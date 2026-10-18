@@ -20,9 +20,9 @@ sidecar exits rather than plan in it. The bench, the declared fixtures and meshe
 never touched; they stay the planner's.
 
 The sidecar's ``check_js`` branch decides with two calls of this module and nothing of its own: :func:`requested_aside`
-reads the request (``None`` for a plain check, refused while the sidecar may hold a carried part, which only it models),
-and :func:`judged_world` opens the world the judgement runs in (the whole world for a plain check, its storage not even
-built). So a plain check is judged as check_js always judged it, and the CPU suite holds that too.
+reads the request (``None`` for a plain check), and :func:`judged_world` opens the world the judgement runs in (the
+whole world for a plain check, its storage not even built). So a plain check is judged as check_js always judged it, and
+the CPU suite holds that too.
 
 Imported from both sides of the process boundary, like ``_curobo_pairs``: as part of the Willy package under python 3.11,
 and as a plain sibling module by ``curobo_planner_server.py`` under python 3.10, so the CPU suite holds the very code the
@@ -88,23 +88,17 @@ def requested_names(value: object, prefix: str) -> "tuple[str, ...]":
     return tuple(sorted(names))
 
 
-def requested_aside(request: Mapping[str, object], *, key: str, prefix: str,
-                    carrying: bool) -> "tuple[str, ...] | None":
+def requested_aside(request: Mapping[str, object], *, key: str, prefix: str) -> "tuple[str, ...] | None":
     """The camera boxes a check_js ``request`` asks to set aside, sorted; ``None`` where it does not carry ``key``.
 
     ``None`` is a plain check, judged in the planner's whole world as check_js always judged it, whatever else holds.
     With the key: the names as :func:`requested_names` reads them, and :class:`PerceivedAsideError` before anything is
-    touched for names that are not some of the camera's boxes, or for any while ``carrying``, the sidecar's own mark that
-    it may hold a carried part. The carried part is modelled by the planner alone, and with the camera's boxes set aside
-    nobody would judge it against them.
+    touched for names that are not some of the camera's boxes. No sidecar holds a carried part since 2026-10-17 (no cell
+    models one), so nothing else refuses them.
     """
     if key not in request:
         return None
-    names = requested_names(request.get(key), prefix)
-    if carrying:
-        raise PerceivedAsideError(
-            "this sidecar may hold a carried part, which only it models, so no box the camera saw is set aside")
-    return names
+    return requested_names(request.get(key), prefix)
 
 
 def judged_world(names: "Sequence[str] | None", store: "Callable[[], CuboidFlags]", *,

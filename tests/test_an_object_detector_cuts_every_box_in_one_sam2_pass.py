@@ -153,7 +153,7 @@ class LoadedOnceTests(_Tmp):
     def test_a_detector_built_without_sam2_refuses_segment_true_before_it_detects(self) -> None:
         with rtdetr(SCENE) as fake:
             bare = ObjectDetector(RtDetrObjectDetector(ObjectDetectorConfig(
-                model_path=str(detector_folder(self.root / "bare")), threshold=0.5, local=True)))
+                model_id=str(detector_folder(self.root / "bare")), threshold=0.5)))
         with self.assertRaisesRegex(ValueError, "segment=True needs SAM2"):
             bare.detect(_image(), segment=True)
         self.assertEqual([], fake.processor.thresholds, "it refused before RT-DETR ran")

@@ -9,13 +9,12 @@ The cost is measured. Replaying the datagen reference verdict on the rank-0 winn
 ranking gap on ``finger_collision`` finds 60.9 % of them colliding with a bin wall rather than with
 an object, and inside the ``bin`` family it is 14 of 14. That is the largest named item left in the
 bin family, and no perception change can reach it: a wall is not an instance any detector segments,
-so it can never enter a fused multi-camera cloud through
-``fusion.geometry.neighbour_scene_enabled``, which is why that switch moves the ``pile`` gap and not
-the ``bin`` one. A wall has to be declared, and this module turns the declaration into points.
+so it can never enter a fused multi-camera cloud through the other cameras' neighbour clouds, which
+is why those moved the ``pile`` gap and not the ``bin`` one. A wall has to be declared, and this module turns the declaration into points.
 
 Points rather than a primitive, because both consumers downstream already take points:
 ``validate_grasp_collision(scene_points_mm=...)`` in the CAMERA frame and
-``generate_support_footprint_grasps(rigid_obstacle_points_base_mm=...)`` in BASE. Emitting points
+``body_grasps(rigid_obstacle_points_base_mm=...)`` in BASE. Emitting points
 means the walls reach every check that already exists, with nothing new to keep in sync.
 
 What declaring the walls buys is not the pick rate. Over the 354 jaw-graspable objects of the D5

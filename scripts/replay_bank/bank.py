@@ -203,7 +203,7 @@ class _NoCamera:
 
 #: What a bank run may switch off to set a lever beside the code without it (``ReplayCell(off=...)``): the ground
 #: seeded round a held target (``support_surfaces._ground_round``), the parts beside the named ones read off the
-#: depth (``robot.grasping.name_neighbours``), and the fine world the guard holds about a motion's goal
+#: depth (``generation.parts_beside``), and the fine world the guard holds about a motion's goal
 #: (``safety.planning.fine_world``) with the 2 mm grid SFE kept the hand off the neighbours' points by; the pick's
 #: other looks the calculator holds beside its own (``scene_views``), and the
 #: body's open finger over the part's outline only through seen space (``unseen``), and the looks the pick took after
@@ -226,7 +226,8 @@ class ReplayCell:
 
     def __init__(self, config_dir: "str | Path" = BANK / "robominds_config" / "config",
                  off: "tuple[str, ...]" = (), *, plan: bool = False, plan_from_home: bool = False,
-                 values: "dict[str, Any] | None" = None, push: bool = False, views: bool = False) -> None:
+                 values: "dict[str, Any] | None" = None, push: bool = False, views: bool = False,
+                 blockers: bool = False) -> None:
         import instant_ur  # noqa: PLC0415 (scripts/bench)
 
         from src.config.tree import load_tree  # noqa: PLC0415
@@ -241,9 +242,9 @@ class ReplayCell:
             raise RuntimeError(f"the bank's config tree does not load: {tree.error}")
         self.tree = tree
         self.robot = tree.robot
-        home = self.robot.home_joint_positions
+        home = self.robot.motion.home_rad
         if home is None:
-            raise RuntimeError("the bank's cell declares no robot.home_joint_positions for its arm to stand at")
+            raise RuntimeError("the bank's cell declares no robot.motion.home_deg for its arm to stand at")
         frame = self.robot.gripper.tool_frame
         self.tool = position_quaternion_to_matrix(np.asarray(frame.offset_mm, dtype=np.float64),
                                                   np.asarray(frame.rotation_quat_xyzw, dtype=np.float64))
@@ -273,6 +274,9 @@ class ReplayCell:
         #: the instant controller stands in for the second.
         self.push = bool(push)
         self.views = bool(views)
+        #: Whether a pick with no admitted grasp asks the pick loop which neighbour it would set aside, and the guard
+        #: whether that neighbour's grasp and then the part's are admitted (:meth:`_blocker`): nothing moves.
+        self.blockers = bool(blockers)
         #: What the last :meth:`grasps` ranked: the orchestrator, the frame, the look, the result, the target's index,
         #: the ordering and the service.
         self._ranked: "tuple[Any, ...] | None" = None
@@ -282,12 +286,12 @@ class ReplayCell:
             support_surfaces._ground_round = lambda *args, **kwargs: None  # noqa: SLF001
         if "fine_world" in self.off:
             from src.robot.execution import camera_world_wiring  # noqa: PLC0415
-            from src.robot.grasping.generation import scene_obstacles, support_footprint  # noqa: PLC0415
+            from src.robot.grasping.generation import hand, scene_obstacles  # noqa: PLC0415
 
             # A lever sets the code's own constants aside for one run: mypy holds them Final, the bank does not.
             camera_world_wiring.FINE_REACH_MM = 0.0  # type: ignore[misc]
             scene_obstacles.FINE_REACH_MM = 0.0  # type: ignore[misc]
-            support_footprint.SEEN_POINTS_CELL_MM = 4.0  # type: ignore[misc]
+            hand.SEEN_POINTS_CELL_MM = 4.0  # type: ignore[misc]
         if "robot_mask" in self.off:
             from src.robot.safety.planning import self_envelope as envelopes  # noqa: PLC0415
 
@@ -332,17 +336,13 @@ class ReplayCell:
             from src.robot.execution.autonomous_grasp.cells import _scene_kwargs  # noqa: PLC0415
             from src.robot.grasping.calculator_factory import build_calculator  # noqa: PLC0415
 
-            # As the cell builds it (``autonomous_grasp.cells``): the geometry stage and its inflation from the tree, and
-            # what the tree says it reads beside the part (``scene_obstacles``, ``side_approaches``). Until 2026-10-14
-            # the bank built the library's calculator, which reads neither: no guard's boxes about the open hand, no
-            # solids under it, no tilted approach.
+            # As the cell builds it (``autonomous_grasp.cells``): what the tree says it reads beside the part
+            # (``scene_obstacles``, ``side_approaches``). Until 2026-10-14 the bank built the library's calculator, which
+            # reads neither: no guard's boxes about the open hand, no solids under it, no tilted approach.
             gripper = self.robot.gripper
-            geometry = self.robot.grasping.geometry
             calculator = build_calculator(self.robot, data_dir=self.tree.root, camera_matrix=intrinsics,
                                           min_grip_width_mm=gripper.min_width_mm,
                                           max_grip_width_mm=gripper.max_width_mm,
-                                          support_footprint_geometry=geometry.stage == "support_footprint",
-                                          support_footprint_inflate_mm=geometry.inflate_mm,
                                           **_scene_kwargs(self.robot))
             if "oracle" in self.off:
                 calculator.max_candidates = ORACLE_TRIES
@@ -425,8 +425,8 @@ class ReplayCell:
         beside = orchestrator._with_the_parts_beside(frame)  # noqa: SLF001 (what every acquired frame carries)
         if beside is not frame:
             resolver.by_frame[id(beside)] = look.camera_to_base
-        result, index, ordering = orchestrator._best_result_over_segmentations(beside)  # noqa: SLF001
-        self._ranked = (orchestrator, beside, look, result, index, ordering, service)
+        result, index = orchestrator._best_result_over_segmentations(beside)  # noqa: SLF001
+        self._ranked = (orchestrator, beside, look, result, index, service)
         from src.robot.grasping.loop.pick_loop import _named_points_base  # noqa: PLC0415
 
         named = _named_points_base(beside, tuple(beside.segmentations), index, look.camera_to_base)
@@ -446,28 +446,29 @@ class ReplayCell:
                                  hold=True, timestamp=_STAMP_S + pick.judged_index, named_points_base_mm=named)
         return result, beside, orchestrator
 
-    def considered(self) -> dict[str, Any]:
+    def considered(self, pick: "RecordedPick | None" = None, seed: Any = None) -> dict[str, Any]:
         """What the cell's own pick loop would do next on the look :meth:`grasps` ranked last, where it admits no grasp
         (the owner, 2026-10-16): its judgement of the look, then, with :attr:`push`, the push of the part it would plan
         (``_considered_push``, as every grasp collided) and the push of the scene a task taking every part would plan
-        (``_considered_scene_push``), and with :attr:`views` the view it would generate (``_aim`` and
+        (``_considered_scene_push``), with :attr:`views` the view it would generate (``_aim`` and
         ``generated_view.go_to_generated_view`` on the instant controller: screened by the arm's inverse kinematics,
-        the travel cap and the cable window, its straight joint line judged against the camera world). Nothing moves
-        anything real."""
+        the travel cap and the cable window, its straight joint line judged against the camera world), and with
+        :attr:`blockers` the neighbour it would set aside (:meth:`_blocker`, ``pick`` and ``seed`` the pick's). Nothing
+        moves anything real."""
         from src.geometry import Frame, Transform  # noqa: PLC0415
         from src.robot.grasping.recovery.push_gate import TRIGGER_ALL_COLLIDED, PushCell, PushGate  # noqa: PLC0415
 
         if self._ranked is None:
             return {}
-        orchestrator, frame, look, result, index, ordering, service = self._ranked
+        orchestrator, frame, look, result, index, service = self._ranked
         transform = Transform.from_matrix(look.camera_to_base, from_frame=Frame.CAMERA, to_frame=Frame.BASE)
         view = orchestrator._look_view(look.name, None, frame, transform)  # noqa: SLF001
-        judged = orchestrator._judge(view, result, index, ordering, None)  # noqa: SLF001
+        judged = orchestrator._judge(view, result, index, None)  # noqa: SLF001
         orchestrator._look_views.append(view)  # noqa: SLF001 (the push reads the table every look saw)
         if judged is None:
             return {"considered": "the look judged no part"}
         out: dict[str, Any] = {}
-        if self.push:
+        if self.push or self.blockers:
             cell = service.push_cell
             if not isinstance(cell, PushCell):
                 out["push"] = {"planned": False, "code": "no_push_cell", "sentence": str(getattr(cell, "sentence", ""))}
@@ -475,10 +476,13 @@ class ReplayCell:
                 campaign = service.start_campaign(every_part=True)
                 gate = PushGate(budgets=campaign.budgets, distance_mm=float(campaign.distance_mm or 30.0), cell=cell,
                                 longest_mm=campaign.longest_mm, every_part=True, scene_budgets=campaign.scene_budgets)
-                if index is not None:
+                if self.push and index is not None:
                     out["push"] = _push_said(orchestrator._considered_push(  # noqa: SLF001
                         gate, judged, index, 0, trigger=TRIGGER_ALL_COLLIDED))
-                out["scene_push"] = _push_said(orchestrator._considered_scene_push(gate, judged, 0))  # noqa: SLF001
+                if self.push:
+                    out["scene_push"] = _push_said(orchestrator._considered_scene_push(gate, judged, 0))  # noqa: SLF001
+                if self.blockers and pick is not None:
+                    out["blocker"] = self._blocker(orchestrator, judged, gate, pick, seed)
         if self.views:
             out["view"] = self._generated(orchestrator, judged)
         return out
@@ -507,13 +511,56 @@ class ReplayCell:
                 "other_angle": any(word in label for word in ("flatter", "steeper", "x as far")),
                 **({"stopped": f"{stopped.status.value}: {stopped.message}"[:200]} if stopped is not None else {})}
 
+    def _blocker(self, orchestrator: Any, judged: Any, gate: Any, pick: RecordedPick, seed: Any) -> dict[str, Any]:
+        """The neighbour the pick loop would set aside for ``judged`` (``_choose_a_blocker``, as the cell chooses: the
+        one whose removal frees most grasps of the part, or up to three together), or why none; then the guard's word on
+        the blocker's grasps, in a world where the blocker is the part held and the part a neighbour, and on the part's
+        grasps once the blocker is gone, its points blanked in every look. Nothing moves (the owner, 2026-10-16: "Das
+        Beiseitelegen auf der Bank messen")."""
+        from dataclasses import replace  # noqa: PLC0415
+
+        from src.robot.grasping.loop.pick_loop import _BLOCKER_MASK_GROWTH_PX, _seen_refusals  # noqa: PLC0415
+        from src.robot.grasping.recovery.blocker import BlockerRecord, mask_of  # noqa: PLC0415
+
+        choice = orchestrator._choose_a_blocker(judged, gate, refusals=_seen_refusals(judged.result))  # noqa: SLF001
+        if isinstance(choice, BlockerRecord):
+            return {"chosen": False, "code": choice.code, "sentence": " ".join(choice.sentence.split())[:240]}
+        cluster = choice.cluster
+        points = np.asarray(cluster.points_base_mm, dtype=np.float64)
+        out: dict[str, Any] = {"chosen": True, "freed": int(choice.freed), "fewer": int(choice.fewer),
+                               "at_mm": [round(float(v)) for v in cluster.centre_mm],
+                               "widths_mm": [round(float(v)) for v in cluster.widths_mm], "where": choice.where,
+                               "with_more": len(choice.rest)}
+        held = self.world(replace(pick, target_cloud_mm=points))
+        grasps = [choice.grasp, *(grasp for grasp, _release in choice.alternatives)]
+        verdicts = [self.judge(held, grasp, orchestrator.policy, seed)["verdict"] for grasp in grasps]
+        out["blocker_tried"], out["blocker_admitted"] = len(verdicts), sum(v == "admitted" for v in verdicts)
+
+        def without(look: Look) -> Look:
+            gone = mask_of(points, shape=np.asarray(look.surface_depth_mm).shape[:2], intrinsics=look.intrinsics,
+                           camera_to_base=look.camera_to_base, grow_px=_BLOCKER_MASK_GROWTH_PX)
+            surface, depth = np.array(look.surface_depth_mm, copy=True), np.array(look.depth_mm, copy=True)
+            surface[gone] = 0.0
+            depth[gone] = 0.0
+            return replace(look, surface_depth_mm=surface, depth_mm=depth)
+
+        cleared = self.world(replace(pick, looks=tuple(without(look) for look in pick.looks)))
+        call = judged.ranked.call
+        blanked = np.asarray(call.depth, dtype=np.float64).copy()
+        blanked[choice.mask] = 0.0
+        again = orchestrator._ask_again(call, depth=blanked, drop_near=points)  # noqa: SLF001
+        offered = list(again.candidates) if again.is_success else []
+        after = [self.judge(cleared, grasp, orchestrator.policy, seed)["verdict"] for grasp in offered]
+        out["part_offered_after"], out["part_admitted_after"] = len(after), sum(v == "admitted" for v in after)
+        return out
+
     # -------------------------------------------------------------- the guard's word on each grasp
     def _flange(self, tcp: np.ndarray) -> np.ndarray:
         return tcp @ np.linalg.inv(self.tool)
 
     def _into_window(self, joints: np.ndarray) -> np.ndarray:
         """``joints`` with each axis a full turn on where that brings it inside the window the guard keeps the arm in
-        (``safety.joint_limits.within_half_turn_of_home``): a look recorded before the window, or a home moved since,
+        (half a turn about home, every real arm's): a look recorded before the window, or a home moved since,
         stood outside it, and the cell of today stands at the same pose a turn round."""
         from src.robot.safety.joint_limits import JointLimitGuard  # noqa: PLC0415
 
@@ -637,7 +684,7 @@ class ReplayCell:
             try:
                 route = self.arm._route_to_the_nearest_goal(  # noqa: SLF001 (the cell's own route)
                     self.arm._curobo_planner(), self.arm._pose_to_flange(standoff), standoff,  # noqa: SLF001
-                    velocity=float(self.robot.motion_limits.max_velocity))
+                    velocity=float(self.robot.motion.max_velocity))
             except Exception as exc:  # noqa: BLE001 (a route the bank cannot ask is said, never a crash of the run)
                 return {"route": "not asked", "route_why": f"{type(exc).__name__}: {exc}"[:200],
                         "route_s": round(time.perf_counter() - started, 2)}
@@ -773,14 +820,14 @@ def replay(cell: ReplayCell, path: "str | Path") -> dict[str, Any]:
             kind = _cause(verdict.get("why", verdict["verdict"]))
             causes[kind] = causes.get(kind, 0) + 1
     record["refused"] = causes
-    if (cell.push or cell.views) and not admitted:
-        record.update(cell.considered())
+    if (cell.push or cell.views or cell.blockers) and not admitted:
+        record.update(cell.considered(pick, seed))
     if cell.plan:
         routes = [cell.route(candidates[index], orchestrator.policy, seed) for index in admitted[:PLAN_TRIES]]
         record["routes"] = routes
         record["routed"] = sum(route["route"] in ("straight", "planned") for route in routes)
     if cell.plan_from_home:
-        home = cell.robot.home_joint_positions
+        home = cell.robot.motion.home_rad
         plans = [cell.plan_from(candidates[index], orchestrator.policy, home) for index in admitted[:PLAN_TRIES]]
         record["plans"] = plans
         record["planned"] = sum(plan["plan"] == "admitted" for plan in plans)

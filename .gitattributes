@@ -5,16 +5,6 @@
 assets/models/** -text
 docs/baselines/** -text
 
-# MEASURED 2026-09-10: the replay packs were not pinned here and core.autocrlf=true checked them out
-# with CRLF while the committed blob is LF. sha256 of the working-tree bytes and sha256 of the same
-# bytes with CRLF folded to LF were computed against tests/data/replay/MANIFEST.json: the LF form
-# matched all four packs, the CRLF form matched none. Eight byte-identity assertions across five test
-# files failed for that reason alone and were being read as cross-platform float drift.
-# An existing clone whose working tree already holds the CRLF copies will show them as modified
-# once this line lands, because git stops converting. Restore them once and the tree matches the
-# blobs again.
-tests/data/replay/** -text
-
 # Universal Robots' description config, vendored byte for byte as its pinned commit holds it and
 # held by scripts/arms/ur_ros2_description.sha256. A CRLF checkout would change every YAML's
 # bytes and fail that pin.

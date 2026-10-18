@@ -12,8 +12,8 @@ pre-grasp refinement and the ``closed_loop`` / ``dense_autonomous`` modes that
 ran it were removed on 2026-09-29, and the post-grasp verification stage and the
 ``dense_recovery`` slots the same day: no pick path consulted them. Whether a
 close holds a part is the execution policy's own post-close check of the
-gripper's hold evidence, and the recovery a pick runs is
-``robot.grasping.recovery``.
+gripper's hold evidence, and the recovery a pick runs is the cell's fixed one
+(``CELL_RECOVERY``).
 
 Contract:
 
@@ -23,8 +23,6 @@ Contract:
   happy path with ``SINGLE_OBJECT`` sampling.
 * :class:`AutonomousGraspReport` composes :class:`PickSessionReport`; it does
   not widen it.
-* The decision and shadow-router slots are exposed as typed fields with no-op
-  defaults.
 
 This module imports only vendor-neutral surfaces. It is safe to import on macOS
 with no hardware drivers installed.
@@ -36,7 +34,7 @@ import logging
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional
@@ -53,7 +51,8 @@ from src.robot.core import (
     RobotError,
 )
 from src.robot.core.errors import ArmFault, CameraWorldUnavailable
-from src.robot.core.gripper import toggle_without_sensor_of, why_toggle_count_unknown
+from src.robot.core.gripper import toggle_without_sensor_of
+from src.robot.execution.camera_fusion import fused_cameras
 from src.robot.execution.looks import Look, LookPose, look_label, looks_of, move_to_look
 from src.robot.execution.motion import MotionOutcome, MotionReport
 from src.robot.grasping.types.feedback import GraspFailureReason
@@ -80,7 +79,6 @@ from src.robot.grasping.recovery.policy import (
 )
 from src.robot.grasping.recovery.orchestrator import (
     OUTCOME_RECOVERY_EXHAUSTED,
-    OUTCOME_UNSAFE_RECOVERY_REFUSED,
     RecoveryDispatcher,
     RecoveryOrchestrator,
     RecoveryTrail,
@@ -92,11 +90,11 @@ from src.robot.grasping.recovery.orchestrator import (
 from .builders import (
     apply_orchestrator_overlays,
     build_config_frame_resolver,
-    build_decision_layer,
     build_effective_config,
     build_runtime,
 )
 from .config import (
+    MAX_ATTEMPTS,
     EffectiveGraspingConfig,
     GraspBehaviorProfile,
     GraspMode,
@@ -104,61 +102,22 @@ from .config import (
     _profile_for,
     resolve_grasp_mode,
 )
-from .latency import LatencyTelemetryCoordinator
 from .prompt import PickPrompt
 from .report import (
     _PICK_TO_AUTONOMOUS,
     AutonomousGraspOutcome,
     AutonomousGraspReport,
 )
-from .shadow import attach_shadow_router, maybe_build_shadow_router
-from .watchdog import WatchdogCoordinator
-from src.robot.grasping.decision import (
-    DecisionAction,
-    DecisionEngine,
-    DecisionPolicy,
-    DecisionReasonCode,
-    DecisionReport,
-)
-from src.robot.grasping.telemetry.latency_tracker import (
-    LatencyStage,
-    LatencyTracker,
-)
-from src.robot.grasping.uncertainty import (
-    UncertaintyCalibration,
-    UncertaintyChannelValues,
-    UncertaintySnapshot,
-    UncertaintyWeights,
-    fuse_uncertainty,
-    should_bias_recovery_for_uncertainty,
-)
-from src.robot.execution.calibration_watchdog import (
-    WatchdogAction,
-    WatchdogPolicy,
-    WatchdogReport,
-    WatchdogSample,
-)
-from src.robot.events import (
-    RobotWatchdogEventListener,
-)
-# The shadow router is the only RL-package surface that lands in the runtime.
-# ``ShadowRouter`` is a typed dataclass field on the service; its telemetry twin
-# ``ShadowRouterTelemetry`` is a field on the report and is imported there. The
-# wiring and post-processing logic lives in ``shadow``, imported above. The
-# import is cheap (no torch or numpy dependency) and stays inert unless the
-# operator opts into ``robot.rl.mode == "rl_shadow"``.
-from src.robot.grasping.rl.router import (
-    ShadowRouter,
-)
 
 if TYPE_CHECKING:
     from src.config.schema import CameraConfig
+    from src.config.schema.runtime import RuntimeConfig
     from src.config.schema.robot import RobotConfig
     from src.geometry.closing_axis import ClosingAxis
     from src.robot.execution.handling import HandlingReport
     from src.robot.grasping.loop.pick_loop import LookedAround
     from src.robot.grasping.recovery.push_gate import PickPush, PushCampaign, PushCell, PushGate
-    from src.robot.grasping.recovery.push_planner import AxisBox, PushRefusal
+    from src.robot.grasping.recovery.push_planner import PushRefusal
     from src.robot.grasping.loop.progress import (
         PickProgressListener,
         ShouldCancel,
@@ -170,17 +129,12 @@ __all__ = [
     "AutonomousGraspOutcome",
     "AutonomousGraspReport",
     "AutonomousGraspService",
-    "DecisionAction",
-    "DecisionEngine",
-    "DecisionPolicy",
-    "DecisionReport",
     "EffectiveGraspingConfig",
     "GraspBehaviorProfile",
     "GraspMode",
     "GraspModeInput",
     "found_nothing",
     "only_excluded",
-    "only_kept_out",
     "resolve_grasp_mode",
 ]
 
@@ -190,14 +144,6 @@ __all__ = [
 # `chosen()` is a `TypeGuard` over `isinstance` rather than an `is` comparison, because
 # `Any = object()` is precise at run time and narrows nothing for a type checker. A `TypeGuard`
 # narrows only the positive branch, so the value-using arm goes first at every call site below.
-
-# The "uncertainty inactive" sentinels returned by ``_resolve_uncertainty_runtime`` when the operator has not
-# opted into fusion (or the active mode is out of ``apply_modes``): a 0.0 fail-closed threshold never trips,
-# a 1.01 disagreement threshold never trips (the fused score is clamped to [0, 1]), and a 0.0 ranking penalty is
-# a no-op. Together they reproduce the exact baseline decision behaviour.
-_UNCERTAINTY_INACTIVE_FAIL_CLOSED_THRESHOLD = 0.0
-_UNCERTAINTY_INACTIVE_DISAGREEMENT_THRESHOLD = 1.01
-_UNCERTAINTY_INACTIVE_RANKING_PENALTY_WEIGHT = 0.0
 
 
 def _is_motion_plan_refusal(attempt: Any) -> bool:
@@ -259,37 +205,6 @@ class _RecoveryReportAdapter:
 _LOG: logging.Logger = create_robot_logger(__name__, "grasp_service.log")
 
 
-def _warn_if_records_will_not_be_trainable(robot_cfg: Any, record_log_path: Any) -> None:
-    """Warn once, at boot, when a cell is about to log records a ranker can never learn from.
-
-    The per-candidate feature rows (`extra.rl_candidate_features`, the only thing a pairwise ranker
-    can rank) are written exclusively when the ranking shadow ran, and the shadow is built only for
-    ``robot.rl.mode == "rl_shadow"``. A cell with any other mode logs records that look healthy: the
-    outcome is there, the KPIs roll up, the file grows every pick. The shortfall surfaces only when
-    somebody trains and the trainer reports a converged fit over nothing, so the warning fires at
-    boot rather than at training time.
-
-    A warning, never a refusal. Record logging also feeds the KPI roll-up, the failure taxonomy and
-    every post-mortem a bring-up depends on, and a cell that never intends to train an RL policy has
-    good reasons to log; refusing here would be a fail-closed gesture with no safety behind it.
-
-    `python -m src.robot.grasping.rl check-dataset --records <log>` answers the same question
-    about a log that already exists.
-    """
-    mode = str(getattr(getattr(robot_cfg, "rl", None), "mode", "") or "")
-    if mode == "rl_shadow":
-        return
-    _LOG.warning(
-        "grasping.record_log_path is set (%s) but robot.rl.mode is %r, not 'rl_shadow': this cell "
-        "will log no per-candidate features (extra.rl_candidate_features), which are written only "
-        "when the ranking shadow runs. The records stay valid for KPIs, the failure taxonomy and "
-        "diagnosis, but a pairwise ranker trained on them has nothing to rank. Set robot.rl.mode: "
-        "rl_shadow (with policy_id + artifact_path) if this corpus is meant for training, and check "
-        "any existing log with `python -m src.robot.grasping.rl check-dataset --records %s`.",
-        record_log_path, mode or "<unset>", record_log_path,
-    )
-
-
 #: What :meth:`AutonomousGraspService.pick` reports instead of raising: a fault of the cell. The robot
 #: stack's own errors (a controller link, an e-stop, a camera that could not vouch, a wrist frame taken
 #: while the tool moved), a device that stopped delivering and a fused camera the cell refuses to go
@@ -334,6 +249,24 @@ def _recovery_action(name: str) -> SceneRecoveryAction:
         ) from None
 
 
+#: Where a cell whose tree names no ``robot.grasping.record_log_path`` appends its grasp records: ``grasp_records.jsonl``
+#: in this folder, or in the log folder (``WILLY_LOG_DIR``, else ``logs/``) where it is ``None``. A cell keeps its
+#: records whether or not its tree names a file (the owner's cleanup, 2026-10-17); the suite points this at a folder of
+#: its own (``tests/conftest.py``), as it does the looks every pick records.
+RECORD_LOG_DIR: "str | None" = None
+
+
+def default_record_log() -> Path:
+    """The file a cell whose tree names none appends its grasp records to (:data:`RECORD_LOG_DIR`).
+
+    Returns:
+        Path: ``grasp_records.jsonl`` in :data:`RECORD_LOG_DIR`, or in the log folder where that is ``None``.
+    """
+    from src.utility.paths import logs_dir  # noqa: PLC0415
+
+    return Path(RECORD_LOG_DIR) / "grasp_records.jsonl" if RECORD_LOG_DIR else logs_dir() / "grasp_records.jsonl"
+
+
 @dataclass
 class AutonomousGraspService:
     """The pick service a cell builds: one autonomous pick per :meth:`pick`, a typed report each time.
@@ -348,11 +281,6 @@ class AutonomousGraspService:
         default_mode (GraspMode): The profile every pick applies unless a call overrides it (default: AUTO).
         effective_config (EffectiveGraspingConfig | None): The config snapshot the orchestrator's overlays read;
             ``None`` for a service built from components (default: None).
-        decision_policy (DecisionPolicy | None): The decision layer's policy (default: None).
-        decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
-        watchdog_history (list[WatchdogSample]): The robot watchdog's samples, newest last (default: []).
-        watchdog_event_listener (RobotWatchdogEventListener | None): Told of watchdog events (default: None).
-        shadow_router (ShadowRouter | None): The shadow router, where the cell runs one (default: None).
         configured_looks (tuple[LookPose, ...]): The looks the cell profile configures, which ``PickRun`` and the
             console hand every pick that names none (default: ()).
         push_cell (PushCell | PushRefusal | None): The cell's push inputs where its recovery may push, or why it may not
@@ -372,34 +300,10 @@ class AutonomousGraspService:
     # so existing call sites do not have to opt into config-driven
     # wiring just to construct the service.
     effective_config: Optional[EffectiveGraspingConfig] = None
-    # AUTO fail-closed decision layer. Both slots are :data:`None` for
-    # legacy services so the wrapped pick path runs verbatim.
-    # ``from_robot_config`` auto-builds these when
-    # ``robot.grasping.decision.enabled`` is :data:`True`.
-    decision_policy: Optional[DecisionPolicy] = None
-    decision_engine: Optional[DecisionEngine] = None
-    # Drift + OOD watchdog rolling history. One sample per completed
-    # decision tick is appended to this list (capped at a generous hard
-    # ceiling so unbounded growth on a long-running service is
-    # impossible). The watchdog itself trims to ``policy.window_size``
-    # internally before evaluation. Runtime wiring fills the list as
-    # ``pick()`` is called; a caller may pre-populate it to seed a
-    # drift trend.
-    watchdog_history: list[WatchdogSample] = field(default_factory=list)
-    # Optional listener invoked on watchdog state transitions (drift
-    # escalating from ``NONE`` to ``MODERATE``, OOD flag rising edge,
-    # degraded-mode rising edge, enforced BLOCK_AUTO fired). The
-    # listener is best-effort: exceptions raised inside it are swallowed
-    # so a buggy subscriber cannot abort the grasp loop.
-    watchdog_event_listener: Optional[RobotWatchdogEventListener] = None
-    # Optional candidate-selection shadow router. ``None`` by default.
-    # Wired by :meth:`from_robot_config` when ``robot.rl.mode ==
-    # "rl_shadow"`` and the logistic-policy artifact is available on
-    # disk. The service never consults this for execution decisions; it
-    # is invoked post-pick to annotate :class:`AutonomousGraspReport`
-    # with :attr:`shadow_router_telemetry` and nothing else.
-    shadow_router: Optional[ShadowRouter] = None
-    #: Where the camera looks from when a program names no look: ``robot.look_joint_positions_deg`` of the cell
+    # The decision layer (``decision_policy``, ``decision_engine``), the drift watchdog (``watchdog_history``,
+    # ``watchdog_event_listener``) and the RL shadow router (``shadow_router``) left on 2026-10-16: off at every cell,
+    # and switched on they changed no pick of the replay bank.
+    #: Where the camera looks from when a program names no look: ``robot.motion.look_deg`` of the cell
     #: profile, read once by :meth:`from_robot_config` into :class:`~src.robot.core.JointPositions`, in order.
     #: ``PickRun`` and the console hand them to every pick whose program names none (a program's own looks override
     #: them), on a fixed camera's cell as on a wrist camera's: a fixed camera's arm moves to them too, and its pick
@@ -408,17 +312,12 @@ class AutonomousGraspService:
     configured_looks: tuple[LookPose, ...] = ()
     #: What the cell is as a push of a failed part needs it (``nudge_target``, pushed inside the pick attempt): the open
     #: hand from the gripper registry, the workspace, the clearance the arm's line judge keeps and a declared container
-    #: (:class:`~src.robot.grasping.recovery.push_gate.PushCell`). :meth:`from_robot_config` reads it where
-    #: ``grasping.recovery.allowed_actions`` names ``nudge_target``, and keeps the refusal where it cannot be read;
-    #: ``None`` otherwise and for :meth:`from_components`, and then nothing is pushed.
+    #: (:class:`~src.robot.grasping.recovery.push_gate.PushCell`). :meth:`from_robot_config` reads it for every cell
+    #: with a grasping block, and keeps the refusal where it cannot be read; ``None`` for :meth:`from_components`, and
+    #: then nothing is pushed.
     push_cell: "PushCell | PushRefusal | None" = None
 
     def __post_init__(self) -> None:
-        # Per-attempt latency/SLO coordinator.
-        self._latency = LatencyTelemetryCoordinator()
-        # Drift/OOD watchdog coordinator. The rolling sample history +
-        # event listener stay on the service.
-        self._watchdog = WatchdogCoordinator()
         # Opt-in production record logging. ``None`` unless a deployment calls
         # :meth:`enable_record_logging`; ``from_robot_config`` wires it from
         # ``grasping.record_log_path``. When set, :meth:`pick` appends one
@@ -434,7 +333,7 @@ class AutonomousGraspService:
         #: above the orchestrator's attempt loop and would otherwise start a fresh pick right after a
         #: cancelled one. Default ``None`` leaves the loop unchanged.
         self._should_cancel: Optional["ShouldCancel"] = None
-        #: The campaign the picks belong to (:meth:`start_campaign`): its push budgets, the parts next_target skips
+        #: The campaign the picks belong to (:meth:`start_campaign`): its push budgets, the regions its task keeps out
         #: and the push distance. Started on the first pick where no caller started one.
         self._campaign: Optional["PushCampaign"] = None
         #: Why the last pick stopped where the arm stands, a person to decide (its report's ``needs_person``), in that
@@ -443,23 +342,6 @@ class AutonomousGraspService:
         self._needs_person: str = ""
         #: Why this service's picks cannot push, each said once (a WARNING per reason, not per pick).
         self._push_said: set[str] = set()
-        # Push the wired :class:`ShadowRouter` (if any) onto the
-        # underlying orchestrator so the ranking-shadow producer can
-        # fire at the pick_loop seam. Never raises: a runtime stack that
-        # exposes no orchestrator is skipped silently, and the post-pick
-        # reader is also defensive.
-        try:
-            orchestrator = getattr(
-                getattr(self, "runtime", None), "orchestrator", None
-            )
-            if orchestrator is not None and self.shadow_router is not None:
-                # ``shadow_router`` is a plain dataclass field on
-                # ``BinPickingOrchestrator``; direct assignment is the
-                # same idiom the overlay wiring uses
-                # (e.g. ``runtime.orchestrator.frame_resolver = ...``).
-                orchestrator.shadow_router = self.shadow_router
-        except Exception:  # noqa: BLE001 (shadow-router attach is fail-safe: degrade to no-shadow, never break setup)
-            return
 
     # Construction helpers
 
@@ -478,8 +360,6 @@ class AutonomousGraspService:
         policy: GraspExecutionPolicy | None = None,
         motion: "Maybe[GraspMotion]" = UNSET,
         frame_resolver: FrameResolver | None = None,
-        decision_policy: DecisionPolicy | None = None,
-        decision_engine: DecisionEngine | None = None,
         record_log_path: "str | Path | None" = None,
     ) -> "AutonomousGraspService":
         """Build the service directly from raw components.
@@ -501,9 +381,6 @@ class AutonomousGraspService:
                 drives from it, with every guard (default: UNSET).
             frame_resolver (FrameResolver | None): Places each frame in BASE; given one, the calculator gets a per-frame
                 camera-to-base transform and a camera-frame grasp is refused before motion (default: None).
-            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one
-                (default: None).
-            decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
             record_log_path (str | Path | None): Append one attempt record per pick to this JSONL file; ``None`` logs
                 nothing (default: None).
 
@@ -522,7 +399,6 @@ class AutonomousGraspService:
             if refusal:
                 raise ValueError(refusal)
         resolved_mode = resolve_grasp_mode(mode)
-        profile = _profile_for(resolved_mode)
         # Build a default policy that fails closed when a resolver is
         # wired. An explicit caller-supplied policy is honoured
         # verbatim; mutating an externally owned object would be a
@@ -571,7 +447,6 @@ class AutonomousGraspService:
             perception=perception,
             gripper=gripper,
             max_attempts=max_attempts,
-            grasp_sampling_mode=profile.sampling_mode,
             standoff_mm=standoff_mm,
             retreat_mm=retreat_mm,
             policy=effective_policy,
@@ -582,16 +457,7 @@ class AutonomousGraspService:
             # public dataclass surface, so direct assignment is the
             # supported idiom.
             runtime.orchestrator.frame_resolver = frame_resolver
-        service = cls(
-            runtime=runtime,
-            default_mode=resolved_mode,
-            decision_policy=(
-                decision_engine.policy
-                if decision_engine is not None and decision_policy is None
-                else decision_policy
-            ),
-            decision_engine=decision_engine,
-        )
+        service = cls(runtime=runtime, default_mode=resolved_mode)
         # Opt into production record logging when a path is supplied (None / empty is off).
         if record_log_path:
             service.enable_record_logging(record_log_path)
@@ -611,30 +477,24 @@ class AutonomousGraspService:
         policy: GraspExecutionPolicy | None = None,
         motion: "Maybe[GraspMotion]" = UNSET,
         frame_resolver: FrameResolver | None = None,
-        decision_policy: DecisionPolicy | None = None,
-        decision_engine: DecisionEngine | None = None,
         arm: "RobotArm | None" = None,
         gripper: "Gripper | None" = None,
         multi_camera_perception: "MultiCameraPerceptionSource | None" = None,
         #: Which camera id is the cell's primary, when the caller knows. It is not config the root
         #: can read: which rig a cell opens is `camera.cameras.primary_rig_id`, in the camera
-        #: section, and this class is handed a `RobotConfig`. The overlays need it to leave the
-        #: primary out of the list of cameras a fused pick waits for, because the primary delivers
-        #: through `perception` and never through the extra-camera rig, so a primary that is expected
-        #: there is permanently missing. `None` expects every camera the map names, which is what
-        #: every caller got before.
+        #: section, and this class is handed a `RobotConfig`. The loop needs it to leave the primary
+        #: out of the cameras a fused pick waits for, because the primary delivers through
+        #: `perception` and never through the extra-camera rig, so a primary that is expected there
+        #: is permanently missing. `None` expects every camera the resolver map names.
         primary_camera_id: str | None = None,
-        #: One calculator per camera id, for a cell that may promote an object from a camera
-        #: other than the primary. A calculator is bound to one camera's intrinsics at
-        #: construction, so an object seen only by a second camera cannot be computed with the
-        #: primary's: it would not fail, it would place a plausible grasp in the wrong lens.
-        #: `None` is every cell that cannot promote, which is every cell by default.
-        camera_calculators: "dict[str, Any] | None" = None,
         #: The camera section of the tree `robot_cfg` came from. Each camera's calibration is
         #: declared on its rig there, `camera.cameras.rigs[<id>].extrinsics`, so the primary's
         #: resolver and a fused cell's resolver map are built from it. `UNSET` builds no resolver
         #: from config, which a real vendor refuses below unless `frame_resolver` is passed.
         camera: "Maybe[CameraConfig]" = UNSET,
+        #: The runtime section of the same tree: what a task takes where it says nothing itself, whether the parts are
+        #: critical among it (`runtime.task.critical_parts`). `UNSET` is the schema's default, not critical.
+        app_runtime: "Maybe[RuntimeConfig]" = UNSET,
     ) -> "AutonomousGraspService":
         """Build the service from a validated robot section, every decision from config.
 
@@ -645,8 +505,8 @@ class AutonomousGraspService:
             perception (PerceptionSource): Where frames come from and what grounds them: the cell's camera source.
             mode (GraspMode | str | None): The locked behaviour profile every pick applies unless a call overrides
                 it: ``"easy"``, ``"auto"`` or ``"dense_clutter"``; ``None`` is ``auto`` (default: None).
-            max_attempts (Maybe[int]): How many attempts one pick may make; unset is ``grasping.max_attempts``
-                (default: UNSET).
+            max_attempts (Maybe[int]): How many attempts one pick may make; unset is ``MAX_ATTEMPTS``, the
+                cell's 5 (default: UNSET).
             standoff_mm (float): How far back along the approach a pick's planned move stops before its line in,
                 millimetres (default: 80.0).
             retreat_mm (float): How far a pick lifts after it closed, millimetres (default: 100.0).
@@ -656,23 +516,20 @@ class AutonomousGraspService:
                 drives from it, with every guard (default: UNSET).
             frame_resolver (FrameResolver | None): Places each frame in BASE; given one, the calculator gets a per-frame
                 camera-to-base transform and a camera-frame grasp is refused before motion (default: None).
-            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one
-                (default: None).
-            decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
             arm (RobotArm | None): A live arm handle config cannot describe (the Isaac arm); ``None`` builds the one the
                 section names (default: None).
             gripper (Gripper | None): A live hand handle, likewise (default: None).
             multi_camera_perception (MultiCameraPerceptionSource | None): Every camera's source, for a cell with several
                 (default: None).
             primary_camera_id (str | None): The rig id of the camera grasps are synthesised in (default: None).
-            camera_calculators (dict[str, Any] | None): A grasp calculator per rig id, for several cameras
-                (default: None).
             camera (Maybe[CameraConfig]): The cell's camera section, read for the push inputs and the looks
+                (default: UNSET).
+            app_runtime (Maybe[RuntimeConfig]): The cell's runtime section, read for whether its parts are critical
                 (default: UNSET).
 
         Returns:
             AutonomousGraspService: The service; ``effective_config`` the section's snapshot, so the config-driven
-                overlays and the recovery (``grasping.recovery``) run as the section says.
+                overlays run as the section says, beside the cell's fixed recovery.
 
         Raises:
             ValueError: No ``mode`` and no ``grasping`` block declared; a ``policy`` that does not drive the arm and
@@ -711,21 +568,8 @@ class AutonomousGraspService:
         profile = _profile_for(resolved_mode)
 
         # The value-using arm comes first because `chosen` is a `TypeGuard`, which narrows the
-        # positive branch only. Reversed, `int(max_attempts)` would still see `int | _Unset` and
-        # mypy would refuse it.
-        if chosen(max_attempts):
-            resolved_max_attempts = int(max_attempts)
-        else:
-            resolved_max_attempts = (
-                int(grasping_cfg.max_attempts) if grasping_cfg is not None else 5
-            )
-
-        # Decision-layer auto-build.
-        resolved_decision_policy, resolved_decision_engine = build_decision_layer(
-            grasping_cfg,
-            decision_policy=decision_policy,
-            decision_engine=decision_engine,
-        )
+        # positive branch only.
+        resolved_max_attempts = int(max_attempts) if chosen(max_attempts) else MAX_ATTEMPTS
 
         # Immutable effective-config snapshot (``None`` on the legacy
         # ``mode``-override path).
@@ -733,6 +577,8 @@ class AutonomousGraspService:
             grasping_cfg,
             resolved_mode=resolved_mode,
             resolved_max_attempts=resolved_max_attempts,
+            critical_parts=bool(app_runtime.task.critical_parts) if chosen(app_runtime) else False,
+            fusion=bool(fused_cameras(camera.cameras.rigs, camera.cameras.primary_rig_id)) if chosen(camera) else False,
         )
 
         # Build the primary camera's resolver from its rig's declared calibration when the caller
@@ -785,23 +631,23 @@ class AutonomousGraspService:
         from src.robot.safety.planning.hand import hand_past_the_tcp_mm  # noqa: PLC0415
 
         apply_orchestrator_overlays(
-            runtime, grasping_cfg, resolved_mode=resolved_mode,
-            primary_camera_id=primary_camera_id, camera=camera,
+            runtime, grasping_cfg, resolved_mode=resolved_mode, camera=camera,
             hand_past_the_tcp_mm=hand_past_the_tcp_mm(robot_cfg),
             palm_thickness_mm=_registry_palm_thickness_mm(robot_cfg),
             hand_steps=_registry_hand_steps(robot_cfg),
+            robot_cfg=robot_cfg,
         )
 
-        # The half of multi-camera fusion that config cannot carry. The overlays above wire
-        # `fusion_geometry_config`, the per-camera resolver map and the list of cameras the config
-        # asked for. The rig is a live device handle, so it arrives here the same way `perception`
-        # and `arm` do. Without it a physical cell can name three calibrated cameras, load three
-        # artifacts fail-closed, and still run single-view.
+        # The half of multi-camera fusion that config cannot carry. The overlays above wire the
+        # per-camera resolver map of a cell whose camera section fuses two or more cameras. The rig
+        # is a live device handle, so it arrives here the same way `perception` and `arm` do.
+        # Without it a physical cell can declare three calibrated cameras, load three artifacts
+        # fail-closed, and still run single-view.
         #
-        # None is the byte-identical default and stays legal with fusion configured: an operator
-        # who enabled the block on a cell whose rig is not wired yet gets the loop's warning that
-        # fusion is enabled and the cell is running single-view, once per pick, which is the honest
-        # answer. Refusing here would break the sim runners, which wire the rig afterwards.
+        # None is the byte-identical default and stays legal on a fused cell: one whose rig is not
+        # wired yet gets the loop's warning that it fuses its cameras and is running single-view,
+        # once per pick, which is the honest answer. Refusing here would break the sim runners,
+        # which wire the rig afterwards.
         if multi_camera_perception is not None:
             if runtime.orchestrator is None:
                 raise ValueError(
@@ -816,31 +662,25 @@ class AutonomousGraspService:
             # `RobotConfig`. Set unconditionally so a caller that passes neither gets the empty
             # string and an absent map, which is what every caller got before they existed.
             runtime.orchestrator.primary_camera_id = primary_camera_id or ""
-            runtime.orchestrator.camera_calculators = camera_calculators
-            # Two of the cell's own switches for its looks (the owner, 2026-10-08 night), both off unless its tree turns
-            # them on: a weak view of the part drives the next look, and the regions a task keeps out are painted out of
-            # the image its detector reads. Set only where on, so a cell that turns neither builds the loop it built.
-            if getattr(grasping_cfg, "weak_look_trigger", False) is True:
-                runtime.orchestrator.weak_look = True
-            if getattr(grasping_cfg, "hide_own_places", False) is True:
-                runtime.orchestrator.hide_own_places = True
+            # Two of the cell's own rules for its looks (the owner, 2026-10-08 night; every cell's since 2026-10-17, as
+            # the owner's cell ran them): a weak view of the part drives the next look, and the regions a task keeps out
+            # are painted out of the image its detector reads.
+            runtime.orchestrator.weak_look = True
+            runtime.orchestrator.hide_own_places = True
 
         service = cls(
             runtime=runtime,
             default_mode=resolved_mode,
             effective_config=effective_config,
-            decision_policy=resolved_decision_policy,
-            decision_engine=resolved_decision_engine,
-            shadow_router=maybe_build_shadow_router(robot_cfg),
             # In degrees in the tree, as the pendant shows them; the one place they become joints.
             configured_looks=tuple(
-                JointPositions.deg(*row) for row in getattr(robot_cfg, "look_joint_positions_deg", None) or ()),
+                JointPositions.deg(*row) for row in getattr(getattr(robot_cfg, "motion", None), "look_deg", None) or ()),
             push_cell=_push_cell_of(robot_cfg, grasping_cfg),
         )
-        # Opt into production record logging from config (grasping.record_log_path; default
-        # None / empty is off). The loader already applied ${ENV} substitution, so an unset env
-        # collapses to "", which counts as off here.
-        record_log_path = getattr(grasping_cfg, "record_log_path", None) or None
+        # Every pick appends its record (grasping.record_log_path): to the file the tree names, else to
+        # grasp_records.jsonl in the log folder (:data:`RECORD_LOG_DIR`; the owner's cleanup, 2026-10-17).
+        # The loader already applied ${ENV} substitution, so an unset env collapses to "", which names no file.
+        record_log_path = getattr(grasping_cfg, "record_log_path", None) or default_record_log()
         if record_log_path:
             # Stamp robot identity so a UR3e cell's records are never silently pooled with the UR5e's.
             # The model comes from the vendor-appropriate field, not `cell_identity()`, which is
@@ -856,26 +696,9 @@ class AutonomousGraspService:
                 record_log_path,
                 provenance={"robot_vendor": vendor_str, "robot_model": model or "unknown"},
             )
-            _warn_if_records_will_not_be_trainable(robot_cfg, record_log_path)
         return service
 
     # Public API
-
-    def _maybe_attach_shadow_router(
-        self, report: AutonomousGraspReport
-    ) -> AutonomousGraspReport:
-        """Shadow-router post-processor; delegates to :func:`shadow.attach_shadow_router`.
-
-        Fail-safe; never raises. Shadow routing has zero influence on the executed
-        grasp: it only annotates :attr:`AutonomousGraspReport.shadow_router_telemetry`
-        and the RL extras dict on ``report.telemetry``.
-        """
-
-        return attach_shadow_router(
-            shadow_router=self.shadow_router,
-            runtime=getattr(self, "runtime", None),
-            report=report,
-        )
 
     def pick(
         self,
@@ -976,25 +799,12 @@ class AutonomousGraspService:
             return self._fault_report(exc, mode=mode)
         if hand:
             return self._hand_refused_report(hand, mode=mode)
-        # A pick of the campaign starts: its own two pushes are available again, and the parts next_target skips age.
+        # A pick of the campaign starts: its own two pushes are available again.
         self.campaign.start_pick()
-        # Install a per-attempt LatencyTracker so the decision seam can record
-        # its span via ``self._current_latency_tracker``, and the ranking and
-        # fusion seams theirs through the orchestrator. The tracker is always
-        # installed (recording is cheap); the typed ``performance_enabled``
-        # knob only gates enforcement and SLO_BREACH event emission.
-        # The wall-time captured here covers the full pick() body and is
-        # exported as ``attempt_wall_time_s`` on the returned report.
-        self._current_latency_tracker: Optional[LatencyTracker] = LatencyTracker()
-        # Hand it to the orchestrator so the ranking and fusion spans are recorded on every path,
-        # including the default open-loop pick.
         _orch = getattr(self.runtime, "orchestrator", None)
-        if _orch is not None:
-            _orch.latency_tracker = self._current_latency_tracker
-        # One attempt_id per pick(), shared across latency / shadow / record-logging
-        # telemetry. The decision path mints its own ``auto-<uuid>`` deeper in; this pick-scoped id
-        # is the fallback stamped when no path set one. Without it every record logged from the
-        # default open-loop path collides on the literal "pick".
+        # One attempt_id per pick(), shared by its telemetry and its record. Without it every record logged collides on
+        # the literal "pick". The wall time covers the whole of pick() and is ``attempt_wall_time_s`` on the report,
+        # which the console's history reads (api/history.py).
         pick_attempt_id = f"pick-{uuid.uuid4().hex[:12]}"
         wall_t0_ns = time.monotonic_ns()
         fault: Optional[Exception] = None
@@ -1017,40 +827,15 @@ class AutonomousGraspService:
             report = _with_the_pushes_of_a_fault(
                 self._fault_report(exc, mode=mode),
                 tuple(push for push in _pushes_of(_orch) if not any(push is kept for kept in pushes_before)))
-        finally:
-            # Always tear the tracker down on the way out; subsequent
-            # pick() calls install a fresh one.
-            tracker = self._current_latency_tracker
-            self._current_latency_tracker = None
-        wall_elapsed_s = (time.monotonic_ns() - wall_t0_ns) / 1e9
-        report = self._inject_latency_telemetry(
-            report=report,
-            tracker=tracker,
-            wall_elapsed_s=wall_elapsed_s,
-            attempt_id=pick_attempt_id,
-        )
+        report = self._stamped(report, wall_elapsed_s=(time.monotonic_ns() - wall_t0_ns) / 1e9,
+                               attempt_id=pick_attempt_id)
         if getattr(report, "needs_person", False) is True:
             # The arm stands where a recovery stopped it: no pick of this service starts until a person decides.
             self._needs_person = str(report.telemetry.get("push_stopped") or report.failure_summary())
         if fault is not None:
-            # What the raise left behind, and nothing more: no SLO sample, no shadow annotation and no
-            # record. The corpus counts grasps, and a camera that stopped delivering is not a grasp
-            # that missed.
+            # What the raise left behind, and nothing more: no record. The corpus counts grasps, and a camera that
+            # stopped delivering is not a grasp that missed.
             return report
-        # Update rolling latency history and emit SLO_BREACH on
-        # rising-edge breaches. Always a no-op unless the operator opted
-        # in via ``performance.enabled`` and
-        # ``performance.emit_breach_events``.
-        self._latency.update_and_emit(
-            config=self.effective_config,
-            event_listener=self.watchdog_event_listener,
-            tracker=tracker,
-            attempt_id=str(report.telemetry.get("attempt_id", "")),
-            effective_mode=report.mode,
-        )
-        # Opt-in shadow-router post-processor. Pure carrier; never
-        # influences ``report`` when shadow is off.
-        report = self._maybe_attach_shadow_router(report)
         self._maybe_log_record(report)
         return report
 
@@ -1061,7 +846,7 @@ class AutonomousGraspService:
     ) -> AutonomousGraspReport:
         """One attempt from its looks: a wrist camera's handed to the pick loop, a fixed camera's tried in turn here.
 
-        Inside :meth:`pick`'s fault guard and its latency span, so a look is part of the attempt it serves: a camera
+        Inside :meth:`pick`'s fault guard and its wall time, so a look is part of the attempt it serves: a camera
         that could not vouch on the way is the attempt's fault, and one record is logged for the attempt, not one per
         look.
 
@@ -1154,7 +939,7 @@ class AutonomousGraspService:
         orchestrator.both_faces = bool(both_faces)
         # Multi-View aus (Q11): no view is generated after the one look this pick was handed.
         orchestrator.generated_view = bool(multi_view)
-        # A task's following (robot.grasping.follow_parts): handed only where asked, so a pick that follows nothing
+        # A task's following: handed only where asked, so a pick that follows nothing
         # sets on the loop what it always set.
         following = follow is not None or bool(follow_looks)
         if following:
@@ -1274,18 +1059,24 @@ class AutonomousGraspService:
 
     def enable_record_logging(
         self, log_path: "str | Path | None", *, provenance: "Mapping[str, Any] | None" = None
-    ) -> None:
-        """Append one attempt record per :meth:`pick` to a JSONL file, the data the soak, KPI and RL layers read. Off by
-        default.
+    ) -> "tuple[Path | None, dict[str, Any] | None]":
+        """Append one attempt record per :meth:`pick` to a JSONL file, the data the soak and KPI layers read, and get back
+        where they went until now. A service built from a robot config appends from the start, to the file its tree names
+        or else to :func:`default_record_log`; one built directly appends nowhere until this names a file.
 
         Args:
             log_path (str | Path | None): The file; ``None`` turns it off.
             provenance (Mapping[str, Any] | None): Stamped into every record's ``extra`` (``robot_vendor``,
                 ``robot_model``, ...), so a corpus from two robots is not silently mixed (default: None).
-        """
 
+        Returns:
+            tuple[Path | None, dict[str, Any] | None]: The file and the provenance until now; pass them back to restore
+                them.
+        """
+        before = (self._record_log_path, self._record_provenance)
         self._record_log_path = Path(log_path) if log_path is not None else None
         self._record_provenance = dict(provenance) if provenance else None
+        return before
 
     def write_records_in_the_background(self, on: bool = True) -> None:
         """Hand each pick's record to the process's background writer instead of writing it before :meth:`pick` returns
@@ -1442,21 +1233,16 @@ class AutonomousGraspService:
         toggle = toggle_without_sensor_of(getattr(getattr(self.runtime, "orchestrator", None), "gripper", None))
         return toggle.jaws_open_for_a_pick() if toggle is not None else ""
 
-    def _hand_refused_report(
-        self, why: str, *, mode: "GraspMode | str | None", stage: str = "before_start",
-    ) -> AutonomousGraspReport:
+    def _hand_refused_report(self, why: str, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
         """The report for a pick a hand that toggles would not start: nothing moved and nothing was sent.
 
         EXECUTION_FAILED with the pick loop's ``gripper_fault`` underneath, as the policy's own refusal reports it
         (:attr:`AutonomousGraspReport.gripper_fault`), so a campaign stops on either. No ``pick_report``: no pick ran.
-        ``stage`` says where: ``before_start``, or ``before_the_re_pick`` where the pick's recovery would have picked
-        again (:meth:`_run_with_recovery`). There ``re_pick_refused`` says so too, ``gripper_fault``: the recovery
-        trail's last step names the action whose pick this refused, and that pick never ran.
+        ``stage`` is ``before_start``.
         """
         effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
-        telemetry = {"stage": stage, "low_level_outcome": str(PickOutcome.GRIPPER_FAULT), "gripper_fault": why}
-        if stage == "before_the_re_pick":
-            telemetry["re_pick_refused"] = PickOutcome.GRIPPER_FAULT.value
+        telemetry = {"stage": "before_start", "low_level_outcome": str(PickOutcome.GRIPPER_FAULT),
+                     "gripper_fault": why}
         return AutonomousGraspReport(
             outcome=AutonomousGraspOutcome.EXECUTION_FAILED,
             mode=effective_mode,
@@ -1650,25 +1436,20 @@ class AutonomousGraspService:
         """How far a push of a campaign moves its part.
 
         Args:
-            push_mm (Maybe[float]): The distance asked, millimetres; unset is the config's
-                ``recovery.fixture.push_distance_mm`` (30 mm unless the cell says otherwise) (default: UNSET).
+            push_mm (Maybe[float]): The distance asked, millimetres; unset is the owner's 30 mm (default: UNSET).
 
         Returns:
             float: The distance, millimetres; a request is taken as asked, never shortened.
 
         Raises:
-            ValueError: A request above the cell's ``recovery.fixture.max_nudge_mm``, above the owner's hard cap of 50
-                mm, or under 10 mm (it cannot open room for a finger); the message is the sentence.
+            ValueError: A request above the owner's hard cap of 50 mm, or under 10 mm (it cannot open room for a
+                finger); the message is the sentence.
         """
         from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
-            DEFAULT_PUSH_DISTANCE_MM,
             PushRefusal,
             resolve_push_distance,
         )
 
-        recovery = getattr(self.effective_config, "recovery_orchestrator", None)
-        default = float(getattr(recovery, "push_distance_mm", DEFAULT_PUSH_DISTANCE_MM))
-        ceiling = self.push_ceiling()
         if chosen(push_mm):
             try:
                 requested: Optional[float] = float(push_mm)
@@ -1676,7 +1457,7 @@ class AutonomousGraspService:
                 raise ValueError(f"a push distance is a number of mm, not {push_mm!r}") from None
         else:
             requested = None
-        resolved = resolve_push_distance(requested, default_mm=default, ceiling_mm=ceiling)
+        resolved = resolve_push_distance(requested)
         if isinstance(resolved, PushRefusal):
             raise ValueError(resolved.sentence)
         return float(resolved)
@@ -1685,14 +1466,11 @@ class AutonomousGraspService:
         """The longest push the cell allows.
 
         Returns:
-            float: ``recovery.fixture.max_nudge_mm`` in millimetres, or the owner's hard cap of 50 mm where no fixture
-                is declared.
+            float: The owner's hard cap of 50 mm.
         """
         from src.robot.grasping.recovery.push_planner import PUSH_DISTANCE_CAP_MM  # noqa: PLC0415
 
-        recovery = getattr(self.effective_config, "recovery_orchestrator", None)
-        fixture = getattr(recovery, "fixture", None)
-        return min(float(fixture[2]), PUSH_DISTANCE_CAP_MM) if fixture is not None else PUSH_DISTANCE_CAP_MM
+        return float(PUSH_DISTANCE_CAP_MM)
 
     def start_campaign(self, *, push_mm: "Maybe[float]" = UNSET,
                        critical_parts: "Maybe[bool | None]" = UNSET,
@@ -1708,11 +1486,11 @@ class AutonomousGraspService:
         Args:
             push_mm (Maybe[float]): The push distance, as :meth:`push_distance` takes it; unset lets a push that opens
                 too little room go as far as the cell allows (default: UNSET).
-            critical_parts (Maybe[bool | None]): The run's word on ``recovery.critical_parts``; unset or ``None`` keeps
-                the cell's (default: UNSET).
+            critical_parts (Maybe[bool | None]): The run's word on whether its parts are critical; unset or ``None``
+                keeps the cell's ``runtime.task.critical_parts`` (default: UNSET).
             recovery_actions (Maybe[tuple[str, ...] | None]): The recovery actions this campaign allows (``rescan``,
-                ``nudge_target``, ...), in place of the cell's ``recovery.allowed_actions`` for it alone; ``()`` allows
-                none; unset or ``None`` keeps the cell's list (default: UNSET).
+                ``nudge_target``), in place of the cell's for it alone; ``()`` allows none; unset or ``None`` keeps the
+                cell's (default: UNSET).
             blocker_is_the_pick (Maybe[bool]): A blocker a pick takes away is the part it picks, set down where the
                 parts go; unset sets it aside (default: UNSET).
             every_part (Maybe[bool]): The campaign takes every part it names until none is left: where none it wants
@@ -1767,7 +1545,7 @@ class AutonomousGraspService:
         """Record provenance, plus which perception route grounded this pick when one did.
 
         Stamped into ``extra`` rather than onto the record itself: :class:`GraspAttemptRecord` is a
-        frozen contract with consumers in KPI, taxonomy and RL, and ``extra`` is the additive channel
+        frozen contract with consumers in KPI and taxonomy, and ``extra`` is the additive channel
         those consumers already tolerate. A routed cell gains two keys and an un-routed cell's
         records stay byte-identical, which is what keeps the soak baseline valid.
 
@@ -1860,29 +1638,11 @@ class AutonomousGraspService:
             pass
 
     @staticmethod
-    def _inject_latency_telemetry(
-        *,
-        report: AutonomousGraspReport,
-        tracker: Optional[LatencyTracker],
-        wall_elapsed_s: float,
-        attempt_id: str,
-    ) -> AutonomousGraspReport:
-        """Fold per-stage latency + wall-time (+ the shared attempt_id) into a report's telemetry.
-
-        Stages that never opened a span (e.g. fusion on a pick that fused
-        no other camera's view) are absent from the snapshot, so the SLO
-        gate skips nulls instead of treating them as passing zeros.
-        ``attempt_wall_time_s`` is always emitted because the pick()
-        wall-clock is meaningful for every attempt.
-
-        ``attempt_id``: keep the decision path's ``auto-<uuid>`` when it already stamped one,
-        else stamp the pick-scoped ``attempt_id`` so latency / shadow / record-logging all share a
-        single, unique id.
-        """
+    def _stamped(report: AutonomousGraspReport, *, wall_elapsed_s: float, attempt_id: str) -> AutonomousGraspReport:
+        """``report`` with the pick's wall time (``attempt_wall_time_s``) and, where it carries none, the pick's
+        ``attempt_id`` in its telemetry."""
 
         merged = dict(report.telemetry)
-        if tracker is not None:
-            merged.update(tracker.snapshot())
         merged["attempt_wall_time_s"] = float(wall_elapsed_s)
         if not merged.get("attempt_id"):
             merged["attempt_id"] = attempt_id
@@ -1893,7 +1653,7 @@ class AutonomousGraspService:
         *,
         mode: GraspMode | str | None = None,
     ) -> AutonomousGraspReport:
-        """Body of :meth:`pick`; latency telemetry is injected by the wrapper."""
+        """Body of :meth:`pick`; the wall time and the attempt id are stamped by the wrapper."""
 
         effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
         profile = _profile_for(effective_mode)
@@ -1922,40 +1682,20 @@ class AutonomousGraspService:
                 effective_config=self.effective_config,
             )
 
-        # Pre-execution decision layer. ``EASY`` is locked out of scope
-        # so the ``EASY`` happy path stays byte-equivalent to the trust
-        # path. When the engine is unwired or the policy is disabled,
-        # the legacy pick path runs verbatim.
-        decision_in_scope = (
-            self.decision_engine is not None
-            and self.decision_policy is not None
-            and self.decision_policy.enabled
-            and effective_mode is not GraspMode.EASY
-        )
-        if decision_in_scope:
-            return self._pick_with_decision(
-                effective_mode=effective_mode, profile=profile
-            )
-
-        return self._execute_pick(
-            effective_mode=effective_mode, profile=profile, decision=None
-        )
+        return self._execute_pick(effective_mode=effective_mode, profile=profile)
 
     # Recovery-orchestrator runtime integration (opt-in)
 
     def _build_recovery_orchestrator_policy(self) -> SceneRecoveryPolicy:
-        """Build the :class:`SceneRecoveryPolicy` from the
-        ``recovery_orchestrator_*`` operator config.
+        """Build the :class:`SceneRecoveryPolicy` from the snapshot's ``recovery_orchestrator``.
 
-        Returns a disabled policy (the byte-identical single-pick fast path)
-        unless ``grasping.recovery.enabled`` is true and the resolved mode is
-        listed in ``grasping.recovery.apply_modes``, whose default excludes
-        ``easy``.
+        Returns a disabled policy (the single-pick fast path) where the snapshot's recovery is off: a service built
+        from components, or a mode outside the cell's ``apply_modes``, which exclude ``easy``.
 
-        A snapshot built by hand (a simulator runner's ``dataclasses.replace``) skips the schema, so
-        a recovery action removed on purpose (``next_viewpoint``, merged into ``rescan`` on
-        2026-09-29) raises :class:`ValueError` here with the schema's own sentence, not as an unknown
-        enum value.
+        A snapshot built by hand (a simulator runner's ``dataclasses.replace``), or a campaign that names its own
+        actions, may name a recovery action removed on purpose (``next_viewpoint``, ``next_target``,
+        ``container_agitate``): it raises :class:`ValueError` here with the sentence that says what to do, not as an
+        unknown enum value.
         """
 
         cfg = self.effective_config
@@ -1972,28 +1712,12 @@ class AutonomousGraspService:
             _recovery_action(name): int(count)
             for name, count in cfg.recovery_orchestrator.per_action_budget
         }
-        # The envelope, rebuilt from what the operator declared. `SceneRecoveryPolicy` refuses to
-        # construct `container_agitate` without one, so a config that declares it and a call site that
-        # passes no envelope raise on every pick(). The push needs none; a declared one narrows its box.
-        envelope = None
-        declared = cfg.recovery_orchestrator.fixture
-        if declared is not None:
-            from src.robot.grasping.recovery.policy import FixtureEnvelope
-
-            centre, half_extents, max_nudge = declared
-            envelope = FixtureEnvelope(
-                center_mm=centre,
-                half_extents_mm=half_extents,
-                max_nudge_mm=max_nudge,
-            )
-
         return SceneRecoveryPolicy(
             enabled=True,
             allowed_actions=allowed,
             max_recovery_actions=int(cfg.recovery_orchestrator.max_actions),
             per_action_budget=budget,
             apply_modes=tuple(cfg.recovery_orchestrator.apply_modes),
-            fixture=envelope,
         )
 
     def _run_with_recovery(
@@ -2004,36 +1728,27 @@ class AutonomousGraspService:
         When ``recovery_orchestrator.enabled`` is :data:`False` (the default)
         this is byte-identical to a single :meth:`_pick_inner` call. When
         enabled (and the effective mode is in the configured ``apply_modes``),
-        the attempt is driven through :func:`run_recovery_loop`; the
-        ``uncertainty_recovery_aggressive_threshold`` knob biases the recovery
-        action ordering toward perception whenever the most recent attempt's
-        fused uncertainty exceeds it.
+        the attempt is driven through :func:`run_recovery_loop`.
 
         ``rescans`` false takes ``rescan`` out of the actions the loop may plan: a wrist pick handed looks, whose looks
         and one generated view were its rescans (:meth:`_look_around_and_pick`). The loop still runs on what is left.
 
         The owner's recovery (2026-09-29), wired here:
 
-        * The loop plans ``rescan`` and ``next_target`` directly and every other action through a strategy, of which
-          there is none for the push: the push runs inside the pick attempt (the pick loop's ``push_gate``), and a
-          ``nudge_target`` this loop plans is refused before anything moves and falls through.
-        * ``next_target`` is a rescan that skips the part that failed: the pick loop names it (``failed_part``), it is
-          added to the campaign's exclusion zones (same label only, this pick and the next two), and the pick runs
-          again, a wrist pick handed looks with its looks again, for another part of the label.
-        * Before ``next_target`` or a rescan drives the looks again (a wrist pick handed looks), a hand that toggles
-          with no sensor is read (``why_toggle_count_unknown``: nothing asked, nothing sent). A count nobody can vouch
-          for ends the pick there as a gripper fault (``stage`` ``before_the_re_pick``, ``re_pick_refused``
-          ``gripper_fault``: the trail's last step never picked), before any look is driven again, and ``PickRun`` and
-          the console stop on it (the owner, 2026-09-30). A re-pick that drives no look, a fixed camera's or that of a
-          wrist pick handed no look, reads nothing more: its own check before the arm moves asks where the jaws stand,
-          as at every pick start.
+        * The loop plans ``rescan`` directly and every other action through a strategy, of which there is none for
+          the push: the push runs inside the pick attempt (the pick loop's ``push_gate``), and a ``nudge_target`` this
+          loop plans is refused before anything moves and falls through. ``next_target``, the rescan that skipped the
+          part a pick failed on, left on 2026-10-16 (the owner's cleanup).
+        * No re-pick drives a look again: a wrist pick handed looks rescans nothing (``rescans``), and the rescan of a
+          fixed camera or of a wrist pick handed no look perceives where the arm stands, its own check before the arm
+          moves asking where a toggle's jaws stand, as at every pick start. The read of the count before a re-pick
+          drove the looks again left with ``next_target`` on 2026-10-16.
         * The pick loop is handed the campaign's zones and, where the policy lets this pick push
           (:func:`~src.robot.grasping.recovery.policy.push_permitted`: dense_clutter only), a push gate
           (:meth:`_push_gate`), both taken back after the pick.
         * A push that stopped where the arm stands ends the loop there (``needs_person``), ``unsafe_recovery_refused``
           unless the controller stopped. A loop that ran at least one action and ended for want of another is
-          ``recovery_exhausted``, and one whose recovery motion failed ``unsafe_recovery_refused``
-          (``terminal_outcome_for_trail``).
+          ``recovery_exhausted`` (``terminal_outcome_for_trail``).
         """
 
         policy = self._build_recovery_orchestrator_policy()
@@ -2058,59 +1773,15 @@ class AutonomousGraspService:
             policy = replace(policy, allowed_actions=tuple(
                 action for action in policy.allowed_actions if action is not SceneRecoveryAction.RESCAN))
 
-        threshold = float(cfg.uncertainty.recovery_aggressive_threshold)
-        orchestrator = RecoveryOrchestrator(
-            dispatcher=RecoveryDispatcher(), strategies={},
-            direct_actions=frozenset({SceneRecoveryAction.RESCAN, SceneRecoveryAction.NEXT_TARGET}),
-        )
-        arm = getattr(loop, "arm", None)
+        orchestrator = RecoveryOrchestrator(dispatcher=RecoveryDispatcher())
         gate = self._push_gate(profile, policy, campaign)
         pushes_by_pick: list[tuple["PickPush", ...]] = []
-        # What picks again: next_target where it skipped the failed part (`_skip_failed_part`), a rescan otherwise.
-        again = ["a rescan"]
 
         def _pick_once() -> _RecoveryReportAdapter:
-            if pushes_by_pick and self.perceives_from_the_wrist and bool(getattr(loop, "looks", None)):
-                # next_target or a rescan drives the looks again (the owner, 2026-09-30): a toggle's count nobody can
-                # vouch for (DO0 switched at the pendant since the pick began, a count lost or unreadable) ends the pick
-                # here, as a gripper fault, before any look is driven again. Read only: nobody is asked, nothing is
-                # sent. A re-pick that drives no look (a fixed camera's, a wrist pick's handed none) reads nothing
-                # more: its own check before the arm moves asks where the jaws stand, as at every pick start.
-                unknown = why_toggle_count_unknown(getattr(loop, "gripper", None))
-                if unknown:
-                    said = (f"the pick ends before {again[0]} picks again, with nothing commanded: nobody can say where "
-                            f"the jaws stand ({unknown}), and nobody is asked")
-                    _LOG.error("%s", said)
-                    pushes_by_pick.append(())
-                    return _RecoveryReportAdapter(self._hand_refused_report(said, mode=mode, stage="before_the_re_pick"))
-            again[0] = "a rescan"
             report = self._pick_inner(mode=mode)
             pushed = _pushes_of(loop)
             pushes_by_pick.append(pushed)
             return _RecoveryReportAdapter(_with_pushes(report, pushed))
-
-        def _aggressive(adapter: _RecoveryReportAdapter) -> bool:
-            # Single source of truth: the canonical gate requires fused_available and
-            # fused >= threshold, applied to the report's own UncertaintySnapshot.
-            snapshot = getattr(adapter.report, "uncertainty", None)
-            return should_bias_recovery_for_uncertainty(
-                snapshot, recovery_aggressive_threshold=threshold,
-            )
-
-        def _skip_failed_part(adapter: _RecoveryReportAdapter) -> bool:
-            # The part the pick that just failed went for, as the pick loop names it: skipped by the next picks.
-            from src.robot.grasping.recovery.push_gate import FailedPart  # noqa: PLC0415
-
-            part = getattr(loop, "failed_part", None)
-            if not isinstance(part, FailedPart):
-                return False
-            zone = campaign.zones.exclude(label=part.label, centre_mm=part.centre_mm,
-                                          footprint_diagonal_mm=part.footprint_diagonal_mm)
-            _LOG.info("next_target skips the %r at (%.0f, %.0f) mm, within %.0f mm, for this pick and the next %d",
-                      part.label, zone.centre_xy_mm[0], zone.centre_xy_mm[1], zone.radius_mm,
-                      zone.last_pick - zone.added_pick)
-            again[0] = "next_target"
-            return True
 
         with _handed(loop, zones=campaign.zones, gate=gate, blocker_is_the_pick=campaign.blocker_is_the_pick):
             final, trail = run_recovery_loop(
@@ -2119,9 +1790,6 @@ class AutonomousGraspService:
                 policy=policy,
                 orchestrator=orchestrator,
                 frame_acquirer=lambda: None,  # the next _pick_inner re-perceives the scene
-                arm=arm,
-                aggressive_recovery_bias=_aggressive,
-                skip_failed_part=_skip_failed_part,
             )
         report = self._attach_recovery_trail(final.report, trail, pushes=tuple(pushes_by_pick))
         return _with_the_recovery_outcome(report, trail)
@@ -2131,10 +1799,9 @@ class AutonomousGraspService:
     ) -> "PushGate | None":
         """What lets this pick push its failed part, or ``None``: the policy must permit it
         (:func:`~src.robot.grasping.recovery.policy.push_permitted`: enabled, the mode's profile lists ``nudge_target``,
-        which only dense_clutter's does, ``recovery.allowed_actions`` lists it, a budget above zero), the cell's push
-        inputs must be known (:attr:`push_cell`), the campaign must have a push distance, and a declared fixture box
-        must leave room. No fixture is needed: without one the automatic push box alone bounds the push. Why a pick
-        that is permitted cannot push is said once, as a WARNING."""
+        which only dense_clutter's does, the cell's or the campaign's actions list it, a budget above zero), the cell's
+        push inputs must be known (:attr:`push_cell`), and the campaign must have a push distance. The automatic push
+        box bounds where the part lands. Why a pick that is permitted cannot push is said once, as a WARNING."""
         from src.robot.grasping.recovery.policy import push_permitted  # noqa: PLC0415
         from src.robot.grasping.recovery.push_gate import PushCell, PushGate  # noqa: PLC0415
 
@@ -2147,17 +1814,12 @@ class AutonomousGraspService:
             return None
         if campaign.distance_mm is None:
             return None
-        operator_box = _operator_box(policy.fixture)
-        if isinstance(operator_box, str):
-            self._say_once("fixture", "nudge_target is allowed and no part is pushed: %s", operator_box)
-            return None
         cfg = self.effective_config
         critical = campaign.critical_parts
         if critical is None:
             critical = bool(getattr(cfg.recovery_orchestrator, "critical_parts", False)) if cfg is not None else False
         return PushGate(
-            budgets=campaign.budgets, distance_mm=campaign.distance_mm, cell=cell, operator_box=operator_box,
-            on_approach_blocked=bool(getattr(cfg, "approach_validation_enabled", False)),
+            budgets=campaign.budgets, distance_mm=campaign.distance_mm, cell=cell,
             blocker_grasp_tries=int(cfg.recovery_orchestrator.blocker_grasp_tries) if cfg is not None else 3,
             critical_parts=critical, longest_mm=campaign.longest_mm, every_part=campaign.every_part,
             scene_budgets=campaign.scene_budgets,
@@ -2193,614 +1855,17 @@ class AutonomousGraspService:
             recovery_actions=_recovery_rows(trail, pushes),
         )
 
-    # Fused-uncertainty helpers
-
-    def _build_uncertainty_calibration(self) -> UncertaintyCalibration:
-        """Construct the runtime calibration from operator config.
-
-        Combines the per-channel weight vector
-        (``effective_config.uncertainty.weights``) with an optional artifact
-        path, which is honoured only as the identity-monotone shape. Channels
-        for which the config omits a weight default to ``0.0``, so downstream
-        fusion ignores them entirely.
-        """
-
-        cfg = self.effective_config
-        weights_dict: dict[str, float] = (
-            dict(cfg.uncertainty.weights) if cfg is not None else {}
-        )
-
-        def _w(name: str) -> float:
-            value = weights_dict.get(name, 0.0)
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return 0.0
-
-        weights = UncertaintyWeights(
-            depth_confidence=_w("depth_confidence"),
-            mask_confidence=_w("mask_confidence"),
-            occlusion_corridor_risk=_w("occlusion_corridor_risk"),
-            feasibility_margin=_w("feasibility_margin"),
-            verification_residual=_w("verification_residual"),
-            topology_risk=_w("topology_risk"),
-            semantic_confidence=_w("semantic_confidence"),
-        )
-        # Every channel keeps the identity map: JSON calibration artifacts
-        # are not loaded here.
-        return UncertaintyCalibration(weights=weights, maps={}, calibration_id=None)
-
-    def _build_uncertainty_channel_values(
-        self,
-        *,
-        frame: Any,
-        grasp_result: Any,
-    ) -> UncertaintyChannelValues:
-        """Assemble per-tick channel observations from live runtime state.
-
-        No channel has a producer, so every channel stays :data:`None`:
-        ``fused_available`` is :data:`False` and the engine reverts to the
-        baseline. Channels can be filled in one at a time (depth-confidence
-        stats from the perception frame, mask-confidence from segmentation
-        backends).
-        """
-
-        return UncertaintyChannelValues()
-
-    # Decision-layer pre-flight loop
-
-    def _pick_with_decision(
-        self,
-        *,
-        effective_mode: GraspMode,
-        profile: GraspBehaviorProfile,
-    ) -> AutonomousGraspReport:
-        """One perception tick decided by :class:`DecisionEngine`.
-
-        Steps:
-
-        1. Evaluate the drift and OOD watchdog. An enforced
-           ``BLOCK_AUTO`` ends the pick with a synthetic ``FAIL_CLOSED``
-           before anything is perceived.
-        2. Acquire a perception frame and compute best candidates via
-           the orchestrator's helper, which honours the configured
-           :class:`FrameResolver`. A camera on the wrist looks around
-           instead (``BinPickingOrchestrator.look_around``): the looks
-           the pick was handed, each fused with the ones before, and the
-           engine decides on the grasp they judged. A look sequence that
-           stopped on a motion or a stop request ends the pick as a
-           refused look or a cancel, with nothing else commanded.
-        3. Hand the typed inputs to
-           :meth:`DecisionEngine.decide`.
-        4. Dispatch:
-
-           * ``GRASP_NOW``: delegate to :meth:`_execute_pick` and
-             attach the decision telemetry. A wrist pick's looks are
-             handed on (``go_on_with``), so the pick goes on with the
-             grasp that was decided on and does not look again. A wrist
-             pick that asked for both jaw contact faces (``both_faces``)
-             and whose looks did not see both is not gripped: a typed
-             ``NO_VALID_GRASP`` report, the engine's decision kept on it.
-           * ``RECOVER``: return a typed
-             ``DECISION_RECOVER_PENDING`` report. No physical recovery
-             action is executed here.
-           * ``FAIL_CLOSED``: return a typed
-             ``DECISION_FAIL_CLOSED`` report with structured
-             telemetry. No pick attempt is dispatched.
-
-        A fixed camera's decision never moves the arm. A wrist camera's
-        moves it through the pick's looks before anything is decided:
-        each a judged motion, with nothing said to the hand. The bounded
-        loop that asked a viewpoint planner for another pose on
-        ``MOVE_CAMERA`` and commanded the arm there, without checking the
-        motion's result, was removed on 2026-09-29 with the planners.
-        """
-
-        # Engine + policy are narrowed by the caller-side gate.
-        assert self.decision_engine is not None
-        assert self.decision_policy is not None
-        engine = self.decision_engine
-        orch = self.runtime.orchestrator
-        is_simulated = bool(orch.arm.capabilities.is_simulated)
-
-        # Stable per-call attempt id. Used purely for telemetry
-        # correlation; the wrapped runtime constructs its own
-        # attempt records inside :class:`PickSessionReport`.
-        attempt_id = f"auto-{uuid.uuid4().hex[:12]}"
-
-        # Drift + OOD watchdog policy is built once per pick(). When
-        # :data:`None` the watchdog is inert: a ``from_components``
-        # service carries no effective config.
-        watchdog_policy = self._build_watchdog_policy()
-
-        # Fused-uncertainty surfaces. The calibration is built once per
-        # pick (cheap; no I/O when no artifact path is set). The runtime
-        # gate ``uncertainty_active`` is :data:`True` only when the
-        # operator opted in via robot.grasping.uncertainty.enabled and
-        # the current mode is in apply_modes. ``EASY`` is permanently
-        # excluded from the default apply_modes tuple.
-        (
-            calibration,
-            fail_closed_threshold,
-            disagreement_threshold,
-            ranking_penalty_weight,
-            uncertainty_active,
-        ) = self._resolve_uncertainty_runtime(effective_mode)
-
-        # Pre-decide watchdog gate. Evaluates over the rolling
-        # history accumulated from prior attempts. Returns
-        # :data:`None` when the watchdog has no policy wired. The
-        # gate fires only when ``report.enforced`` is :data:`True`,
-        # which already encodes the hardware lock (real hardware +
-        # canary/active + mode in policy.block_modes) and the
-        # ``EASY`` exclusion, since schema validation rejects
-        # ``EASY`` from ``block_modes``.
-        watchdog_report, terminal_report = self._handle_watchdog_pretick(
-            policy=watchdog_policy,
-            effective_mode=effective_mode,
-            is_simulated=is_simulated,
-            attempt_id=attempt_id,
-            profile=profile,
-        )
-        if terminal_report is not None:
-            return terminal_report
-
-        looked: "LookedAround | None" = None
-        frame: Optional[Any]
-        grasp_result: Optional[Any]
-        if self.perceives_from_the_wrist:
-            # A camera on the wrist decides on its looks, fused (plan A2): one look sequence, whose judgement the pick
-            # goes on with on GRASP_NOW. What the looks came to is stamped on the report by the caller.
-            looked = orch.look_around()
-            if looked.cancelled:
-                return self._cancelled_report(mode=effective_mode)
-            if looked.stopped is not None:
-                return self._looks_stopped_report(looked, effective_mode=effective_mode)
-            judged = looked.judged
-            frame = judged.frame if judged is not None else None
-            grasp_result = judged.result if judged is not None else None
-        else:
-            frame = orch.perception.acquire()
-            grasp_result = self._rank_grasp_for_decision(frame)
-
-        uncertainty_snapshot = self._build_uncertainty_snapshot_for_tick(
-            frame=frame,
-            grasp_result=grasp_result,
-            calibration=calibration,
-            uncertainty_active=uncertainty_active,
-            fail_closed_threshold=fail_closed_threshold,
-            disagreement_threshold=disagreement_threshold,
-            attempt_id=attempt_id,
-        )
-
-        decision = self._decide_once(
-            engine=engine,
-            grasp_result=grasp_result,
-            effective_mode=effective_mode,
-            attempt_id=attempt_id,
-            is_simulated=is_simulated,
-            uncertainty_snapshot=uncertainty_snapshot,
-            uncertainty_active=uncertainty_active,
-            ranking_penalty_weight=ranking_penalty_weight,
-        )
-        # Record one watchdog sample per decision (keeps the rolling
-        # history fresh for the next pick()).
-        self._record_watchdog_sample(
-            self._build_watchdog_sample_from_decision(decision)
-        )
-
-        if decision.action is DecisionAction.GRASP_NOW:
-            if looked is not None and _both_faces_unseen(orch, looked):
-                # The owner's switch for safety-critical processes (addendum 1): no grip on a grasp whose jaw contact
-                # faces the looks did not both see. The engine's word is kept on the report beside the refusal.
-                faces = looked.jaw_faces_seen
-                _LOG.warning(
-                    "%s (looked from %s), and the pick asked for both jaw contact faces (both_faces): it does not grip",
-                    "the contact faces of the chosen grasp could not be judged" if faces is None else " and ".join(
-                        f"the contact face at jaw {jaw} of the chosen grasp was not seen"
-                        for jaw, seen in zip((1, 2), faces) if not seen),
-                    ", ".join(looked.visited) or "no look")
-                return self._terminal_decision_report(
-                    effective_mode=effective_mode,
-                    profile=profile,
-                    decision=decision,
-                    watchdog_report=watchdog_report,
-                    n_segmentations=len(frame.segmentations) if frame is not None else 0,
-                    reasons=tuple(getattr(grasp_result, "reasons", ()) or ()),
-                    refused_as=AutonomousGraspOutcome.NO_VALID_GRASP,
-                )
-            if looked is not None:
-                # The looks just decided on are the ones the pick goes on with: the pick loop does not look again.
-                orch.go_on_with(looked)
-            return self._execute_pick(
-                effective_mode=effective_mode,
-                profile=profile,
-                decision=decision,
-                watchdog_report=watchdog_report,
-            )
-
-        # RECOVER or FAIL_CLOSED: terminate without dispatching. What the frame held goes with it, so a
-        # pick handed several looks can tell a view that held nothing from an object it could not grasp.
-        # A wrist pick's frame is the look its grasp was judged on; no look that saw anything held nothing.
-        return self._terminal_decision_report(
-            effective_mode=effective_mode,
-            profile=profile,
-            decision=decision,
-            watchdog_report=watchdog_report,
-            n_segmentations=len(frame.segmentations) if frame is not None else 0,
-            reasons=tuple(getattr(grasp_result, "reasons", ()) or ()),
-        )
-
-    # Decision helpers
-
-    def _resolve_uncertainty_runtime(
-        self, effective_mode: GraspMode
-    ) -> tuple[Optional[UncertaintyCalibration], float, float, float, bool]:
-        """The per-pick uncertainty runtime: (calibration, fail_closed_threshold,
-        disagreement_threshold, ranking_penalty_weight, uncertainty_active).
-        ``uncertainty_active`` is True only when the operator opted in
-        (effective_config.uncertainty.enabled) and the mode is in apply_modes;
-        ``EASY`` is permanently excluded. Inactive yields the inert sentinels
-        (None / 0.0 / 1.01 / 0.0 / False)."""
-        ucfg = self.effective_config
-        uncertainty_enabled_cfg = bool(
-            ucfg is not None and ucfg.uncertainty.enabled
-        )
-        uncertainty_modes = (
-            frozenset(ucfg.uncertainty.apply_modes) if ucfg is not None else frozenset()
-        )
-        uncertainty_active = bool(
-            uncertainty_enabled_cfg
-            and effective_mode.value in uncertainty_modes
-        )
-        if uncertainty_active:
-            # ``uncertainty_active`` implies ``ucfg is not None`` (see guards above);
-            # assert so the type checker can narrow ``ucfg`` here.
-            assert ucfg is not None
-            calibration: Optional[UncertaintyCalibration] = (
-                self._build_uncertainty_calibration()
-            )
-            fail_closed_threshold = float(ucfg.uncertainty.fail_closed_threshold)
-            disagreement_threshold = float(
-                ucfg.uncertainty.channel_disagreement_threshold
-            )
-            ranking_penalty_weight = float(
-                ucfg.uncertainty.ranking_penalty_weight
-            )
-        else:
-            calibration = None
-            fail_closed_threshold = _UNCERTAINTY_INACTIVE_FAIL_CLOSED_THRESHOLD
-            disagreement_threshold = _UNCERTAINTY_INACTIVE_DISAGREEMENT_THRESHOLD
-            ranking_penalty_weight = _UNCERTAINTY_INACTIVE_RANKING_PENALTY_WEIGHT
-        return (
-            calibration,
-            fail_closed_threshold,
-            disagreement_threshold,
-            ranking_penalty_weight,
-            uncertainty_active,
-        )
-
-    def _rank_grasp_for_decision(self, frame: Any) -> Optional[Any]:
-        """Rank the frame's segmentations into a best candidate inside the ranking latency span.
-        Empty segmentations short-circuit to None without opening a span (null contract)."""
-        if not frame.segmentations:
-            return None
-        orch = self.runtime.orchestrator
-        # The ranking span lives inside ``_best_result_over_segmentations``, the one
-        # call every pick path makes; opening one here as well would nest a span in a
-        # span and count the same work twice. See the carrier comment in pick_loop.py.
-        grasp_result, _idx, _ord_decision = orch._best_result_over_segmentations(frame)
-        return grasp_result
-
-    def _build_uncertainty_snapshot_for_tick(
-        self,
-        *,
-        frame: Any,
-        grasp_result: Optional[Any],
-        calibration: Optional[UncertaintyCalibration],
-        uncertainty_active: bool,
-        fail_closed_threshold: float,
-        disagreement_threshold: float,
-        attempt_id: str,
-    ) -> Optional[UncertaintySnapshot]:
-        """The per-tick fused-uncertainty snapshot. None when inactive, and the engine
-        then uses the baseline. Prints the ``[U8] uncertainty_no_signal`` diagnostic
-        when no producer wired a channel this tick; the snapshot is still attached to
-        the decision report."""
-        if not (uncertainty_active and calibration is not None):
-            return None
-        channel_values = self._build_uncertainty_channel_values(
-            frame=frame, grasp_result=grasp_result
-        )
-        uncertainty_snapshot = fuse_uncertainty(
-            channel_values,
-            calibration,
-            fail_closed_threshold=fail_closed_threshold,
-            channel_disagreement_threshold=disagreement_threshold,
-        )
-        if not uncertainty_snapshot.fused_available:
-            print(f"[U8] uncertainty_no_signal: attempt_id={attempt_id}")
-        return uncertainty_snapshot
-
-    def _decide_once(
-        self,
-        *,
-        engine: DecisionEngine,
-        grasp_result: Optional[Any],
-        effective_mode: GraspMode,
-        attempt_id: str,
-        is_simulated: bool,
-        uncertainty_snapshot: Optional[UncertaintySnapshot],
-        uncertainty_active: bool,
-        ranking_penalty_weight: float,
-    ) -> DecisionReport:
-        """One engine.decide(), inside the decision latency span when a tracker is
-        installed. The watchdog sample is recorded at the call site."""
-        tracker = self._current_latency_tracker
-        if tracker is not None:
-            with tracker.span(LatencyStage.DECISION):
-                return engine.decide(
-                    grasp_result=grasp_result,
-                    mode=effective_mode.value,
-                    attempt_id=attempt_id,
-                    is_simulated=is_simulated,
-                    uncertainty_snapshot=uncertainty_snapshot,
-                    uncertainty_active=uncertainty_active,
-                    ranking_penalty_weight=ranking_penalty_weight,
-                )
-        return engine.decide(
-            grasp_result=grasp_result,
-            mode=effective_mode.value,
-            attempt_id=attempt_id,
-            is_simulated=is_simulated,
-            uncertainty_snapshot=uncertainty_snapshot,
-            uncertainty_active=uncertainty_active,
-            ranking_penalty_weight=ranking_penalty_weight,
-        )
-
-    def _handle_watchdog_pretick(
-        self,
-        *,
-        policy: Optional[WatchdogPolicy],
-        effective_mode: GraspMode,
-        is_simulated: bool,
-        attempt_id: str,
-        profile: GraspBehaviorProfile,
-    ) -> tuple[
-        Optional[WatchdogReport],
-        Optional[AutonomousGraspReport],
-    ]:
-        """The pre-decide watchdog gate. Returns ``(watchdog_report, terminal_report)``:
-        ``watchdog_report`` is threaded downstream, since the GRASP_NOW dispatch and the
-        terminal reports carry it; ``terminal_report`` is non-None only when an enforced
-        BLOCK_AUTO fires, and that branch records the fail-closure sample and builds the
-        terminal report."""
-        watchdog_report = self._evaluate_watchdog_pretick(
-            policy=policy,
-            effective_mode=effective_mode,
-            is_simulated=is_simulated,
-        )
-        if watchdog_report is not None:
-            self._fire_watchdog_transitions(
-                curr=watchdog_report,
-                attempt_id=attempt_id,
-                effective_mode=effective_mode,
-            )
-        if (
-            watchdog_report is not None
-            and watchdog_report.enforced
-            and watchdog_report.recommended_action
-            is WatchdogAction.BLOCK_AUTO
-        ):
-            synthetic = self._synthesize_watchdog_block_decision(
-                report=watchdog_report,
-                effective_mode=effective_mode,
-                attempt_id=attempt_id,
-            )
-            # Record a sample so subsequent ticks see this fail-closure in the rolling rate.
-            self._record_watchdog_sample(
-                self._build_watchdog_sample_from_decision(synthetic)
-            )
-            terminal = self._terminal_decision_report(
-                effective_mode=effective_mode,
-                profile=profile,
-                decision=synthetic,
-                watchdog_report=watchdog_report,
-            )
-            return watchdog_report, terminal
-        return watchdog_report, None
-
-    # Watchdog (drift + OOD). Logic lives in watchdog.WatchdogCoordinator
-    # (self._watchdog). These shims delegate to it and keep the pick()-path
-    # call sites and the ``service.watchdog_history`` injection point stable.
-
-    def _build_watchdog_policy(self) -> Optional[WatchdogPolicy]:
-        return self._watchdog.build_policy(self.effective_config)
-
-    def _evaluate_watchdog_pretick(
-        self,
-        *,
-        policy: Optional[WatchdogPolicy],
-        effective_mode: GraspMode,
-        is_simulated: bool,
-    ) -> Optional[WatchdogReport]:
-        return self._watchdog.evaluate_pretick(
-            history=self.watchdog_history,
-            policy=policy,
-            effective_mode=effective_mode,
-            is_simulated=is_simulated,
-        )
-
-    def _watchdog_telemetry_dict(
-        self, report: WatchdogReport
-    ) -> dict[str, Any]:
-        return self._watchdog.telemetry_dict(report)
-
-    def _synthesize_watchdog_block_decision(
-        self,
-        *,
-        report: WatchdogReport,
-        effective_mode: GraspMode,
-        attempt_id: str,
-    ) -> DecisionReport:
-        return self._watchdog.synthesize_block_decision(
-            report=report,
-            effective_mode=effective_mode,
-            attempt_id=attempt_id,
-        )
-
-    def _record_watchdog_sample(self, sample: WatchdogSample) -> None:
-        self._watchdog.record_sample(self.watchdog_history, sample)
-
-    @staticmethod
-    def _build_watchdog_sample_from_decision(
-        decision: DecisionReport,
-    ) -> WatchdogSample:
-        return WatchdogCoordinator.build_sample_from_decision(decision)
-
-    def _fire_watchdog_transitions(
-        self,
-        *,
-        curr: WatchdogReport,
-        attempt_id: str,
-        effective_mode: GraspMode,
-    ) -> None:
-        # A pick evaluates the watchdog once, so every flag this evaluation raises is a rising edge
-        # for the pick (see WatchdogCoordinator._detect_transitions).
-        self._watchdog.fire_transitions(
-            event_listener=self.watchdog_event_listener,
-            curr=curr,
-            attempt_id=attempt_id,
-            effective_mode=effective_mode,
-        )
-
     def _base_telemetry(self, profile: GraspBehaviorProfile) -> dict[str, Any]:
         """The shared leading telemetry key (``sampling_mode``) for every AutonomousGraspReport
-        this service builds: one source, so the projection cannot drift across the legacy
-        and decision paths. Callers add their path-specific keys after, so the insertion
+        this service builds: one source, so the projection cannot drift across its paths. Callers add their
+        path-specific keys after, so the insertion
         order keeps ``sampling_mode`` first."""
         return {"sampling_mode": str(profile.sampling_mode)}
 
-    def _terminal_decision_report(
-        self,
-        *,
-        effective_mode: GraspMode,
-        profile: GraspBehaviorProfile,
-        decision: DecisionReport,
-        watchdog_report: Optional[WatchdogReport] = None,
-        n_segmentations: Optional[int] = None,
-        reasons: Optional[tuple[Any, ...]] = None,
-        refused_as: Optional[AutonomousGraspOutcome] = None,
-    ) -> AutonomousGraspReport:
-        """Wrap a non-executing decision into an :class:`AutonomousGraspReport`.
-
-        ``n_segmentations`` and ``reasons`` are what the decided frame held: how many objects, and why its ranking
-        grasped none (``target_label_not_found`` where no object carried the prompted label). The engine answers an
-        empty frame and an object it cannot grasp with the same ``RECOVER`` for want of candidates; these two keys
-        are what tells a look that found nothing from one that found something (``_found_nothing``). Left out where
-        no frame was decided on (a watchdog block before perception).
-
-        ``refused_as`` is the service's own outcome where it refused a decision to grasp (a wrist pick that asked for
-        both jaw contact faces and did not see both); left out, the decision's action names it.
-        """
-
-        if refused_as is not None:
-            outcome = refused_as
-        elif decision.action is DecisionAction.RECOVER:
-            outcome = AutonomousGraspOutcome.DECISION_RECOVER_PENDING
-        elif decision.action is DecisionAction.FAIL_CLOSED:
-            # Prefer the uncertainty-specific terminal outcome when the
-            # fail-closure was driven by fused signal
-            # (UNCERTAINTY_FAIL_CLOSED) or channel disagreement
-            # (CHANNEL_DISAGREEMENT). The two watchdog reason codes map
-            # to dedicated outcomes so replay can attribute drift and
-            # OOD fail-closures separately. DECISION_FAIL_CLOSED is
-            # reserved for the ``(1 - top_score) + reasons_penalty``
-            # path.
-            if decision.reason_code is DecisionReasonCode.DRIFT_BLOCKED_AUTO:
-                outcome = AutonomousGraspOutcome.DRIFT_BLOCKED_AUTO
-            elif decision.reason_code is DecisionReasonCode.OOD_BLOCKED_AUTO:
-                outcome = AutonomousGraspOutcome.OOD_BLOCKED_AUTO
-            elif decision.reason_code in (
-                DecisionReasonCode.UNCERTAINTY_FAIL_CLOSED,
-                DecisionReasonCode.CHANNEL_DISAGREEMENT,
-            ):
-                outcome = AutonomousGraspOutcome.UNCERTAINTY_FAIL_CLOSED
-            else:
-                outcome = AutonomousGraspOutcome.DECISION_FAIL_CLOSED
-        else:  # pragma: no cover (defensive; the caller filters above)
-            outcome = AutonomousGraspOutcome.MODE_NOT_AVAILABLE
-
-        telemetry = self._base_telemetry(profile)
-        telemetry.update(decision.to_dict())
-        if watchdog_report is not None:
-            telemetry.update(self._watchdog_telemetry_dict(watchdog_report))
-        if n_segmentations is not None:
-            telemetry["n_segmentations"] = int(n_segmentations)
-        if reasons is not None:
-            telemetry["reasons"] = tuple(str(r) for r in reasons)
-        return AutonomousGraspReport(
-            outcome=outcome,
-            mode=effective_mode,
-            profile=replace(profile),
-            pick_report=None,
-            telemetry=telemetry,
-            effective_config=self.effective_config,
-            decision=decision,
-        )
-
-    # The pick body, called directly by the decision pre-flight on
-    # ``GRASP_NOW``.
-
-    def _execute_pick(
-        self,
-        *,
-        effective_mode: GraspMode,
-        profile: GraspBehaviorProfile,
-        decision: Optional[DecisionReport],
-        watchdog_report: Optional[WatchdogReport] = None,
-    ) -> AutonomousGraspReport:
-        """Run one open-loop attempt (``runtime.run_attempt()``) and fold the pre-flight in.
-
-        ``decision`` is :data:`None` when no decision pre-flight ran and
-        a typed :class:`DecisionReport` when the pre-flight selected
-        ``GRASP_NOW``. When present, its telemetry is merged into
-        every returned :class:`AutonomousGraspReport` and the typed
-        report carries the engine's :attr:`decision` field.
-
-        ``watchdog_report`` is :data:`None` when the watchdog is unwired
-        and a typed :class:`WatchdogReport` when it is wired. When
-        present (and the watchdog mode is not ``disabled``) its
-        telemetry keys are merged into the returned report.
-        """
-
-        report = self._run_legacy_attempt(
-            effective_mode=effective_mode, profile=profile
-        )
-        if decision is None and watchdog_report is None:
-            return report
-        merged_telemetry: dict[str, Any] = dict(report.telemetry)
-        if decision is not None:
-            merged_telemetry.update(decision.to_dict())
-        if watchdog_report is not None:
-            merged_telemetry.update(
-                self._watchdog_telemetry_dict(watchdog_report)
-            )
-        return replace(report, telemetry=merged_telemetry, decision=decision)
-
-    def _run_legacy_attempt(
-        self,
-        *,
-        effective_mode: GraspMode,
-        profile: GraspBehaviorProfile,
-    ) -> AutonomousGraspReport:
-        """The open-loop attempt: ``runtime.run_attempt()``, the mapping from
-        PickOutcome to AutonomousGraspOutcome, and the report build.
-
-        The fusion span is not timed here. The orchestrator records it around
-        the geometry fusion itself (``BinPickingOrchestrator._fused_scene``), on
-        this path and on every other, and only when another camera's view was
-        fused."""
+    def _execute_pick(self, *, effective_mode: GraspMode, profile: GraspBehaviorProfile) -> AutonomousGraspReport:
+        """The open-loop attempt: ``runtime.run_attempt()``, the mapping from PickOutcome to AutonomousGraspOutcome, and
+        the report build. The fusion of another camera's view happens in the orchestrator, on this path and every other
+        (``BinPickingOrchestrator._fused_scene``)."""
         pick_report = self.runtime.run_attempt()
         outcome = _PICK_TO_AUTONOMOUS.get(
             pick_report.outcome,
@@ -2824,9 +1889,6 @@ class AutonomousGraspService:
             pick_report=pick_report,
             telemetry=telemetry,
             effective_config=self.effective_config,
-            shadow_success_telemetry=pick_report.shadow_success_telemetry,
-            ranking_blend_telemetry=pick_report.ranking_blend_telemetry,
-            uncertainty_rerank_telemetry=pick_report.uncertainty_rerank_telemetry,
         )
 
 
@@ -2861,7 +1923,7 @@ def _report_of_looking(
         telemetry["every_look"] = True
     weak = tuple(getattr(looked, "weak", ()) or ())
     if weak:
-        # The looks the owner's trigger judged weak (robot.grasping.weak_look_trigger): what a bench reads to tell the
+        # The looks the owner's trigger judged weak (``weak_look``): what a bench reads to tell the
         # looks it drove on from the looks a grasp's doubt drove on.
         telemetry["looks_weak"] = [f"{look}: {why}" for look, why in weak]
     if handed and looked.cancelled:
@@ -2884,7 +1946,7 @@ def _report_of_looking(
     follow_why = getattr(looked, "follow_why", "")
     if follow_why:
         # Whether the first look found the parts the task kept with no detector, or why the detector grounded them
-        # (robot.grasping.follow_parts): what a bench reads to tell following from grounding.
+        # (``follow``): what a bench reads to tell following from grounding.
         telemetry["followed"] = bool(getattr(looked, "followed", False))
         telemetry["follow_why"] = str(follow_why)
     followed_looks = tuple(getattr(looked, "looks_followed", ()) or ())
@@ -2928,27 +1990,15 @@ def found_nothing(report: AutonomousGraspReport) -> bool:
 
 
 def only_excluded(report: AutonomousGraspReport) -> bool:
-    """Whether a pick saw only parts its campaign keeps out: the parts ``next_target`` skips, or a region its task keeps
-    out (the bin it places into, the circle about its drop).
+    """Whether a pick saw only parts its task keeps out (the bin it places into, the circle about its drop): a look with
+    nothing left for the task to pick, which a task counts as an empty look, not a failed pick.
 
-    The pick loop ends such an attempt with the zones' sentence (``PickAttempt.excluded``) and the service reports it
+    The pick loop ends such an attempt with the regions' sentence (``PickAttempt.excluded``) and the service reports it
     ``no_valid_grasp``, which :func:`found_nothing` does not count. Read off the pick report's last attempt, so a report
-    that ran no pick says no. A task counts as an empty look only :func:`only_kept_out`, the narrower of the two.
+    that ran no pick says no.
     """
     excluded = getattr(_last_attempt(report), "excluded", None)
     return isinstance(excluded, str) and bool(excluded)
-
-
-def only_kept_out(report: AutonomousGraspReport) -> bool:
-    """Whether a pick saw only parts its task keeps out, every one of them standing in a region of the task (the bin it
-    places into, the circle about its drop): a look with nothing left for the task to pick, which a task counts as an
-    empty look, not a failed pick.
-
-    A pick that saw a part a zone ``next_target`` made after a failed pick skips, alone or beside the task's own, is
-    :func:`only_excluded` and not this: that part still stands there to be picked, and the look is a failed pick. Read
-    off the pick loop's last attempt (``PickAttempt.excluded_by_regions``).
-    """
-    return only_excluded(report) and getattr(_last_attempt(report), "excluded_by_regions", False) is True
 
 
 def _last_attempt(report: AutonomousGraspReport) -> Any:
@@ -2965,23 +2015,17 @@ def _found_nothing(report: AutonomousGraspReport) -> bool:
     (:meth:`AutonomousGraspService._look_around_and_pick`), which goes on by its own rule: to the next look, fused,
     until a grasp is safe. A wrist pick handed no look has no next look, and rescans where it stands instead.
 
-    Each pick path says it in its own words. The pick loop's: ``NO_TARGET``, or a last attempt refused for want of the
-    label. The decision layer's: ``DECISION_RECOVER_PENDING`` (no candidates) on a frame that held no object, or whose
-    ranking carried ``target_label_not_found`` (:meth:`AutonomousGraspService._terminal_decision_report` keeps both).
-    A report that does not say which (a watchdog block has no frame) is not empty: it ends the looking where it stands.
-    The two-scan refinement's own words (``NO_VALID_GRASP`` at its first compute) left with it on 2026-09-29.
+    The pick loop says it in its own words: ``NO_TARGET``, or a last attempt refused for want of the label. A report
+    with no pick underneath is not empty: it ends the looking where it stands. The two-scan refinement's own words
+    (``NO_VALID_GRASP`` at its first compute) left with it on 2026-09-29, the decision layer's
+    (``DECISION_RECOVER_PENDING``) with it on 2026-10-16.
     """
     if report.outcome is AutonomousGraspOutcome.NO_TARGET:
         return True
     # The pick loop's own word underneath, where a recovery loop that ran out of actions reports recovery_exhausted.
     if getattr(report.pick_report, "outcome", None) is PickOutcome.NO_PERCEPTION:
         return True
-    not_found = GraspFailureReason.TARGET_LABEL_NOT_FOUND.value
-    telemetry = report.telemetry or {}
-    said = tuple(str(reason) for reason in (telemetry.get("reasons") or ()))
     if report.pick_report is None:
-        if report.outcome is AutonomousGraspOutcome.DECISION_RECOVER_PENDING:
-            return telemetry.get("n_segmentations") == 0 or not_found in said
         return False
     attempts = getattr(report.pick_report, "attempts", ()) or ()
     reasons = tuple(getattr(attempts[-1], "reasons", ()) or ()) if attempts else ()
@@ -3072,8 +2116,8 @@ def _with_the_pushes_of_a_fault(
 
 def _with_the_recovery_outcome(report: AutonomousGraspReport, trail: RecoveryTrail) -> AutonomousGraspReport:
     """``report`` with the outcome the recovery loop stands for, where it stands for one
-    (``terminal_outcome_for_trail``): ``unsafe_recovery_refused`` where a recovery motion started and failed,
-    ``recovery_exhausted`` where at least one action ran and the loop ended for want of another. A report that
+    (``terminal_outcome_for_trail``): ``recovery_exhausted`` where at least one action ran and the loop ended for
+    want of another. A report that
     succeeded, stopped for a person (a push that stopped, a stopped controller, a hand that needs one), was cancelled
     or carries a fault keeps its own, and so does one that found nothing (``no_target``): an empty bench is no dead
     loop, whatever the recovery rescanned (the KPI roll-up counts ``recovery_exhausted`` as one), and its own outcome
@@ -3086,15 +2130,13 @@ def _with_the_recovery_outcome(report: AutonomousGraspReport, trail: RecoveryTra
             or (isinstance(hand, str) and hand) or getattr(report, "fault", None) is not None):
         return report
     terminal = terminal_outcome_for_trail(trail)
-    if terminal == OUTCOME_UNSAFE_RECOVERY_REFUSED:
-        return replace(report, outcome=AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED)
     if terminal == OUTCOME_RECOVERY_EXHAUSTED:
         return replace(report, outcome=AutonomousGraspOutcome.RECOVERY_EXHAUSTED)
     return report
 
 
 def _trail_row(entry: RecoveryTrailEntry) -> dict[str, Any]:
-    """One step of the recovery loop, as ``recovery_actions_from_trail`` writes it."""
+    """One step of the recovery loop, as the record's ``recovery_actions`` carries it."""
     return {
         "action": str(entry.plan_action.value),
         "outcome": str(entry.outcome),
@@ -3122,11 +2164,11 @@ def _recovery_rows(
 ) -> tuple[dict[str, Any], ...]:
     """The recovery a pick ran, step by step, as the record's ``recovery_actions`` carries it.
 
-    The loop's steps (``recovery_actions_from_trail``'s rows) with every push whose arm left the look among them (one
-    that moved the part, one that stopped where the arm stands, and P0 in the air above a part nothing touched), in the
-    order they ran: the pushes of the loop's first pick, then the loop's steps up to the one that ran the pick again,
-    then that pick's pushes, and so on. As ``recovery_actions_from_trail`` has it, the last step's outcome reads
-    ``recovered_success`` where the recovery ended in a success. With no push this is that function's output exactly.
+    The loop's steps (:func:`_trail_row`) with every push whose arm left the look among them (one that moved the part,
+    one that stopped where the arm stands, and P0 in the air above a part nothing touched), in the order they ran: the
+    pushes of the loop's first pick, then the loop's steps up to the one that ran the pick again, then that pick's
+    pushes, and so on. The last step's outcome reads ``recovered_success`` where the recovery ended in a success, its
+    own result kept in ``step_result``.
     """
     entries = list(trail.entries)
     rows: list[dict[str, Any]] = []
@@ -3145,28 +2187,10 @@ def _recovery_rows(
     return tuple(rows)
 
 
-def _operator_box(fixture: Any) -> "AxisBox | None | str":
-    """The declared fixture box (``recovery.fixture``) as the push planner's operator box, which only narrows where a
-    push may land; ``None`` without a fixture, and why not, as a sentence, where the box leaves no room in BASE XY."""
-    if fixture is None:
-        return None
-    from src.robot.grasping.recovery.push_planner import AxisBox  # noqa: PLC0415
-
-    (cx, cy, cz), (hx, hy, hz) = fixture.center_mm, fixture.half_extents_mm
-    if not (float(hx) > 0.0 and float(hy) > 0.0):
-        return (f"the recovery fixture box (recovery.fixture) is {2.0 * float(hx):g} x {2.0 * float(hy):g} mm in BASE "
-                "XY, which leaves a pushed part nowhere to land")
-    # Only its XY narrows the push box; a flat box is given a millimetre of height so it is a box.
-    half_z = max(float(hz), 1.0)
-    return AxisBox((float(cx) - float(hx), float(cy) - float(hy), float(cz) - half_z),
-                   (float(cx) + float(hx), float(cy) + float(hy), float(cz) + half_z))
-
-
 def _push_cell_of(robot_cfg: Any, grasping_cfg: Any) -> "PushCell | PushRefusal | None":
-    """What the cell is as a push needs it, read wherever the config has a recovery block: a run may allow the push
-    for itself from the console (the owner, 2026-10-05) where the config's ``allowed_actions`` does not name it."""
-    recovery = getattr(grasping_cfg, "recovery", None)
-    if recovery is None:
+    """What the cell is as a push needs it, read wherever the config has a grasping block: every such cell may push in
+    ``dense_clutter``, and a run may allow the push for itself from the console (the owner, 2026-10-05)."""
+    if grasping_cfg is None:
         return None
     from src.robot.grasping.recovery.push_gate import PushCell  # noqa: PLC0415
 

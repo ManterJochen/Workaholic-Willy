@@ -16,8 +16,8 @@ guard and the planner screened. So:
   by hand in block style included, and its line endings with it;
 * only a clear pose or one in the planner's band reaches the file; a name or a label that is none is refused before
   anything is written, and a note loses the newlines and the " #" a later rewrite would cut at;
-* every comment survives, a pose taught again is rewritten in place, and a cell layer that holds ``named_poses: {}``
-  takes its first pose;
+* every comment survives, a pose taught again is rewritten in place, and a cell layer that holds
+  ``robot.motion.named_poses: {}`` takes its first pose;
 * the generic writer, ``set_keys`` behind ``PATCH /v1/config``, refuses every pose key with a sentence of its own:
   typed joints would skip the hand and the screen. ``WRITABLE`` and ``/v1/config/writable`` do not change. The
   console's own answer to such a PATCH (403, the file untouched) is an HTTP test, so it lives with the console's tests
@@ -59,6 +59,14 @@ TAUGHT_AT = "2026-10-01T09:12:00+02:00"
 def _the_shipped_tree() -> Any:
     """Every tree read as this repository's shipped one, whose base ``robot.yaml`` every cell reads."""
     return patch("src.config.edit._is_shipped_tree", return_value=True)
+
+
+def _into_motion(path: Path, text: str) -> None:
+    """``text`` written into the ``robot.motion`` block of ``path``, right under the line that opens it."""
+    raw = path.read_bytes().decode("utf-8")
+    head = "  motion:\r\n" if "  motion:\r\n" in raw else "  motion:\n"
+    assert raw.count(head) == 1, f"fixture drift: {path.name} opens no one robot.motion block"
+    path.write_bytes(raw.replace(head, head + text, 1).encode("utf-8"))
 
 
 def _tree_hash(root: Path) -> dict[str, str]:
@@ -106,11 +114,11 @@ class APoseLandsInTheCellsOwnLayerTests(_Case):
         after = _tree_hash(self.tmp)
         changed = sorted(name for name in after if after[name] != before.get(name))
         self.assertEqual([str(Path("robot") / "robot.cell.yaml")], changed)
-        pose = self.robot().named_poses["drop_left"]
+        pose = self.robot().motion.named_poses["drop_left"]
         self.assertEqual(tuple(DROP), pose.joints_deg)
         self.assertEqual(("Ablage links", "clear", TAUGHT_AT), (pose.label, pose.screen, pose.taught_at))
         self.assertIn(self.CELL_TEXT.strip(), self.cell.read_text(encoding="utf-8"), "the layer's comment was lost")
-        self.assertEqual(tuple(DROP), result.values["robot.named_poses.drop_left.joints_deg"])
+        self.assertEqual(tuple(DROP), result.values["robot.motion.named_poses.drop_left.joints_deg"])
 
     def test_the_file_is_named_before_anything_is_written(self) -> None:
         self.assertEqual(self.cell, pose_target_file(self.tmp, LAYERS))
@@ -158,7 +166,7 @@ class APoseLandsInTheCellsOwnLayerTests(_Case):
         self.assertEqual((base,), result.files)
         after = _tree_hash(self.tmp)
         self.assertEqual([str(Path("robot") / "robot.yaml")], sorted(n for n in after if after[n] != before.get(n)))
-        self.assertEqual(tuple(DROP), self.robot(profile="").named_poses["drop_left"].joints_deg)
+        self.assertEqual(tuple(DROP), self.robot(profile="").motion.named_poses["drop_left"].joints_deg)
 
     def test_the_tree_writes_through_the_same_door(self) -> None:
         tree = ConfigTree(root=self.tmp, profile=CHAIN, layers=LAYERS)
@@ -166,19 +174,19 @@ class APoseLandsInTheCellsOwnLayerTests(_Case):
                                        note="in the planner's cushion band: forearm|wrist_2", make_default_place=True)
         self.assertTrue(result.applied, result.message)
         robot = self.robot()
-        self.assertEqual("band", robot.named_poses["park"].screen)
-        self.assertEqual("park", robot.default_place_pose)
+        self.assertEqual("band", robot.motion.named_poses["park"].screen)
+        self.assertEqual("park", robot.motion.default_place_pose)
         cleared = tree.write_default_place_pose(None)
         self.assertTrue(cleared.applied, cleared.message)
-        self.assertIsNone(self.robot().default_place_pose)
+        self.assertIsNone(self.robot().motion.default_place_pose)
 
 
 class TheGroupIsOneTransactionTests(_Case):
     def test_the_pose_and_the_default_place_land_together(self) -> None:
         result = self.write(make_default_place=True)
         self.assertTrue(result.applied, result.message)
-        self.assertEqual("drop_left", self.robot().default_place_pose)
-        self.assertIn("robot.default_place_pose", result.keys)
+        self.assertEqual("drop_left", self.robot().motion.default_place_pose)
+        self.assertIn("robot.motion.default_place_pose", result.keys)
 
     def test_a_group_the_validators_refuse_leaves_every_byte_as_it_was(self) -> None:
         self.assertTrue(self.write().applied)
@@ -192,24 +200,25 @@ class TheGroupIsOneTransactionTests(_Case):
         self.assertIn("Ablage links", result.message)
         self.assertEqual(before, self.cell.read_bytes())
         robot = self.robot()
-        self.assertEqual({"drop_left"}, set(robot.named_poses))
-        self.assertIsNone(robot.default_place_pose)
+        self.assertEqual({"drop_left"}, set(robot.motion.named_poses))
+        self.assertIsNone(robot.motion.default_place_pose)
 
     def test_a_pose_written_by_hand_in_block_style_rolls_back_byte_for_byte(self) -> None:
         """The line editor rewrites a value on its own line; a joint list written as a block below its key cannot be
         rewritten that way, and the loader refuses the result. Every byte comes back, the CRLF endings included."""
-        by_hand = ("# taught by hand\r\nrobot:\r\n  named_poses:\r\n    drop_left:\r\n      joints_deg:\r\n"
-                   + "".join(f"        - {value}\r\n" for value in DROP)
-                   + "      label: \"Ablage links\"   # the bin on the left\r\n")
+        by_hand = ("# taught by hand\r\nrobot:\r\n  motion:\r\n    named_poses:\r\n      drop_left:\r\n"
+                   + "        joints_deg:\r\n"
+                   + "".join(f"          - {value}\r\n" for value in DROP)
+                   + "        label: \"Ablage links\"   # the bin on the left\r\n")
         self.cell.write_bytes(by_hand.encode("utf-8"))
-        self.assertEqual(tuple(DROP), self.robot().named_poses["drop_left"].joints_deg, "the hand-written pose loads")
+        self.assertEqual(tuple(DROP), self.robot().motion.named_poses["drop_left"].joints_deg, "the hand-written pose loads")
 
         result = self.write(joints=PARK)
 
         self.assertFalse(result.applied)
         self.assertIs(WriteRefused.INVALID_VALUE, result.refused)
         self.assertEqual(by_hand.encode("utf-8"), self.cell.read_bytes())
-        self.assertEqual(tuple(DROP), self.robot().named_poses["drop_left"].joints_deg)
+        self.assertEqual(tuple(DROP), self.robot().motion.named_poses["drop_left"].joints_deg)
 
     def test_a_default_place_that_names_no_pose_is_refused_and_rolled_back(self) -> None:
         before = self.cell.read_bytes()
@@ -256,21 +265,21 @@ class OnlyWhatTheScreenClearedIsWrittenTests(_Case):
     def test_a_note_loses_what_a_later_rewrite_would_cut_at(self) -> None:
         note = "in the planner's cushion band:\nforearm|wrist_2 #1 overlaps\r\nby 1.2 mm"
         self.assertTrue(self.write(screen="band", note=note).applied)
-        written = self.robot().named_poses["drop_left"].note
+        written = self.robot().motion.named_poses["drop_left"].note
         self.assertNotIn("\n", written)
         self.assertNotIn(" #", written)
         for part in ("cushion band", "forearm|wrist_2", "1.2 mm"):
             self.assertIn(part, written)
         again = self.write(joints=PARK, screen="band", note="a second note")
         self.assertTrue(again.applied, again.message)
-        self.assertEqual("a second note", self.robot().named_poses["drop_left"].note)
+        self.assertEqual("a second note", self.robot().motion.named_poses["drop_left"].note)
 
 
 class TheFileStaysReadableTests(_Case):
     def test_a_pose_taught_again_is_rewritten_in_place_and_every_comment_stays(self) -> None:
         self.assertTrue(self.write().applied)
         text = self.cell.read_text(encoding="utf-8").replace(
-            "    drop_left:", "    # the bin on the left, measured 2026-10-01\n    drop_left:")
+            "      drop_left:", "      # the bin on the left, measured 2026-10-01\n      drop_left:")
         self.cell.write_text(text, encoding="utf-8")
         lines_before = self.cell.read_text(encoding="utf-8").splitlines()
 
@@ -281,37 +290,36 @@ class TheFileStaysReadableTests(_Case):
         self.assertEqual(len(lines_before), len(lines_after))
         changed = [after for before, after in zip(lines_before, lines_after) if before != after]
         self.assertEqual(2, len(changed), changed)
-        self.assertIn("    # the bin on the left, measured 2026-10-01", lines_after)
-        self.assertEqual(tuple(PARK), self.robot().named_poses["drop_left"].joints_deg)
+        self.assertIn("      # the bin on the left, measured 2026-10-01", lines_after)
+        self.assertEqual(tuple(PARK), self.robot().motion.named_poses["drop_left"].joints_deg)
 
     def test_a_second_pose_joins_the_first(self) -> None:
         self.assertTrue(self.write().applied)
         self.assertTrue(self.write("park", PARK, label="Parken").applied)
-        self.assertEqual({"drop_left", "park"}, set(self.robot().named_poses))
+        self.assertEqual({"drop_left", "park"}, set(self.robot().motion.named_poses))
 
     def test_a_layer_that_holds_an_empty_map_takes_its_first_pose(self) -> None:
-        self.cell.write_text("robot:\n  named_poses: {}   # taught in the console\n  default_place_pose: null\n",
-                             encoding="utf-8")
+        self.cell.write_text("robot:\n  motion:\n    named_poses: {}   # taught in the console\n"
+                             "    default_place_pose: null\n", encoding="utf-8")
         result = self.write(make_default_place=True)
         self.assertTrue(result.applied, result.message)
         self.assertIn("# taught in the console", self.cell.read_text(encoding="utf-8"))
         robot = self.robot()
-        self.assertEqual({"drop_left"}, set(robot.named_poses))
-        self.assertEqual("drop_left", robot.default_place_pose)
+        self.assertEqual({"drop_left"}, set(robot.motion.named_poses))
+        self.assertEqual("drop_left", robot.motion.default_place_pose)
 
     def test_clearing_the_default_place_clears_one_a_lower_layer_set(self) -> None:
         """A ``null`` in an overlay keeps the value below it; clearing writes the loader's reset instead."""
-        ur10 = self.tmp / "robot" / "robot.ur10.yaml"
-        with ur10.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write("  named_poses:\n    park:\n      joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n"
-                         "  default_place_pose: park\n")
-        self.assertEqual("park", self.robot().default_place_pose)
+        _into_motion(self.tmp / "robot" / "robot.ur10.yaml",
+                     "    named_poses:\n      park:\n        joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n"
+                     "    default_place_pose: park\n")
+        self.assertEqual("park", self.robot().motion.default_place_pose)
 
         result = set_default_place_pose(None, root=self.tmp, layers=LAYERS, profile=CHAIN)
 
         self.assertTrue(result.applied, result.message)
-        self.assertIsNone(self.robot().default_place_pose)
-        self.assertEqual("park", self.robot("ur10").default_place_pose, "a lower layer was written")
+        self.assertIsNone(self.robot().motion.default_place_pose)
+        self.assertEqual("park", self.robot("ur10").motion.default_place_pose, "a lower layer was written")
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -348,7 +356,7 @@ class GitKeepsTheCellsLayerOutTests(_Case):
         (self.repo / ".gitignore").write_text("data/**/*.cell.yaml\n", encoding="utf-8")
         result = self.write(make_default_place=True)
         self.assertTrue(result.applied, result.message)
-        self.assertEqual("drop_left", self.robot().default_place_pose)
+        self.assertEqual("drop_left", self.robot().motion.default_place_pose)
 
     def test_a_layer_ignored_on_this_machine_alone_takes_the_pose(self) -> None:
         """``.git/info/exclude`` keeps a file out on this clone alone, with no line in the repository's .gitignore."""
@@ -424,9 +432,9 @@ class GitIsAskedOnlyInsideAWorkTreeTests(_Case):
 
 
 class TheGenericWriterRefusesPosesTests(_Case):
-    POSE_KEYS = ("robot.named_poses.drop_left.joints_deg", "robot.named_poses.drop_left.label",
-                 "robot.named_poses.drop_left", "robot.named_poses", "robot.default_place_pose",
-                 "robot.named_poses.drop_left.joints_deg[0]")
+    POSE_KEYS = ("robot.motion.named_poses.drop_left.joints_deg", "robot.motion.named_poses.drop_left.label",
+                 "robot.motion.named_poses.drop_left", "robot.motion.named_poses", "robot.motion.default_place_pose",
+                 "robot.motion.named_poses.drop_left.joints_deg[0]")
 
     def test_a_pose_key_is_not_writable_and_says_why(self) -> None:
         before = _tree_hash(self.tmp)
@@ -444,16 +452,16 @@ class TheGenericWriterRefusesPosesTests(_Case):
 
     def test_a_pose_key_beside_a_measurement_refuses_the_whole_group(self) -> None:
         before = _tree_hash(self.tmp)
-        result = set_keys({"robot.safety.payload.mass_kg": 1.5, "robot.default_place_pose": "drop_left"},
+        result = set_keys({"robot.safety.payload.mass_kg": 1.5, "robot.motion.default_place_pose": "drop_left"},
                           root=self.tmp, layers=LAYERS, profile=CHAIN)
         self.assertIs(WriteRefused.NOT_WRITABLE, result.refused)
         self.assertEqual(before, _tree_hash(self.tmp))
 
     def test_the_writable_set_offers_no_pose(self) -> None:
         self.assertFalse([entry.path for entry in WRITABLE if "pose" in entry.path])
-        self.assertIsNone(writable("robot.named_poses.drop_left.joints_deg"))
-        self.assertIsNone(writable("robot.default_place_pose"))
-        refused = set_key("robot.default_place_pose", "drop_left", root=self.tmp)
+        self.assertIsNone(writable("robot.motion.named_poses.drop_left.joints_deg"))
+        self.assertIsNone(writable("robot.motion.default_place_pose"))
+        refused = set_key("robot.motion.default_place_pose", "drop_left", root=self.tmp)
         self.assertIs(WriteRefused.NOT_WRITABLE, refused.refused)
 
 

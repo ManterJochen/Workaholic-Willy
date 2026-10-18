@@ -31,3 +31,41 @@ runtime:
     # A reading moves nothing either way; a task starts only at POST /v1/task, behind every gate of that route.
     # [default: true]
     known_sentences: true
+
+  # What a task takes where it says nothing itself: the cell's, rather than each browser's. The console's Settings
+  # page ("Auftrag") writes these into the cell's own layer, the chain's last; none of them starts a task.
+  task:
+
+    # How the console starts a typed or spoken task. enter: Enter reads the sentence and starts a clean reading at
+    # once where the cell is ready, and the card opens for every other. card: Enter only reads, and Start on the
+    # card starts.
+    # [default: enter] [one of: enter | card]
+    start: enter
+
+    # The mode of a task Enter starts: once, one part; until_empty, until nothing matching is left. "Alle" in the
+    # sentence does not change it, and a sentence that singles out one part runs once either way.
+    # [default: once] [one of: once | until_empty]
+    scope: once
+
+    # Where the part goes when the sentence names no place: default, the cell's default place pose
+    # (robot.motion.default_place_pose); pose:<name>, a taught pose; camera:<phrase>, a target the camera finds, in English
+    # (camera:yellow bin), at most 200 characters on one line, with no " #".
+    # [default: default] [one of: default | pose:<name> | camera:<phrase>]
+    place: default
+
+    # true: a card whose sentence names no part comes ticked for "alles, was die Kamera sieht", bin walls included.
+    # false: the person ticks it on the card. Such a card never starts on Enter.
+    # [default: false]
+    anything: false
+
+    # How each pick of a task looks: first, the first look only (multi-view off); when_needed, the looks until a
+    # grasp is safe; every, every configured look, the early stop off. A card may change it for its task.
+    # [default: when_needed] [one of: first | when_needed | every]
+    looks: when_needed
+
+    # Whether the parts are critical. false: a boxed-in part is pushed first (the push may shove the neighbours in
+    # its way), and a blocker is cleared where no push plans. true: nothing is pushed, and a blocker is cleared
+    # instead. A task may say otherwise for itself in the console's advanced drawer. Read when the cell is built, so
+    # a change applies from its next build. Until 2026-10-16 this was robot.grasping.recovery.critical_parts.
+    # [default: false]
+    critical_parts: false

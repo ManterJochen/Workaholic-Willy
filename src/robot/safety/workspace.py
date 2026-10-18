@@ -25,7 +25,13 @@ from src.config.schema.robot import WorkspaceLimitsConfig
 from src.geometry import Frame, FrameMismatchError, Pose
 from src.robot.constants import SAFETY_WORKSPACE_LOG_FILE, create_robot_logger
 
-__all__ = ["WorkspaceGuard"]
+__all__ = ["WORKSPACE_MARGIN_MM", "WorkspaceGuard"]
+
+#: How far inside every face of ``robot.motion.workspace`` a commanded pose has to stay, millimetres: the safety
+#: preflight shrinks the box by this before its workspace guard holds it, and the controller's own guard keeps the
+#: whole box as a backstop. The owner's cell's 20, every cell's since 2026-10-17 (the owner's cleanup took
+#: ``safety.limits.workspace_margin_mm``).
+WORKSPACE_MARGIN_MM = 20.0
 
 
 def _coerce_pose(pose: Pose) -> Pose:

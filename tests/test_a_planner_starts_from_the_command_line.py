@@ -72,7 +72,7 @@ class TheLibraryTwinTests(unittest.TestCase):
         self.assertTrue(report.started, report.render())
         self.assertEqual(report.exit_code, 0)
         self.assertEqual((len(sidecar.started), len(sidecar.closed)), (1, 1))
-        self.assertIn("ur5e_robotiq_2f85_c0mm_+Y+X_m4mm_a0.json", report.render())
+        self.assertIn("ur5e_robotiq_2f85_c0mm_+Y+X_m4mm.json", report.render())
 
     def test_a_sidecar_that_loaded_another_robot_is_refused_by_the_driver_s_own_check(self) -> None:
         """⭐ THE CONTROL: the start is the driver's path, so the evidence check it runs is the one that refuses."""

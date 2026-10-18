@@ -1,11 +1,12 @@
 """A cable along the arm is never wound more than half a turn from home, and nobody types a joint range.
 
-``safety.joint_limits.within_half_turn_of_home`` narrows every axis whose range is a full turn or more to half a turn
-either side of the home the arm drives to, before the margin comes off; a UR elbow, which Universal Robots plans within
-+-180 degrees and so never turns a full turn, is left alone. The guard refuses outside it, the UR driver
-chooses a Cartesian goal's configuration inside it and never leaves cuRobo to choose one, a joint target outside it
-runs as its full turn inside, a plan that passes outside is refused by the path gate, and the desk check prints the
-controller limits that hold it on the pendant.
+Every real arm's joint-limit guard narrows every axis whose range is a full turn or more to half a turn either side of
+the home the arm drives to, before the margin comes off (the owner's ``safety.joint_limits.within_half_turn_of_home``,
+every real arm's since 2026-10-17; the Isaac arm states it keeps its whole envelope, ``willy_sim/guard_numbers.py``); a
+UR elbow, which Universal Robots plans within +-180 degrees and so never turns a full turn, is left alone. The guard
+refuses outside it, the UR driver chooses a Cartesian goal's configuration inside it and never leaves cuRobo to choose
+one, a joint target outside it runs as its full turn inside, a plan that passes outside is refused by the path gate, and
+the desk check prints the controller limits that hold it on the pendant.
 
 What it costs, measured here with the closed-form inverse kinematics over random homes and poses: nothing at a margin
 of zero, because every UR joint is 2*pi-periodic and each angle has a twin inside any full-turn window; at the
@@ -29,7 +30,7 @@ import numpy as np
 import pytest
 
 from src.config.arms import described_home
-from src.config.schema.robot import JointLimitSafetyConfig, RobotConfig
+from src.config.schema.robot import RobotConfig
 from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, JointPositions, MotionCommand, MotionStatus, RobotCapabilities
 from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.drivers.planned.curobo_motion import planner_envelope_rad
@@ -45,14 +46,35 @@ from src.robot.safety.joint_limits import (
     half_turn_axes,
     stated_home_rad,
 )
-from tests._arm_kit import LOGGER_NAME, planned_arm
+from tests._arm_kit import LOGGER_NAME, planned_arm, with_the_whole_envelope
 from tests._fake_transport import fake_transport
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 from tests._route_planner import RoutePlanner as _Planner
+from tests._route_planner import the_planner_holds_more
 
 _DECLINED = "unit double: this file reads which configurations a planner double is asked for, and no camera world"
 _HOME = (0.2, -1.4, 1.3, -1.5, -1.57, 0.1)
-_WINDOW = {"joint_limits": {"within_half_turn_of_home": True}}
+
+
+class _Tabled(JointLimitGuard):
+    """The guard over a table of its own, as an arm whose description held it would be judged: for an arm nobody
+    describes, which has none."""
+
+    def __init__(self, table: "tuple[list[float], list[float]]") -> None:
+        super().__init__()
+        self._table = table
+
+    def table_for(self, *, model: "str | None") -> "tuple[list[float], list[float]]":
+        return self._table
+
+
+def _with_margin(arm: Any, margin_deg: float, *, window: bool) -> Any:
+    """``arm`` with its joint-limit guard keeping ``margin_deg`` (every cell's 5 since 2026-10-17; 0 is what the window
+    alone costs) and the window about home where ``window``. Returns ``arm``."""
+    guard = JointLimitGuard(half_turn_about_home=window)
+    guard._margin_deg = float(margin_deg)
+    arm._preflight._guards = tuple(guard if isinstance(g, JointLimitGuard) else g for g in arm._preflight.guards)
+    return arm
 
 
 class _Arm:
@@ -76,11 +98,13 @@ def _judged(guard: JointLimitGuard, joints_deg: "list[float]", arm: Any) -> Any:
 
 def _tree(*, home: "tuple[float, ...] | None" = _HOME, safety: "dict[str, Any] | None" = None,
           model: str = "ur10") -> RobotConfig:
+    """A UR tree on cuRobo whose home is ``home``, radians, written into ``robot.motion.home_deg`` in degrees."""
     return RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": model}, "motion": {"planner": "curobo"},
-        "safety": {"payload": {"enforce": False}, **(safety if safety is not None else _WINDOW)},
-        "gripper": {"model": "robotiq_2f85"}, "workspace_limits": OPEN_WORKSPACE,
-        **({"home_joint_positions": home} if home is not None else {}),
+        "vendor": "ur", "ur": {"model": model},
+        "motion": {"planner": "curobo", "workspace": OPEN_WORKSPACE,
+                   **({"home_deg": [math.degrees(v) for v in home]} if home is not None else {})},
+        "safety": {**(safety or {})},
+        "gripper": {"model": "robotiq_2f85"},
     })
 
 
@@ -90,9 +114,13 @@ def _ur(*, joints: "list[float] | None" = None, **kwargs: Any) -> Any:
     return planned_arm(_tree(**kwargs), transport=transport)
 
 
-def _driven(planner: _Planner, *, judged: bool = True, **kwargs: Any) -> PlannedArm:
-    """A cuRobo arm on a planner double; ``judged=False`` stubs the end and path gates, for a test of the goal asked."""
-    arm = _ur(joints=list(planner.here), **kwargs)
+def _driven(planner: _Planner, *, judged: bool = True, whole_envelope: bool = False, **kwargs: Any) -> PlannedArm:
+    """A cuRobo arm on a planner double, which the arm asks beside the exact guard (:func:`the_planner_holds_more`);
+    ``judged=False`` stubs the end and path gates, for a test of the goal asked; ``whole_envelope`` holds it to the arm's
+    whole envelope, as the Isaac arm is, the control for the window."""
+    arm = the_planner_holds_more(_ur(joints=list(planner.here), **kwargs))
+    if whole_envelope:
+        with_the_whole_envelope(arm._preflight)
     arm._curobo = planner
     if not judged:
         arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None
@@ -115,20 +143,21 @@ def _asked(planner: _Planner) -> "list[tuple[float, ...]]":
 
 
 class TheWindowTests(unittest.TestCase):
-    def test_it_is_off_unless_a_cell_asks_and_the_ur10_profile_asks(self) -> None:
-        from src.config import load_config, reload_config
-        from src.config.loader import set_active_profile
+    def test_every_real_arm_keeps_it_and_the_isaac_arm_states_it_does_not(self) -> None:
+        """The owner's cell's since 2026-09-23, every real arm's since 2026-10-17: no tree turns it off. The Isaac arm,
+        which winds no cable and parks its base half a turn from home, states it keeps its whole envelope."""
+        from pydantic import ValidationError
 
-        self.assertFalse(JointLimitSafetyConfig().within_half_turn_of_home)
-        try:
-            for profile, expected in ((None, False), ("sim", False), ("ur10", True)):
-                reload_config()
-                set_active_profile(profile)
-                with self.subTest(profile=profile):
-                    self.assertIs(expected, load_config(None).robot.safety.joint_limits.within_half_turn_of_home)
-        finally:
-            set_active_profile(None)
-            reload_config()
+        from src.robot.safety.guard_numbers import CELL
+        from src.willy_sim.guard_numbers import ISAAC
+
+        self.assertTrue(JointLimitGuard().within_half_turn_of_home)
+        self.assertTrue(CELL.half_turn_about_home)
+        self.assertFalse(ISAAC.half_turn_about_home)
+        guard = next(g for g in _ur()._preflight.guards if isinstance(g, JointLimitGuard))
+        self.assertTrue(guard.within_half_turn_of_home)
+        with self.assertRaises(ValidationError):
+            RobotConfig.model_validate({"vendor": "ur", "safety": {"joint_limits": {"within_half_turn_of_home": False}}})
 
     def test_every_full_turn_axis_is_narrowed_to_half_a_turn_either_side_of_home(self) -> None:
         home_deg = [10.0, -90.0, 45.0, -90.0, 90.0, 200.0]
@@ -170,7 +199,7 @@ class TheWindowTests(unittest.TestCase):
 
 class TheGuardTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.guard = JointLimitGuard(JointLimitSafetyConfig(within_half_turn_of_home=True))
+        self.guard = JointLimitGuard()
         self.home = _Arm((0.0, -math.pi / 2, 0.0, -math.pi / 2, 0.0, 0.0))
 
     def test_inside_the_window_is_admitted_and_past_it_is_refused_naming_the_twin(self) -> None:
@@ -178,13 +207,13 @@ class TheGuardTests(unittest.TestCase):
         refused = _judged(self.guard, [200.0, -90.0, 0.0, -90.0, 0.0, 0.0], self.home)
         self.assertIs(SafetyReason.JOINT_LIMIT, refused.reason)
         self.assertIn("half a turn either side of home", refused.message)
-        self.assertIn("within_half_turn_of_home", refused.message)
+        self.assertIn("every real arm keeps", refused.message)
         self.assertIn("-160.000 deg, is inside it", refused.message)
         self.assertEqual("0.000000", refused.detail["home_deg"])
 
     def test_the_same_configuration_passes_the_guard_without_the_window(self) -> None:
         """The control: the table alone admits it, so the refusal above is the window's."""
-        plain = JointLimitGuard(JointLimitSafetyConfig())
+        plain = JointLimitGuard(half_turn_about_home=False)
         self.assertTrue(_judged(plain, [200.0, -90.0, 0.0, -90.0, 0.0, 0.0], self.home).accepted)
 
     def test_a_ur_elbow_bent_the_other_way_from_home_is_admitted(self) -> None:
@@ -192,8 +221,7 @@ class TheGuardTests(unittest.TestCase):
         self.assertTrue(_judged(self.guard, [0.0, -90.0, 120.0, -90.0, 90.0, 0.0], elbow_down).accepted)
         # The control: an arm nobody describes, with the same table, has its axis 2 narrowed like any other. The
         # vendor does not decide (P0d D5): the Isaac arm reports the UR it drives and keeps its elbow too.
-        other = JointLimitGuard(JointLimitSafetyConfig(
-            within_half_turn_of_home=True, min_deg=[-360.0] * 6, max_deg=[360.0] * 6))
+        other = _Tabled(([-360.0] * 6, [360.0] * 6))
         nobody = _Arm(elbow_down.home_joint_positions, model="dummy-6dof", vendor="dummy")
         self.assertIs(SafetyReason.JOINT_LIMIT, _judged(other, [0.0, -90.0, 120.0, -90.0, 90.0, 0.0], nobody).reason)
         sim = _Arm(elbow_down.home_joint_positions, vendor="sim")
@@ -215,16 +243,16 @@ class TheGuardTests(unittest.TestCase):
                 decision = _judged(self.guard, [0.0] * 6, arm)
                 self.assertIs(SafetyReason.UNAVAILABLE, decision.reason)
         decision = _judged(self.guard, [0.0] * 6, _Arm())
-        self.assertIn("home_joint_positions", decision.message)
+        self.assertIn("robot.motion.home_deg", decision.message)
         self.assertIsNone(self.guard.limits_for(model="ur10"))
         self.assertIsNone(self.guard.limits_for_arm(_Arm()))
         self.assertIsNone(stated_home_rad(_Arm(MagicMock())), "a mock's attribute read as a home")
 
-    def test_a_home_written_in_degrees_leaves_no_range_and_says_radians(self) -> None:
+    def test_a_home_written_in_degrees_leaves_no_range_and_names_the_degrees_key(self) -> None:
         degrees = _Arm((0.0, -90.0, 90.0, -90.0, -90.0, 0.0))
         decision = _judged(self.guard, [0.0] * 6, degrees)
         self.assertIs(SafetyReason.UNAVAILABLE, decision.reason)
-        self.assertIn("read in radians", decision.message)
+        self.assertIn("robot.motion.home_deg is read in degrees", decision.message)
 
 
 class TheBuildTests(unittest.TestCase):
@@ -232,19 +260,18 @@ class TheBuildTests(unittest.TestCase):
 
     def _arm(self, home: Any) -> _Arm:
         arm = _Arm(home)
-        arm.safety_preflight = SafetyPreflight([  # type: ignore[attr-defined]
-            JointLimitGuard(JointLimitSafetyConfig(within_half_turn_of_home=True))])
+        arm.safety_preflight = SafetyPreflight([JointLimitGuard()])  # type: ignore[attr-defined]
         return arm
 
     def test_no_home_is_refused_at_build_naming_the_key(self) -> None:
         with self.assertRaises(JointLimitTableMissing) as caught:
             assert_joint_limit_table_available(self._arm(None))
-        self.assertIn("robot.home_joint_positions", str(caught.exception))
+        self.assertIn("robot.motion.home_deg", str(caught.exception))
 
     def test_a_home_in_degrees_is_refused_at_build(self) -> None:
         with self.assertRaises(JointLimitTableMissing) as caught:
             assert_joint_limit_table_available(self._arm((0.0, -90.0, 90.0, -90.0, -90.0, 0.0)))
-        self.assertIn("read in radians", str(caught.exception))
+        self.assertIn("robot.motion.home_deg is read in degrees", str(caught.exception))
 
     def test_a_home_in_radians_builds(self) -> None:
         assert_joint_limit_table_available(self._arm(_HOME))
@@ -256,7 +283,7 @@ class TheBuildTests(unittest.TestCase):
         def driver(home_joints: "list[float] | None" = None, **kwargs: Any) -> URRobotArm:
             return URRobotArm(_tree(**kwargs), home_joints=home_joints)
 
-        self.assertEqual(_HOME, driver().home_joint_positions)
+        np.testing.assert_allclose(driver().home_joint_positions, _HOME, rtol=0.0, atol=1e-12)
         self.assertEqual(described_home("ur10"), driver(home=None).home_joint_positions)
         self.assertEqual((0.5,) * 6, driver([0.5] * 6).home_joint_positions)
         assert_joint_limit_table_available(driver())
@@ -282,7 +309,7 @@ class TheDriverTests(unittest.TestCase):
         here = [*_HOME[:5], math.radians(170.0)]
         end = [*_HOME[:5], math.radians(-170.0)]
         without = _Planner(here=here)
-        with without_camera_world_of(_driven(without, judged=False, safety={})) as arm:
+        with without_camera_world_of(_driven(without, judged=False, whole_envelope=True)) as arm:
             arm.move(pose_where_it_ends(arm, end))
         (ran,) = without.named("execute")
         self.assertAlmostEqual(190.0, math.degrees(ran[1][-1][5]), places=4)
@@ -343,9 +370,11 @@ class TheDriverTests(unittest.TestCase):
 def test_a_plan_that_passes_outside_is_refused_by_the_path_gate() -> None:
     """Both ends inside the window, the base swinging past the seam between them: the path gate refuses it.
 
-    The detour bound refuses such a plan first (tests/test_the_nearest_goal_is_planned.py); it is opened to its
-    ceiling here, so that what is read is the path gate, the second line of defence, on its own.
+    The detour bound refuses such a plan first (tests/test_the_nearest_goal_is_planned.py); it is opened to a whole
+    turn here, so that what is read is the path gate, the second line of defence, on its own.
     """
+    from unittest import mock
+
     here = list(_HOME)
     end = [_HOME[0] + 0.3, *_HOME[1:]]
     out = [_HOME[0] + math.radians(200.0), *_HOME[1:]]
@@ -354,11 +383,11 @@ def test_a_plan_that_passes_outside_is_refused_by_the_path_gate() -> None:
     planner = _Planner(here=here)
     planner.line_clear = lambda start, end: False
     planner.answer = lambda goal: [*dense[:-1], list(goal)]
-    safety = {**_WINDOW, "planned_motion": {"max_detour_deg": 360.0}}
-    with without_camera_world_of(_driven(planner, safety=safety)) as arm:
+    with mock.patch("src.robot.drivers.planned.arm.MAX_DETOUR_DEG", 360.0), \
+            without_camera_world_of(_driven(planner)) as arm:
         result = arm.move(pose_where_it_ends(arm, end))
     assert result.status is MotionStatus.JOINT_LIMIT_REJECTED, result.message
-    assert "half a turn either side of home" in result.message and "within_half_turn_of_home" in result.message
+    assert "half a turn either side of home" in result.message and "every real arm keeps" in result.message
     assert "sample" in result.message
     assert planner.named("execute") == []
 
@@ -402,8 +431,8 @@ def test_the_window_makes_no_reachable_pose_unreachable(model: str) -> None:
     Homes stay within 174 deg of zero on every joint, where the planner's own +-(2 pi - 0.1) cannot cut the window.
     """
     rng = np.random.default_rng(2026)
-    before = _ur(safety={"joint_limits": {"margin_deg": 0.0}}, model=model)
-    within = _ur(safety={"joint_limits": {"margin_deg": 0.0, "within_half_turn_of_home": True}}, model=model)
+    before = _with_margin(_ur(model=model), 0.0, window=False)
+    within = _with_margin(_ur(model=model), 0.0, window=True)
     low, high = planner_envelope_rad(model)
     checked = 0
     for _ in range(1500):
@@ -425,7 +454,7 @@ def test_what_the_margin_costs_is_the_band_at_the_seam_behind_home() -> None:
     """At the shipped 5 deg a pose is lost only where every configuration the window holds needs a joint within
     5 deg of the seam, and that is rare: a few in a thousand random poses on a UR10."""
     rng = np.random.default_rng(11)
-    open_window = _ur(safety={"joint_limits": {"margin_deg": 0.0, "within_half_turn_of_home": True}})
+    open_window = _with_margin(_ur(), 0.0, window=True)
     shipped = _ur()
     guard = next(g for g in shipped._preflight.guards if g.name == "joint_limit")
     self_margin = math.radians(guard.margin_deg)  # type: ignore[attr-defined]
@@ -489,17 +518,22 @@ class TheDeskTests(unittest.TestCase):
         row = _desk_row(_tree(home=None))
         self.assertIs(CheckStatus.WARN, row.status)
         self.assertIn("Base -180.0 to 180.0", row.detail)
-        self.assertIn("robot.home_joint_positions", row.fix)
+        self.assertIn("robot.motion.home_deg", row.fix)
 
-    def test_a_home_in_degrees_blocks(self) -> None:
+    def test_a_home_that_leaves_no_window_blocks(self) -> None:
         from src.robot.execution.real_cell.preflight import CheckStatus
 
-        row = _desk_row(_tree(home=(0.0, -90.0, 90.0, -90.0, -90.0, 0.0)))
+        # The shoulder and the wrists more than half a turn outside the table: no window is left about them.
+        row = _desk_row(_tree(home=tuple(math.radians(v) for v in (0.0, -900.0, 90.0, -900.0, -900.0, 0.0))))
         self.assertIs(CheckStatus.BLOCK, row.status)
-        self.assertIn("radians", row.fix)
+        self.assertIn("robot.motion.home_deg is read in degrees", row.fix)
 
-    def test_no_window_no_row(self) -> None:
-        self.assertIsNone(_desk_row(_tree(safety={})))
+    def test_the_sim_and_the_dummy_have_no_row(self) -> None:
+        """The Isaac arm keeps its whole envelope and the dummy carries no preflight; every real arm has the row."""
+        for vendor in ("sim", "dummy"):
+            with self.subTest(vendor=vendor):
+                self.assertIsNone(_desk_row(RobotConfig.model_validate({"vendor": vendor})))
+        self.assertIsNotNone(_desk_row(_tree()))
 
 
 if __name__ == "__main__":

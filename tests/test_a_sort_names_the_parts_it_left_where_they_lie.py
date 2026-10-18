@@ -90,7 +90,7 @@ def _sort(picks: Any, *, left: "tuple[LocatedObject, ...]" = (), raises: "BaseEx
     log: list[Any] = []
     arm = TaskArm(log, fk_table={_key(LY): AT_LY, _key(LB): AT_LB, _key(LE): AT_LE})
     if workspace is not None:
-        arm.config = SimpleNamespace(workspace_limits=workspace)  # type: ignore[attr-defined]
+        arm.config = SimpleNamespace(motion=SimpleNamespace(workspace=workspace))  # type: ignore[attr-defined]
     bins = [SeenBin()] + ([SeenBin(label="blue bin", centre_xy=BLUE_CENTRE, colour_bgr=BLUE)] if sort else [])
     locator = LeftOverLocator(BinScene(bins=bins), arm=arm, log=log, left=left, raises=raises)
     ran = run_sort(_plan(sort=sort), picks, arm=arm, locators=[locator], wrist=True, looks=LOOKS)
@@ -144,7 +144,7 @@ class TheEndCountsWhatTheSortLeftTests(unittest.TestCase):
 
     def test_a_thing_outside_the_cells_workspace_is_no_part_left(self) -> None:
         """A marker, a tool or a cable beside the work area is boxed by a locate of every part too: only what stands in
-        the cell's ``robot.workspace_limits`` is counted."""
+        the cell's ``robot.motion.workspace`` is counted."""
         workspace = SimpleNamespace(x_min=-500.0, x_max=0.0, y_min=-600.0, y_max=-200.0, z_min=0.0, z_max=400.0)
         beside = _thing(200.0, -300.0, 40.0)
         ran = _sort([SortPick("part", label="green part"), "empty", "empty"], left=(STRAY, beside),

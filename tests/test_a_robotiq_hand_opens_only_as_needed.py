@@ -1,7 +1,7 @@
 """A Robotiq hand opens only as wide as a grasp needs, and the guard holds its fingers there (lever G, 2026-10-13).
 
 The owner's "Option 1 aber nur wenn Robotiq genutzt wird": the jaws open to the span and 7 mm beside each jaw
-(``support_footprint.NARROW_ROOM_MM``; 2 mm until the owner's Robotiq came down onto the parts, 2026-10-14), not to
+(``hand.NARROW_ROOM_MM``; 2 mm until the owner's Robotiq came down onto the parts, 2026-10-14), not to
 the whole 49.99 mm stroke, and only on a Robotiq cell. Pinned on the owner's cell (``tests/_cell_2026_10_01``, the Hand-E on the UR10, its exact guard):
 
 * only a Robotiq cell plans so (``calculator_factory.opens_as_needed``);

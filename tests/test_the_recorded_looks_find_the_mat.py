@@ -22,15 +22,16 @@ from tests import _cell_2026_10_01 as cell
 _BIN_X, _BIN_Y = (100.0, 350.0), (-690.0, -490.0)
 
 
-def _world(name: str, **perceived: object) -> Any:
+def _world(name: str, **tuning: object) -> Any:
     owner = cell.owner_cell()
     look = cell.look(name)
-    from src.config.schema.robot import RobotConfig
 
-    # The counts below were read at the 15 mm margin the camera world shipped with on 2026-10-01; the owner ships 8 mm
-    # since 2026-10-05, and a thinner box merges differently. The looks are judged at the margin they were recorded at.
-    config = RobotConfig.model_validate(cell.owner_robot(perceived={"margin_mm": 15.0, **perceived}))
-    world = owner.world(look, config=config)
+    # The counts below were read on the camera world the cell built on 2026-10-01: boxes grown by 15 mm (the fingers 3
+    # past a named part's surface), 64 slots and no distance field. Every cell grows them by 6 mm into 128 slots beside
+    # a 10 mm field since 2026-10-17, and a thinner box merges differently: the looks are judged at the world they were
+    # recorded at, on the cell's own wiring.
+    world = owner.world(look, tuning={"margin_mm": 15.0, "part_soft_mm": 18.0, "max_boxes": 64, "voxel_field_mm": 0.0,
+                                      **tuning})
     world.offer_segmentation(camera="EIH_Cam", target_points_base_mm=look.target_points_base_mm,
                              target_label="Einen Zollstock", hold=True)
     snapshot = world.world_for(self_envelope=owner.envelope(np.radians(cell.LOOK_0_DEG)),

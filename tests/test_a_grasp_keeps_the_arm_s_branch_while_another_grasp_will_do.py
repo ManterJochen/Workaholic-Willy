@@ -8,7 +8,7 @@ grasp that needed one, whatever the grasps after it would have done.
 
 Now, on the UR driver, :meth:`URRobotArm.keeping_its_branch` opens a block in which every Cartesian move keeps the branch
 the arm holds: the other branches are not screened, lined or planned to, a cuRobo plan swinging a joint more than 15
-degrees past its span is a detour (``max_detour_deg`` 45 outside), and a move nothing on the branch runs while another
+degrees past its span is a detour (``MAX_DETOUR_DEG`` 45 outside), and a move nothing on the branch runs while another
 branch, or a plan within 45, was left untried is refused before anything is sent, ``JOINT_LIMIT_REJECTED``, and counted.
 ``nearest_configuration`` answers inside it among the same goals. A route a grasp judged ahead on the arm's branch is
 judged again on that branch alone: a change of branch nobody judged ahead is refused before sending.
@@ -154,7 +154,7 @@ class InsideTheBlockAMoveKeepsTheBranchTests(unittest.TestCase):
             result = _move(arm, _THERE)
 
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status)
-        self.assertIn("max_detour_deg", result.message or "")
+        self.assertIn("the 45 deg any joint of a plan may swing past its span", result.message or "")
         self.assertEqual(0, kept.refused)
 
     def test_the_configuration_a_pose_goes_to_is_answered_on_the_arms_branch_alone(self) -> None:
@@ -205,7 +205,7 @@ class ARouteJudgedAheadKeepsItsBranchTests(unittest.TestCase):
         standoff = pose_where_it_ends(arm, _TO)
         grasp = Pose.tool_down(400.0, -100.0, 100.0)
 
-        said = arm.grasp_refusal_ahead(standoff=standoff, grasp=grasp, lift=grasp, grip_width_mm=40.0)
+        said = arm.grasp_refusal_ahead(standoff=standoff, grasp=grasp, lift=grasp)
         self.assertEqual("", said)
         self._the_change(arm, planner)
         with arm.without_camera_world("unit double: no camera world is wired"):
@@ -224,7 +224,7 @@ class ARouteJudgedAheadKeepsItsBranchTests(unittest.TestCase):
         other = pose_where_it_ends(arm, [0.3, -1.4, 1.4, -1.6, -0.35, 0.2])
         grasp = Pose.tool_down(400.0, -100.0, 100.0)
 
-        self.assertEqual("", arm.grasp_refusal_ahead(standoff=other, grasp=grasp, lift=grasp, grip_width_mm=40.0))
+        self.assertEqual("", arm.grasp_refusal_ahead(standoff=other, grasp=grasp, lift=grasp))
         self._the_change(arm, planner)
         with arm.without_camera_world("unit double: no camera world is wired"), \
                 self.assertLogs(LOGGER_NAME, level="WARNING") as logs:

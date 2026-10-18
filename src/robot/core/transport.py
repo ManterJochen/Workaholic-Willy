@@ -142,7 +142,7 @@ class HoldsAHaltLatch(Protocol):
     """A link that keeps the halt latch (Willy's own): set, it sends no motion and switches no output until it is cleared.
 
     ``request_halt`` latches the link and sends nothing from the calling thread; a move in flight is braked by the
-    thread that sent it where ``brake_on_halt`` says so, and runs to its end otherwise. ``halt_state`` is the latch
+    thread that sent it where ``brake_on_halt`` says so (every UR), and runs to its end otherwise. ``halt_state`` is the latch
     while it is set. ``last_move_end`` says how the last move the link was asked for ended, read by the thread that
     asked for it, and ``halt_requests`` counts the latches set since the link was built, so a path that met a halt
     cleared again before its next leg still ends there. Both are ``None`` on a link that keeps no such record.

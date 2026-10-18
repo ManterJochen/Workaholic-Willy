@@ -223,11 +223,8 @@ export const REFUSAL_CODES = every<RefusalCode>()([
   'part_still_held',
   'jaws_not_confirmed',
   'route_refused',
-  'carried_part_not_modelled',
   'camera_target_unavailable',
   'object_required',
-  'prompt_not_routable',
-  'target_not_routable',
   'push_distance_refused',
   'unknown_pose',
   'no_place_declared',
@@ -281,7 +278,6 @@ export const LIGHT_IDS = every<LightId>()([
   'cameras',
   'planner',
   'gripper',
-  'carried_part',
   'commands',
 ])
 
@@ -313,13 +309,9 @@ export const LIGHT_CODES = every<LightCode>()([
   'jaws_unknown',
   'jaws_closed',
   'question_pending',
-  'modelled',
-  'not_modelled',
-  'not_applicable',
   'idle',
   'loading',
   'missing',
-  'not_configured',
 ])
 
 export const BLOCKER_CODES = every<BlockerCode>()([
@@ -351,23 +343,6 @@ export const COMMAND_NOTES = every<CommandNote>()([
   'count_not_supported',
   'retried',
 ])
-
-/** What models the part the gripper carries now (`CellOut.payload_model`). */
-export type PayloadModel = components['schemas']['CellOut']['payload_model']
-
-/**
- * The `payload_model` values that model no part now (`api.schemas.NO_PART_MODELLED`). It is one of the reads of the
- * stop card's "no part held, now" gate (`cockpit/recovery.ts` `partHeld`), whose whole rule is the server's
- * `part_still_held` (the ready bar's blocker; it also counts a stop record's belief for a hand that measures nothing).
- * `not_applicable` (an arm that models no part at all: the dummy, sim) is in it, so the gate opens on the rehearsal
- * cell; `unknown` (a read that failed) is not, so a part nobody can rule out keeps the gate shut.
- */
-export const NO_PART_MODELLED = ['none', 'not_applicable'] as const satisfies readonly PayloadModel[]
-
-/** Whether `model` models no part now (`NO_PART_MODELLED`). */
-export function noPartModelled(model: PayloadModel): boolean {
-  return (NO_PART_MODELLED as readonly PayloadModel[]).includes(model)
-}
 
 /** The stream of the events that belong to no run (the jaws question, the recovery record, ...). */
 export const CELL_STREAM = 'cell'

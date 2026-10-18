@@ -9,9 +9,7 @@ from .cam_schema import (
     RealSensePostProcessingConfig,
     RGBDDeviceRigConfig,
     SingleDeviceRigConfig,
-    StereoMatcherConfig,
     WebcamPairRigConfig,
-    WlsFilterConfig,
 )
 from .shared_schema import (
     ArucoDictName,
@@ -39,7 +37,5 @@ __all__ = [
     "RealSensePostProcessingConfig",
     "SingleDeviceRigConfig",
     "StereoCalibPaths",
-    "StereoMatcherConfig",
     "WebcamPairRigConfig",
-    "WlsFilterConfig",
 ]

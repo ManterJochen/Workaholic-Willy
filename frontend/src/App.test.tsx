@@ -23,7 +23,6 @@ const CELL = {
   active_run_id: null,
   needs_person: '',
   halted: null,
-  payload_model: 'planner_and_filter',
   recovery: null,
   countdown_due: false,
   jaws_question: false,

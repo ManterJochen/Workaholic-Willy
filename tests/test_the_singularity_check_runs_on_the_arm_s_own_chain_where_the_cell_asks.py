@@ -1,10 +1,10 @@
-"""The singularity check before a move runs on the arm's own DH chain where the cell asks, with the controller's verdict
-(``robot.safety.ik_quality.singularity_fk: dh``, the owner, 2026-10-09).
+"""The singularity check before a move runs on the arm's own DH chain, with the controller's verdict (the owner's
+``robot.safety.ik_quality.singularity_fk: dh`` of 2026-10-09, every cell's since 2026-10-17).
 
 Before every ``moveL`` (and every ``moveJ`` ``MotionController.move_to`` sends) the check estimates the TCP's Jacobian
 by central differences of a forward kinematics and refuses below a least singular value of 0.005 or above a condition
-number of 250. The controller's FK costs 12 round trips, 0.4 s before every line on the cell. With ``dh`` the same
-differences run on the arm's own chain here: the controller's calibrated rows as its primary interface reports them, or
+number of 250. The controller's FK costs 12 round trips, 0.4 s before every line on the cell. The same differences
+run on the arm's own chain here: the controller's calibrated rows as its primary interface reports them, or
 the model's nominal table where the controller's own FK confirms it is its chain, times the controller's active TCP.
 
 What this file pins:
@@ -17,8 +17,8 @@ What this file pins:
 * the cell's line ends keep the thresholds 47 to 70 times over on the least singular value;
 * the nominal table stands in only where the controller's FK is the table's, once per connection, and a calibrated
   controller whose rows cannot be read is asked as always;
-* an unreadable TCP, no chain at all, or a connection that offers neither keep the controller's FK;
-* the controller's FK, 12 round trips, stays the default, and the key loads.
+* an unreadable TCP, no chain at all, or a connection that offers neither keep the controller's FK, 12 round trips;
+* no key chooses another FK: the old one is refused.
 """
 
 from __future__ import annotations
@@ -97,8 +97,8 @@ class _Controller:
         return _pose_vector(self.fk_chain.flange_m(joints) @ ur_pose_matrix_m(self.fk_tcp))
 
 
-def _check(controller: _Controller, *, singularity_fk: str = "dh", arm_model: "str | None" = "ur10") -> MotionController:
-    return MotionController(controller, object(), singularity_fk=singularity_fk, arm_model=arm_model)  # type: ignore[arg-type]
+def _check(controller: _Controller, *, arm_model: "str | None" = "ur10") -> MotionController:
+    return MotionController(controller, object(), arm_model=arm_model)  # type: ignore[arg-type]
 
 
 class TheChainsVerdictIsTheControllersTests(unittest.TestCase):
@@ -192,34 +192,24 @@ class TheControllersFkWhereNoChainCanBeHadTests(unittest.TestCase):
 
         self_tcp = self.tcp
         bare = Bare()
-        MotionController(bare, object(), singularity_fk="dh", arm_model="ur10")._is_singularity_risky(  # type: ignore[arg-type]
+        MotionController(bare, object(), arm_model="ur10")._is_singularity_risky(  # type: ignore[arg-type]
             list(self.row["joints"]))
         self.assertEqual(12, bare.calls)
 
 
-class TheControllersFkStaysTheDefaultTests(unittest.TestCase):
-    def test_the_check_asks_the_controller_twelve_times_and_reads_no_rows(self) -> None:
-        variant = _recorded()["variants"]["nominal"]
-        controller = _Controller(_rows(variant), variant["tcp"], fk_chain=URDhChain.nominal("ur10"))
-        check = MotionController(controller, object())  # type: ignore[arg-type]
-        self.assertFalse(check._is_singularity_risky(list(variant["rows"][0]["joints"])))
-        self.assertEqual(12, controller.fk_calls)
-        self.assertEqual(0, controller.rows_asked)
+class NoKeyChoosesAnotherFkTests(unittest.TestCase):
+    def test_a_motion_controller_takes_no_choice_of_fk(self) -> None:
+        with self.assertRaises(TypeError):
+            MotionController(object(), object(), singularity_fk="controller")  # type: ignore[arg-type,call-arg]
 
-    def test_anything_but_controller_or_dh_is_refused(self) -> None:
-        with self.assertRaises(ValueError):
-            MotionController(object(), object(), singularity_fk="local")  # type: ignore[arg-type]
-
-    def test_the_key_loads_and_defaults_to_the_controller(self) -> None:
+    def test_the_old_key_is_refused(self) -> None:
         from pydantic import ValidationError
 
         from src.config.schema.robot import RobotConfig
 
-        self.assertEqual("controller", RobotConfig.model_validate({"vendor": "ur"}).safety.ik_quality.singularity_fk)
-        asked = RobotConfig.model_validate({"vendor": "ur", "safety": {"ik_quality": {"singularity_fk": "dh"}}})
-        self.assertEqual("dh", asked.safety.ik_quality.singularity_fk)
-        with self.assertRaises(ValidationError):
-            RobotConfig.model_validate({"vendor": "ur", "safety": {"ik_quality": {"singularity_fk": "nominal"}}})
+        for value in ("dh", "controller"):
+            with self.subTest(singularity_fk=value), self.assertRaises(ValidationError):
+                RobotConfig.model_validate({"vendor": "ur", "safety": {"ik_quality": {"singularity_fk": value}}})
 
 
 if __name__ == "__main__":

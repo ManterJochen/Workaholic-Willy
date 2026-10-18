@@ -17,7 +17,6 @@ import unittest
 import numpy as np
 
 from src.robot.grasping.multiview.association import (
-    AssociationMetric,
     ViewCandidates,
     assign_view,
     fuse_scene_clouds,
@@ -192,7 +191,7 @@ class DeterminismTests(unittest.TestCase):
             name="left", clouds_base_mm=(_box((30.0, 0.0, 0.0)), _box((0.0, 0.0, 0.0)))
         )
 
-        first = assign_view(primaries, view, metric=AssociationMetric.OVERLAP)
+        first = assign_view(primaries, view)
         for _ in range(5):
             self.assertEqual(assign_view(primaries, view).assignment, first.assignment)
 

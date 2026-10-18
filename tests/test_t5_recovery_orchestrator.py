@@ -1,387 +1,190 @@
-"""Phase T5 — RED tests for :class:`RecoveryOrchestrator`.
+"""The recovery orchestrator: the pure decision driver of the loop that looks again after a failed pick.
 
-The orchestrator is a pure decision driver. Given a profile, the
-policy, the dispatcher, a last-failure reason set, and the
-accumulated typed history, it returns the *next* :class:`SceneRecoveryPlan`
-to execute, or ``None`` when no further recovery is permissible.
+Given the mode's profile, the policy, the last failure's classes and the history,
+:meth:`RecoveryOrchestrator.next_step` returns the next :class:`SceneRecoveryPlan`, or ``None`` when no further
+recovery is permissible. It moves nothing and perceives nothing; the service plumbs it. It plans ``RESCAN`` alone, the
+one action this loop runs, where the profile and the policy both allow it, its budget is left and it was not yet tried
+for that failure class: ``NEXT_TARGET`` and the strategies that planned an action left on 2026-10-16 (the owner's
+cleanup), and the push runs inside the pick attempt.
 
-The orchestrator never executes motion or touches perception; the
-service is responsible for plumbing.
-
-``NEXT_VIEWPOINT`` was merged into ``RESCAN`` on 2026-09-29, so the
-fall-through cases that escalated RESCAN -> NEXT_VIEWPOINT fall through
-NEXT_TARGET -> RESCAN instead, and ``NextTargetRecoveryStrategy`` /
-``NoRecoveryStrategy`` (which left with the ``dense_recovery`` block) are
-replaced by a local declining stub where a strategy has to say no.
+The loop's end maps to the service's outcome (:func:`terminal_outcome_for_trail`): ``recovery_exhausted`` where an
+action ran and none was left, the last pick's own otherwise. The loop around a scripted pick is pinned in
+``tests/test_t5_service_retry_loop.py``.
 """
 
 from __future__ import annotations
 
+import json
 import unittest
-from typing import Optional
+from types import SimpleNamespace
+from typing import Any, Optional
 
-from src.robot.execution.autonomous_grasp import (
-    AutonomousGraspOutcome,
-    GraspBehaviorProfile,
-    GraspMode,
-)
-from src.robot.grasping.types.feedback import GraspFailureReason
-from src.robot.grasping.types.modes import GraspSamplingMode
-from src.robot.grasping.recovery.policy import (
-    FixtureEnvelope,
-    SceneRecoveryAction,
-    SceneRecoveryContext,
-    SceneRecoveryPlan,
-    SceneRecoveryPolicy,
-)
+from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome, GraspBehaviorProfile, GraspMode
 from src.robot.grasping.recovery.orchestrator import (
+    OUTCOME_RECOVERY_EXHAUSTED,
     RecoveryDispatcher,
     RecoveryHistoryEntry,
     RecoveryOrchestrator,
     RecoveryTrail,
     RecoveryTrailEntry,
+    run_recovery_loop,
+    terminal_outcome_for_trail,
 )
+from src.robot.grasping.recovery.policy import SceneRecoveryAction as A
+from src.robot.grasping.recovery.policy import SceneRecoveryContext, SceneRecoveryPlan, SceneRecoveryPolicy
+from src.robot.grasping.types.feedback import GraspFailureReason as R
+from src.robot.grasping.types.modes import GraspSamplingMode
 
 
-def _profile(
-    mode: GraspMode = GraspMode.DENSE_CLUTTER,
-    allowed: tuple[str, ...] = ("rescan", "next_target", "nudge_target"),
-) -> GraspBehaviorProfile:
-    return GraspBehaviorProfile(
-        mode=mode,
-        sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        recovery_allowed_actions=allowed,
-    )
+def _profile(mode: GraspMode = GraspMode.DENSE_CLUTTER,
+             allowed: tuple[str, ...] = ("rescan", "nudge_target")) -> GraspBehaviorProfile:
+    return GraspBehaviorProfile(mode=mode, sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
+                                recovery_allowed_actions=allowed)
 
 
-def _easy_profile() -> GraspBehaviorProfile:
-    return GraspBehaviorProfile(
-        mode=GraspMode.EASY,
-        sampling_mode=GraspSamplingMode.SINGLE_OBJECT,
-        recovery_allowed_actions=(),
-    )
+def _policy(*, enabled: bool = True, allowed: tuple[A, ...] = (A.RESCAN, A.NUDGE_TARGET), max_actions: int = 3,
+            per_action: Optional[dict[A, int]] = None,
+            apply_modes: tuple[str, ...] = ("auto", "dense_clutter")) -> SceneRecoveryPolicy:
+    return SceneRecoveryPolicy(enabled=enabled, allowed_actions=allowed, max_recovery_actions=max_actions,
+                               per_action_budget=per_action or {}, apply_modes=apply_modes)
 
 
-def _policy(
-    *,
-    enabled: bool = True,
-    allowed: tuple[SceneRecoveryAction, ...] = (
-        SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_TARGET,
-    ),
-    max_total: int = 3,
-    per_action: Optional[dict] = None,
-    apply_modes: tuple[str, ...] = ("auto", "dense_clutter"),
-    fixture: Optional[FixtureEnvelope] = None,
-) -> SceneRecoveryPolicy:
-    return SceneRecoveryPolicy(
-        enabled=enabled,
-        allowed_actions=allowed,
-        max_recovery_actions=max_total,
-        per_action_budget=per_action or {},
-        apply_modes=apply_modes,
-        fixture=fixture,
-    )
+def _tried(action: A, reason: R) -> RecoveryHistoryEntry:
+    return RecoveryHistoryEntry(action=action, failure_class=reason, outcome="completed")
 
 
-def _ctx(
-    *,
-    profile: GraspBehaviorProfile,
-    policy: SceneRecoveryPolicy,
-    failure_reasons: tuple[GraspFailureReason, ...] = (),
-    history: tuple[SceneRecoveryAction, ...] = (),
-) -> SceneRecoveryContext:
-    return SceneRecoveryContext(
-        profile=profile,
-        policy=policy,
-        last_outcome=AutonomousGraspOutcome.NO_VALID_GRASP,
-        failure_reasons=failure_reasons,
-        history=history,
-    )
+def _next(*, profile: Optional[GraspBehaviorProfile] = None, policy: Optional[SceneRecoveryPolicy] = None,
+          reasons: tuple[R, ...] = (R.NO_VALID_GRASP,), history: tuple[A, ...] = (),
+          tried: tuple[RecoveryHistoryEntry, ...] = (),
+          tried_on_the_context: tuple[RecoveryHistoryEntry, ...] = ()) -> Optional[SceneRecoveryPlan]:
+    context = SceneRecoveryContext(profile=profile or _profile(), policy=policy or _policy(),
+                                   last_outcome=AutonomousGraspOutcome.NO_VALID_GRASP, failure_reasons=reasons,
+                                   history=history, typed_history=tried_on_the_context)
+    return RecoveryOrchestrator(dispatcher=RecoveryDispatcher()).next_step(context, typed_history=tried)
 
 
-class _StubStrategy:
-    """Always emits a plan for its bound action when permitted."""
-
-    __slots__ = ("_action",)
-
-    def __init__(self, action: SceneRecoveryAction) -> None:
-        self._action = action
-
-    def plan(self, context: SceneRecoveryContext) -> SceneRecoveryPlan:
-        return SceneRecoveryPlan(
-            action=self._action,
-            reason=f"stub:{self._action.value}",
-        )
+def _entry(reason: R = R.IK_FAILED) -> RecoveryTrailEntry:
+    return RecoveryTrailEntry(attempt_index=0, failure_reason=reason, plan_action=A.RESCAN,
+                              plan_reason="dispatcher:rescan", executed=True, outcome="completed")
 
 
-class _DecliningStrategy:
-    """Always declines (plans NONE), as a strategy whose preconditions are not met does."""
+class TheGatesTests(unittest.TestCase):
+    def test_a_disabled_policy_plans_nothing(self) -> None:
+        self.assertIsNone(_next(policy=_policy(enabled=False)))
 
-    def plan(self, context: SceneRecoveryContext) -> SceneRecoveryPlan:
-        return SceneRecoveryPlan(action=SceneRecoveryAction.NONE, reason="declined")
+    def test_easy_plans_nothing(self) -> None:
+        easy = GraspBehaviorProfile(mode=GraspMode.EASY, sampling_mode=GraspSamplingMode.SINGLE_OBJECT,
+                                    recovery_allowed_actions=())
+        self.assertIsNone(_next(profile=easy))
+        self.assertIsNone(_next(profile=easy, policy=_policy(apply_modes=("auto", "dense_clutter", "easy"))),
+                          "the easy profile allows nothing, whatever the policy says")
 
+    def test_a_mode_outside_the_apply_modes_plans_nothing(self) -> None:
+        self.assertIsNone(_next(profile=_profile(mode=GraspMode.AUTO), policy=_policy(apply_modes=("dense_clutter",))))
 
-def _make_orchestrator(
-    *,
-    dispatcher: Optional[RecoveryDispatcher] = None,
-) -> RecoveryOrchestrator:
-    return RecoveryOrchestrator(
-        dispatcher=dispatcher or RecoveryDispatcher(),
-        strategies={
-            SceneRecoveryAction.RESCAN: _StubStrategy(SceneRecoveryAction.RESCAN),
-            SceneRecoveryAction.NEXT_TARGET: _StubStrategy(
-                SceneRecoveryAction.NEXT_TARGET
-            ),
-            SceneRecoveryAction.NUDGE_TARGET: _StubStrategy(
-                SceneRecoveryAction.NUDGE_TARGET
-            ),
-        },
-    )
+    def test_the_profile_and_the_policy_must_both_allow_the_rescan(self) -> None:
+        self.assertIsNone(_next(profile=_profile(allowed=())))
+        self.assertIsNone(_next(policy=_policy(allowed=())))
+
+    def test_a_failure_with_no_class_plans_nothing(self) -> None:
+        self.assertIsNone(_next(reasons=()))
 
 
-class RecoveryOrchestratorGatingTests(unittest.TestCase):
-    def test_disabled_policy_returns_none(self) -> None:
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_profile(),
-            policy=_policy(enabled=False),
-            failure_reasons=(GraspFailureReason.IK_FAILED,),
-        )
-        self.assertIsNone(orch.next_step(ctx))
+class WhatItPlansTests(unittest.TestCase):
+    def test_a_failure_a_look_again_can_help_plans_the_rescan(self) -> None:
+        for reason in (R.NO_VALID_GRASP, R.ALL_COLLIDED, R.MOTION_PLAN_REFUSED):
+            with self.subTest(reason=reason.value):
+                plan = _next(reasons=(reason,))
+                assert plan is not None
+                self.assertEqual((A.RESCAN, "dispatcher:rescan"), (plan.action, plan.reason))
 
-    def test_easy_mode_excluded_by_apply_modes(self) -> None:
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_easy_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
-        )
-        self.assertIsNone(orch.next_step(ctx))
+    def test_the_push_is_never_planned_here(self) -> None:
+        # The profile and the policy allow the push and nothing else: the loop plans nothing, the push runs in the pick.
+        self.assertIsNone(_next(reasons=(R.ALL_COLLIDED,), profile=_profile(allowed=("nudge_target",)),
+                                policy=_policy(allowed=(A.NUDGE_TARGET,))))
 
-    def test_mode_not_in_apply_modes_returns_none(self) -> None:
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_profile(mode=GraspMode.AUTO),
-            policy=_policy(apply_modes=("dense_clutter",)),
-            failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
-        )
-        self.assertIsNone(orch.next_step(ctx))
-
-
-class RecoveryOrchestratorDispatchTests(unittest.TestCase):
-    def test_dispatch_picks_first_permitted_action(self) -> None:
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
-        )
-        plan = orch.next_step(ctx)
-        self.assertIsNotNone(plan)
+    def test_an_escalation_plans_nothing_and_a_class_after_it_still_rescans(self) -> None:
+        self.assertIsNone(_next(reasons=(R.SEMANTIC_REJECTED,)))
+        plan = _next(reasons=(R.SEMANTIC_REJECTED, R.IK_FAILED))
         assert plan is not None
-        self.assertEqual(plan.action, SceneRecoveryAction.RESCAN)
+        self.assertIs(A.RESCAN, plan.action)
 
-    def test_dispatch_skips_disallowed_and_falls_through(self) -> None:
-        # IK_FAILED maps to (NEXT_TARGET, RESCAN). With both allowed the first listed wins, which
-        # confirms ordering is respected.
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.IK_FAILED,),
-        )
-        plan = orch.next_step(ctx)
-        self.assertIsNotNone(plan)
+
+class TheBudgetsTests(unittest.TestCase):
+    def test_the_total_budget_ends_it(self) -> None:
+        self.assertIsNone(_next(policy=_policy(max_actions=2), history=(A.RESCAN, A.RESCAN)))
+        self.assertIsNotNone(_next(policy=_policy(max_actions=2), history=(A.RESCAN,)))
+
+    def test_the_rescans_own_budget_ends_it(self) -> None:
+        self.assertIsNone(_next(policy=_policy(per_action={A.RESCAN: 1}), history=(A.RESCAN,)))
+        self.assertIsNotNone(_next(policy=_policy(per_action={A.RESCAN: 2}), history=(A.RESCAN,)))
+
+
+class TheAntiLoopTests(unittest.TestCase):
+    def test_the_rescan_is_not_planned_twice_for_one_failure_class(self) -> None:
+        self.assertIsNone(_next(reasons=(R.RESCAN_RECOMMENDED,), tried=(_tried(A.RESCAN, R.RESCAN_RECOMMENDED),)))
+
+    def test_another_failure_class_may_rescan_again(self) -> None:
+        plan = _next(reasons=(R.TARGET_LOST_DURING_REFINE,), tried=(_tried(A.RESCAN, R.RESCAN_RECOMMENDED),))
         assert plan is not None
-        self.assertEqual(plan.action, SceneRecoveryAction.NEXT_TARGET)
-        # A second case where the *first* listed action is disallowed: it falls through to RESCAN.
-        ctx2 = _ctx(
-            profile=_profile(),
-            policy=_policy(
-                allowed=(SceneRecoveryAction.RESCAN,),
-            ),
-            failure_reasons=(GraspFailureReason.IK_FAILED,),
-        )
-        plan2 = orch.next_step(ctx2)
-        self.assertIsNotNone(plan2)
-        assert plan2 is not None
-        self.assertEqual(plan2.action, SceneRecoveryAction.RESCAN)
+        self.assertIs(A.RESCAN, plan.action)
 
-    def test_escalation_class_returns_none(self) -> None:
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.SEMANTIC_REJECTED,),
-        )
-        self.assertIsNone(orch.next_step(ctx))
+    def test_what_the_context_carries_counts_as_tried_too(self) -> None:
+        self.assertIsNone(_next(reasons=(R.RESCAN_RECOMMENDED,),
+                                tried_on_the_context=(_tried(A.RESCAN, R.RESCAN_RECOMMENDED),)))
 
 
-class RecoveryOrchestratorBudgetTests(unittest.TestCase):
-    def test_total_budget_exhausted_returns_none(self) -> None:
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_profile(),
-            policy=_policy(max_total=2),
-            failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
-            history=(
-                SceneRecoveryAction.RESCAN,
-                SceneRecoveryAction.NEXT_TARGET,
-            ),
-        )
-        self.assertIsNone(orch.next_step(ctx))
-
-    def test_per_action_budget_blocks_repeat(self) -> None:
-        orch = _make_orchestrator()
-        ctx = _ctx(
-            profile=_profile(),
-            policy=_policy(
-                max_total=5,
-                per_action={SceneRecoveryAction.NEXT_TARGET: 1},
-            ),
-            failure_reasons=(GraspFailureReason.IK_FAILED,),
-            history=(SceneRecoveryAction.NEXT_TARGET,),
-        )
-        plan = orch.next_step(ctx)
-        self.assertIsNotNone(plan)
-        assert plan is not None
-        # NEXT_TARGET was used; budget=1 forces fall-through to RESCAN.
-        self.assertEqual(plan.action, SceneRecoveryAction.RESCAN)
-
-
-class RecoveryOrchestratorAntiLoopTests(unittest.TestCase):
-    def test_same_action_same_failure_class_blocks(self) -> None:
-        """Anti-loop: refuse the same (action, failure_class) pair twice."""
-
-        orch = _make_orchestrator()
-        # First step: IK_FAILED -> NEXT_TARGET.
-        ctx1 = _ctx(
-            profile=_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.IK_FAILED,),
-        )
-        plan1 = orch.next_step(ctx1)
-        assert plan1 is not None
-        self.assertEqual(plan1.action, SceneRecoveryAction.NEXT_TARGET)
-
-        # Same class again with NEXT_TARGET already in typed history.
-        history_entry = RecoveryHistoryEntry(
-            action=SceneRecoveryAction.NEXT_TARGET,
-            failure_class=GraspFailureReason.IK_FAILED,
-            outcome="completed",
-        )
-        ctx2 = orch.context_with_history_entry(ctx1, history_entry)
-        # Second call should skip NEXT_TARGET and pick RESCAN.
-        plan2 = orch.next_step(ctx2)
-        assert plan2 is not None
-        self.assertEqual(plan2.action, SceneRecoveryAction.RESCAN)
-
-    def test_a_class_with_one_action_stops_once_it_was_tried(self) -> None:
-        """RESCAN_RECOMMENDED maps to RESCAN alone since NEXT_VIEWPOINT was merged into it."""
-
-        orch = _make_orchestrator()
-        ctx1 = _ctx(
-            profile=_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
-        )
-        plan1 = orch.next_step(ctx1)
-        assert plan1 is not None
-        self.assertEqual(plan1.action, SceneRecoveryAction.RESCAN)
-        ctx2 = orch.context_with_history_entry(ctx1, RecoveryHistoryEntry(
-            action=SceneRecoveryAction.RESCAN,
-            failure_class=GraspFailureReason.RESCAN_RECOMMENDED,
-            outcome="completed",
-        ))
-        self.assertIsNone(orch.next_step(ctx2))
-
-    def test_same_action_different_failure_class_allowed(self) -> None:
-        """Anti-loop is per (action, class), not per action alone."""
-
-        orch = _make_orchestrator()
-        history_entry = RecoveryHistoryEntry(
-            action=SceneRecoveryAction.RESCAN,
-            failure_class=GraspFailureReason.RESCAN_RECOMMENDED,
-            outcome="completed",
-        )
-        # New failure class with same fallback to RESCAN is allowed.
-        ctx_seed = _ctx(
-            profile=_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.TARGET_LOST_DURING_REFINE,),
-        )
-        ctx = RecoveryOrchestrator.attach_history_entry(ctx_seed, history_entry)
-        plan = orch.next_step(ctx)
-        assert plan is not None
-        self.assertEqual(plan.action, SceneRecoveryAction.RESCAN)
-
-
-class RecoveryTrailTests(unittest.TestCase):
-    def test_trail_terminal_reasons(self) -> None:
-        empty = RecoveryTrail(entries=(), terminal_reason="recovery_disabled")
-        self.assertEqual(empty.terminal_reason, "recovery_disabled")
-        self.assertEqual(empty.entries, ())
-
-    def test_trail_to_dict_is_jsonable(self) -> None:
-        entry = RecoveryTrailEntry(
-            attempt_index=0,
-            failure_reason=GraspFailureReason.IK_FAILED,
-            plan_action=SceneRecoveryAction.NEXT_TARGET,
-            plan_reason="dispatcher",
-            executed=True,
-            outcome="completed",
-        )
-        trail = RecoveryTrail(
-            entries=(entry,), terminal_reason="recovered_success"
-        )
-        d = trail.to_dict()
-        self.assertEqual(d["terminal_reason"], "recovered_success")
-        self.assertEqual(len(d["entries"]), 1)
-        e0 = d["entries"][0]
-        self.assertEqual(e0["attempt_index"], 0)
-        self.assertEqual(e0["failure_reason"], "ik_failed")
-        self.assertEqual(e0["plan_action"], "next_target")
-        self.assertEqual(e0["plan_reason"], "dispatcher")
-        self.assertTrue(e0["executed"])
-        self.assertEqual(e0["outcome"], "completed")
-
-    def test_trail_terminal_reason_validation(self) -> None:
-        valid = {
-            "recovered_success",
-            "exhausted_budget",
-            "anti_loop_blocked",
-            "escalated_no_recovery",
-            "recovery_disabled",
-        }
-        for reason in valid:
-            RecoveryTrail(entries=(), terminal_reason=reason)
+class TheTrailTests(unittest.TestCase):
+    def test_it_takes_only_the_terminal_reasons_it_knows(self) -> None:
+        for reason in ("recovered_success", "exhausted_budget", "anti_loop_blocked", "escalated_no_recovery",
+                       "recovery_disabled"):
+            with self.subTest(reason=reason):
+                self.assertEqual(reason, RecoveryTrail(entries=(), terminal_reason=reason).terminal_reason)
         with self.assertRaises(ValueError):
             RecoveryTrail(entries=(), terminal_reason="bogus_terminal")
 
+    def test_it_is_plain_data(self) -> None:
+        said = RecoveryTrail(entries=(_entry(),), terminal_reason="recovered_success").to_dict()
+        self.assertEqual({"terminal_reason": "recovered_success", "entries": [{
+            "attempt_index": 0, "failure_reason": "ik_failed", "plan_action": "rescan",
+            "plan_reason": "dispatcher:rescan", "executed": True, "outcome": "completed"}]}, said)
+        json.dumps(said)
 
-class RecoveryOrchestratorIntegrationWithStrategiesTests(unittest.TestCase):
-    """Confirm orchestrator delegates to per-action strategies."""
 
-    def test_a_declining_strategy_falls_through_to_the_next_action(self) -> None:
-        orch = RecoveryOrchestrator(
-            dispatcher=RecoveryDispatcher(),
-            strategies={
-                SceneRecoveryAction.RESCAN: _StubStrategy(SceneRecoveryAction.RESCAN),
-                SceneRecoveryAction.NEXT_TARGET: _DecliningStrategy(),
-                SceneRecoveryAction.NUDGE_TARGET: _DecliningStrategy(),
-            },
-        )
-        # The NEXT_TARGET strategy declines (as one with no alternative
-        # target in the frame does); orchestrator must fall through to RESCAN.
-        ctx = _ctx(
-            profile=_profile(),
-            policy=_policy(),
-            failure_reasons=(GraspFailureReason.IK_FAILED,),
-        )
-        plan = orch.next_step(ctx)
-        assert plan is not None
-        self.assertEqual(plan.action, SceneRecoveryAction.RESCAN)
+class TheLoopsEndMapsToAnOutcomeTests(unittest.TestCase):
+    def test_the_string_is_the_services_outcome(self) -> None:
+        self.assertEqual(OUTCOME_RECOVERY_EXHAUSTED, AutonomousGraspOutcome.RECOVERY_EXHAUSTED.value)
+
+    def test_each_end(self) -> None:
+        ran = (_entry(),)
+        cases = {
+            "success keeps the pick's own": (RecoveryTrail(entries=ran, terminal_reason="recovered_success"), None),
+            "nothing ran keeps the pick's own": (RecoveryTrail(entries=(), terminal_reason="recovery_disabled"), None),
+            "budget spent after a rescan": (RecoveryTrail(entries=ran, terminal_reason="exhausted_budget"),
+                                            OUTCOME_RECOVERY_EXHAUSTED),
+            "the rescan tried for the class": (RecoveryTrail(entries=ran, terminal_reason="anti_loop_blocked"),
+                                               OUTCOME_RECOVERY_EXHAUSTED),
+            "escalated after a rescan keeps the pick's own": (
+                RecoveryTrail(entries=ran, terminal_reason="escalated_no_recovery"), None),
+        }
+        for name, (trail, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(expected, terminal_outcome_for_trail(trail))
+
+    def test_a_loop_allowed_no_action_keeps_the_picks_own_outcome(self) -> None:
+        # max_recovery_actions = 0 ends the loop as exhausted_budget with nothing run: no recovery was tried.
+        picks: list[int] = []
+
+        def pick() -> Any:
+            picks.append(1)
+            return SimpleNamespace(outcome=AutonomousGraspOutcome.NO_VALID_GRASP, failure_reasons=(R.ALL_COLLIDED,))
+
+        _, trail = run_recovery_loop(pick=pick, profile=_profile(), policy=_policy(max_actions=0),
+                                     orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher()),
+                                     frame_acquirer=lambda: None)
+        self.assertEqual(((), "exhausted_budget"), (trail.entries, trail.terminal_reason))
+        self.assertIsNone(terminal_outcome_for_trail(trail))
+        self.assertEqual([1], picks)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -5,7 +5,8 @@ each one names the failure it caught:
 
 * three CLI legs answered a missing input file with a raw ``FileNotFoundError`` traceback while
   every neighbouring leg answered with a sentence and an exit code;
-* ``--baseline-report`` silently ignored ``--out`` and rewrote the git-tracked baseline instead;
+* ``--baseline-report`` silently ignored ``--out`` and rewrote the git-tracked baseline instead (it left
+  with the baseline on 2026-10-16);
 * the library KPI leg printed ``false_positive_grasp_rate: 0.0`` as a measurement, a number that
   comes from a field no writer on this stack ever sets;
 * the record serializer read ``report.verification``, an attribute ``AutonomousGraspReport`` has
@@ -26,7 +27,6 @@ from contextlib import redirect_stdout
 from dataclasses import fields
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest import mock
 
 from src.robot.grasping.replay import __main__ as replay_main
 from src.robot.grasping.replay.runs import SoakGate
@@ -56,7 +56,7 @@ class MissingInputIsAnAnswerTests(unittest.TestCase):
             missing = Path(tmp) / "nope.jsonl"
             report = Path(tmp) / "report.json"
             code, out = _run_cli(
-                ["--sim-soak-report", str(missing), "--baseline-out", str(report)]
+                ["--sim-soak-report", str(missing), "--out", str(report)]
             )
             self.assertFalse(
                 report.exists(), "a report was written for an input nobody could read"
@@ -87,59 +87,20 @@ class MissingInputIsAnAnswerTests(unittest.TestCase):
         self.assertTrue(verdict.violations)
 
 
-class BaselineOutIsHonouredTests(unittest.TestCase):
-    """``--out`` names a file. A mode that ignores it overwrites a committed one instead."""
-
-    def test_baseline_report_writes_where_the_operator_asked(self) -> None:
-        written: list[Path] = []
-
-        class _Measured:
-            report = {"stub": True}
-            audit_offenders = 0
-            exit_code = 0
-
-            def write(self, path: Path) -> Path:
-                written.append(Path(path))
-                return Path(path)
-
-        class _Baseline:
-            @classmethod
-            def canonical(cls) -> "_Baseline":
-                return cls()
-
-            def measure(self) -> _Measured:
-                return _Measured()
-
-        with TemporaryDirectory() as tmp:
-            asked = Path(tmp) / "mine" / "baseline.json"
-            with mock.patch.object(replay_main, "Baseline", _Baseline):
-                code, out = _run_cli(["--baseline-report", "--out", str(asked)])
-            self.assertEqual(code, 0)
-            self.assertEqual(written, [asked.resolve()])
-            self.assertEqual(json.loads(out)["report_path"], str(asked.resolve()))
-
-
 class UnmeasurableRatesAreNamedTests(unittest.TestCase):
     """A rate with no source must not print as a number, in the library as well as the console."""
 
     def _log(self, tmp: str) -> Path:
-        from src.robot.grasping.replay.soak import (
-            SoakScenarioSpec,
-            generate_soak_records,
-        )
+        from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
 
-        records = generate_soak_records(
-            SoakScenarioSpec(
-                name="unit",
-                mode="easy",
-                attempts=12,
-                failure_class_weights={"succeeded": 9.0, "no_valid_grasp": 1.0},
-                recovery_success_rate=0.0,
-                cycle_time_mean_s=1.5,
-                cycle_time_jitter_s=0.2,
-                seed=7,
+        records = [
+            GraspAttemptRecord.new(
+                attempt_id=f"unit-{index:04d}", mode="easy", timestamp=float(index),
+                final_outcome="no_valid_grasp" if index % 10 == 9 else "succeeded",
+                execution=None if index % 10 == 9 else {"outcome": "executed"},
             )
-        )
+            for index in range(12)
+        ]
         path = Path(tmp) / "records.jsonl"
         path.write_text("\n".join(r.to_json() for r in records) + "\n", encoding="utf-8")
         return path

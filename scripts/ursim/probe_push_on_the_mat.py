@@ -325,8 +325,8 @@ class _NoDepth:
 
 
 def _looks_deg(robot: Any, which: str) -> list[tuple[float, ...]]:
-    """The looks a pick visits: the tree's ``look_joint_positions_deg`` (``all``), or LOOK[0] alone (``first``)."""
-    looks = [tuple(float(v) for v in look) for look in (getattr(robot, "look_joint_positions_deg", None) or ())]
+    """The looks a pick visits: the tree's ``motion.look_deg`` (``all``), or LOOK[0] alone (``first``)."""
+    looks = [tuple(float(v) for v in look) for look in (getattr(getattr(robot, "motion", None), "look_deg", None) or ())]
     if not looks:
         looks = [LOOK0_DEG]
     return looks if which == "all" else looks[:1]
@@ -337,7 +337,6 @@ def offline_step(tree: Any, crop: Path, *, push_mm: Optional[float], gaps: Seque
     """Render the push scene from each look the pick visits as the cell's camera stands there (the bundled DH chain, the
     declared tool frame, the rig's calibration), find the supports over all of them, and ask ``plan_push`` with the
     cell's push inputs and the table every look saw, gap by gap until one plans. Nothing connects."""
-    from src.robot.execution.autonomous_grasp.service import _operator_box  # noqa: PLC0415
     from src.robot.execution.camera_world_wiring import _live_planner_world  # noqa: PLC0415
     from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator  # noqa: PLC0415
     from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
@@ -360,9 +359,6 @@ def offline_step(tree: Any, crop: Path, *, push_mm: Optional[float], gaps: Seque
     cell = PushCell.from_robot_config(robot)
     if not isinstance(cell, PushCell):
         return {"planned": False, "refused": f"the cell's push inputs: {cell.sentence}"}
-    operator_box = _operator_box(robot.grasping.recovery.fixture)
-    if isinstance(operator_box, str):
-        return {"planned": False, "refused": f"the fixture box: {operator_box}"}
     k = static.intrinsics
     # The cell's own 30 mm where nobody asks, which may go as far as 50 mm (the owner, 2026-10-03).
     distance = float(push_mm) if push_mm is not None else 30.0
@@ -405,7 +401,7 @@ def offline_step(tree: Any, crop: Path, *, push_mm: Optional[float], gaps: Seque
         normal = np.asarray(surface.normal, dtype=np.float64)
         offset = float(surface.offset_mm)
         table = model.table_points(views, target[:, :2])
-        gate = SimpleNamespace(cell=cell, distance_mm=distance, operator_box=operator_box)
+        gate = SimpleNamespace(cell=cell, distance_mm=distance)
         floor = BinPickingOrchestrator._finger_floor_mm(model, target, normal, offset, gate)  # type: ignore[arg-type]
         evidence = neighbour_evidence(target_points_mm=target, neighbour_points_mm=others,
                                       support_normal=normal, support_offset_mm=offset)
@@ -413,7 +409,7 @@ def offline_step(tree: Any, crop: Path, *, push_mm: Optional[float], gaps: Seque
         plan = plan_push(target_points_mm=target, neighbour_points_mm=others, support_normal=normal,
                          support_offset_mm=offset, workspace=cell.workspace, hand=cell.hand, table_points_mm=table,
                          push_distance_mm=distance, container_interior=cell.container_interior,
-                         operator_box=operator_box, hand_clearance_mm=cell.hand_clearance_mm,
+                         hand_clearance_mm=cell.hand_clearance_mm,
                          beside_part_clearance_mm=cell.beside_part_clearance_mm, beside_part_mm=cell.beside_part_mm,
                          may_shove=True, longest_push_mm=longest, **floor_kwargs)
         row.update({"surface": surface.render(), "surface_tilt_deg": round(float(surface.tilt_deg), 2),
@@ -720,7 +716,7 @@ def _min_clearances(bed: Bed, rows: list[dict[str, Any]]) -> list[dict[str, Any]
             out.append({"t": row["t"], "least_mm": None, "why": "no DH chain"})
             continue
         a = backend._a
-        rb = _yaw_matrix(float(guard._config.kinematics_base_yaw_deg))
+        rb = _yaw_matrix(guard.base_yaw_deg)
         for name in backend._names:
             t = transforms[backend._frame[name]]
             a.set_transform(backend._models[name], rb @ t[:3, :3], rb @ t[:3, 3])
@@ -813,7 +809,7 @@ def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: 
     holder["output"] = output
     cameras: list[ms.StandInD415] = []
 
-    def create_streamer(rig: Any) -> ms.StandInD415:
+    def create_streamer(rig: Any, workspace: Any = None) -> ms.StandInD415:  # noqa: ARG001 (a stereo rig's, unread)
         camera = ms.StandInD415(rig, scene, camera_to_tool=cam_to_tool, tcp=output.tcp)
         cameras.append(camera)
         return camera

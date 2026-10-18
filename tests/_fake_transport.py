@@ -487,7 +487,7 @@ class _HoldsAHaltLatch:
 
     @property
     def brake_on_halt(self: Any) -> bool:
-        """``False``: a move in flight runs to its end, as on a UR with ``robot.ur.brake_on_halt`` off (shipped)."""
+        """``False``: a move in flight runs to its end, as on an arm that does not brake (every UR brakes)."""
         return False
 
     @property

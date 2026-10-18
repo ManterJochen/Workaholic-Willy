@@ -120,7 +120,7 @@ class WhatTheGateWrites(unittest.TestCase):
                             refused=12, false_clears=34, attribution_disagreements=0, control_mm=0.0)
         fields: dict[str, object] = {
             "arm": "ur5e", "hand": "robotiq_2f85", "coupling_mm": 0.0, "approach": "+Y", "closing": "+X",
-            "planner_margin_mm": 4.0, "attach_spheres": 0, "guard_margin_mm": 10.0,
+            "planner_margin_mm": 4.0, "guard_margin_mm": 10.0,
             "composed_sha256": "c" * 64, "urdf_sha256": "u" * 64, "arm_descriptor_sha256": "a" * 64,
             "hand_map_sha256": "h" * 64, "guard_sha256": "g" * 64, "measured": measured,
         }
@@ -142,7 +142,7 @@ class WhatTheGateWrites(unittest.TestCase):
             evidence = self._evidence()
             path = Path(folder) / evidence.path.name
             path.write_bytes(evidence.evidence_bytes())
-            self.assertEqual(path.name, "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm_a0.json")
+            self.assertEqual(path.name, "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm.json")
 
     def test_false_clears_do_not_stop_it_reaching_the_bar(self) -> None:
         from src.robot.safety.planning.evidence import REQUIRED_CRITERION

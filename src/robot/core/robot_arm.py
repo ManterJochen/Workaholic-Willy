@@ -1,6 +1,6 @@
 """:class:`RobotArm` is the vendor-neutral abstract surface for a manipulator.
 
-Every driver in :mod:`src.robot.drivers` (UR, KUKA, Franka, ROS 2, sim, dummy)
+Every driver in :mod:`src.robot.drivers` (UR, sim, dummy)
 implements this Protocol. Pipelines and planners depend on this interface alone and
 never import a driver class directly.
 
@@ -31,7 +31,11 @@ from .capabilities import RobotCapabilities
 from .joint_positions import JointPositions
 from .motion_result import MotionResult
 
-__all__ = ["RobotArm"]
+__all__ = ["STEADY_TIMEOUT_S", "RobotArm"]
+
+#: How long a motion waits, at most, for the arm to stand still before it is sent, seconds: the owner's cell's
+#: (``robot.safety.dwell.steady_timeout_s`` until 2026-10-17). A timeout refuses the motion with nothing sent.
+STEADY_TIMEOUT_S = 5.0
 
 
 @runtime_checkable

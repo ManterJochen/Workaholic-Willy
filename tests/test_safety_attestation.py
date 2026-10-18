@@ -68,7 +68,7 @@ class TheFourPosturesTests(unittest.TestCase):
         cfg = RobotConfig()
 
         class Gated:
-            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.workspace_limits, arm_model=None)
+            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.motion.workspace, arm_model=None)
 
         attestation = SafetyAttestation.of(Gated())
         self.assertIs(attestation.posture, SafetyPosture.GATED)
@@ -76,58 +76,22 @@ class TheFourPosturesTests(unittest.TestCase):
         self.assertIn("workspace", attestation.guards)
         self.assertGreaterEqual(len(attestation.guards), 1)
 
-    def test_a_family_switched_off_is_NAMED_not_merely_absent(self) -> None:
-        """⛔⛔ THE ABSENCE IS THE SAFETY FACT, and it was the one thing not reported.
-
-        `guards` says what will run, so an operator reads "6 guard(s)" and stops. An `enforce: false`
-        block removes that family's surface ENTIRELY, as `from_safety_config`'s own comment puts it:
-        it "does not just silence the log; the safety surface for that family is *gone*". A cell with
-        self-collision off and one with it on both printed a working pipeline.
-        """
-        from src.config.schema.robot import RobotConfig
-
-        cfg = RobotConfig()
-        off = cfg.safety.model_copy(update={
-            "self_collision": cfg.safety.self_collision.model_copy(update={"enforce": False}),
-        })
-
-        class Partial:
-            safety_preflight = SafetyPreflight.from_safety_config(off, cfg.workspace_limits, arm_model=None)
-
-        attestation = SafetyAttestation.of(Partial())
-        self.assertIn("self_collision", attestation.omitted)
-        self.assertNotIn("self_collision", attestation.guards)
-        self.assertIn("not enforced: self_collision", attestation.render())
-        self.assertIn("self_collision", attestation.to_dict()["omitted"])
-
-    def test_a_full_pipeline_omits_nothing_and_says_nothing(self) -> None:
-        """The line is absent when there is nothing to report, rather than saying "none". A cell with
-        every family enforced should not have to read a sentence about what is missing."""
+    def test_every_family_is_in_the_pipeline_a_cell_s_config_builds(self) -> None:
+        """⛔ THE ABSENCE WAS THE SAFETY FACT, and since 2026-10-17 there is none to report: no cell switches a family
+        off (the owner's cleanup took the ``enforce`` flags), so the pipeline a cell's config builds holds all six, in
+        the canonical order, and the attestation says them all."""
         from src.config.schema.robot import RobotConfig
 
         cfg = RobotConfig()
 
         class Gated:
-            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.workspace_limits, arm_model=None)
+            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.motion.workspace, arm_model=None)
 
         attestation = SafetyAttestation.of(Gated())
-        self.assertEqual(attestation.omitted, ())
-        self.assertNotIn("not enforced", attestation.render())
-
-    def test_the_workspace_guard_can_never_be_reported_as_omitted(self) -> None:
-        """⚠ IT IS WIRED UNCONDITIONALLY, being the one non-negotiable surface. Seeing it in
-        `omitted` would mean the property is wrong, not that the cell is."""
-        from src.config.schema.robot import RobotConfig
-
-        cfg = RobotConfig()
-        nothing_enforced = cfg.safety.model_copy(update={
-            field: getattr(cfg.safety, field).model_copy(update={"enforce": False})
-            for field in ("joint_limits", "ik_quality", "self_collision", "payload",
-                          "motion_continuity")
-        })
-        preflight = SafetyPreflight.from_safety_config(nothing_enforced, cfg.workspace_limits, arm_model=None)
-        self.assertNotIn("workspace", preflight.omitted_guards)
-        self.assertIn("workspace", preflight.guard_names)
+        self.assertEqual(("workspace", "joint_limit", "ik_quality", "self_collision", "payload", "motion_continuity"),
+                         attestation.guards)
+        self.assertIn("6 guard(s)", attestation.render())
+        self.assertNotIn("omitted", attestation.to_dict())
 
 
 class FailClosedTests(unittest.TestCase):

@@ -218,21 +218,16 @@ wrist sweep with the planner and the exact guard, and writes the file:
 
 <!-- step: evidence-gate -->
 ```bash
-$PY scripts/arms/gate.py --arm $ARM --hand $HAND --coupling-mm $COUPLING_MM --planner-margin-mm 4 --guard-margin-mm 10 --attach 0 --tool-rotation-xyzw $ROT --write
+$PY scripts/arms/gate.py --arm $ARM --hand $HAND --coupling-mm $COUPLING_MM --planner-margin-mm 4 --guard-margin-mm 10 --tool-rotation-xyzw $ROT --write
 ```
 
 ### 6. The cell layer
 
 Name the hand, its driver, its plates, the tool frame and the arm as `ur.model`, the one name the
 guard, the mesh bundle and the planner take the arm from: the layer chains on `$ARM`, it still loads on
-its own, and the arm it states is the one the retract table expects your hand's row on. Write no widths and no
-`grasping.gripper_geometry`: the hand supplies them. Weigh the whole assembly for the payload; the
+its own, and the arm it states is the one the retract table expects your hand's row on. Write no widths: the
+hand supplies them, and its envelope too. Weigh the whole assembly for the payload; the
 numbers below are placeholders a bench replaces.
-
-The layer also states that the cell carries no part, because the evidence above was measured with
-`--attach 0`. A cell that carries one declares `safety.planning_world.payload.length_mm` instead,
-how far its longest part hangs past the fingertips, and measures its evidence with `--attach 16`;
-with neither, the checklist's `carried part` row blocks.
 
 <!-- step: cell-layer file: config/robot/robot.$CELL.yaml -->
 ```yaml
@@ -253,9 +248,6 @@ robot:
       cog_mm: [0.0, 0.0, $COG_Z_MM]
     self_collision:
       planner_margin_mm: 4.0
-    planning_world:
-      payload:
-        enabled: false
 ```
 
 <!-- step: cell-validate -->

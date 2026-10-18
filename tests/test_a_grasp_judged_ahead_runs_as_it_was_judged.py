@@ -7,14 +7,15 @@ for the question the line's world had just answered, and the route to the stando
 move that ran it. After the close, the line up was judged again as the lift judged at the part had judged it. What this
 file pins, on the real UR driver, its real guard and planner glue, over the test bench's camera and sidecar:
 
-* ``grasp_refusal_ahead`` judges the line down, the lift and the route once each, with two refreshes, where the route
-  ends where the line was judged from, and keeps that route for the move to the standoff;
+* ``grasp_refusal_ahead`` judges the line down, the lift and the route once each, with one refresh, the line down's,
+  which the lift and the route are judged in (the world held at the standoff, every cell since 2026-10-17), where the
+  route ends where the line was judged from, and keeps that route for the move to the standoff;
 * that move runs the route as it was judged, with no refresh and no second judgement, and is stamped PLANNED on the
   refresh it was judged in. A moved arm, a refresh, more than half a second, another pose, another hand, a held world, a
   halt and a second move each have it judged again;
-* the line up from the part runs on the lift judged there as if the jaws held the part, inside the held world it was
-  judged in, on a cell that models no carried part. A moved arm, a cell that models the part, the world no longer held
-  and another pose each have it judged again.
+* the line up from the part runs on the lift judged there before the jaws closed, inside the held world it was judged
+  in (no cell models a carried part since 2026-10-17). A moved arm, the world no longer held and another pose each have
+  it judged again.
 
 Every motion still goes out through the same sending code: the halt latch read before every waypoint, the controller's
 own checks before a moveL. Honesty bucket (2): the arm's real judgement on a stand-in controller whose inverse kinematics
@@ -101,16 +102,6 @@ def _stand(arm: Any, joints: "list[float]") -> None:
     arm._motion.get_current_pose.return_value = pose_to_urpose(Pose.from_matrix(tcp, frame=Frame.BASE))
 
 
-class _CarryingClient(_Client):
-    """The test bench's sidecar, taking a carried part as the glue hands it over and forgetting it on a detach."""
-
-    def attach_payload(self, joints: Any, dims_m: Any, pose: Any) -> bool:
-        return True
-
-    def detach_payload(self) -> bool:
-        return True
-
-
 def _cell(client: "_Client | None" = None) -> "tuple[Any, list[str], list[Pose]]":
     """The cuRobo UR of ``test_every_verb_meets_the_camera_world`` (its real guard recording into ``events``, its live
     world on the bench camera, its sidecar double), its controller solving every pose on the closed form into
@@ -125,7 +116,7 @@ def _cell(client: "_Client | None" = None) -> "tuple[Any, list[str], list[Pose]]
 
 
 def _judged_ahead(arm: Any) -> str:
-    return arm.grasp_refusal_ahead(standoff=_STANDOFF, grasp=_GRASP, lift=_LIFT, grip_width_mm=_WIDTH_MM)
+    return arm.grasp_refusal_ahead(standoff=_STANDOFF, grasp=_GRASP, lift=_LIFT)
 
 
 def _refreshes() -> Any:
@@ -148,7 +139,8 @@ class AGraspJudgedAheadIsJudgedOnceTests(unittest.TestCase):
 
     def test_the_line_down_the_lift_and_the_route_are_judged_once_each_with_two_refreshes(self) -> None:
         """⭐ Red before: four refreshes and the line down judged twice, from the closed form's configuration and again
-        from the route's end, which is the same configuration."""
+        from the route's end, which is the same configuration. Two refreshes while a cell could leave the world unheld
+        at the standoff; one since every cell holds it (2026-10-17)."""
         arm, events, solved = _cell()
         lines: list[Any] = []
         judge = arm._judge_linear_move
@@ -160,7 +152,7 @@ class AGraspJudgedAheadIsJudgedOnceTests(unittest.TestCase):
         arm._judge_linear_move = judged_line
         with _refreshes() as refresh:
             self.assertEqual("", _judged_ahead(arm))
-        self.assertEqual(2, refresh.call_count, "the line down's world, the lift judged in it, the route's own")
+        self.assertEqual(1, refresh.call_count, "the line down's world, the lift and the route judged in it")
         self.assertEqual(["grasp", "lift"], [label for label, _ in lines], "the line down once, the lift once")
         self.assertEqual(1, events.count("gate_planned_path"), "the route once")
         ahead = arm._judged_ahead
@@ -216,7 +208,9 @@ class TheMoveToTheStandoffRunsTheRouteJudgedAheadTests(unittest.TestCase):
         self.assertNotIn("gate_planned_path", events, "the move judged its route a second time")
         self.assertNotIn("gate_joint_path", events)
         sent = [list(call.args[0]) for call in arm._conn.moveJ.call_args_list]
-        self.assertEqual([[float(v) for v in w] for w in ahead.route.waypoints], sent,
+        # The gate found the arm at the route's first waypoint (every cuRobo arm gates its own sends), so no moveJ goes
+        # there: every waypoint after it is sent, exactly as judged.
+        self.assertEqual([[float(v) for v in w] for w in ahead.route.waypoints[1:]], sent,
                          "moveJ was not handed exactly the waypoints judged")
         stamp = result.camera_world
         self.assertIs(CameraWorldUse.PLANNED, stamp.use, stamp.render())
@@ -225,7 +219,8 @@ class TheMoveToTheStandoffRunsTheRouteJudgedAheadTests(unittest.TestCase):
 
     def test_the_picks_own_sequence_runs_the_route_it_judged_ahead(self) -> None:
         """The pick loop asks the policy ``refusal_ahead``, then ``execute``s the grasp: the move to the standoff runs the
-        route judged ahead, the line down refreshes its own world as ever, and the line up is judged in it."""
+        route judged ahead, the line down is judged in the world they were judged in (held at the standoff, every cell
+        since 2026-10-17), and the line up is judged in it."""
         from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
         from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 
@@ -240,9 +235,10 @@ class TheMoveToTheStandoffRunsTheRouteJudgedAheadTests(unittest.TestCase):
         with _refreshes() as refresh:
             report = policy.execute(grasp)
         self.assertIs(PolicyOutcome.EXECUTED, report.outcome, report.motion_message)
-        self.assertEqual(1, refresh.call_count, "the line down's world alone")
+        self.assertEqual(0, refresh.call_count, "the approach held the world it was judged in")
         self.assertEqual(0, events.count("gate_planned_path"), "the route to the standoff was judged a second time")
-        self.assertEqual(2, arm._conn.moveJ.call_count, "the route judged ahead, one moveJ a waypoint")
+        self.assertEqual(1, arm._conn.moveJ.call_count,
+                         "the route judged ahead, one moveJ a waypoint after the one the gate found the arm at")
         self.assertEqual(2, arm._motion.move_to.call_count, "the moveL down and the moveL up")
 
     def test_a_second_move_judges_its_route(self) -> None:
@@ -256,8 +252,10 @@ class TheMoveToTheStandoffRunsTheRouteJudgedAheadTests(unittest.TestCase):
         _moved_2_mm(arm)
         result = self._judged_again(arm, events)
         self.assertTrue(result.ok, result.message)
-        self.assertEqual([float(v) for v in arm._conn.get_joint_positions()],
-                         list(arm._conn.moveJ.call_args_list[0].args[0]), "the route judged again starts where it stands")
+        # The route judged again starts where the arm stands, so its first moveJ goes on from there (the gate at the
+        # send found the arm at that first waypoint).
+        self.assertNotEqual([float(v) for v in arm._conn.get_joint_positions()],
+                            list(arm._conn.moveJ.call_args_list[0].args[0]), "the zero-length first moveJ went out")
 
     def test_a_refresh_in_between_has_the_route_judged_again(self) -> None:
         arm, events, _ahead = self._ready()
@@ -342,11 +340,10 @@ class TheLineUpRunsOnTheLiftJudgedAtThePartTests(unittest.TestCase):
         try on the cell, for the same line, in the same world, judged as the lift was."""
         arm, events, solved = _at_the_part()
         with arm.held_world(_HELD):
-            self.assertIsNone(arm.carried_line_refusal(_LIFT, grip_width_mm=_WIDTH_MM))
+            self.assertIsNone(arm.carried_line_refusal(_LIFT))
             asked, gated = len(solved), events.count("gate_joint_path")
             self.assertGreater(asked, 0)
             self.assertEqual(1, gated)
-            self.assertFalse(arm.attach_payload(_WIDTH_MM), "this cell models no carried part")
             with _refreshes() as refresh:
                 result = arm.move(_LIFT, linear=True)
         self.assertIs(MotionStatus.EXECUTED, result.status, result.message)
@@ -366,41 +363,23 @@ class TheLineUpRunsOnTheLiftJudgedAtThePartTests(unittest.TestCase):
     def test_an_arm_moved_a_millimetre_has_the_line_up_judged_again(self) -> None:
         arm, events, solved = _at_the_part()
         with arm.held_world(_HELD):
-            self.assertIsNone(arm.carried_line_refusal(_LIFT, grip_width_mm=_WIDTH_MM))
-            arm.attach_payload(_WIDTH_MM)
+            self.assertIsNone(arm.carried_line_refusal(_LIFT))
             _moved_2_mm(arm)
             self._judged_again(arm, events, solved)
 
     def test_another_pose_has_the_line_up_judged(self) -> None:
         arm, events, solved = _at_the_part()
         with arm.held_world(_HELD):
-            self.assertIsNone(arm.carried_line_refusal(_LIFT, grip_width_mm=_WIDTH_MM))
-            arm.attach_payload(_WIDTH_MM)
+            self.assertIsNone(arm.carried_line_refusal(_LIFT))
             self._judged_again(arm, events, solved, _shifted(_LIFT, 10.0))
 
     def test_outside_the_held_world_the_line_up_is_judged(self) -> None:
         arm, events, solved = _at_the_part()
         with arm.held_world(_HELD):
-            self.assertIsNone(arm.carried_line_refusal(_LIFT, grip_width_mm=_WIDTH_MM))
-            arm.attach_payload(_WIDTH_MM)
+            self.assertIsNone(arm.carried_line_refusal(_LIFT))
         with _refreshes() as refresh:
             self._judged_again(arm, events, solved)
         self.assertEqual(1, refresh.call_count)
-
-    def test_a_cell_that_models_the_part_judges_the_line_up_carrying_it(self) -> None:
-        """The lift judged at the part only stood in for the part the planner then carries: its line up is judged with
-        it (``safety.planning_world.payload.length_mm``)."""
-        arm, events, solved = _at_the_part(_CarryingClient(joint_names=_UR_JOINT_NAMES))
-        world = arm.config.safety.planning_world
-        modelled = world.model_copy(update={"payload": world.payload.model_copy(update={"length_mm": 120.0})})
-        arm.config = arm.config.model_copy(update={"safety": arm.config.safety.model_copy(
-            update={"planning_world": modelled})})
-        self.assertIsNone(arm.payload_declined_reason(), "this cell models the carried part")
-        with arm.held_world(_HELD):
-            self.assertIsNone(arm.carried_line_refusal(_LIFT, grip_width_mm=_WIDTH_MM))
-            self.assertIsNone(arm._lift_judged)
-            self.assertTrue(arm.attach_payload(_WIDTH_MM))
-            self._judged_again(arm, events, solved)
 
 
 if __name__ == "__main__":

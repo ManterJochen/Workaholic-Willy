@@ -10,7 +10,6 @@ grouped in that stack order:
     motion
     recovery
     telemetry
-    uncertainty
 
 Importing ``grasping`` gives the stable public names regardless of which tier
 module they physically live in. ``closed_loop``, the tier between motion and
@@ -23,11 +22,7 @@ after every close.
 # --- types/ : shared value objects ---------------------------------------
 from .types.feedback import GraspFailureReason, GraspResult
 from .types.grasp_point import GraspFrame, GraspPoint
-from .types.modes import (
-    GraspSamplingMode,
-    mode_to_dense_sampling,
-    resolve_grasp_sampling_mode,
-)
+from .types.modes import GraspSamplingMode
 from .types.perception import SegmentationLike
 
 # --- geometry / contacts / collision -------------------------------------
@@ -113,7 +108,7 @@ from .scoring import (
     width_fit_score,
 )
 
-# --- motion/ : approach, grasp, retreat + path validation ----------------
+# --- motion/ : approach, grasp, retreat ----------------------------------
 from .motion.execution_policy import GraspExecutionPolicy, PolicyOutcome, PolicyReport
 from .motion.frame_resolver import (
     EyeInHandFrameResolver,
@@ -121,29 +116,13 @@ from .motion.frame_resolver import (
     IdentityFrameResolver,
     StaticCameraToBaseResolver,
 )
-from .motion.trajectory_safety import (
-    AcceptAllTrajectorySafetyCheck,
-    ApproachPathOutcome,
-    ApproachPathPolicy,
-    ApproachPathReport,
-    TrajectorySafetyCheck,
-    TrajectoryStepReport,
-    validate_approach_and_retreat,
-    validate_approach_path,
-    validate_retreat_path,
-)
 
 # --- recovery/ -----------------------------------------------------------
 from .recovery.policy import (
-    ContainerAgitateStrategy,
-    FixtureEnvelope,
     SceneRecoveryAction,
     SceneRecoveryContext,
     SceneRecoveryPlan,
     SceneRecoveryPolicy,
-    SceneRecoveryReport,
-    SceneRecoveryStrategy,
-    execute_recovery_motion,
 )
 from .recovery.orchestrator import (
     RecoveryDispatcher,
@@ -164,10 +143,9 @@ from .telemetry.outcome_logging import (
     iter_jsonl,
     json_safe,
     profile_metadata_from,
-    recovery_metadata_from,
 )
 
-# --- visualization / uncertainty -----------------------------------------
+# --- visualization -------------------------------------------------------
 from .visualization import (
     DebugDrawConfig,
     GraspViewerConfig,
@@ -176,27 +154,11 @@ from .visualization import (
     save_grasp_debug_image,
     show_grasp_scene,
 )
-from .uncertainty import (
-    UncertaintyCalibration,
-    UncertaintyChannel,
-    UncertaintyChannelValues,
-    UncertaintyMonotoneMap,
-    UncertaintySnapshot,
-    UncertaintyWeights,
-    apply_uncertainty_ranking_penalty,
-    fuse_uncertainty,
-    should_bias_recovery_for_uncertainty,
-)
 
 __all__ = [
-    "AcceptAllTrajectorySafetyCheck",
     "append_jsonl",
-    "apply_uncertainty_ranking_penalty",
     "approach_alignment_score",
     "approach_clearance_mm",
-    "ApproachPathOutcome",
-    "ApproachPathPolicy",
-    "ApproachPathReport",
     "build_grasp_scene",
     "CablePCAStrategy",
     "CameraIntrinsics",
@@ -205,7 +167,6 @@ __all__ = [
     "CollisionBox",
     "ContactPair",
     "ContactPoint",
-    "ContainerAgitateStrategy",
     "DebugDrawConfig",
     "DeformableClass",
     "DeformableHandlingDecision",
@@ -214,14 +175,12 @@ __all__ = [
     "depth_unit_to_mm",
     "draw_grasp_debug_image",
     "estimate_surface_normals",
-    "execute_recovery_motion",
     "EyeInHandFrameResolver",
     "find_antipodal_pairs",
     "FingerKinematicSpec",
     "ForceClosureCertificate",
     "frame_metadata_from",
     "FrameResolver",
-    "fuse_uncertainty",
     "generate_grasp_poses",
     "geometric_grasp_score",
     "geometric_score_components",
@@ -252,7 +211,6 @@ __all__ = [
     "masked_point_cloud",
     "masked_points",
     "MaskedPointCloud",
-    "mode_to_dense_sampling",
     "MultiContactGrasp",
     "MultiContactGraspPlanner",
     "MultiContactPlanRequest",
@@ -270,14 +228,12 @@ __all__ = [
     "reachability_grasp_score",
     "reachability_score_components",
     "ReachabilityScoreConfig",
-    "recovery_metadata_from",
     "RecoveryDispatcher",
     "RecoveryHistoryEntry",
     "RecoveryOrchestrator",
     "RecoveryTrail",
     "RecoveryTrailEntry",
     "RefuseDeformableStrategy",
-    "resolve_grasp_sampling_mode",
     "run_recovery_loop",
     "save_grasp_debug_image",
     "Scene",
@@ -286,13 +242,10 @@ __all__ = [
     "SceneRecoveryContext",
     "SceneRecoveryPlan",
     "SceneRecoveryPolicy",
-    "SceneRecoveryReport",
-    "SceneRecoveryStrategy",
     "score_grasp_pose",
     "SegmentationLike",
     "SemanticDecision",
     "SemanticPolicy",
-    "should_bias_recovery_for_uncertainty",
     "show_grasp_scene",
     "stability_grasp_score",
     "stability_score_components",
@@ -303,20 +256,9 @@ __all__ = [
     "SurfaceNormals",
     "table_clearance_score",
     "topology_risk_from_mask",
-    "TrajectorySafetyCheck",
-    "TrajectoryStepReport",
-    "UncertaintyCalibration",
-    "UncertaintyChannel",
-    "UncertaintyChannelValues",
-    "UncertaintyMonotoneMap",
-    "UncertaintySnapshot",
-    "UncertaintyWeights",
     "VALID_TERMINAL_REASONS",
-    "validate_approach_and_retreat",
-    "validate_approach_path",
     "validate_grasp_collision",
     "validate_grasp_collisions",
-    "validate_retreat_path",
     "width_fit_score",
     "WorkspaceBox",
 ]

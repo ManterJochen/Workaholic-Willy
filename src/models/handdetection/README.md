@@ -8,8 +8,8 @@ It is optional and standalone: nothing on the grasp path imports it, and no cell
 from willy import load_tree
 from src.models.handdetection import build_gesture_recognizer
 
-models = load_tree().app_config.models             # the cell WILLY_PROFILE names
-with build_gesture_recognizer(models.gesturedetect) as recognizer:
+root = load_tree().app_config.models.weights_root  # the cell WILLY_PROFILE names: where its bundles are
+with build_gesture_recognizer(weights_root=root) as recognizer:
     for hand in recognizer.observe(frame_bgr):     # one OpenCV BGR image
         print(hand.palm.palm_center_xy, hand.gesture.gesture, hand.gesture.confidence)
 ```
@@ -30,19 +30,24 @@ fault. Without `--transform`, `--rig` reports the hand in the camera frame only,
 
 `mediapipe==1.0.1` is pinned in `requirements.txt` and `requirements-cpu.txt`. A `0.10.x` release cannot
 be installed beside the numpy and opencv pins the rest of the stack uses. The `.task` bundles are
-binaries the operator downloads into `assets/models/hf/mediapipe/`, which git ignores. Their paths are
-`models.handdetect.model_path` and `models.gesturedetect.model_path` in
-[`config/models/hand.yaml`](../../../config/models/hand.yaml), so bundles kept elsewhere are a config
-change.
+binaries `fetch.py --mediapipe` downloads into `<models.weights_root>/mediapipe/` (`assets/models/hf` as
+shipped, which git ignores), and each builder reads them there, under the `weights_root=` it is given or
+the repository's. Bundles kept elsewhere are that one folder, set once
+([`config/models/weights.yaml`](../../../config/models/weights.yaml)).
+
+How the detectors run is fixed at the owner's cell's numbers since 2026-10-17, when the `models.handdetect`
+and `models.gesturedetect` blocks left the config ([`constants.py`](constants.py)): two hands at most, the
+detection, presence and tracking thresholds at 0.5, a gesture counted from 0.5, and the depth read from a
+disc of 15 px about the palm, believed from 20 valid samples.
 
 ## The nouns
 
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
-| `ThumbGestureRecognizer` | `build_gesture_recognizer(models.gesturedetect)` | `observe(frame_bgr)` | a `HandObservation` per hand: palm and gesture |
-| `PalmDetector` | `build_palm_detector(models.handdetect)` | `observe(frame_bgr)` | a `HandObservation` per hand, landmarks only |
-| `HandFinder` | `build_hand_finder(models.handdetect, provider=..., transforms=...)` | `find_hand()` | a `LocatedHand` in the base frame and an annotated image |
-| the same, over one open camera | `build_hand_finder_on_camera(models.handdetect, camera)`; on the wrist also `tool_pose=` and `tool_frame=` | `find_hand()` | the same, reading that camera's own calibration and lens |
+| `ThumbGestureRecognizer` | `build_gesture_recognizer(weights_root=...)` | `observe(frame_bgr)` | a `HandObservation` per hand: palm and gesture |
+| `PalmDetector` | `build_palm_detector(weights_root=...)` | `observe(frame_bgr)` | a `HandObservation` per hand, landmarks only |
+| `HandFinder` | `build_hand_finder(provider=..., transforms=...)` | `find_hand()` | a `LocatedHand` in the base frame and an annotated image |
+| the same, over one open camera | `build_hand_finder_on_camera(camera)`; on the wrist also `tool_pose=` and `tool_frame=` | `find_hand()` | the same, reading that camera's own calibration and lens |
 
 `build_hand_finder` takes the open frame provider, a 4x4 CAMERA to BASE matrix per rig, a 3x3 camera
 matrix per RGB-D rig, a `StereoCam3D` for stereo rigs, and optionally the recognizer as `observer=` so
@@ -52,7 +57,8 @@ own loader, and a second spelling of it would be a second source of truth for th
 number here.
 
 `build_hand_finder_on_camera` is the same search over one `Camera` a program already holds open, and
-it is what a pick loop uses: `FrameProvider.open()` claims every configured streamer, so asking where
+it is what a pick loop uses (a stereo rig's owner hands out depth and its rectified lens, so it is
+searched as an RGB-D camera is, `Camera.gives_depth`): `FrameProvider.open()` claims every configured streamer, so asking where
 a hand is through a second catalogue takes the cell's other cameras away from it, and one device
 opened twice is what the camera owner exists to prevent. It writes no transform of its own either. A
 fixed rig's CAMERA to BASE is `RigCalibration.camera_to_base()`, one method with one answer.
@@ -64,11 +70,10 @@ its calibration was solved against another flange to TCP. Each frame is then tak
 is (`OneWristCamera`: five warm-up frames, then the tool pose read before and after the grab, the grab
 taken again while the tool moved beyond the rig's `shutter_motion_tolerance_*`) and placed by the
 composition the `Locator` places its frames by, `robot.core.shutter_motion.camera_to_base_at_shutter`,
-called and never written again. How many times a grab is taken again is `attempts=`; pass the
-profile's `robot.safety.planning_world.perceived.fresh_frame_attempts`, which `Locator.from_tree`
-reads, or the schema's default is taken. A frame the tool moved across on every attempt gives no
-hand. So the arm holds still while it looks, and the open hand has to be in the wrist camera's view
-and past its Min-Z, which the driver logs when the camera opens: a D415 measures no depth nearer than
+called and never written again. How many times a grab is taken again is `attempts=`; unset, every
+cell's `shutter_motion.FRESH_FRAME_ATTEMPTS` (3) is taken, as `Locator.from_tree` takes it. A frame the tool moved
+across on every attempt gives no hand. So the arm holds still while it looks, and the open hand has to be in the wrist
+camera's view and past its Min-Z, which the driver logs when the camera opens: a D415 measures no depth nearer than
 about 310 mm at 848x480, so 0.35 m or more, and about 450 mm at 1280x720, so 0.5 m or more.
 [`examples/real_robot/15`](../../../examples/real_robot/15_speak_pick_and_hand_handover.py) brings a
 picked part to the hand it finds, from a fixed camera or from one on the wrist.
@@ -78,7 +83,7 @@ picked part to the hand it finds, from a fixed camera or from one on the wrist.
 | Refusal | When | What to do |
 | --- | --- | --- |
 | `ImportError` when a detector is built | `mediapipe` is not installed (importing the package still works) | install from `requirements.txt` |
-| `FileNotFoundError` when a detector is built | a `.task` bundle is missing; it names the key, the absolute path and the download | `python scripts/model_weights/fetch.py --mediapipe` |
+| `FileNotFoundError` when a detector is built | a `.task` bundle is missing; it names the absolute path, the download and the fetch | `python scripts/model_weights/fetch.py --mediapipe` |
 | `ValueError` from `find_hand` | an RGB-D rig with no camera matrix, or a stereo rig with no `StereoCam3D` | supply the rig's intrinsics; nothing is invented |
 | a skipped rig | a rig with no transform, or more than one hand in view | calibrate the rig; one hand at a time |
 | no hand from a frame | a wrist camera's frame the tool moved across on every attempt, so no pose places it; logged | hold the arm still while the camera looks |
@@ -130,7 +135,7 @@ bundles are absent.
 | [`model_files.py`](model_files.py) | the `mediapipe` guard and the fail-closed `.task` resolver |
 | [`palm_detector.py`](palm_detector.py), [`gestures.py`](gestures.py) | the landmark detector, and the gesture classifier with its palm centre |
 | [`hand_finder.py`](hand_finder.py) | pixels plus depth plus calibration to millimetres in the base frame; `RigFrames`, `OneCamera` and `OneWristCamera`, where the frames come from |
-| [`factory.py`](factory.py), [`constants.py`](constants.py) | the config readers, and the download URLs quoted in errors |
+| [`factory.py`](factory.py), [`constants.py`](constants.py) | the builders, and the owner's cell's numbers and the download URLs quoted in errors |
 | [`__main__.py`](__main__.py) | the `--check`, `--frame` and `--rig` command |
 
 ## Details

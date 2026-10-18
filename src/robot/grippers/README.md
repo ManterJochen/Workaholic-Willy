@@ -116,17 +116,17 @@ output is read before every command: one that no longer stands where the program
 by hand, at the pendant above all, and the command is refused with nothing sent; the next pick asks. It takes
 no width (`set_width_mm` is refused), and a pick with it counts as grasped with the hold not checked,
 because there is no sensor. The bench's `--jaws open|closed` drives the jaws through the driver, which
-asks first. A push (recovery's `nudge_target`, on a wrist camera's pick in `dense_clutter` only) only
-reads the hand: it runs on a connected toggle whose count says open (`jaws_closed` false,
-`why_jaws_unknown()` empty), writes no output and never calls `jaws_open_for_a_pick`. A count that says
+asks first. A push (recovery's `nudge_target`, on a wrist camera's pick in `dense_clutter` only) runs on a
+connected toggle whose count says open (`jaws_closed` false, `why_jaws_unknown()` empty): it closes the
+jaws by one change in the air over the part, pushes with them closed and opens them by one more change at
+the look after the push (2026-10-16), and never calls `jaws_open_for_a_pick`. A count that says
 closed means no push. One nobody can vouch for when the push reads it, once its plan and budgets passed
 (the output switched at the pendant mid-pick, the count lost or unreadable), ends the pick as a gripper
 fault, as the pick-start refusal does. The push reads it again before each contact leg and once the arm
 is up, and one nobody can vouch for there stops the push where the arm stands, a person to decide. The push
-asks nobody either way. A push refused before that read falls through, and `next_target` reads the count
-before it drives a wrist pick's looks again: one nobody can vouch for ends the pick as a gripper fault before
-any look is driven (`core.gripper.why_toggle_count_unknown`, read before each contact leg, once the arm is
-up and before the looks run again; the push's first read applies the same rule).
+asks nobody either way. A push refused before that read lets the attempt go on
+(`core.gripper.why_toggle_count_unknown`, read before each contact leg and once the arm is up; the push's
+first read applies the same rule).
 
 At the terminal the console's typeahead is discarded before each question (`msvcrt` on Windows,
 `termios.tcflush` on POSIX), so an Enter pressed earlier cannot answer it; an `ask=` handed in is not
@@ -147,8 +147,9 @@ you.
 
 **The stroke, left to the verb.** `set_closed(closed, wait=False)` sends the same one change and comes back at once
 with the moment the jaws' stroke is over (`time.monotonic()` seconds, `close_settle_s` on); `wait_settled(deadline)`
-sleeps what is left of it. In between the verb judges its next leg and sends nothing (`robot.motion.judge_next_leg`,
-the owner, 2026-10-09): the grasp's carry while the jaws close, the line out of a place while they open. Only a wait
+sleeps what is left of it. In between the verb judges its next leg and sends nothing (the owner, 2026-10-09; every
+cuRobo arm since 2026-10-17, `robot.motion.judge_next_leg` until then): the grasp's carry while the jaws close, the
+line out of a place while they open. Only a wait
 that is the travel time alone is left so, a toggle's and a solenoid's with no switch to read; a close that reads its
 reeds waits here as ever and returns `None`, and so does a command that moved nothing. A command that comes while a
 stroke left so still runs waits it out first, as it waited inside `set_closed` before, so a change never turns the

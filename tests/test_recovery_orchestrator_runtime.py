@@ -1,10 +1,8 @@
-"""Bucket-A feature: the T5 RecoveryOrchestrator is now wired into the live
-service ``pick()`` path (opt-in via ``recovery_orchestrator.enabled``), and the
-previously-inert ``uncertainty_recovery_aggressive_threshold`` knob drives the
-recovery action ordering through a per-attempt callable bias.
+"""The recovery loop's pieces on the service: the policy built from the snapshot, the report the loop reads, and the
+trail folded into the report and the record.
 
-These tests cover the new pieces. The *disabled* (default) path being byte-identical
-is already proven by the full existing suite (every other test runs recovery off).
+The per-attempt bias the fused uncertainty drove its ordering with left on 2026-10-16 with the uncertainty layer, and
+the recovery block with it: a cell built from config runs the owner's fixed recovery (the owner's cleanup).
 """
 
 from __future__ import annotations
@@ -18,21 +16,16 @@ from src.robot.execution.autonomous_grasp import (
     AutonomousGraspService,
     EffectiveGraspingConfig,
     EffectiveRecoveryOrchestratorConfig,
-    GraspBehaviorProfile,
     GraspMode,
     _profile_for,
     _RecoveryReportAdapter,
 )
+from src.robot.execution.autonomous_grasp.service import _recovery_rows
 from src.robot.grasping.types.feedback import GraspFailureReason
-from src.robot.grasping.types.modes import GraspSamplingMode
-from src.robot.grasping.recovery.policy import SceneRecoveryAction, SceneRecoveryPolicy
+from src.robot.grasping.recovery.policy import SceneRecoveryAction
 from src.robot.grasping.recovery.orchestrator import (
-    RecoveryDispatcher,
-    RecoveryOrchestrator,
     RecoveryTrail,
     RecoveryTrailEntry,
-    recovery_actions_from_trail,
-    run_recovery_loop,
 )
 
 
@@ -56,20 +49,6 @@ def _eff_cfg(**overrides: object) -> EffectiveGraspingConfig:
     return EffectiveGraspingConfig(**base)  # type: ignore[arg-type]
 
 
-def _profile_dense() -> GraspBehaviorProfile:
-    return GraspBehaviorProfile(
-        mode=GraspMode.DENSE_CLUTTER,
-        sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        recovery_allowed_actions=("rescan", "next_target"),
-    )
-
-
-def _orch() -> RecoveryOrchestrator:
-    return RecoveryOrchestrator(
-        dispatcher=RecoveryDispatcher(), strategies={}, bypass_strategies=True
-    )
-
-
 class RecoveryPolicyBuilderTests(unittest.TestCase):
     def test_disabled_config_yields_disabled_policy(self) -> None:
         fake = SimpleNamespace(effective_config=_eff_cfg())  # default: disabled
@@ -84,7 +63,7 @@ class RecoveryPolicyBuilderTests(unittest.TestCase):
     def test_enabled_config_maps_actions_modes_budget(self) -> None:
         cfg = _eff_cfg(
             recovery_orchestrator_enabled=True,
-            recovery_orchestrator_allowed_actions=("rescan", "next_target"),
+            recovery_orchestrator_allowed_actions=("rescan", "nudge_target"),
             recovery_orchestrator_apply_modes=("dense_clutter",),
             recovery_orchestrator_max_actions=3,
             recovery_orchestrator_per_action_budget=(("rescan", 2),),
@@ -95,7 +74,7 @@ class RecoveryPolicyBuilderTests(unittest.TestCase):
         self.assertTrue(policy.enabled)
         self.assertEqual(
             policy.allowed_actions,
-            (SceneRecoveryAction.RESCAN, SceneRecoveryAction.NEXT_TARGET),
+            (SceneRecoveryAction.RESCAN, SceneRecoveryAction.NUDGE_TARGET),
         )
         self.assertEqual(policy.max_recovery_actions, 3)
         self.assertEqual(policy.apply_modes, ("dense_clutter",))
@@ -121,71 +100,6 @@ class RecoveryReportAdapterTests(unittest.TestCase):
         )
         adapter = _RecoveryReportAdapter(report)  # type: ignore[arg-type]
         self.assertEqual(adapter.failure_reasons, ())
-
-
-class CallableAggressiveBiasTests(unittest.TestCase):
-    """The threshold wire: a per-attempt callable bias reads the most recent
-    attempt's fused uncertainty and drives the recovery aggressiveness."""
-
-    def _run(self, *, fused: float, threshold: float):
-        seen_bias: list[float] = []
-
-        def bias(report: object) -> bool:
-            u = float(getattr(report, "telemetry", {}).get("uncertainty_fused", 0.0))
-            seen_bias.append(u)
-            return u > threshold
-
-        seq = iter(
-            [
-                SimpleNamespace(
-                    outcome=AutonomousGraspOutcome.EXECUTION_FAILED,
-                    failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
-                    telemetry={"uncertainty_fused": fused},
-                )
-            ]
-        )
-
-        def pick():
-            try:
-                return next(seq)
-            except StopIteration:
-                return SimpleNamespace(
-                    outcome=AutonomousGraspOutcome.SUCCEEDED,
-                    failure_reasons=(),
-                    telemetry={},
-                )
-
-        final, trail = run_recovery_loop(
-            pick=pick,
-            profile=_profile_dense(),
-            policy=SceneRecoveryPolicy(
-                enabled=True,
-                allowed_actions=(
-                    SceneRecoveryAction.RESCAN,
-                    SceneRecoveryAction.NEXT_TARGET,
-                ),
-                apply_modes=("dense_clutter",),
-                max_recovery_actions=3,
-            ),
-            orchestrator=_orch(),
-            frame_acquirer=lambda: None,
-            aggressive_recovery_bias=bias,
-        )
-        return final, trail, seen_bias
-
-    def test_bias_evaluated_per_attempt_and_recovers(self) -> None:
-        final, trail, seen = self._run(fused=0.8, threshold=0.5)
-        # The callable bias was evaluated against the failing attempt's telemetry.
-        self.assertTrue(seen)
-        self.assertEqual(seen[0], 0.8)
-        # Recovery drove a retry that succeeded.
-        self.assertIs(final.outcome, AutonomousGraspOutcome.SUCCEEDED)
-        self.assertEqual(trail.terminal_reason, "recovered_success")
-
-    def test_low_uncertainty_does_not_trip_bias(self) -> None:
-        _final, _trail, seen = self._run(fused=0.1, threshold=0.5)
-        self.assertTrue(seen)
-        self.assertEqual(seen[0], 0.1)  # below threshold -> bias False (no error)
 
 
 class AttachRecoveryTrailTests(unittest.TestCase):
@@ -244,58 +158,33 @@ class AttachRecoveryTrailTests(unittest.TestCase):
         self.assertEqual(report.recovery_actions, ())  # original untouched
 
 
-class RecoveryActionsFromTrailTests(unittest.TestCase):
-    """P4.2: trail -> V6-trainable per-step recovery_actions (last-step recovered_success credit)."""
+class TheTrailAsTheRecordCarriesItTests(unittest.TestCase):
+    """The trail as the record's ``recovery_actions``: one row a step, the last one credited ``recovered_success`` where
+    the recovery ended in a success, each step's own result kept in ``step_result``."""
 
     @staticmethod
-    def _entry(
-        action: SceneRecoveryAction, outcome: str, *, executed: bool = True
-    ) -> RecoveryTrailEntry:
-        return RecoveryTrailEntry(
-            attempt_index=0,
-            failure_reason=GraspFailureReason.RESCAN_RECOMMENDED,
-            plan_action=action,
-            plan_reason="t",
-            executed=executed,
-            outcome=outcome,
-        )
+    def _entry(reason: GraspFailureReason, *, executed: bool = True) -> RecoveryTrailEntry:
+        return RecoveryTrailEntry(attempt_index=0, failure_reason=reason, plan_action=SceneRecoveryAction.RESCAN,
+                                  plan_reason="dispatcher:rescan", executed=executed, outcome="completed")
 
-    def test_empty_trail_is_empty(self) -> None:
-        trail = RecoveryTrail(entries=(), terminal_reason="recovered_success")
-        self.assertEqual(recovery_actions_from_trail(trail), ())
+    def test_an_empty_trail_is_no_row(self) -> None:
+        self.assertEqual((), _recovery_rows(RecoveryTrail(entries=(), terminal_reason="recovered_success"), ()))
 
-    def test_success_credits_only_last_step(self) -> None:
-        trail = RecoveryTrail(
-            entries=(
-                self._entry(SceneRecoveryAction.NEXT_TARGET, "completed"),
-                self._entry(SceneRecoveryAction.RESCAN, "completed"),
-            ),
-            terminal_reason="recovered_success",
-        )
-        rows = recovery_actions_from_trail(trail)
-        self.assertEqual([r["action"] for r in rows], ["next_target", "rescan"])
-        self.assertEqual(rows[0]["outcome"], "completed")          # intermediate: no credit
-        self.assertEqual(rows[1]["outcome"], "recovered_success")  # last: the reward signal
-        self.assertEqual(rows[1]["step_result"], "completed")      # raw result preserved
-        self.assertTrue(rows[1]["executed"])
+    def test_a_success_credits_only_the_last_step(self) -> None:
+        trail = RecoveryTrail(entries=(self._entry(GraspFailureReason.RESCAN_RECOMMENDED),
+                                       self._entry(GraspFailureReason.NO_VALID_GRASP)),
+                              terminal_reason="recovered_success")
+        first, last = _recovery_rows(trail, ())
+        self.assertEqual(("rescan", "completed", "rescan_recommended"),
+                         (first["action"], first["outcome"], first["failure_reason"]))
+        self.assertEqual(("recovered_success", "completed", True),
+                         (last["outcome"], last["step_result"], last["executed"]))
 
-    def test_failed_recovery_keeps_raw_outcomes(self) -> None:
-        trail = RecoveryTrail(
-            entries=(self._entry(SceneRecoveryAction.RESCAN, "completed", executed=False),),
-            terminal_reason="escalated_no_recovery",
-        )
-        rows = recovery_actions_from_trail(trail)
-        self.assertEqual(rows[0]["outcome"], "completed")  # NO recovered_success credit on failure
-        self.assertFalse(rows[0]["executed"])
-
-    def test_new_sim_action_logged_verbatim(self) -> None:
-        # P4.2/B: a new concrete sim action logs its token (V6's token map identity-maps it now).
-        trail = RecoveryTrail(
-            entries=(self._entry(SceneRecoveryAction.NUDGE_TARGET, "completed"),),
-            terminal_reason="recovered_success",
-        )
-        rows = recovery_actions_from_trail(trail)
-        self.assertEqual(rows[0]["action"], "nudge_target")
+    def test_a_recovery_that_failed_keeps_each_steps_own_result(self) -> None:
+        trail = RecoveryTrail(entries=(self._entry(GraspFailureReason.NO_VALID_GRASP, executed=False),),
+                              terminal_reason="escalated_no_recovery")
+        (row,) = _recovery_rows(trail, ())
+        self.assertEqual(("completed", False), (row["outcome"], row["executed"]))
 
 
 if __name__ == "__main__":

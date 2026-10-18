@@ -72,7 +72,7 @@ class RigDepthSource:
     about nothing, and a band grown by a threshold it never came near drops a part that low
     (review of 2026-09-23: 1 mm and 0.5 degrees at 500 mm grew the band from 5 mm to 10-16 mm, and
     a plate 8 mm tall left the world). The camera's calibration error is not the tool's motion and
-    is not declared here: ``perceived.plane_clearance_mm`` holds it.
+    is not declared here: the camera world's bench band holds it (``perceived.CAMERA_BENCH_BAND_MM``).
 
     ``warmup_grabs`` is how many frames are thrown away between the pose read and the frame kept:
     :data:`WRIST_WARMUP_GRABS` for a camera on the wrist, which moved since its last frame, and none for
@@ -156,8 +156,9 @@ class RigDepthSource:
 
         depth = getattr(frame, "depth", None)
         if depth is None or intrinsics is None:
-            # A stereo rig has no depth of its own and an uncalibrated one has no matrix. Both are
-            # states a cell can be in, and neither is something to guess a way around.
+            # A raw stereo pair carries no depth (a stereo rig's own owner hands out its depth) and an
+            # uncalibrated rig has no matrix. Both are states a cell can be in, and neither is something to
+            # guess a way around.
             return None
         array = np.asarray(depth, dtype=np.float64)
         if array.ndim != 2 or array.size == 0:

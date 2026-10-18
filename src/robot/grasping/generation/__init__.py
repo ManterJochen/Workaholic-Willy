@@ -1,8 +1,8 @@
 """Turn a segmentation mask + depth into ranked grasp candidates.
 
-The :mod:`calculator` facade drives the whole generate step: it reads mask
-geometry (:mod:`mask_analyzer`), back-projects pixels to millimetres
-(:mod:`_camera_geometry`), synthesizes antipodal poses
-(:mod:`_candidate_generator`), routes non-rigid targets
-(:mod:`deformables`), and renders debug overlays (:mod:`_debug_renderer`).
+The :mod:`calculator` facade drives the whole generate step: it gates the mask
+(:mod:`mask_analyzer`), reads the lens (:mod:`_camera_geometry`), plans the part's
+own body over its support (:mod:`body_grasps`, through :mod:`_support_footprint_stage`,
+with the hand of :mod:`hand`), routes non-rigid targets (:mod:`deformables`), and
+renders debug overlays (:mod:`_debug_renderer`).
 """

@@ -104,7 +104,7 @@ def _scene_points(robot: "RobotConfig") -> list[tuple[str, tuple[float, float, f
     ]
     if scene.marker.kind != "none":
         out.append(("marker", _vec3(scene.marker.position_mm)))
-    wl = robot.workspace_limits
+    wl = robot.motion.workspace
     for x in (wl.x_min, wl.x_max):
         for y in (wl.y_min, wl.y_max):
             out.append((f"workspace corner ({x:.0f},{y:.0f})", (float(x), float(y), float(wl.z_min))))

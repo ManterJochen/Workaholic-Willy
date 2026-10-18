@@ -1,14 +1,14 @@
 """The next leg is judged while the jaws travel, and nothing is sent before their stroke is over (map4 motion C7a).
 
 The owner's Hand-E on tool DO0 takes its configured 2.0 s to close and to open, and nothing reads it: the program waits
-that long after the one change. With ``robot.motion.judge_next_leg`` the verb that waits judges its next leg meanwhile:
+that long after the one change. On every cuRobo arm the verb that waits judges its next leg meanwhile:
 
-* at the part, the grasp's close leaves its stroke to the policy: the change goes out once, the part is attached, the
-  joint move a task declared after the pick (the carry) is judged from where the lift will end, in the world held at
-  the part, and the lift is sent only once the stroke is waited out;
-* at a place, the release leaves its stroke to the verb: the change goes out once, the part is forgotten, and in the
-  world held across the drop (``safety.planning_world.hold.drop``) the line out is judged where the arm stands and the
-  joint move declared after the place (the return) from where the line out ends; the line out is sent after the stroke;
+* at the part, the grasp's close leaves its stroke to the policy: the change goes out once, the joint move a task
+  declared after the pick (the carry) is judged from where the lift will end, in the world held at the part, and the
+  lift is sent only once the stroke is waited out;
+* at a place, the release leaves its stroke to the verb: the change goes out once, and in the world held across the
+  drop (every cell's since 2026-10-17) the line out is judged where the arm stands and the joint move declared after the
+  place (the return) from where the line out ends; the line out is sent after the stroke;
 * where no stroke is left to the verb, the leg is left to the line before it, which judges it during motion where the
   arm can (``in_settles_and_motion``);
 * off, as shipped, every close and release waits out its stroke as it always did, and nothing is judged ahead.
@@ -32,7 +32,7 @@ import numpy as np
 from src.contracts import UNSET
 from src.geometry import Frame, Pose
 from src.robot.core import MotionCommand, MotionResult
-from src.robot.core.arm_capabilities import LineMotion, LineReading, PayloadModel
+from src.robot.core.arm_capabilities import LineMotion, LineReading
 from src.robot.execution import handling
 from src.robot.execution.handling import HandlingOutcome
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
@@ -76,22 +76,8 @@ class _JudgingArm(PlansItsMotions):
         self.events.append(("move", f"{pose.label}{' line' if linear else ''}"))
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
-    def carried_line_refusal(self, pose: Pose, *, grip_width_mm: float, camera_world: Any = UNSET) -> None:
-        self.events.append(("lift judged carrying", pose.label))
-
-    def attach_payload(self, grip_width_mm: float) -> bool:
-        self.events.append(("attach", round(float(grip_width_mm), 3)))
-        return False
-
-    def detach_payload(self) -> bool:
-        self.events.append(("detach", None))
-        return True
-
-    def payload_declined_reason(self) -> str | None:
-        return "this stand-in models no carried part"
-
-    def payload_model(self) -> PayloadModel:
-        return PayloadModel.NONE
+    def carried_line_refusal(self, pose: Pose, *, camera_world: Any = UNSET) -> None:
+        self.events.append(("lift judged", pose.label))
 
     def judge_the_next_leg(self, after: Pose, *, junction: str, now: bool = True) -> str:
         self.events.append(("next leg judged", (after.label, junction, now)))
@@ -153,12 +139,11 @@ class AtThePartTheCarryIsJudgedWhileTheJawsCloseTests(unittest.TestCase):
         self.assertIs(PolicyOutcome.EXECUTED, report.outcome, report.motion_message)
         events = io.events
         self.assertEqual([HIGH], _changes(events), "the close is exactly one change of DO0")
-        change, attach = events.index(HIGH), _at(events, "attach")
+        change = events.index(HIGH)
         judged = events.index(("next leg judged", ("retreat", "carry", True)))
         slept = _at(events, "sleep")
         lift = events.index(("move", "retreat line"))
-        self.assertLess(change, attach)
-        self.assertLess(attach, judged, "the carry is judged with the part attached")
+        self.assertLess(change, judged, "the carry is judged once the change went out")
         self.assertLess(judged, slept, "the carry is judged while the jaws close, not after")
         self.assertLess(slept, lift, "the lift went out before the stroke was waited out")
         stroke = float(events[slept][1])  # type: ignore[arg-type]
@@ -216,13 +201,12 @@ class AtAPlaceTheLineOutIsJudgedWhileTheJawsOpenTests(unittest.TestCase):
         self.assertIs(HandlingOutcome.EXECUTED, placed.outcome, placed.message)
         events = io.events
         self.assertEqual([LOW], _changes(events), "the release is exactly one change of DO0")
-        change, detach = events.index(LOW), _at(events, "detach")
+        change = events.index(LOW)
         line = events.index(("line judged ahead", "standoff"))
         judged = events.index(("next leg judged", ("standoff", "drop", True)))
         slept = _at(events, "sleep")
         line_out = events.index(("move", "standoff line"))
-        self.assertLess(change, detach)
-        self.assertLess(detach, line, "the line out is judged with the part forgotten")
+        self.assertLess(change, line, "the line out is judged once the change went out")
         self.assertLess(line, judged, "the return is judged from where the line out ends")
         self.assertLess(judged, slept)
         self.assertLess(slept, line_out, "the line out went out before the jaws had opened")

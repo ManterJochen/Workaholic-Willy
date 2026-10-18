@@ -7,10 +7,12 @@
  * click and is not the e-stop; the red "press the e-stop" alarm appears only where the arm brakes a move in flight;
  * Restart and Home ask first; the jaws question is never answered here; nothing starts by itself after a stop.
  *
- * Every test here runs with the setting "Erst die Karte" (`willy.taskStart=card`, set before each), where Enter only
- * reads and the card's Start starts: the card is what Enter opens wherever a reading is not clean, so its pins hold
- * in both settings. Enter starting a clean reading at once, the default since the owner's decision of 2026-10-08, is
- * pinned in "Enter starts the task" (it sets `enter`), with every case that sends it to the card instead.
+ * Every test here runs with the cell's setting "Erst die Karte" (`runtime.task.start: card`, as the stubbed server's
+ * `GET /v1/task/settings` answers it unless a test says otherwise), where Enter only reads and the card's Start starts:
+ * the card is what Enter opens wherever a reading is not clean, so its pins hold in both settings. Enter starting a
+ * clean reading at once, the default since the owner's decision of 2026-10-08, is pinned in "Enter starts the task"
+ * (the server says `enter`), with every case that sends it to the card instead; the settings are the cell's, never a
+ * key this browser kept, and none read yet start nothing on Enter.
  *
  * The three pins of the old Pick screen (`screens.test.tsx`, "Pick") live here now, with the cockpit's copy.
  */
@@ -25,7 +27,7 @@ import { ConfirmProvider } from '../model/confirm'
 import targetLostJson from '../test/fixtures/task_camera_target_lost.json'
 import haltedRestartJson from '../test/fixtures/task_halted_then_restart.json'
 import twoPartsJson from '../test/fixtures/task_two_parts_nothing_left.json'
-import { api } from '../api/client'
+import { api, type TaskSettingsOut } from '../api/client'
 import { eventsOf, fakeSockets, refusal, renderWith, reply, runOf, stubApi, type ApiCall, type FakeSockets, type Fixture, type Route } from '../test/render'
 import Cockpit from './Cockpit'
 import { firstMotion } from './draft'
@@ -48,7 +50,6 @@ const CELL = {
   active_run_id: null as string | null,
   needs_person: '',
   halted: null,
-  payload_model: 'none',
   recovery: null,
   jaws_confirmed_at: null,
   countdown_due: false,
@@ -63,7 +64,6 @@ const LIGHTS = [
   light('cameras', 'ok', 'live'),
   light('planner', 'ok', 'ready'),
   light('gripper', 'ok', 'open_confirmed'),
-  light('carried_part', 'ok', 'modelled'),
   light('commands', 'info', 'ready'),
 ]
 const READY = { ready: true, lights: LIGHTS, blockers: [] }
@@ -74,10 +74,9 @@ const FACTS = {
   looks: ['look_1', 'look_2', 'look_3'],
   natural_closing_axis: '-y',
   push: { can_push: true, why_not: '', default_mm: 30, ceiling_mm: 50 },
-  detector: { backend: 'vlm', router_enabled: false, vlm_model_id: 'Qwen/Qwen3-VL-4B-Instruct', precision: 'auto' },
+  detector: { backend: 'vlm', vlm_model_id: 'Qwen/Qwen3-VL-4B-Instruct', precision: 'auto' },
   hand_eye_warn_mm: 6,
   brake: { latches: true, brakes_in_motion: false },
-  payload: { modelled: true, declined_reason: null, length_mm: 40 },
   route: { route: 'planned', sentence: '' },
   rehearsal: false,
 }
@@ -112,12 +111,10 @@ function live(extra: Record<string, unknown> = {}) {
   }
 }
 
-const ROUTE = { prompt: 'green cube', route: 'simple', reason: 'english', description: 'simple (english)', runnable: true }
-
 const PARSED = {
   understood: true,
   intent: 'task',
-  object: { phrase: 'green cube', said: 'alle grünen Würfel', verified: true, route: ROUTE },
+  object: { phrase: 'green cube', said: 'alle grünen Würfel', verified: true },
   place: null,
   place_pose: 'drop_left',
   scope: 'until_empty',
@@ -131,6 +128,23 @@ const PARSED = {
 
 const ACCEPTED = { id: 'run-new', prompt: 'green cube', requested_picks: 0, state: 'running', started_at: 1, succeeded: 0, attempted: 0, error: '', stop_requested: false, kind: 'task', stop_code: '', stop_class: '', parts_placed: 0, holding: false, halt_requested: false, step: '' }
 
+/** The cell's task settings as the stub server answers them: "Erst die Karte", every other setting as shipped. */
+const CARD: TaskSettingsOut = {
+  start: 'card',
+  scope: 'once',
+  place: { kind: 'default' },
+  anything: false,
+  looks: 'when_needed',
+  critical_parts: false,
+  target_file: 'config/app/runtime.cell.yaml',
+  why_not: '',
+  why_not_code: '',
+}
+/** The settings as shipped: Enter starts. */
+const ENTER: TaskSettingsOut = { ...CARD, start: 'enter' }
+/** What `GET /v1/task/settings` answers in the test running now. */
+let settings: TaskSettingsOut = CARD
+
 /** The server, with every route the cockpit reads answered; a test overrides what it is about. */
 function server(over: Record<string, Route> = {}): ApiCall[] {
   return stubApi({
@@ -138,6 +152,7 @@ function server(over: Record<string, Route> = {}): ApiCall[] {
     '/v1/cell/readiness': READY,
     '/v1/cell/facts': FACTS,
     '/v1/cell/status': { state: 'connected', connected: true, simulated: false, vendor: 'ur', model: 'ur10', controller_state_included: false },
+    '/v1/task/settings': () => settings,
     '/v1/poses': POSES,
     '/v1/camera/live': () => live(),
     'POST /v1/commands/parse': PARSED,
@@ -166,10 +181,12 @@ function cockpit(lang: Lang = 'de') {
   )
 }
 
-/** Type a sentence and press Enter: the parse, never a start. */
+/** Type a sentence and press Enter: the parse, and a start only where the cell's settings say Enter starts. Where they
+ *  do, the person types once the line under the box says so: the cockpit has read them. */
 async function command(text: string) {
   const box = await screen.findByRole('textbox', { name: /Befehl an Willy|Command for Willy/ })
   await waitFor(() => expect(box.hasAttribute('disabled')).toBe(false))
+  if (settings.start === 'enter') await screen.findByText(/Enter startet sofort|Enter starts at once/)
   fireEvent.change(box, { target: { value: text } })
   fireEvent.keyDown(box, { key: 'Enter' })
 }
@@ -192,7 +209,7 @@ let sockets: FakeSockets
 beforeEach(() => {
   localStorage.clear()
   // Today's card: Enter reads, Start starts. "Enter starts the task" below switches to the default, `enter`.
-  localStorage.setItem('willy.taskStart', 'card')
+  settings = CARD
   clearConversation()
   sockets = fakeSockets()
 })
@@ -303,7 +320,7 @@ describe('Start', () => {
 
   it('names the put-back fallback for a target the camera finds, in the reader\'s words', async () => {
     server({
-      'POST /v1/commands/parse': { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true, route: { ...ROUTE, prompt: 'blue bin' } } },
+      'POST /v1/commands/parse': { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true } },
     })
     cockpit()
     await command('Räum alle grünen Würfel in die blaue Kiste')
@@ -399,7 +416,6 @@ describe('reading a command', () => {
     expect(within(card).getByText('deine Worte: „alle grünen Würfel“')).toBeTruthy()
     expect((within(card).getByRole('combobox', { name: 'Ablegen' }) as HTMLSelectElement).selectedOptions[0].textContent).toBe('Ablage links')
     expect(within(card).getByRole('button', { name: 'Bis leer' }).getAttribute('aria-pressed')).toBe('true')
-    expect(within(card).getByText('PHRASE')).toBeTruthy()
   })
 
   it('opens the card by hand when the language model is not there (501), and starts nothing by itself', async () => {
@@ -438,7 +454,7 @@ describe('reading a command', () => {
 
   it('takes a phrase of up to the server\'s 200 characters on the card, and counts it from 160 on', async () => {
     // The morning of 2026-10-08: a description of 85 characters typed into the card was refused at Start.
-    server({ 'POST /v1/commands/parse': { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true, route: null } } })
+    server({ 'POST /v1/commands/parse': { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true } } })
     cockpit()
     await command('Räum alle grünen Würfel in die blaue Kiste')
     const card = await screen.findByRole('region', { name: 'Verstanden' })
@@ -866,7 +882,7 @@ describe('the stop card', () => {
   it('asks for "Backen leer" while the stopped run may have left a part in a hand that measures nothing, and keeps Restart and Home off until then', async () => {
     let emptied = false
     const record = () => ({ ...RECORD, holding: !emptied, cleared_at: RECORD.at + 5 })
-    const cellNow = () => ({ ...STOPPED_CELL, halted: null, hand: WIDTH, payload_model: 'not_applicable', recovery: record() })
+    const cellNow = () => ({ ...STOPPED_CELL, halted: null, hand: WIDTH, recovery: record() })
     const calls = server({
       '/v1/cell': cellNow,
       '/v1/cell/readiness': () => ({
@@ -907,7 +923,7 @@ describe('the stop card', () => {
   })
 
   it('believes the stop record\'s part where the ready bar cannot be read, or was read before the record', async () => {
-    const holdingCell = { ...STOPPED_CELL, halted: null, hand: WIDTH, payload_model: 'not_applicable', recovery: { ...RECORD, holding: true, cleared_at: RECORD.at + 5 } }
+    const holdingCell = { ...STOPPED_CELL, halted: null, hand: WIDTH, recovery: { ...RECORD, holding: true, cleared_at: RECORD.at + 5 } }
     server({ '/v1/cell': holdingCell, '/v1/cell/readiness': refusal(500, 'software_error', 'readiness failed'), [`/v1/runs/${HALTED}`]: halted.runs[HALTED] })
     cockpit()
     const card = await screen.findByRole('region', { name: /Angehalten/ })
@@ -926,7 +942,7 @@ describe('the stop card', () => {
     // After a restart of the server the record comes back uncleared and nothing is built: no hand is read, and the
     // ready bar names no part_still_held (there is no hand to hold one). The record's belief stands until a hand is.
     const none = { kind: 'none', driver: '', where: '', connected: false, jaws: 'not_counted', why_unknown: '', no_sensor: false, commands_sent: null }
-    const down = { ...CELL, state: 'disconnected', arm: null, gripper: null, hand: none, payload_model: 'not_applicable', recovery: { ...RECORD, holding: true } }
+    const down = { ...CELL, state: 'disconnected', arm: null, gripper: null, hand: none, recovery: { ...RECORD, holding: true } }
     const blockers = [{ code: 'cell_not_cleared', message: '' }, { code: 'restart_required', message: '' }]
     server({
       '/v1/cell': down,
@@ -1580,7 +1596,7 @@ describe('voice output', () => {
 describe('the ready bar', () => {
   it('starts the planner on its light\'s action, which moves nothing, and then shows the planner\'s run', async () => {
     const calls = server({
-      '/v1/cell/readiness': { ready: false, blockers: [], lights: [LIGHTS[0], LIGHTS[1], light('planner', 'blocked', 'off'), LIGHTS[3], LIGHTS[4], LIGHTS[5]] },
+      '/v1/cell/readiness': { ready: false, blockers: [], lights: [LIGHTS[0], LIGHTS[1], light('planner', 'blocked', 'off'), LIGHTS[3], LIGHTS[4]] },
       'POST /v1/cell/planner': reply(202, { ...ACCEPTED, id: 'run-planner', kind: 'planner' }),
     })
     cockpit()
@@ -1595,7 +1611,7 @@ describe('the ready bar', () => {
   })
 
   it('names the language model where it is missing, and says the card is then filled in by hand', async () => {
-    server({ '/v1/cell/readiness': { ready: true, blockers: [], lights: [...LIGHTS.slice(0, 5), light('commands', 'info', 'missing')] } })
+    server({ '/v1/cell/readiness': { ready: true, blockers: [], lights: [...LIGHTS.slice(0, 4), light('commands', 'info', 'missing')] } })
     cockpit()
     const bar = await screen.findByRole('region', { name: 'Bereitschaft der Zelle' })
     const row = (await within(bar).findByText('Sprachmodell')).closest('li') as HTMLElement
@@ -1620,7 +1636,7 @@ describe('the ready bar', () => {
   it('asks the cell where the jaws stand on the gripper light\'s action, and answers nothing itself', async () => {
     const calls = server({
       '/v1/cell': { ...CELL, hand: { ...HAND, jaws: 'unknown' } },
-      '/v1/cell/readiness': { ready: false, blockers: [], lights: [LIGHTS[0], LIGHTS[1], LIGHTS[2], light('gripper', 'blocked', 'jaws_unknown'), LIGHTS[4], LIGHTS[5]] },
+      '/v1/cell/readiness': { ready: false, blockers: [], lights: [LIGHTS[0], LIGHTS[1], LIGHTS[2], light('gripper', 'blocked', 'jaws_unknown'), LIGHTS[4]] },
     })
     cockpit()
     const bar = await screen.findByRole('region', { name: 'Bereitschaft der Zelle' })
@@ -1807,7 +1823,7 @@ describe('the Advanced drawer and the numbers', () => {
 
   // The owner, 2026-10-08 night: "Multi-View" and "Alle Posen" one choice; no switch for recordings (always kept) or
   // for both jaw faces (a program's); a switch to carry straight over the rim, the cell's own where untouched.
-  const BLUE_BIN = { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true, route: { ...ROUTE, prompt: 'blue bin' } } }
+  const BLUE_BIN = { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true } }
 
   async function drawer(sentence = 'Räum alle grünen Würfel auf die Ablage links') {
     await command(sentence)
@@ -1850,8 +1866,9 @@ describe('the Advanced drawer and the numbers', () => {
     expect(await startFrom(card, calls)).toMatchObject({ options: { multi_view: false, every_look: false } })
   })
 
-  it('starts from the looks the settings set', async () => {
-    localStorage.setItem('willy.taskLooks', 'every')
+  it('starts from the looks the cell\'s settings set', async () => {
+    // Enter starts where the settings say so; this reading is not clean, so the card opens all the same.
+    settings = { ...ENTER, looks: 'every' }
     const calls = server()
     cockpit()
     const card = await drawer()
@@ -2015,8 +2032,8 @@ describe('Enter starts the task (the owner, 2026-10-08: "Enter ist der Klick der
   const NOT_READY = { ready: false, blockers: [], lights: [...LIGHTS.filter((l) => l.id !== 'planner'), light('planner', 'wait', 'starting')] }
 
   beforeEach(() => {
-    // The default: nothing stored says "Erst die Karte".
-    localStorage.removeItem('willy.taskStart')
+    // The default: the cell's settings say Enter starts.
+    settings = ENTER
   })
 
   it('reads once and starts once: the settings\' mode, nothing edited, no card and no dialog', async () => {
@@ -2055,7 +2072,7 @@ describe('Enter starts the task (the owner, 2026-10-08: "Enter ist der Klick der
   })
 
   it('runs until empty where the settings say so, whatever the sentence', async () => {
-    localStorage.setItem('willy.taskScope', 'until_empty')
+    settings = { ...ENTER, scope: 'until_empty' }
     const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, scope: 'once' } })
     cockpit()
     await command('Leg den grünen Würfel auf die Ablage links')
@@ -2064,7 +2081,7 @@ describe('Enter starts the task (the owner, 2026-10-08: "Enter ist der Klick der
   })
 
   it('puts the part where the settings say when the sentence names no place: the camera\'s target', async () => {
-    localStorage.setItem('willy.taskPlace', 'camera:yellow bin')
+    settings = { ...ENTER, place: { kind: 'camera', phrase: 'yellow bin' } }
     const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, place_pose: null, place: null } })
     cockpit()
     await command('Nimm alle grünen Würfel')
@@ -2092,7 +2109,7 @@ describe('Enter starts the task (the owner, 2026-10-08: "Enter ist der Klick der
   })
 
   it('opens the card for a sentence that names no part, ticked for anything where the settings say so, and starts nothing', async () => {
-    localStorage.setItem('willy.taskAnything', 'anything')
+    settings = { ...ENTER, anything: true }
     const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, startable: false, object: null } })
     cockpit()
     await command('Räum auf')
@@ -2117,7 +2134,7 @@ describe('Enter starts the task (the owner, 2026-10-08: "Enter ist der Klick der
   })
 
   it('opens the card with "Laden" said first where the cell detects with a language model not loaded yet', async () => {
-    const idle = { ready: true, blockers: [], lights: [...LIGHTS.slice(0, 5), light('commands', 'info', 'idle')] }
+    const idle = { ready: true, blockers: [], lights: [...LIGHTS.slice(0, 4), light('commands', 'info', 'idle')] }
     const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, model: { ...PARSED.model, model_id: 'known-sentence', attempts: 0 } }, '/v1/cell/readiness': idle })
     cockpit()
     await command('Räum alle grünen Würfel auf die Ablage links')
@@ -2190,16 +2207,39 @@ describe('Enter starts the task (the owner, 2026-10-08: "Enter ist der Klick der
   })
 
   it('says the settings\' place and the card under the box where they are set', async () => {
-    localStorage.setItem('willy.taskPlace', 'pose:park')
-    localStorage.setItem('willy.taskScope', 'until_empty')
+    settings = { ...ENTER, place: { kind: 'pose', pose: 'park' }, scope: 'until_empty' }
     server()
     cockpit()
     expect(await screen.findByText(/Enter startet sofort · Bis leer · ohne Ort: Parkposition/)).toBeTruthy()
     cleanup()
-    localStorage.setItem('willy.taskStart', 'card')
+    settings = CARD
     server()
     cockpit()
     expect(await screen.findByText(/Enter öffnet die Karte, Start startet/)).toBeTruthy()
+  })
+
+  it('takes the cell\'s settings, never what this browser kept before they were the cell\'s', async () => {
+    // The keys an older console wrote into this browser (until 2026-10-17) say "Erst die Karte" and "Bis leer".
+    localStorage.setItem('willy.taskStart', 'card')
+    localStorage.setItem('willy.taskScope', 'until_empty')
+    const calls = server({ 'POST /v1/commands/parse': CLEAN })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ scope: 'once' })
+    expect(sent(calls, 'GET /v1/task/settings')).toHaveLength(1)
+  })
+
+  it('starts nothing on Enter while the cell\'s settings are not read: Enter only reads', async () => {
+    const calls = server({ 'POST /v1/commands/parse': CLEAN, '/v1/task/settings': refusal(500, 'http_500', 'the tree did not load') })
+    cockpit()
+    expect(await screen.findByText(/Enter öffnet die Karte, Start startet/)).toBeTruthy()
+    const box = await screen.findByRole('textbox', { name: 'Befehl an Willy' })
+    await waitFor(() => expect(box.hasAttribute('disabled')).toBe(false))
+    fireEvent.change(box, { target: { value: 'Räum alle grünen Würfel auf die Ablage links' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(await screen.findByRole('region', { name: 'Verstanden' })).toBeTruthy()
+    expect(moved(calls)).toHaveLength(0)
   })
 
   it('stops a sentence at the reader\'s 1000 characters', async () => {
@@ -2214,7 +2254,7 @@ describe('the one part a sentence singles out, and where the parts lie (2026-10-
   /** "Nimm von der schwarzen Matte den grauen Würfel, der oben auf dem anderen liegt", as the reader answers it. */
   const SINGLED = {
     ...PARSED,
-    object: { phrase: 'gray cube', said: 'den grauen Würfel, der oben auf dem anderen liegt', verified: true, route: ROUTE },
+    object: { phrase: 'gray cube', said: 'den grauen Würfel, der oben auf dem anderen liegt', verified: true },
     which: 'the gray cube on top of the other one',
     source: 'on the black mat',
     scope: 'once',
@@ -2278,23 +2318,8 @@ describe('the one part a sentence singles out, and where the parts lie (2026-10-
     expect(await within(card).findByText('170/200')).toBeTruthy()
   })
 
-  it('routes the pick by the one part a person singles out, as the server\'s guard judges it', async () => {
-    const calls = server({
-      'POST /v1/commands/parse': SINGLED,
-      '/v1/diagnostics/route': { ...ROUTE, prompt: 'the smallest cube', route: 'vlm', reason: 'comparative', runnable: true },
-    })
-    cockpit()
-    await command(SENTENCE)
-    const card = await screen.findByRole('region', { name: 'Verstanden' })
-    fireEvent.change(fields(card).which, { target: { value: 'the smallest cube' } })
-    const asked = () => sent(calls, 'GET /v1/diagnostics/route').map((c) => new URLSearchParams(c.query).get('prompt'))
-    await waitFor(() => expect(asked()).toContain('the smallest cube'))
-    expect(await within(card).findByText('VLM')).toBeTruthy()
-  })
-
   it('starts a reading that singles out one part once on Enter, with both, whatever mode the settings set', async () => {
-    localStorage.removeItem('willy.taskStart')
-    localStorage.setItem('willy.taskScope', 'until_empty')
+    settings = { ...ENTER, scope: 'until_empty' }
     const calls = server({ 'POST /v1/commands/parse': { ...SINGLED, startable: true } })
     cockpit()
     await command(SENTENCE)

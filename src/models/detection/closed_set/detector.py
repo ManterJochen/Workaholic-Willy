@@ -11,6 +11,7 @@ from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
 from src.config.schema.models.models_schema import ObjectDetectorConfig
 from src.models._inference import (
+    RTDETR,
     autocast_ctx,
     build_load_kwargs,
     finalize_model,
@@ -18,6 +19,7 @@ from src.models._inference import (
 )
 from src.models.constants import MODELS_LOG_DIR, RTDETR_LOG_FILE
 from src.models.detection.types import Detection
+from src.models.weights import resolve_weights
 from src.utility import (
     bgr_to_rgb,
     create_logger,
@@ -37,35 +39,38 @@ class RtDetrObjectDetector:
 
     Runs the model's own label vocabulary over the whole image, so a scene can be
     perceived without a prompt, and emits the same :class:`Detection` type as the
-    zero-shot GroundingDINO backend, so the two are interchangeable. The optional
+    VLM grounder, so the two are interchangeable behind the perception seam. The optional
     ``prompt``, passed positionally by the perception seam, is only a case-insensitive
     class-name filter; ``None`` returns every class above threshold.
 
-    ``device`` names where the model runs (``"cpu"``, ``"cuda"`` or ``"mps"``); left out, it
-    runs where every model here runs, ``WILLY_DEVICE`` or else the first of CUDA, MPS and the
-    CPU. :attr:`classes` is the class list the model was trained on, which is all a prompt can
-    name.
+    The weights are read from ``config.model_id`` (:mod:`src.models.weights`): a Hugging Face id
+    under ``weights_root``, or a ``DetectorTraining`` folder. ``local`` ``False`` lets an id that is
+    not on this machine be downloaded, which only ``ObjectDetector.from_weights`` asks. The model
+    loads as the owner's cell ran it (:data:`~src.models._inference.RTDETR`). ``device`` names where the model
+    runs (``"cpu"``, ``"cuda"`` or ``"mps"``); left out, it runs where every model here runs,
+    ``WILLY_DEVICE`` or else the first of CUDA, MPS and the CPU. :attr:`classes` is the class list
+    the model was trained on, which is all a prompt can name.
     """
 
     def __init__(
         self, config: ObjectDetectorConfig, debug_images: bool = False, *, device: str | None = None,
+        weights_root: str | None = None, local: bool = True,
     ) -> None:
         self.device = get_device(device)
         self.model_id = config.model_id
-        self.model_path = config.model_path
         self.threshold = config.threshold
-        self.local = config.local
-        self.optim = config.optim
+        self.settings = RTDETR
         self.debug_images = debug_images
 
         self.logger = create_logger("RTDETRObjectDetector", log_file=RTDETR_LOG_FILE, log_dir=MODELS_LOG_DIR)
 
-        source = self.model_path if self.local else self.model_id
-        if not source:
-            raise ValueError("model_path (local=True) or model_id (local=False) must be set.")
-        base_kwargs = {"local_files_only": True} if self.local else {}
+        found = resolve_weights(config.model_id, kind="detection", root=weights_root, local=local,
+                                key="models.rtdetr.model_id")
+        #: Where the weights are read from: the folder, or the id the Hugging Face cache (or the Hub) holds.
+        self.source = source = found.source
+        base_kwargs = {"local_files_only": True} if found.local else {}
         proc_kwargs = dict(base_kwargs)
-        model_kwargs = build_load_kwargs(self.optim, self.device, base_kwargs)
+        model_kwargs = build_load_kwargs(self.settings, self.device, base_kwargs)
         self._model_dtype = model_kwargs.get("torch_dtype")
 
         self.logger.info(
@@ -83,7 +88,7 @@ class RtDetrObjectDetector:
         except weight_load_errors():
             self.logger.error("Failed to load model '%s'", source)
             raise
-        self.model = finalize_model(self.model, self.device, self.optim, vision=True)
+        self.model = finalize_model(self.model, self.device, self.settings, vision=True)
         self._id2label = dict(getattr(self.model.config, "id2label", {}) or {})
 
         if self.device.type == "cpu":
@@ -121,7 +126,7 @@ class RtDetrObjectDetector:
             raise ValueError(
                 f"RT-DETR is a closed-set detector: it never sees the prompt text, so {prompt!r} can "
                 f"only be matched against its trained class names, and it matches none of them. Use a "
-                f"class name, or switch to a zero-shot backend for free-text prompts. "
+                f"class name, or ground free text with the VLM (models.pipeline.kind: zero_shot). "
                 f"Known classes: {shown}"
             )
         return cleaned
@@ -142,7 +147,7 @@ class RtDetrObjectDetector:
         pil_image = Image.fromarray(bgr_to_rgb(image))
         inputs = self.processor(images=pil_image, return_tensors="pt")
         inputs = move_inputs_to_device(dict(inputs), self.device)
-        if self.optim and self.optim.channels_last and self.device.type == "cuda":
+        if self.settings.channels_last and self.device.type == "cuda":
             pv = inputs.get("pixel_values")
             if torch.is_tensor(pv) and pv.dim() == 4:
                 inputs["pixel_values"] = pv.to(memory_format=torch.channels_last)

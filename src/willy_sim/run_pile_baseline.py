@@ -7,7 +7,7 @@ generation change reads as a delta against this floor.
 
 Two perception modes, one per invocation, because SimulationApp is a singleton and a process boots it
 once:
-  * ``--perception vision`` is the end-to-end floor: GroundingDINO detect_all plus SAM2.
+  * ``--perception vision`` is the end-to-end floor: the cell's detector (the VLM) plus SAM2.
   * ``--perception gt``     is the perception ceiling: Isaac instance-id masks plus true depth.
 Running both and diffing the two reports separates perception-limited from generation-limited failure.
 A large gap between vision and gt means perception is the constraint; a small gap means the geometric
@@ -90,14 +90,6 @@ def run_baseline(
     curobo_bin_world: bool = False,
     adaptive_close: bool = False,
     top_ref: bool = False,
-    enable_g12: bool = False,          # swept-approach validation: reject candidates whose approach
-    #                                    sweep hits a neighbour, not just the final pose
-    enable_g4: bool = False,           # per-candidate corridor-risk producer (approach clearance)
-    g4_rerank: bool = False,           # G4 uncertainty rerank consumer: demote blocked-corridor candidates
-    g4_rerank_weight: float = 0.3,
-    oblique: bool = False,             # multi-angle approach generation (top-down plus tilts)
-    oblique_tilt_deg: float = 30.0,
-    oblique_azimuths: int = 4,
     multiview: bool = False,           # two fixed oblique cameras, fused into a BASE target cloud of
     #                                    side faces, fed to the generator for grasps in clutter
     bin_half_width_mm: float = 110.0,
@@ -111,16 +103,15 @@ def run_baseline(
     vision = perception == "vision"
     center_xy = (450.0, 0.0)
     # The conditions are logged before the picks that follow, so a run killed halfway still leaves a
-    # record of what it was measuring. Only the non-default blocks are named: a floor taken with G12
-    # or multiview on is not the same floor.
+    # record of what it was measuring. Only the non-default blocks are named: a floor taken with
+    # multiview on is not the same floor.
     _LOG.info(
         "pile baseline starting: %d run(s), perception=%s, pile=%d objects spread=%.0f mm shapes=%s, "
         "bin=%s, seed=%d, opt-in=%s",
         runs, perception, pile_count, pile_spread_mm, pile_shapes, enable_bin, seed,
         ", ".join(n for n, on in (
             ("curobo_bin_world", curobo_bin_world), ("adaptive_close", adaptive_close),
-            ("top_ref", top_ref), ("g12", enable_g12), ("g4", enable_g4), ("g4_rerank", g4_rerank),
-            ("oblique", oblique), ("multiview", multiview),
+            ("top_ref", top_ref), ("multiview", multiview),
         ) if on) or "none (the anchored default config)",
     )
     service, arm, gripper, handles, cfg, _target_idx, _target_label = build_service(
@@ -128,8 +119,6 @@ def run_baseline(
         pile=True, pile_count=pile_count, pile_seed=seed, pile_spread_mm=pile_spread_mm,
         pile_shapes=pile_shapes, pile_top_ref=top_ref,
         vision=vision, enable_bin=enable_bin, curobo_bin_world=curobo_bin_world,
-        enable_g12=enable_g12, enable_g4=enable_g4, g4_rerank=g4_rerank, g4_rerank_weight=g4_rerank_weight,
-        oblique_approach=oblique, oblique_tilt_deg=oblique_tilt_deg, oblique_azimuths=oblique_azimuths,
         bin_half_width_mm=bin_half_width_mm, bin_height_mm=bin_height_mm,
         # adaptive_close and top_ref are opt-in. Default off is the run_dense_pick configuration: fixed
         # close_width, centre-referenced depth. Each varied-object accommodation is enabled one at a
@@ -170,8 +159,7 @@ def run_baseline(
             build_fused_scene_cloud,
             build_fused_target_cloud,
         )
-        from src.willy_sim.run_occlusion_probe import _author_oblique_camera
-        from src.willy_sim.scene import camera_to_base_ground_truth
+        from src.willy_sim.scene import author_fixed_camera, camera_to_base_ground_truth
 
         _build_fused_target = build_fused_target_cloud
         _build_fused_scene = build_fused_scene_cloud
@@ -190,7 +178,7 @@ def run_baseline(
             _cc = robot.sim.cameras.get(_cn)
             if _cc is None or _cc.position_mm is None or _cc.mount_aim_mm is None:
                 raise SystemExit(f"--multiview needs sim.cameras[{_cn!r}] position_mm + mount_aim_mm")
-            _cam = _author_oblique_camera(
+            _cam = author_fixed_camera(
                 arm.session, _cc.prim_path or f"/World/Cameras/{_cn}",
                 position_mm=_cc.position_mm, aim_mm=_cc.mount_aim_mm,
                 near_clip_m=_cc.near_clip_m or 0.05,
@@ -296,8 +284,6 @@ def run_baseline(
             "outcome": outcome_value, "pick_outcome": pick_outcome,
             "fail_class": fail_class, "pick_error": pick_error,
             "reasons": reasons,
-            "candidates_silhouette": _calc_tel.get("candidates_silhouette"),
-            "candidates_geometry": _calc_tel.get("candidates_geometry"),
             "rejected_collision": _calc_tel.get("rejected_collision"),
             "rejected_ik": _calc_tel.get("rejected_ik"),
         }
@@ -317,8 +303,6 @@ def run_baseline(
         "target_mode": "top_object",
         "config": {"enable_bin": enable_bin, "curobo_bin_world": curobo_bin_world,
                    "adaptive_close": adaptive_close, "top_ref": top_ref, "pile_shapes": pile_shapes,
-                   "enable_g12": enable_g12, "enable_g4": enable_g4, "g4_rerank": g4_rerank,
-                   "oblique": oblique, "oblique_tilt_deg": oblique_tilt_deg, "oblique_azimuths": oblique_azimuths,
                    "multiview": multiview},
         "runs": runs,
         "pile_count": pile_count,
@@ -367,7 +351,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Iteration-1 dense-clutter PILE baseline (GraspingRevisit Opp 0).")
     ap.add_argument("--runs", type=int, default=20)
     ap.add_argument("--perception", choices=("vision", "gt"), default="vision",
-                    help="vision = end-to-end FLOOR (GDINO+SAM2); gt = perception CEILING (Isaac GT masks).")
+                    help="vision = end-to-end FLOOR (VLM+SAM2); gt = perception CEILING (Isaac GT masks).")
     ap.add_argument("--pile-count", type=int, default=8)
     ap.add_argument("--pile-spread-mm", type=float, default=50.0, help="pile-density dial (smaller = tighter).")
     ap.add_argument("--pile-shapes", choices=("mixed", "cube", "cylinder"), default="mixed",
@@ -375,14 +359,6 @@ def main() -> None:
     ap.add_argument("--no-bin", action="store_true", help="disable the shallow tray walls (open-table anchor).")
     ap.add_argument("--curobo-bin-world", action="store_true",
                     help="register the tray walls in cuRobo's world so it plans AROUND them (bin correctness).")
-    ap.add_argument("--g12", action="store_true", help="It.2a: swept-approach validation (reject colliding approaches).")
-    ap.add_argument("--g4", action="store_true", help="It.2a: per-candidate corridor-risk producer.")
-    ap.add_argument("--g4-rerank", action="store_true", help="It.2a: G4 corridor rerank (demote blocked corridors).")
-    ap.add_argument("--g4-rerank-weight", type=float, default=0.3)
-    ap.add_argument("--oblique", action="store_true",
-                    help="It.3a: generate grasps at multiple approach angles (top-down + tilts) -> gap-threading.")
-    ap.add_argument("--oblique-tilt-deg", type=float, default=30.0)
-    ap.add_argument("--oblique-azimuths", type=int, default=4)
     ap.add_argument("--multiview", action="store_true",
                     help="It.3b: 2 fixed oblique cameras -> fused BASE target cloud (side faces) into the generator.")
     ap.add_argument("--adaptive-close", action="store_true",
@@ -405,8 +381,6 @@ def main() -> None:
         pile_count=args.pile_count, pile_spread_mm=args.pile_spread_mm, pile_shapes=args.pile_shapes,
         enable_bin=not args.no_bin, curobo_bin_world=args.curobo_bin_world,
         adaptive_close=args.adaptive_close, top_ref=args.top_ref,
-        enable_g12=args.g12, enable_g4=args.g4, g4_rerank=args.g4_rerank, g4_rerank_weight=args.g4_rerank_weight,
-        oblique=args.oblique, oblique_tilt_deg=args.oblique_tilt_deg, oblique_azimuths=args.oblique_azimuths,
         multiview=args.multiview,
         bin_half_width_mm=args.bin_half_width_mm, bin_height_mm=args.bin_height_mm,
         seed=args.seed, jitter_mm=args.jitter_mm, settle_steps=args.settle_steps, out=default_out,

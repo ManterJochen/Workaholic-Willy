@@ -33,10 +33,6 @@ export default function CellFacts({ facts }: { facts: CellFactsOut | null }) {
             t('ck.facts.brake'),
             brake?.brakes_in_motion ? t('ck.facts.brakes') : brake?.latches ? t('ck.facts.latches') : t('ck.facts.noLatch'),
           ],
-          [
-            t('ck.facts.payload'),
-            facts.payload?.modelled ? `${yes(true)} · ${facts.payload.length_mm ?? '—'} mm` : facts.payload?.declined_reason || yes(false),
-          ],
           [t('ck.facts.route'), `${facts.route.route}${facts.route.sentence ? ` · ${facts.route.sentence}` : ''}`],
           [t('ck.facts.handEye'), `${facts.hand_eye_warn_mm} mm`],
           [t('ck.facts.rehearsal'), yes(facts.rehearsal)],

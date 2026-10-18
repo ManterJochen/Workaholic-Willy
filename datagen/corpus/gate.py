@@ -13,7 +13,7 @@
 
 3. Group leakage. A `split` column with one value on every row is no held-out set at all, and a
    row-level split puts the same object on both sides, which inflates every number reported from
-   the corpus. The RL layer checks the same property over its own datasets with `audit-leakage`.
+   the corpus.
 
 4. Class balance. A trainer has to be told the positive rate before it starts, and a corpus with no
    positive row, or with a positive in fewer than two groups, is unusable rather than difficult.

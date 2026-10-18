@@ -23,6 +23,7 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 
+from src.robot.grasping.collision.gripper_model import jaw_envelope
 from src.config import load_config
 from src.config.grippers import available_grippers, load_gripper
 from src.robot.grippers.sim.gripper import ROBOTIQ_HANDE_PROFILE, SCHUNK_EGU50_PROFILE
@@ -60,7 +61,7 @@ class TheHandEFileTests(unittest.TestCase):
         """
         jaw = load_gripper("robotiq_hande", aliases=False).jaw
         robot = load_config(profile="hande").robot
-        actuation, envelope = robot.gripper, robot.grasping.gripper_geometry.parallel_jaw
+        actuation, envelope = robot.gripper, jaw_envelope(robot)
         for field, expected in {
             "aperture_mm": actuation.max_width_mm,
             "min_width_mm": actuation.min_width_mm,

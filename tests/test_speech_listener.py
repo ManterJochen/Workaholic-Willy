@@ -71,24 +71,26 @@ def _listener(source: Any, engine: Any = None, **kwargs: Any) -> Any:
     )
 
 
-class TheMicrophoneKeysTests(unittest.TestCase):
+class TheMicrophoneNumbersTests(unittest.TestCase):
+    """The microphone keys left `models.stt` on 2026-10-17 (the owner's cleanup): the cell PC's microphone opens at
+    the owner's cell's numbers, fixed in `src/models/speech/capture.py`, and a tree that still writes one is refused
+    naming it."""
+
     def test_chunk_duration_left_with_the_fixed_window_path(self) -> None:
         self.assertNotIn("chunk_duration", _shipped_stt())
         with self.assertRaises(ValidationError) as caught:
             _config(chunk_duration=3)
         self.assertIn("chunk_duration", str(caught.exception))
 
-    def test_the_sample_format_is_one_the_stream_can_scale(self) -> None:
-        for sample_format in ("int16", "int32", "float32"):
-            with self.subTest(dtype=sample_format):
-                self.assertEqual(_config(dtype=sample_format).dtype, sample_format)
-        for sample_format in ("int61", "uint8", "float64"):
-            with self.subTest(dtype=sample_format):
-                with self.assertRaises(ValidationError):
-                    _config(dtype=sample_format)
+    def test_the_numbers_are_the_owners_cells(self) -> None:
+        from src.models.speech import capture
 
-    def test_a_stream_needs_a_channel_and_a_rate(self) -> None:
-        for overrides in ({"channels": 0}, {"samplerate": 0}, {"blocksize": -1}):
+        self.assertEqual((16000, 8000, 1, "int16"),
+                         (capture.MICROPHONE_SAMPLERATE, capture.MICROPHONE_BLOCKSIZE, capture.MICROPHONE_CHANNELS,
+                          capture.MICROPHONE_FORMAT))
+
+    def test_a_tree_that_still_writes_one_is_refused(self) -> None:
+        for overrides in ({"channels": 1}, {"samplerate": 16000}, {"blocksize": 8000}, {"dtype": "int16"}):
             with self.subTest(**overrides):
                 with self.assertRaises(ValidationError):
                     _config(**overrides)
@@ -134,7 +136,7 @@ class TheMicrophoneSourceTests(unittest.TestCase):
         self.addCleanup(source.stop)
         return source
 
-    def test_the_stream_is_an_input_stream_opened_with_the_configured_keys(self) -> None:
+    def test_the_stream_is_an_input_stream_opened_with_the_cells_numbers(self) -> None:
         from src.models.speech.capture import MicrophoneSource
 
         module = fake_sounddevice()
@@ -143,14 +145,12 @@ class TheMicrophoneSourceTests(unittest.TestCase):
             source.start()
         self.addCleanup(source.stop)
         (stream,) = module.opened  # type: ignore[attr-defined]
-        config = _config()
         self.assertEqual(
             {key: stream.kwargs[key] for key in ("samplerate", "blocksize", "channels", "dtype")},
-            {"samplerate": config.samplerate, "blocksize": config.blocksize,
-             "channels": config.channels, "dtype": config.dtype},
+            {"samplerate": 16000, "blocksize": 8000, "channels": 1, "dtype": "int16"},
         )
         self.assertTrue(stream.active)
-        self.assertEqual(source.samplerate, config.samplerate)
+        self.assertEqual(source.samplerate, 16000)
 
     def test_a_block_the_callback_receives_comes_back_as_mono_float32(self) -> None:
         module = fake_sounddevice()
@@ -413,7 +413,7 @@ class ListenTests(unittest.TestCase):
             config=_config(), engine=RecordingEngine(), detector=LoudnessDetector()
         )
         self.assertIsInstance(listener.source, MicrophoneSource)
-        self.assertEqual(listener.source.samplerate, _config().samplerate)
+        self.assertEqual(listener.source.samplerate, 16000)
 
     def test_from_config_builds_the_silero_detector_when_none_is_chosen(self) -> None:
         import torch
@@ -425,7 +425,9 @@ class ListenTests(unittest.TestCase):
             listener = Listener.from_config(config=_config(), engine=RecordingEngine())
         load.assert_not_called()
         self.assertIsInstance(listener.detector, SileroVoiceActivityDetector)
-        self.assertEqual(listener.detector.model_path, Path(_config().vad_model_path))
+        from src.models.weights import fixed_file
+
+        self.assertEqual(listener.detector.model_path, fixed_file("silero-vad"), "the repository's weights folder")
 
 
 class TheUtteranceReportTests(unittest.TestCase):

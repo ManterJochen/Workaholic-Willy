@@ -105,15 +105,9 @@ class SafetyAttestation:
     #: vendor with different guards.
     arm: str
     posture: SafetyPosture
-    #: Guard names in execution order. Empty unless the posture is GATED.
+    #: Guard names in execution order. Empty unless the posture is GATED. Every family is in a pipeline the cell's
+    #: config builds since 2026-10-17 (the owner's cleanup took the switches that left one out).
     guards: tuple[str, ...] = ()
-    #: The canonical guard families that are not in the pipeline.
-    #:
-    #: The absence is the safety fact. `guards` says what will run, so an operator reads
-    #: a count and stops; what a count cannot show is which family was switched off, and
-    #: an `enforce: false` block removes that family surface entirely rather than
-    #: silencing its log.
-    omitted: tuple[str, ...] = ()
     #: Whether the guards ever judge the middle of a path, or only its endpoints. True
     #: where the arm plans its moves, because a planned path is judged sample by sample
     #: and an interpolated move has no middle to judge.
@@ -166,17 +160,12 @@ class SafetyAttestation:
             # execute a whole trajectory.
             planner = plans_motions(arm)
             trajectories = bool(planner is not None and planner.plans_paths)
-            # `getattr` with a default, because a caller can supply any object with a
-            # `safety_preflight`, and an attestation that raised on an unfamiliar one
-            # would fail exactly where it is asked whether it is safe to start.
-            omitted = tuple(getattr(preflight, "omitted_guards", ()) or ())
         except Exception:  # noqa: BLE001 (a driver that cannot answer has not answered)
             return cls(arm=name, posture=SafetyPosture.UNSTATED)
         return cls(
             arm=name,
             posture=SafetyPosture.GATED if names else SafetyPosture.EMPTY,
             guards=names,
-            omitted=omitted,
             checks_trajectories=trajectories,
         )
 
@@ -194,12 +183,6 @@ class SafetyAttestation:
                 f"             {len(self.guards)} guard(s), {path}",
                 f"             {', '.join(self.guards)}",
             ]
-            if self.omitted:
-                # The line an operator needs. A guard count reads as complete, and
-                # naming the family that is switched off is what makes it a reading
-                # rather than a reassurance. An `enforce: false` block removes that
-                # surface entirely.
-                lines.append(f"             not enforced: {', '.join(self.omitted)}")
             return "\n".join(lines)
         reason = {
             SafetyPosture.UNGATED: "this arm states that nothing gates its motion",
@@ -216,7 +199,6 @@ class SafetyAttestation:
             "arm": self.arm,
             "posture": self.posture.value,
             "guards": list(self.guards),
-            "omitted": list(self.omitted),
             "checks_trajectories": self.checks_trajectories,
             "enforced": self.enforced,
         }

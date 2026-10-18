@@ -4,7 +4,7 @@ Wires two seams that give the offline layers a data source:
 
 * the record-logging seam (``record_logging.log_record``) appends one
   :class:`~src.robot.grasping.telemetry.outcome_logging.GraspAttemptRecord` JSONL line per pick, so
-  the soak, KPI and RL layers read sim data; and
+  the soak and KPI layers read sim data; and
 * the grasp-point viewer (the calculator's rendered debug PNG, surfaced via
   ``AutonomousGraspService.last_debug_image_png``) writes the annotated frame to disk: segmentation
   mask, projected gripper wireframes, contact arrows, and per-candidate rank and score.
@@ -40,10 +40,8 @@ def cell_identity(cell: Any) -> dict[str, Any]:
 
     ``GraspAttemptRecord`` is a frozen contract with no robot field, so nothing downstream can tell
     a UR3e attempt from a UR5e one. The two cells have different reach envelopes, scene anchors and
-    carry heights, and ``build-dataset`` would merge them with no stratification key and no
-    leakage-audit dimension, which poisons the RL ranking signal. The stamp rides the
-    caller-supplied ``extra=`` bag, so the frozen contract and the committed canonical replay packs
-    are untouched.
+    carry heights, and a log that merges them has no key to tell them apart. The stamp rides the
+    caller-supplied ``extra=`` bag, so the frozen contract is untouched.
 
     ``degraded_engines`` is carried for the same reason in the other direction: a run made without
     cuRobo or the exact-mesh guard describes a different motion stack, and its records say so rather

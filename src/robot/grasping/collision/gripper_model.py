@@ -13,8 +13,8 @@ same way. Add a new end-effector by writing a third model that satisfies the str
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Protocol, cast, runtime_checkable
+from dataclasses import dataclass, replace
+from typing import Any, Final, Protocol, cast, runtime_checkable
 
 import numpy as np
 
@@ -28,7 +28,9 @@ __all__ = [
     "HousingStep",
     "ParallelJawGripperModel",
     "SuctionCupGripperModel",
+    "UNNAMED_HAND",
     "hand_steps_of",
+    "jaw_envelope",
     "points_to_grasp_frame",
 ]
 
@@ -416,6 +418,55 @@ class SuctionCupGripperModel:
     def local_corners_mm(self, grip_width_mm: float) -> np.ndarray:
         """Return all local collision-box corners as a fresh ``(24, 3)`` array."""
         return np.vstack([box.corners_local_mm() for box in self.collision_boxes(grip_width_mm)])
+
+
+#: The hand a tree that names none plans with (``robot.gripper.model`` unset): the 2F-85, whose registry numbers are
+#: :class:`ParallelJawGripperModel`'s own defaults.
+UNNAMED_HAND: Final[str] = "robotiq_2f85"
+
+
+def jaw_envelope(
+    robot_config: Any = None,
+    *,
+    past_the_tcp_mm: float = 0.0,
+    palm_thickness_mm: float | None = None,
+    hand_steps: "HandSteps | None" = None,
+) -> ParallelJawGripperModel:
+    """The collision envelope of the hand a tree names (``robot.gripper.model``), from its registry file
+    (``config/grippers/<model>.yaml``); a tree that names none, or no tree, plans the 2F-85's (:data:`UNNAMED_HAND`).
+
+    The registry file is the one description of a hand: the loader fills the gripper's widths from it, and the
+    calculator, the jaw the part's body is searched with, the push and a scene's guard distance all plan this
+    envelope (the owner's cleanup, 2026-10-17, took the config block that restated it).
+
+    ``past_the_tcp_mm`` is how far past the TCP the guard holds the jaw's grasp centre
+    (``planning.hand.hand_past_the_tcp_mm``): the whole jaw stands that much further along the approach, its fingertip
+    and pad further ahead of the TCP and its palm nearer, so the calculator plans the hand where the guard judges it.
+    0.0, the default, is the jaw as the registry describes it. ``palm_thickness_mm`` is the registry's housing along
+    the closing axis (:attr:`ParallelJawGripperModel.palm_thickness_mm`); ``None`` keeps the palm as wide as the open
+    fingers. ``hand_steps`` are the fingers and the housing as the hand's guard bundle measures them about the grasp
+    centre (:func:`hand_steps_of`), placed with the jaw ``past_the_tcp_mm`` on; ``None`` keeps each one box.
+    """
+    from src.config.grippers import load_gripper  # noqa: PLC0415 (config is read only when a hand is built)
+
+    model = str(getattr(getattr(robot_config, "gripper", None), "model", "") or "") or UNNAMED_HAND
+    jaw = load_gripper(model, aliases=False).jaw
+    past = max(0.0, float(past_the_tcp_mm))
+    return ParallelJawGripperModel(
+        finger_length_mm=float(jaw.finger_length_mm) - past,
+        finger_thickness_mm=float(jaw.finger_thickness_mm),
+        finger_width_mm=float(jaw.finger_width_mm),
+        finger_pad_overlap_mm=float(jaw.finger_pad_overlap_mm),
+        fingertip_depth_mm=float(jaw.finger_ahead_mm) + past,
+        pad_length_mm=float(jaw.pad_length_mm),
+        pad_ahead_mm=float(jaw.pad_ahead_mm) + past,
+        palm_depth_mm=float(jaw.palm_depth_mm),
+        palm_width_mm=float(jaw.palm_width_mm),
+        palm_thickness_mm=palm_thickness_mm,
+        hand_steps=None if hand_steps is None else HandSteps(
+            finger=tuple(replace(step, z_mm=(step.z_mm[0] + past, step.z_mm[1] + past)) for step in hand_steps.finger),
+            housing=tuple(replace(step, z_mm=(step.z_mm[0] + past, step.z_mm[1] + past)) for step in hand_steps.housing)),
+    )
 
 
 def points_to_grasp_frame(points_mm: np.ndarray, pose: GraspPose) -> np.ndarray:

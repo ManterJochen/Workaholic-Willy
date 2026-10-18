@@ -6,9 +6,10 @@ nothing BECAUSE a model raised (the detector, or the segmenter on every detectio
 names itself in `last_failure`. A caller that must tell "the scene is empty" from "the model could not look" reads
 the count before and after: the console's task ends `detector_failed` instead of `nothing_left`.
 
-The guarded VLM backend and the routed backend pass the counts through, so the number is the same whichever
-stack a cell built. A missing VLM is the case that matters most on the owner's cell: its load error is raised
-inside the detector, and until now it read as an empty table on every look.
+Every stack a cell builds is one `TwoStageBackend` since the guarded VLM backend and the router left with
+GroundingDINO (2026-10-17), so the number is the same whichever detector a cell built. A missing VLM is the case that
+matters most on the owner's cell: its load error is raised inside the detector, and with nothing to fall back to it
+reads as a counted failure on every look, never as an empty table.
 """
 
 from __future__ import annotations
@@ -17,8 +18,7 @@ import unittest
 from unittest import mock
 
 from src.models.perception_backend import TwoStageBackend, failures_of, last_failure_of
-from src.models.routed_backend import RoutedPerceptionBackend
-from src.models.vlm import GuardedVlmBackend, Qwen3VLGrounder, VlmUnavailableError, shared_vlm
+from src.models.vlm import Qwen3VLGrounder, shared_vlm
 
 
 class _Detection:
@@ -105,40 +105,6 @@ class TheTwoStageBackendCountsItsFailuresTests(unittest.TestCase):
         self.assertEqual(failures_of(mock.Mock()), 0, "a stand-in without a real count is no count")
 
 
-class TheCountsPassThroughTests(unittest.TestCase):
-    def test_the_guarded_vlm_backend_reports_its_route_failures(self) -> None:
-        inner = _two_stage(raises=RuntimeError("generate failed"))
-        guard = GuardedVlmBackend(vlm=inner, model_id="qwen")
-        self.assertEqual(guard.perceive(object(), "the broken part"), ())
-        self.assertEqual(guard.failures, 1)
-        self.assertIn("generate failed", guard.last_failure)
-
-    def test_a_degraded_guard_counts_its_fallback_too(self) -> None:
-        class _Unavailable:
-            failures = 0
-
-            def perceive(self, image: object, prompt: str) -> tuple[()]:
-                raise VlmUnavailableError("qwen", OSError("no weights"))
-
-        fallback = _two_stage(raises=RuntimeError("dino fell over"))
-        guard = GuardedVlmBackend(vlm=_Unavailable(), model_id="qwen", degrade=True,
-                                  fallback_factory=lambda: fallback)
-        with self.assertLogs("src.models.vlm.availability", level="WARNING"):
-            self.assertEqual(guard.perceive(object(), "the broken part"), ())
-        self.assertEqual(guard.failures, 1)
-        self.assertIn("dino fell over", guard.last_failure)
-
-    def test_the_routed_backend_sums_its_built_routes(self) -> None:
-        vlm_route = _two_stage(raises=RuntimeError("qwen fell over"))
-        simple_route = _two_stage(("cube",))
-        routed = RoutedPerceptionBackend(simple_factory=lambda: simple_route, vlm_factory=lambda: vlm_route)
-        self.assertEqual(routed.failures, 0, "nothing built, nothing failed")
-        routed.perceive(object(), "der kaputte Würfel")       # the VLM route, which raises
-        routed.perceive(object(), "a red cube")               # the simple route, which works
-        self.assertEqual(routed.failures, 1)
-        self.assertIn("qwen fell over", routed.last_failure)
-
-
 class TheComposedVlmStackTests(unittest.TestCase):
     """The owner's stack, built from config: a VLM that cannot load is a counted failure on every look."""
 
@@ -148,12 +114,11 @@ class TheComposedVlmStackTests(unittest.TestCase):
 
     def test_a_vlm_that_cannot_load_is_counted_not_nothing(self) -> None:
         from src.config.loader import load_config
-        from src.config.schema.models.models_schema import PipelineConfig
         from src.models import factory
+        from src.models.segmentation.realtime import segmenter
 
-        models = load_config().models.model_copy(update={"pipeline": PipelineConfig(
-            zero_shot={"backend": "vlm"}, router={"enabled": False})})
-        with mock.patch.object(factory, "_build_named_segmenter", return_value=_Segmenter()):
+        models = load_config().models  # the shipped stack: zero-shot, the VLM grounds
+        with mock.patch.object(segmenter, "Sam2Segmenter", return_value=_Segmenter()):
             backend = factory.build_perception(models)
         with mock.patch.object(Qwen3VLGrounder, "_load", side_effect=OSError("no weights on disk")):
             for _ in range(2):

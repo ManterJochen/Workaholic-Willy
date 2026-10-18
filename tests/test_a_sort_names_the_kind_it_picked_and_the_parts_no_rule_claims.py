@@ -187,7 +187,6 @@ def _bench(*, boxes: tuple[Box, ...] = BENCH, target_labels: tuple[str, ...] = K
 def _region_over(*boxes: Box) -> ExclusionZones:
     """A task's zones keeping out a square of 80 mm about each box, every label, as a bin's footprint is kept out."""
     zones = ExclusionZones()
-    zones.start_pick()
     for box in boxes:
         x, y, _ = _centre(box)
         zones.keep_out_region(ExclusionRegion.rectangle((x, y), (80.0, 80.0), reason=f"the bin over {box.label}"))
@@ -272,14 +271,12 @@ class WhatNoRuleClaimsTests(unittest.TestCase):
         excluded = report.attempts[-1].excluded or ""
         self.assertIn("Every 'green part' the camera sees (1)", excluded)
         self.assertIn("Every 'red part' the camera sees (1)", excluded)
-        self.assertTrue(report.attempts[-1].excluded_by_regions)
         self.assertEqual(("ambiguous",), report.unclaimed_labels)
 
     def test_a_region_that_names_a_kind_keeps_it_out_of_a_blocker_too(self) -> None:
         """A blocker standing in a region is never taken away: a sort asks the zones with each of its kinds, as one
         kind's pick asks with its label; a task's own regions name none and keep every kind out."""
         zones = ExclusionZones()
-        zones.start_pick()
         zones.keep_out_region(ExclusionRegion.circle((0.0, 0.0), 50.0, label="red part"))
         zones.keep_out_region(ExclusionRegion.circle((500.0, 0.0), 50.0))
         sort = _bench(zones=zones).orchestrator

@@ -78,25 +78,21 @@ def _refuse_a_tree_hand(robot_cfg: "RobotConfig", data_dir: "str | Path | None")
 
 
 def _scene_kwargs(robot_cfg: "RobotConfig") -> dict[str, Any]:
-    """What the cell's calculator reads beside the part it grasps, from the tree: ``robot.grasping.scene_obstacles``
-    (the parts the prompt did not name, by the planner world's rules) and ``robot.grasping.side_approaches``.
+    """What the cell's calculator reads beside the part it grasps: the parts the prompt did not name, by the planner
+    world's rules from the tree, and the tilted approaches beside the vertical ones.
 
-    Both default on in a cell's tree and off in the library, so a calculator a script builds by hand is the one of
-    before; a cell built here gets what its tree says (the fix plan's contracts 5 and 8).
+    Every cell's since 2026-10-17, as the owner's cell ran them (``robot.grasping.scene_obstacles`` and
+    ``side_approaches`` until then); a calculator a script builds by hand reads neither, as before (the fix plan's
+    contracts 5 and 8).
     """
     from src.robot.grasping.generation.scene_obstacles import SceneObstacleRules
 
-    grasping = robot_cfg.grasping
-    return {
-        "scene_obstacles": (SceneObstacleRules.from_robot_config(robot_cfg)
-                            if bool(getattr(grasping, "scene_obstacles", False)) else None),
-        "side_approaches": bool(getattr(grasping, "side_approaches", False)),
-    }
+    return {"scene_obstacles": SceneObstacleRules.from_robot_config(robot_cfg), "side_approaches": True}
 
 
 def build_rehearsal_components(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
-                               ) -> tuple[Any, Any, Any, Any, Any]:
-    """``(calculator, perception, frame_resolver, multi_camera, camera_calculators)`` for a desk.
+                               ) -> tuple[Any, Any, Any, Any]:
+    """``(calculator, perception, frame_resolver, multi_camera)`` for a desk.
 
     Kept as its own function beside the cell builder so a caller that wants the pieces, to swap
     one or to inspect one, does not have to take the whole service to get them.
@@ -123,13 +119,8 @@ def build_rehearsal_components(robot_cfg: "RobotConfig", *, data_dir: "str | Pat
         camera_matrix=rehearsal_intrinsics(),
         max_grip_width_mm=robot_cfg.gripper.max_width_mm,
         min_grip_width_mm=robot_cfg.gripper.min_width_mm,
-        # Which geometry stage proposes candidates, from config. The default
-        # ('support_footprint') needs the BASE support plane the pick loop resolves and the
-        # CAMERA->BASE transform the resolver below provides; without either it stands down to the
-        # silhouette stage on its own and says so in telemetry.
-        support_footprint_geometry=(
-            robot_cfg.grasping.geometry.stage == "support_footprint"),
-        support_footprint_inflate_mm=robot_cfg.grasping.geometry.inflate_mm,
+        # The support-footprint stage needs the BASE support plane the pick loop resolves and the CAMERA->BASE
+        # transform the resolver below provides; without either a call offers nothing and says so in telemetry.
         **_scene_kwargs(robot_cfg),
     )
     # A nadir camera 800 mm above the workspace centre, looking straight down. Stands in for the
@@ -139,17 +130,17 @@ def build_rehearsal_components(robot_cfg: "RobotConfig", *, data_dir: "str | Pat
         quaternion_xyzw=np.array([1.0, 0.0, 0.0, 0.0]),
         from_frame=Frame.CAMERA, to_frame=Frame.BASE,
     ))
-    # A desk has no cameras at all, so it has no other cameras and no per-camera calculators. The
-    # last two slots are here so the two component builders keep the same shape and a reader is not
-    # left wondering which one is missing something.
-    return calculator, perception, resolver, None, None
+    # A desk has no cameras at all, so it has no other cameras. The last slot is here so the two
+    # component builders keep the same shape and a reader is not left wondering which one is missing
+    # something.
+    return calculator, perception, resolver, None
 
 
 def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
                           app_config: "Maybe[AppConfig]" = UNSET,
                           data_dir: "str | Path | None" = None,
-                          ) -> tuple[Any, Any, Any, Any, Any]:
-    """``(calculator, perception, frame_resolver=None, multi_camera, camera_calculators)``.
+                          ) -> tuple[Any, Any, Any, Any]:
+    """``(calculator, perception, frame_resolver=None, multi_camera)``.
 
     The resolver stays ``None`` on purpose: ``from_robot_config`` builds it from the calibration
     artifact named in config, and refuses if there is none. Passing one here would paper over exactly
@@ -187,18 +178,20 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
     # The cell's camera is named, not inferred. This took the first rig with `source: rgbd` by list
     # position and did not consult `enabled`, while the schema's own two-camera serial check used
     # `source == "rgbd" and enabled` and this file's fusion guard used a third rule. Three predicates
-    # over one list, disagreeing. On the shipped base profile the consequence was concrete: its only
+    # over one list, disagreeing (the fusion's is `camera_fusion.fused_cameras` since 2026-10-16). On the shipped base profile the consequence was concrete: its only
     # RGB-D rig ships `enabled: false`, and this opened it anyway, so the failure arrived at the
     # device instead of at the config that caused it.
     #
-    # The refusals (a rig the section does not configure, one switched off, one with no depth) are
-    # the camera noun's, so the cell, the calibration CLI and the exerciser say one thing.
+    # The refusals (a rig the section does not configure, one switched off, a stereo pair whose
+    # stereo calibration is not written yet) are the camera noun's, so the cell, the calibration CLI
+    # and the exerciser say one thing. A stereo primary searches its depth from where the robot's
+    # workspace box begins (`working_depth_range_mm`), so the box is handed over with the section.
     #
     # Which rig is primary: whichever `camera.cameras.primary_rig_id` names. The grasp is
     # synthesised from this camera and every other camera confirms what it sees, so moving the
     # primary moves every measured number this cell has.
     try:
-        primary = Camera.from_config(app_cfg.camera)
+        primary = Camera.from_config(app_cfg.camera, workspace=robot_cfg.motion.workspace)
     except CameraRefused as refused:
         raise CellBuildRefused(str(refused)) from refused
     rig_id = primary.rig_id
@@ -233,7 +226,7 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
                            cameras: "dict[str, Any]",
                            rig_id: str, np: Any, perception_spec: Any, build_calculator: Any,
                            vision_source: Any, data_dir: "str | Path | None" = None,
-                           ) -> tuple[Any, Any, Any, Any, Any]:
+                           ) -> tuple[Any, Any, Any, Any]:
     """The half of :func:`build_real_components` that runs with a device already held.
 
     Split out for the `try` above rather than for its own sake: wrapping the tail in place would
@@ -246,21 +239,15 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
     # models on the GPU) and it is stateless per call, so a four-camera rig costs four inference
     # passes and one set of weights, not four sets.
     #
-    # It goes through `PerceptionSpec`, so the whole `models.pipeline` block (kind, VLM backend,
-    # OneFormer segmenter, prompt router) selects the stack and `build_perception`'s fail-closed
-    # refusals are reachable from here. Reading only `models.detector` and
-    # `models.segmenter_backend` would build GroundingDINO plus SAM2 whatever the pipeline block
-    # says, with no error and no log line. On the shipped values the two resolve to the same pair.
+    # It goes through `PerceptionSpec`, so `models.pipeline` (the VLM, or RT-DETR's classes)
+    # selects the stack, every model reads its weights under `models.weights_root`, and
+    # `build_perception`'s fail-closed refusals are reachable from here.
     spec = perception_spec.from_config(app_cfg.models)
     backend = spec.build()
     perception = vision_source(
         streamer=handle,
         backend=backend,
         prompt=prompt,
-        # Whether a part's pixels must have the colour its phrase names (robot.grasping.colour_check).
-        colour_check=getattr(getattr(robot_cfg, "grasping", None), "colour_check", "on"),
-        # Whether a channel the camera clipped leaves its pixel out (robot.grasping.colour_check_clipped).
-        colour_check_clipped=getattr(getattr(robot_cfg, "grasping", None), "colour_check_clipped", "exclude"),
     )
     intrinsics = np.asarray(handle.get_intrinsics(), dtype=np.float64)
     multi_camera = _build_multi_camera_rig(
@@ -276,9 +263,6 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
         camera_matrix=intrinsics,
         max_grip_width_mm=robot_cfg.gripper.max_width_mm,
         min_grip_width_mm=robot_cfg.gripper.min_width_mm,
-        support_footprint_geometry=(
-            robot_cfg.grasping.geometry.stage == "support_footprint"),
-        support_footprint_inflate_mm=robot_cfg.grasping.geometry.inflate_mm,
         **_scene_kwargs(robot_cfg),
     )
     # Load the weights here, while the caller can still refuse; `preload` exists for exactly that.
@@ -294,70 +278,7 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
     _preload = getattr(calculator, "preload", None)
     if callable(_preload):
         _preload()
-    calculators = _build_camera_calculators(
-        robot_cfg, app_cfg, cameras=cameras, primary_rig_id=rig_id, primary=calculator,
-        multi_camera=multi_camera, data_dir=data_dir,
-    )
-    return calculator, perception, None, multi_camera, calculators
-
-
-def _build_camera_calculators(
-    robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: "dict[str, Any]", primary_rig_id: str,
-    primary: Any, multi_camera: Any, data_dir: "str | Path | None" = None,
-) -> "dict[str, Any] | None":
-    """One calculator per camera, or None when one is enough.
-
-    A GraspCalculator is bound to one camera's intrinsics at construction: it back-projects the mask
-    with them, and every candidate position it returns is in that camera's frame. So an object seen
-    only by a second camera cannot be computed with the primary's calculator. It would not fail. It
-    would produce a plausible grasp at the wrong place, using the right pixels with the wrong focal
-    length and the wrong principal point, and nothing downstream can tell that pose from a good one.
-
-    Returns None unless the cell can actually promote an object, which keeps every existing cell on
-    exactly the object it built before. The gripper limits are read once and shared: a gripper is a
-    fact about the cell and not about a camera, so K calculators differ in their lens and in nothing
-    else.
-    """
-    geometry_cfg = getattr(getattr(getattr(robot_cfg, "grasping", None), "fusion", None),
-                           "geometry", None)
-    if multi_camera is None or geometry_cfg is None:
-        return None
-    if not bool(getattr(geometry_cfg, "promote_unmatched", False)):
-        # Fusion without promotion never needs a second calculator: every object it computes was
-        # seen by the primary, because an object the primary did not see is not in the list.
-        return None
-
-    import numpy as np  # noqa: PLC0415
-
-    from src.robot.grasping.calculator_factory import build_calculator  # noqa: PLC0415
-
-    calculators: dict[str, Any] = {primary_rig_id: primary}
-    for cam_id in getattr(multi_camera, "sources", {}):
-        handle = cameras[cam_id].handle()
-        matrix = handle.get_intrinsics()
-        if matrix is None:
-            # Refused rather than defaulted. A camera whose intrinsics are unknown can still fuse a
-            # surface onto somebody else's object, and it cannot own one: the pick loop would fall
-            # back to the primary's lens and say so, once, in a warning nobody reads at 3 a.m.
-            raise CellBuildRefused(
-                f"camera {cam_id!r} can promote an object (grasping.fusion.geometry."
-                "promote_unmatched is true) and its intrinsics are unavailable, so a grasp "
-                "synthesised from it would be placed with the primary camera's lens. Calibrate it, "
-                "or set promote_unmatched: false and let it confirm objects rather than introduce "
-                "them."
-            )
-        calculators[cam_id] = build_calculator(
-            robot_cfg,
-            data_dir=data_dir,
-            camera_matrix=np.asarray(matrix, dtype=np.float64),
-            max_grip_width_mm=robot_cfg.gripper.max_width_mm,
-            min_grip_width_mm=robot_cfg.gripper.min_width_mm,
-            support_footprint_geometry=(
-                robot_cfg.grasping.geometry.stage == "support_footprint"),
-            support_footprint_inflate_mm=robot_cfg.grasping.geometry.inflate_mm,
-            **_scene_kwargs(robot_cfg),
-        )
-    return calculators
+    return calculator, perception, None, multi_camera
 
 
 def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: "dict[str, Any]",
@@ -365,10 +286,12 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: 
                             prompt: str) -> Any:
     """The other cameras of a fused cell, as a `MultiCameraPerceptionSource`, or None.
 
-    `apply_orchestrator_overlays` wires `fusion_geometry_config` and the per-camera resolver map
-    from config, but the rig itself is a live device handle a caller must pass in. This is what
-    builds it, so a physical cell that names calibrated cameras fuses them instead of naming three
-    cameras, loading three artifacts fail-closed, and still running single-view.
+    `apply_orchestrator_overlays` wires the per-camera resolver map from config, but the rig itself
+    is a live device handle a caller must pass in. This is what builds it, so a physical cell whose
+    camera section declares calibrated cameras fuses them instead of loading their artifacts
+    fail-closed and still running single-view. The cameras are `camera_fusion.fused_cameras`: every
+    enabled rig that declares its calibration, RGB-D or stereo, where two or more do (the owner,
+    2026-10-16: no switch).
 
     The primary is deliberately not in here. `fuse_scene_geometry` takes the primary view as its
     first four arguments and the rest as `other_views`; a primary that appears in both is fused
@@ -377,60 +300,29 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: 
     than an error, and it is left as it is because changing it would move a measured number
     without a measurement.
 
-    Returns None when fusion geometry is off or names no camera besides the primary, which keeps
-    every existing cell byte-identical.
+    Returns None where the cell fuses no camera besides the primary, which keeps every one-camera
+    cell byte-identical.
 
     Never run on hardware. No physical multi-camera cell has been built by this function.
     """
     from src.camera.orchestration.camera import Camera, CameraRefused
+    from src.robot.execution.camera_fusion import fused_cameras
     from src.robot.grasping.types.perception import MappedCameraRig
     from src.robot.perception import RealSenseVisionPerceptionSource
 
-    grasping_cfg = getattr(robot_cfg, "grasping", None)
-    fusion_cfg = getattr(grasping_cfg, "fusion", None)
-    geometry_cfg = getattr(fusion_cfg, "geometry", None)
-    if geometry_cfg is None or not bool(getattr(geometry_cfg, "enabled", False)):
-        return None
-    # Named apart from `cameras`, the owners this build opened: this is the config's map of fused
-    # cameras.
-    configured = getattr(fusion_cfg, "cameras", None) or {}
-    wanted = [cam_id for cam_id, cam in sorted(configured.items())
-              if bool(getattr(cam, "enabled", True)) and cam_id != primary_rig_id]
+    wanted = [cam_id for cam_id in fused_cameras(app_cfg.camera.cameras.rigs, primary_rig_id)
+              if cam_id != primary_rig_id]
     if not wanted:
         return None
 
-    # Fail-closed, at build time and before a device is opened. A camera named in `fusion.cameras`
-    # with no matching RGB-D rig, or whose rig declares no calibration, is a camera every pick
-    # expects and none can place: under `refuse` that stops every pick, and under `degrade` it warns
-    # on every pick. This says it once instead, while an operator is watching.
-    known = {r.rig_id: r for r in app_cfg.camera.cameras.rigs
-             if getattr(r, "source", None) == "rgbd"}
-    unknown = [cam_id for cam_id in wanted if cam_id not in known]
-    if unknown:
-        raise CellBuildRefused(
-            f"grasping.fusion.cameras names {unknown} but camera.cameras.rigs has no RGB-D rig with "
-            f"that id (known: {sorted(known)}). A fused cell expects every configured camera to "
-            "deliver a frame, so this would refuse or warn on every pick instead of once here."
-        )
-    uncalibrated = [cam_id for cam_id in wanted if getattr(known[cam_id], "extrinsics", None) is None]
-    if uncalibrated:
-        raise CellBuildRefused(
-            f"grasping.fusion.cameras names {uncalibrated} and those rigs declare no calibration. A fused "
-            "camera is placed by its own CAMERA to BASE, declared on its rig as "
-            "camera.cameras.rigs[<id>].extrinsics: calibrate it and paste the block the calibration CLI "
-            "prints, or set the camera enabled: false in grasping.fusion.cameras."
-        )
-
     sources = {}
     for cam_id in wanted:
-        # Through the camera noun, which refuses a rig switched off. The check above asks only
-        # whether the id names an RGB-D rig, so a camera its own config declares off would
-        # otherwise be opened and fused here. An opened camera joins `cameras`, so a later refusal
-        # gives it back too.
+        # Through the camera noun, as the primary is opened, so the cell says the camera's own
+        # refusals. An opened camera joins `cameras`, so a later refusal gives it back too.
         try:
-            camera = Camera.from_config(app_cfg.camera, rig_id=cam_id)
+            camera = Camera.from_config(app_cfg.camera, rig_id=cam_id, workspace=robot_cfg.motion.workspace)
         except CameraRefused as refused:
-            raise CellBuildRefused(f"grasping.fusion.cameras names {cam_id!r}: {refused}") from refused
+            raise CellBuildRefused(f"the fused camera {cam_id!r}: {refused}") from refused
         camera.open()
         cameras[cam_id] = camera
         sources[cam_id] = RealSenseVisionPerceptionSource(
@@ -439,8 +331,6 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: 
             # with one set of weights; the cost of an extra camera is an inference pass.
             backend=backend,
             prompt=prompt,
-            colour_check=getattr(grasping_cfg, "colour_check", "on"),
-            colour_check_clipped=getattr(grasping_cfg, "colour_check_clipped", "exclude"),
         )
     return MappedCameraRig(sources)
 
@@ -493,14 +383,13 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
         raise CellBuildRefused(row.reason) from row.cause
     # The wrist cameras the arm carries, which the row has just placed.
     wrist = WristBodies.from_config(robot_cfg, app_cfg.camera, data_dir=data_dir)
-    calculator, perception, resolver, multi_camera, calculators = build_real_components(
+    calculator, perception, resolver, multi_camera = build_real_components(
         robot_cfg, prompt, app_config=app_cfg, data_dir=data_dir)
     rig_id = app_cfg.camera.cameras.primary_rig_id
     try:
         service = AutonomousGraspService.from_robot_config(
             robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
             multi_camera_perception=multi_camera,
-            camera_calculators=calculators,
             # Which camera is the primary, told to the root rather than inferred there. It cannot
             # read it: the key lives in the camera section and the root is handed a `RobotConfig`.
             # Without it the primary is expected among the cameras a fused pick waits for, and it
@@ -509,13 +398,15 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
             # Each camera's calibration is declared on its rig, so the root reads the camera section
             # of the same tree for the primary's resolver and a fused cell's resolver map.
             camera=app_cfg.camera,
+            # What a task takes where it says nothing itself, whether the parts are critical among it.
+            app_runtime=app_cfg.runtime,
             **overrides,
         )
         _stamp_wrist_pick_frames(robot_cfg, service, perception)
         # Before the world, because the world's self filter reads the bodies the arm holds.
         _wire_wrist_bodies(service, wrist)
         _wire_live_planner_world(robot_cfg, service, perception, app_cfg=app_cfg)
-        _start_the_pick_writers(robot_cfg, service)
+        _write_records_in_the_background(service)
     except BaseException:
         # A refused build gives the cameras back past the components as well.
         # `build_real_components` gives back what it opened when it fails itself, but the root, the
@@ -527,29 +418,12 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     return service
 
 
-def _start_the_pick_writers(robot_cfg: Any, service: Any) -> None:
-    """What keeps a pick of a real cell from waiting: SFE's workers started now and handed to the pick loop
-    (``robot.grasping.workers``, ``src/robot/grasping/workers.py``), and the records written in the background
-    (``AutonomousGraspService.write_records_in_the_background``).
-
-    The workers start once per process (``shared_workers``), here rather than at the first pick, which would wait for
-    them; how many, and why, is said in the log. Workers that cannot start are said there too, and every part is then
-    searched in the cell's process, as with none. Nothing here moves or opens a device.
-    """
-    from src.robot.constants import create_robot_logger
-    from src.robot.grasping.workers import shared_workers, worker_count
-
+def _write_records_in_the_background(service: Any) -> None:
+    """What keeps a pick of a real cell from waiting on its records: they are written in the background
+    (``AutonomousGraspService.write_records_in_the_background``). Nothing here moves or opens a device."""
     write_later = getattr(service, "write_records_in_the_background", None)
     if callable(write_later):
         write_later(True)
-    orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
-    setting = getattr(getattr(robot_cfg, "grasping", None), "workers", 0)
-    count, said = worker_count(setting if isinstance(setting, (int, str)) else 0)
-    if orchestrator is None or count < 1:
-        return
-    # The robot log (a bare logger writes nowhere in the console), under this module's name, as the tests read it.
-    create_robot_logger(__name__, "grasp_cells.log").info("SFE workers (robot.grasping.workers): %s", said)
-    orchestrator.sfe_workers = shared_workers(count)
 
 
 def _plans_with_curobo(robot_cfg: Any) -> bool:
@@ -583,13 +457,14 @@ def _stamp_wrist_pick_frames(robot_cfg: Any, service: Any, perception: Any) -> N
     grasp by where the tool is when the grasp is resolved, not by where it was when the camera saw
     the part. A stamped frame carries the pose at its shutter, and one taken while the arm moved
     beyond the rig's shutter tolerance is taken again up to
-    ``safety.planning_world.perceived.fresh_frame_attempts`` more times before the pick stops.
+    ``shutter_motion.FRESH_FRAME_ATTEMPTS`` more times before the pick stops.
 
     Each rig's calibration also has to have been solved against the flange to TCP this cell
     declares, whether or not the rig declares a body: a wrist frame is placed by CAMERA to TOOL, and
     a calibration made against another tool frame puts every grasp off by the difference.
     """
     from src.calibration.rig_calibration import flange_to_tcp_refusal
+    from src.robot.core.shutter_motion import FRESH_FRAME_ATTEMPTS
     from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
 
     orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
@@ -603,7 +478,7 @@ def _stamp_wrist_pick_frames(robot_cfg: Any, service: Any, perception: Any) -> N
             sources.append(source)
     if not sources:
         return
-    attempts = int(robot_cfg.safety.planning_world.perceived.fresh_frame_attempts)
+    attempts = FRESH_FRAME_ATTEMPTS
     for source in sources:
         calibration = source.streamer.camera.calibration()
         stale = flange_to_tcp_refusal(calibration, robot_cfg.gripper.tool_frame)
@@ -624,8 +499,8 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
     pieces: the cameras the components builder opened, the calibration each rig declares, and the
     arm the service built. The layers below cannot reach across those and are not supposed to.
 
-    Which rigs feed the world is `CameraWorldPlan`'s answer: every enabled RGB-D rig that declares
-    its calibration, the primary first. The primary and the fused cameras are already open and are
+    Which rigs feed the world is `CameraWorldPlan`'s answer: every enabled rig that declares its
+    calibration, RGB-D or stereo, the primary first. The primary and the fused cameras are already open and are
     taken as they are. Every other planned rig is opened here, held on the orchestrator as
     `planner_world_cameras`, and given back with the rest on teardown. A cell that did not ask
     opens nothing more and logs nothing. A camera that cannot be opened or placed refuses the build
@@ -661,7 +536,7 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
             elif rig_id in fused:
                 owners[rig_id] = fused[rig_id].streamer.camera
             else:
-                camera = Camera.from_config(app_cfg.camera, rig_id=rig_id)
+                camera = Camera.from_config(app_cfg.camera, rig_id=rig_id, workspace=robot_cfg.motion.workspace)
                 camera.open()
                 opened.append(camera)
                 owners[rig_id] = camera
@@ -669,8 +544,8 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
             _give_back(OpenedCameras(tuple(opened)))
             raise CellBuildRefused(
                 f"the live planner world cannot open camera {rig_id!r}: {exc}. A cell that enables "
-                "safety.planning_world takes every enabled RGB-D rig that declares its calibration, so free that "
-                "camera, switch its rig off, or turn safety.planning_world.perceived off"
+                "safety.planning_world takes every enabled rig that declares its calibration, so free that "
+                "camera or switch its rig off"
             ) from exc
     reader = getattr(arm, "get_tcp_pose", None)
     try:
@@ -746,10 +621,10 @@ def build_rehearsal_cell(robot_cfg: "RobotConfig", *, data_dir: "str | Path | No
 
     _refuse_a_tree_hand(robot_cfg, data_dir)
 
-    camera: dict[str, Any] = {"camera": app_config.camera} if chosen(app_config) else {}
+    camera: dict[str, Any] = ({"camera": app_config.camera, "app_runtime": app_config.runtime} if chosen(app_config)
+                              else {})
     robot_cfg = robot_cfg.model_copy(update={"vendor": "dummy"})
-    calculator, perception, resolver, _no_cameras, _one_lens = (
-        build_rehearsal_components(robot_cfg, data_dir=data_dir))
+    calculator, perception, resolver, _no_cameras = build_rehearsal_components(robot_cfg, data_dir=data_dir)
     return AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
         **camera, **overrides,

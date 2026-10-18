@@ -2,8 +2,9 @@
 
 The owner decided the key (``camera.cameras.rigs[<id>].body``), its own ``margin_mm`` with no default, the bracket on
 the rig, required and nullable, and ``record_tolerance_mm`` and ``record_tolerance_deg`` on the rig's extrinsics with
-no default. A body is placed by the eye in hand calibration, which solves on an RGB-D rig's colour image, so a body on
-a fixed camera, on a stereo rig, or on a rig whose id cannot name a link is refused at load.
+no default. A body is placed by the eye in hand calibration, which solves on an RGB-D rig's colour image or a stereo
+rig's left image rectified (2026-10-17), so a body on a fixed camera, or on a rig whose id cannot name a link, is
+refused at load.
 """
 
 from __future__ import annotations
@@ -72,12 +73,18 @@ class TheSchemaRefusesTests(unittest.TestCase):
         self.assertIn("camera.cameras.rigs['wrist'].body declares a camera the arm carries, and the rig's extrinsics "
                       "say eye_to_hand", str(caught.exception))
 
-    def test_a_body_on_a_stereo_rig_is_refused(self) -> None:
+    def test_a_stereo_rig_on_the_wrist_declares_its_body_as_an_rgbd_rig_does(self) -> None:
+        """Since 2026-10-17 a stereo pair's hand-eye calibration solves on its left image rectified, so a pair on the
+        wrist places its housing as an RGB-D rig does, in that camera's frame; on a fixed pair a body is refused as on
+        any fixed camera."""
         for rig in (_webcam_rig("pair"), _single_rig("stereo")):
-            with self.subTest(source=rig.source), self.assertRaises(ValidationError) as caught:
-                type(rig).model_validate({**rig.model_dump(), "body": _BODY})
-            self.assertIn(f"is on a {rig.source!r} rig; a body is placed by the eye in hand calibration",
-                          str(caught.exception))
+            with self.subTest(source=rig.source):
+                carried = type(rig).model_validate({**rig.model_dump(), "extrinsics": _WRIST, "body": _BODY})
+                self.assertIsNotNone(carried.body)
+                with self.assertRaises(ValidationError) as caught:
+                    type(rig).model_validate({**rig.model_dump(), "body": _BODY, "extrinsics": {
+                        "mounting_mode": "eye_to_hand", "artifact_path": "eth.json"}})
+                self.assertIn("say eye_to_hand", str(caught.exception))
 
     def test_a_rig_id_that_cannot_name_a_link_is_refused(self) -> None:
         for rig_id in ("wrist cam", "wrist-cam", "wrist.cam"):

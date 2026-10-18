@@ -55,7 +55,7 @@ from src.robot.execution.robot import Robot
 from src.robot.grasping.scene import Scene
 from src.robot.perception.locator import Located, LocatedObject, Locator, LocatorRefused, SetDown, _Placed
 from tests._helpers import HoldsAWorld
-from tests.test_a_scene_plans_the_trees_hand import _CENTRE, _cube, _hande, _replace
+from tests.test_a_scene_plans_the_trees_hand import _CENTRE, _cube, _hande, _on_a_bench, _replace
 from tests.test_a_toggle_hand_pulses_only_where_the_owner_expects import (
     _MOTIONS,
     _PROTECTIVE,
@@ -312,9 +312,8 @@ class TheSceneSaysTheSupportTheCellDeclaresTests(unittest.TestCase):
         cfg = _hande()
         rows = (
             ("the table", cfg, 0.0),
-            ("a table declared at 12 mm", _replace(cfg, "grasping.support.height_mm", 12.0), 12.0),
+            ("a bench declared at 12 mm", _on_a_bench(cfg, 12.0), 12.0),
             ("a container floor at 8 mm", _replace(cfg, "grasping.support.container.floor_height_mm", 8.0), 8.0),
-            ("no refinement from the target", _replace(cfg, "grasping.support.refine_from_target", False), 0.0),
         )
         for label, config, declared in rows:
             with self.subTest(label):
@@ -367,7 +366,7 @@ class ThePartsBottomIsALowerBoundTests(unittest.TestCase):
     def test_a_part_the_looks_saw_standing_below_the_declared_support_hangs_from_where_it_stood(self) -> None:
         """A table declared 8 mm high: the looks measured the part's foot at 0, so the hang grows by 8 mm and the part
         lands with its air over the target, not 8 mm into it."""
-        config = _replace(_hande(), "grasping.support.height_mm", 8.0)
+        config = _on_a_bench(_hande(), 8.0)
         scene = _scene_of_looks(config, _cube(40.0))
         self.assertEqual(8.0, scene.declared_support_height_mm)
         self.assertEqual(0.0, scene.part_bottom_mm, "where the looks measured the part's foot")
@@ -385,7 +384,7 @@ class ThePartsBottomIsALowerBoundTests(unittest.TestCase):
     def test_one_view_hangs_the_part_from_the_declared_support_as_before(self) -> None:
         """A fixed camera (a cell with no wrist camera behaves as it did), and a wrist camera that stopped at its first
         look: no extra view measured anything, so the declared support stands, whatever the one view read."""
-        config = _replace(_hande(), "grasping.support.height_mm", 8.0)
+        config = _on_a_bench(_hande(), 8.0)
         for looks in (0, 1):
             with self.subTest(looks=looks):
                 self.assertEqual(8.0, _scene_of_looks(config, _cube(40.0), looks=looks).part_bottom_mm)
@@ -398,7 +397,7 @@ class ThePartsBottomIsALowerBoundTests(unittest.TestCase):
         from src.robot.grasping import scene as scene_module
 
         enough = int(scene_module._PART_BOTTOM_POINTS)  # noqa: SLF001
-        config = _replace(_hande(), "grasping.support.height_mm", 8.0)
+        config = _on_a_bench(_hande(), 8.0)
         cube = _cube(40.0)
         for strays, bottom in ((1, 0.0), (enough - 1, 0.0), (enough, -60.0)):
             with self.subTest(strays=strays):
@@ -408,7 +407,7 @@ class ThePartsBottomIsALowerBoundTests(unittest.TestCase):
     def test_it_is_never_above_the_declared_support(self) -> None:
         rng = np.random.default_rng(7)
         for declared in (-10.0, 0.0, 8.0, 30.0):
-            config = _replace(_hande(), "grasping.support.height_mm", declared)
+            config = _on_a_bench(_hande(), declared)
             for _ in range(5):
                 cloud = _cube(40.0, base_mm=float(rng.uniform(-20.0, 40.0)))
                 cloud[:, 2] += rng.normal(0.0, 2.0, cloud.shape[0])
@@ -510,10 +509,8 @@ class ThePlaceLeavesTheLocatedTargetOutOfTheWorldTests(unittest.TestCase):
         from tests.test_locator import _backend, _block_frame, _Handle, _Owner
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "safety": {"payload": {"enforce": False}, "planning_world": {
-                "enabled": True,
+            "vendor": "ur", "safety": {"planning_world": {
                 "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                "perceived": {"enabled": True},
             }},
         })
         rigs = [SimpleNamespace(rig_id="overhead", enabled=True, source="rgbd",
@@ -602,19 +599,23 @@ class TheLocatorsOfACellShareOneBackendTests(unittest.TestCase):
         self.assertTrue(all(locator._backend is built for locator in locators))  # noqa: SLF001
         self.assertEqual(cameras, [locator._camera for locator in locators])  # noqa: SLF001
         self.assertEqual([True, False, False], [locator.on_the_wrist for locator in locators])
-        self.assertEqual([4, 4, 4], [locator._attempts for locator in locators])  # noqa: SLF001
+        self.assertEqual([3, 3, 3], [locator._attempts for locator in locators])  # noqa: SLF001
         self.assertEqual(["wrist", "overhead", "side"], view.watched)
 
     def test_one_camera_it_cannot_place_refuses_them_all_before_any_model_loads_or_window_opens(self) -> None:
+        from src.camera.orchestration.camera import Camera, create_device_streamer
+        from tests.test_camera_boundaries import _webcam_rig
         from tests.test_locator import _backend, _Owner, _wrist
 
         spec = mock.MagicMock()
         spec.from_config.return_value.build.return_value = _backend()
         view = _Watching()
+        pair = _webcam_rig("stereo")  # an owner over the raw pair, as a stereo catalogue builds one: two images, no depth
         rows: "tuple[tuple[str, list[Any], dict[str, Any]], ...]" = (
             ("a wrist camera with no TCP reader", [_Owner(rig_id="overhead"), _Owner(calibration=_wrist(), rig_id="wrist")],
              {}),
-            ("a rig with no depth", [_Owner(rig_id="overhead"), SimpleNamespace(rig_id="stereo", source="stereo")],
+            ("a rig with no depth",
+             [_Owner(rig_id="overhead"), Camera.from_rig(pair, streamer=create_device_streamer(pair))],
              {"tool_pose": lambda: _grasp(300.0)}),
         )
         for label, cameras, keywords in rows:
@@ -661,6 +662,23 @@ def _east_face() -> np.ndarray:
     return np.array([[_CENTRE[0] + 20.0, _CENTRE[1] + y, z] for y in across for z in up])
 
 
+def _block(low: "tuple[float, float]", high: "tuple[float, float]", height_mm: float) -> np.ndarray:
+    """A block standing on the table, ``low`` to ``high`` in x and y off the cube's centre, as a look from the east sees
+    it: its top and its east face."""
+    xs = np.arange(low[0], high[0] + 1e-9, 2.0)
+    ys = np.arange(low[1], high[1] + 1e-9, 2.0)
+    up = np.arange(0.0, height_mm + 1e-9, 2.0)
+    top = [[_CENTRE[0] + x, _CENTRE[1] + y, height_mm] for x in xs for y in ys]
+    east = [[_CENTRE[0] + high[0], _CENTRE[1] + y, z] for y in ys for z in up]
+    return np.array(top + east)
+
+
+#: Beside the cube as its east look sees them: a block as tall, 4 mm off its north face, and a low one 30 mm off its east
+#: face. Across the east face alone the hand's fingers have no room at either side (the face's ends, the north block;
+#: across it, the low one); across the whole cube they have, between the two.
+_BESIDE = (_block((-20.0, 24.0), (20.0, 44.0), 40.0), _block((50.0, -20.0), (70.0, 20.0), 15.0))
+
+
 class _Owners:
     """``Camera`` as example 13 calls it: one owner per rig, each opened and released on the log."""
 
@@ -691,7 +709,7 @@ class _Seeing(Locator):
     in turn, each locate on the log. Its ``look_around`` is the locator's own, so a wrist camera's looks are moved to,
     fused and judged as on the cell."""
 
-    def __init__(self, cell: _Cell, rig_id: str, on_the_wrist: bool, sees: "dict[str, list[np.ndarray | None]]",
+    def __init__(self, cell: _Cell, rig_id: str, on_the_wrist: bool, sees: "dict[str, list[_Answer]]",
                  tool_pose: Any, view: Any = None) -> None:
         super().__init__(camera=SimpleNamespace(rig_id=rig_id), backend=None, calibration=None,
                          tool_pose=tool_pose if on_the_wrist else None, attempts=0, view=view)
@@ -706,14 +724,16 @@ class _Seeing(Locator):
         points = answers.pop(0) if answers else None
         self.cell.log.write("locate", self.rig_id, prompt, points is not None)
         label = "red cube" if prompt == _OBJECT else "blue plate"
-        return _Placed(located=_located(self.rig_id, *(() if points is None else (_object(label, points),))))
+        clouds = () if points is None else points if isinstance(points, tuple) else (points,)
+        return _Placed(located=_located(self.rig_id, *(_object(label if number == 0 else "block", cloud)
+                                                       for number, cloud in enumerate(clouds))))
 
 
 class _Locators:
     """``Locator`` as example 13 calls it: the scripted locator of each camera handed in, and how many perception
     backends were built for them: one per ``for_cameras`` call, one per ``from_tree`` call."""
 
-    def __init__(self, cell: _Cell, script: "dict[str, tuple[bool, dict[str, list[np.ndarray | None]]]]") -> None:
+    def __init__(self, cell: _Cell, script: "dict[str, tuple[bool, dict[str, list[_Answer]]]]") -> None:
         self.cell = cell
         self.script = script
         self.built: list[_Seeing] = []
@@ -829,7 +849,7 @@ def _plans(rig_ids: "tuple[str, ...]", refusal: "str | None" = None) -> Any:
 class _Run:
     """One run of example 13 on a cell whose cameras see what ``script`` says, primary first."""
 
-    def __init__(self, script: "dict[str, tuple[bool, dict[str, list[np.ndarray | None]]]]", *, answers: str = "",
+    def __init__(self, script: "dict[str, tuple[bool, dict[str, list[_Answer]]]]", *, answers: str = "",
                  rig_ids: "tuple[str, ...] | None" = None, refusal: "str | None" = None,
                  stop_at_look: "int | None" = None, **arm: Any) -> None:
         self.cell = _cell(answers, **arm)
@@ -867,7 +887,11 @@ class _Run:
                 for e in self.cell.log.kinds("joints", "locate")]
 
 
-def _sees(**by_prompt: "list[np.ndarray | None]") -> "dict[str, list[np.ndarray | None]]":
+#: What one locate of a prompt finds: nothing, the object's cloud, or its cloud and the blocks the look sees beside it.
+_Answer = "np.ndarray | tuple[np.ndarray, ...] | None"
+
+
+def _sees(**by_prompt: "list[_Answer]") -> "dict[str, list[_Answer]]":
     return {(_OBJECT if key == "part" else _TARGET): answers for key, answers in by_prompt.items()}
 
 
@@ -947,9 +971,10 @@ class Example13PicksAndPlacesWhatTheCamerasFindTests(unittest.TestCase):
         self.assertEqual(1, len(run.watched.places))
 
     def test_a_wrist_look_with_no_safe_grasp_goes_on_to_the_next_and_the_part_is_picked_on_both(self) -> None:
-        """The first look sees only the cube's east face, on which the hand finds no grasp; the second sees its top
-        and its south face. The looks are fused, and the grasp is planned on all three faces."""
-        run = _Run({"wrist": (True, _sees(part=[_east_face(), _cube(40.0)], target=[_plate()]))})()
+        """The first look sees only the cube's east face, and the blocks beside it (``_BESIDE``), on which the hand
+        finds no grasp; the second sees the cube's top and its south face. The looks are fused, the blocks obstacles
+        still, and the grasp is planned on all three faces, across the cube between the blocks."""
+        run = _Run({"wrist": (True, _sees(part=[(_east_face(), *_BESIDE), _cube(40.0)], target=[_plate()]))})()
 
         self.assertIsNone(run.exit, run.printed[-2000:])
         spans = _check(self, run.cell)
@@ -959,6 +984,7 @@ class Example13PicksAndPlacesWhatTheCamerasFindTests(unittest.TestCase):
         self.assertEqual(_LOOK_LABELS, seen.looks)
         self.assertEqual((_LOOK_LABELS[1], _LOOK_LABELS[0]), seen.looks_fused)
         self.assertEqual(_east_face().shape[0] + _cube(40.0).shape[0], seen.objects[0].points_base_mm.shape[0])
+        self.assertEqual(["red cube", "block", "block"], [obj.label for obj in seen.objects], "a block was not kept")
         np.testing.assert_array_equal(seen.objects[0].points_base_mm, run.watched.picks[0]["keep_out"]
                                       .target_points_base_mm)
         self.assertEqual(["closed"], [e.data[0] for e in _only(spans, "pick").of("edge")])

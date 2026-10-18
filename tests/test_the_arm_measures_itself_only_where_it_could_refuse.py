@@ -39,7 +39,7 @@ _ROUNDING_MM = 1e-9
 
 
 def _backend() -> Any:
-    preflight, arm = owner.owner_cell(whole=True)
+    preflight, arm = owner.owner_cell()
     guard = preflight._path_authority(arm)
     assert guard is not None
     return guard._exact_mesh_backend("ur10"), preflight, arm

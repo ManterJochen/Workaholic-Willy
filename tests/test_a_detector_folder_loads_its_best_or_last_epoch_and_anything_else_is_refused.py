@@ -6,8 +6,10 @@ both are the real RT-DETR architecture at toy size (``tests/_detector_training_f
 transformers on a CPU with nothing downloaded, the last epoch with a class the best one lacks, so which one loaded is
 plain from its classes. Whatever holds no detector is refused before anything loads, in a sentence naming the folder
 and what it lacks; an out_dir whose run kept only its last epoch names ``last/``. A Hugging Face id is read from the
-folder the fetch script writes when that is there, and ``local=True`` keeps the read on this machine. ``from_config``
-reads the two blocks a cell's tree names, and refuses the key that names no checkpoint.
+folder the fetch script writes when that is there, else from the Hugging Face cache, and ``local=True`` keeps the read
+on this machine. ``from_config`` reads the two blocks a cell's tree names, each model from its ``model_id`` under the
+tree's ``models.weights_root``, and refuses the key that names no checkpoint. The Hugging Face cache of the machine
+running the tests is held out wherever the answer would depend on it.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from unittest import mock
 import numpy as np
 
 from src.config import ConfigError, load_tree
+from src.models import weights as weights_module
 from src.models.detection.object_detector import DEFAULT_SEGMENTER, ObjectDetector, _weights_source
 from tests._detector_training_fixtures import tiny_factory
 from tests._object_detector_fakes import CHESS, detector_folder, pin_cpu, rtdetr, sam2, sam2_folder
@@ -172,13 +175,23 @@ class AHuggingFaceIdTests(_Tmp):
 
     def test_local_true_reads_this_machine_alone_and_otherwise_the_hub_may_answer(self) -> None:
         with mock.patch.dict(os.environ, {"WILLY_PROJECT_ROOT": str(self.root)}):
-            for local, files_only in ((None, False), (False, False), (True, True)):
-                with self.subTest(local=local), rtdetr(SCENE) as fake:
+            for local, cached, files_only in ((None, False, False), (False, False, False), (True, True, True),
+                                              (None, True, True)):
+                with self.subTest(local=local, cached=cached), rtdetr(SCENE) as fake, \
+                        mock.patch.object(weights_module, "_in_the_cache", return_value=cached):
                     detector = ObjectDetector.from_weights("PekingU/rtdetr_r50vd", local=local)
                     self.assertEqual("PekingU/rtdetr_r50vd", fake.loads.call_args.args[0])
                     self.assertEqual(files_only, fake.loads.call_args.kwargs.get("local_files_only", False))
                     self.assertEqual("PekingU/rtdetr_r50vd", detector.source)
                     self.assertEqual(DEFAULT_SEGMENTER, detector.segmenter_source)
+
+    def test_local_true_refuses_an_id_this_machine_does_not_hold_naming_the_fetch(self) -> None:
+        with mock.patch.dict(os.environ, {"WILLY_PROJECT_ROOT": str(self.root)}), rtdetr(SCENE) as fake, \
+                mock.patch.object(weights_module, "_in_the_cache", return_value=False), \
+                self.assertRaises(FileNotFoundError) as caught:
+            ObjectDetector.from_weights("PekingU/rtdetr_r50vd", local=True)
+        self.assertIn("python scripts/model_weights/fetch.py rtdetr", str(caught.exception))
+        self.assertEqual(0, fake.loads.call_count)
 
     def test_the_default_segmenter_is_the_one_the_shipped_tree_names(self) -> None:
         self.assertEqual(load_tree(None).app_config.models.segmenter.model_id, DEFAULT_SEGMENTER)
@@ -189,9 +202,17 @@ class FromConfigTests(_Tmp):
     pipeline is the closed set builds it unnamed. The open backends are in
     ``test_an_object_detector_finds_what_a_prompt_names_on_every_backend.py``."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        self.weights = (self.root / "weights").as_posix()  # an empty weights folder of the test's own
+        cache = mock.patch.object(weights_module, "_in_the_cache", return_value=False)
+        cache.start()
+        self.addCleanup(cache.stop)
+
     def test_it_reads_models_rtdetr_and_models_segmenter_from_a_tree_its_config_or_its_models(self) -> None:
         folder = detector_folder(self.root / "chess").as_posix()
-        tree = load_tree(None).with_values({"models.rtdetr.model_path": folder, "models.rtdetr.threshold": 0.3})
+        tree = load_tree(None).with_values({"models.rtdetr.model_id": folder, "models.rtdetr.threshold": 0.3,
+                                            "models.weights_root": self.weights})
         for config in (tree, tree.app_config, tree.app_config.models):
             with self.subTest(type(config).__name__), rtdetr(SCENE) as fake:
                 detector = ObjectDetector.from_config(config, backend="closed_set")
@@ -201,20 +222,20 @@ class FromConfigTests(_Tmp):
             self.assertEqual(0.3, detector.threshold)
             self.assertEqual(CHESS, detector.classes)
             self.assertEqual(folder, detector.source)
-            self.assertEqual(tree.app_config.models.segmenter.model_path, detector.segmenter_source)
+            self.assertEqual(f"{self.weights}/segmentation/facebook--sam2-hiera-large", detector.segmenter_source)
 
     def test_a_tree_whose_pipeline_is_the_closed_set_builds_rtdetr_unnamed(self) -> None:
         folder = detector_folder(self.root / "chess").as_posix()
-        tree = load_tree(None).with_values({"models.rtdetr.model_path": folder, "models.pipeline.kind": "closed_set"})
+        tree = load_tree(None).with_values({"models.rtdetr.model_id": folder, "models.pipeline.kind": "closed_set"})
         self.assertTrue(tree.ok, tree.error)
         with rtdetr(SCENE) as fake:
             detector = ObjectDetector.from_config(tree)
         self.assertEqual(("closed_set", folder), (detector.backend, fake.loads.call_args.args[0]))
 
-    def test_the_first_mask_refuses_a_segmenter_folder_that_is_not_there_naming_its_key(self) -> None:
+    def test_the_first_mask_refuses_a_segmenter_that_is_not_there_naming_its_key(self) -> None:
         tree = load_tree(None).with_values({
-            "models.rtdetr.model_path": detector_folder(self.root / "chess").as_posix(),
-            "models.segmenter.model_path": (self.root / "no_sam2").as_posix(),
+            "models.rtdetr.model_id": detector_folder(self.root / "chess").as_posix(),
+            "models.weights_root": self.weights,
         })
         with rtdetr(SCENE):
             detector = ObjectDetector.from_config(tree, backend="closed_set")
@@ -223,19 +244,27 @@ class FromConfigTests(_Tmp):
         with sam2() as fake:
             with self.assertRaises(FileNotFoundError) as caught:
                 detector.detect(image, segment=True)
-        self.assertIn("models.segmenter.model_path is", str(caught.exception))
+        self.assertIn("models.segmenter.model_id is 'facebook/sam2-hiera-large'", str(caught.exception))
         self.assertIn("python scripts/model_weights/fetch.py sam2", str(caught.exception))
         self.assertEqual(0, fake.loads.call_count)
 
-    def test_a_local_rtdetr_folder_that_is_not_there_is_refused_naming_the_key_and_the_fetch(self) -> None:
-        tree = load_tree(None).with_values({"models.rtdetr.model_path": (self.root / "nothing").as_posix()})
-        with rtdetr(SCENE) as fake:
-            with self.assertRaises(FileNotFoundError) as caught:
-                ObjectDetector.from_config(tree, backend="closed_set")
-        message = str(caught.exception)
-        for part in ("models.rtdetr.model_path is", "there is no folder there", "fetch.py rtdetr", "DetectorTraining"):
-            self.assertIn(part, message)
-        self.assertEqual(0, fake.loads.call_count)
+    def test_an_rtdetr_that_is_not_there_is_refused_naming_the_key_and_the_fetch(self) -> None:
+        cases = {
+            "an id": ({"models.weights_root": self.weights},
+                      ("models.rtdetr.model_id is 'PekingU/rtdetr_r50vd'", "detection/PekingU--rtdetr_r50vd",
+                       "fetch.py rtdetr", "a DetectorTraining out_dir")),
+            "a folder": ({"models.rtdetr.model_id": (self.root / "nothing").as_posix()},
+                         ("models.rtdetr.model_id is", f"no folder at {(self.root / 'nothing').as_posix()}",
+                          "DetectorTraining")),
+        }
+        for name, (values, parts) in cases.items():
+            with self.subTest(name), rtdetr(SCENE) as fake:
+                tree = load_tree(None).with_values(values)
+                with self.assertRaises(FileNotFoundError) as caught:
+                    ObjectDetector.from_config(tree, backend="closed_set")
+                for part in parts:
+                    self.assertIn(part, str(caught.exception))
+                self.assertEqual(0, fake.loads.call_count)
 
     def test_a_tree_with_no_rtdetr_block_is_refused(self) -> None:
         tree = load_tree(None).with_values({"models.rtdetr": None})

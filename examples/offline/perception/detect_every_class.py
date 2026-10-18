@@ -27,20 +27,22 @@ if len(sys.argv) > 2:
     # the first mask is asked for; local=True would keep both on this machine.
     detector = ObjectDetector.from_weights(sys.argv[2])
 else:
-    # The base tree's two blocks, the closed-set detector and the segmenter; `local: true` downloads nothing. The tree's
-    # pipeline grounds free text as shipped, so the closed set is named.
-    models = load_tree(None).app_config.models
-    missing = [block.model_path for block in (models.rtdetr, models.segmenter)
-               if block is not None and block.local and not Path(block.model_path).is_dir()]
-    if missing:
-        print(f"not built: no weights at {', '.join(missing)} on this machine; fetch them with "
-              "`python scripts/model_weights/fetch.py rtdetr sam2`, or name a model after the image")
+    # The base tree's closed-set detector and segmenter, read from models.weights_root; nothing downloads. The tree's
+    # pipeline grounds free text as shipped, so the closed set is named. A model not on this machine is refused, naming
+    # its key and the fetch: RT-DETR's here, SAM2's at the first mask.
+    try:
+        detector = ObjectDetector.from_config(load_tree(None), backend="closed_set")
+    except FileNotFoundError as missing:
+        print(f"not built: {missing} Or name a model after the image.")
         raise SystemExit
-    detector = ObjectDetector.from_config(models, backend="closed_set")
 print(detector)  # where the weights come from, and every class the model knows, in id order
 
 # Every class at once, the highest score first; segment=True cuts all the boxes in one SAM2 pass.
-found = detector.detect(image, segment=True)
+try:
+    found = detector.detect(image, segment=True)
+except FileNotFoundError as missing:
+    print(f"not run: {missing}")
+    raise SystemExit
 print(found)
 for obj in found[:3]:  # what a program reads off each object, the surest first
     pixels = 0 if obj.mask is None else int(obj.mask.sum())

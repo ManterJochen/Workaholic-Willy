@@ -84,7 +84,7 @@ class GsoPart:
     collision: str = "boundingCube"
     # Approximate real-object display colour (linear RGB 0..1). The flat GSO .obj dump ships geometry
     # and UVs but no texture images, so a per-object colour is the local stand-in for the real texture,
-    # and a coloured mesh gives GroundingDINO an appearance cue a uniformly grey one does not. ``None``
+    # and a coloured mesh gives the detector an appearance cue a uniformly grey one does not. ``None``
     # selects the neutral grey default.
     display_color: "tuple[float, float, float] | None" = None
 

@@ -63,8 +63,7 @@ bench as a different-looking failure:
 | Row | What it looks like at the bench if you skip it |
 | --- | --- |
 | `tool frame`: `gripper.tool_frame.source` is `undeclared` | a top-down grasp drives the flange to the grasp pose and the fingertips into the bench |
-| `payload`: `enforce: true` with `mass_kg: 0.0` | `connect()` refuses it; better seen here than at the cell |
-| `carried part`: `safety.planning_world.payload.length_mm` undeclared | every lift after a grasp is planned as if the hand were empty |
+| `payload`: `mass_kg: 0.0` | `connect()` refuses it; better seen here than at the cell |
 | `camera -> base`: the primary rig declares no `extrinsics` | the driver refuses every motion as `INVALID_TARGET`, which looks like a hung cell |
 | `camera world`: cuRobo with no live world | every pick motion is refused as `UNSUPPORTED` before it moves |
 | `planner margin`: `safety.self_collision.planner_margin_mm` undeclared | the first planned move is refused as `CONTROLLER_REJECTED` |
@@ -87,7 +86,7 @@ The other rows:
   nothing places, a calibration without its flange to TCP record or with a stale one, and a camera
   the registry does not hold.
 - `camera world` warns on the `ik` planner, where no planner reads a world.
-- `looks` appears only where `robot.look_joint_positions_deg` is set: `ok` with the count, visited in
+- `looks` appears only where `robot.motion.look_deg` is set: `ok` with the count, visited in
   order by every pick whose program names none, and `warn` for a look that reads as radians (every joint
   within 6.3 of zero), since the key is in degrees and the loader cannot tell the two apart.
 - `self-collision`, `fixtures`, `planning world` and `record log` warn and never block.
@@ -185,7 +184,7 @@ An eye in hand sweep records the flange to TCP the arm applied while it swept, w
 
 Writing the artifact is half the job. The command prints the rig block to paste under
 `camera.cameras.rigs[<rig id>].extrinsics`; until it is pasted the cell has no CAMERA to BASE for that
-camera, and a second camera also needs its entry in `grasping.fusion.cameras` before fusion uses it.
+camera, and a second camera is not fused before its block is pasted too.
 
 ## Status
 
@@ -203,6 +202,7 @@ camera, and a second camera also needs its entry in `grasping.fusion.cameras` be
 | `__main__.py` | the pick command: the stage banners over `Cell` and `PickRun` |
 | `preflight.py` | `run_config_preflight`, `PreflightReport`, `PreflightCheck`, `CheckStatus` |
 | `calibrate.py` | the calibration command over `HandEyeCalibration` |
+| `register.py` | `python -m src.robot.execution.real_cell.register`: where an arm of a cell of several arms stands, measured by touching the same marks with both arms |
 
 ## Details
 

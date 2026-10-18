@@ -104,7 +104,7 @@ class DetectorTrainingReport:
 
     @property
     def model_dir(self) -> str | None:
-        """The folder RtDetrObjectDetector and ``models.rtdetr.model_path`` take, when a model was written."""
+        """The folder ``models.rtdetr.model_id`` names for RtDetrObjectDetector, when a model was written."""
         return str(self.artifact["model_dir"]) if self.artifact.get("written") else None
 
     @property

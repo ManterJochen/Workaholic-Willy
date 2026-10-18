@@ -1,13 +1,13 @@
 # Detection: boxes for a prompt, or every class at once (`src/models/detection`)
 
-Two detector families behind one result type. **GroundingDINO** (`zero_shot/`) reads a prompt as text and grounds it
-to boxes; **RT-DETR** (`closed_set/`) knows a fixed list of classes, the ones it was trained on, and reads no text at
-all. Both answer with the frozen `Detection` of [`types.py`](types.py), so the cell's perception takes either.
-**`ObjectDetector`** ([`object_detector.py`](object_detector.py)) is every detection model a cell can run, as a program of
-your own uses it (the owner, 2026-10-09: "alle unter einem Dach"): the closed-set RT-DETR, every class it knows in one
-call; GroundingDINO; the VLM ([`../vlm/`](../vlm/README.md)); and the router between those two. One
-`detect(image, prompt= or classes=, segment=)`, one result type, and each object's mask from SAM2 in the same call when
-you ask for it. **`DetectorTraining`** ([`closed_set/training/`](closed_set/training/)) trains the closed-set model on
+Two detectors behind one result type. **The VLM** (Qwen3-VL, [`../vlm/`](../vlm/README.md)) reads a prompt as text and
+grounds it to boxes; **RT-DETR** (`closed_set/`) knows a fixed list of classes, the ones it was trained on, and reads no
+text at all. Both answer with the frozen `Detection` of [`types.py`](types.py), so the cell's perception takes either.
+GroundingDINO, the phrase grounder that lived in `zero_shot/`, left on 2026-10-17 with the router between it and the
+VLM (the owner's cleanup). **`ObjectDetector`** ([`object_detector.py`](object_detector.py)) is every detection model a
+cell can run, as a program of your own uses it (the owner, 2026-10-09: "alle unter einem Dach"): the closed-set
+RT-DETR, every class it knows in one call, and the VLM. One `detect(image, prompt= or classes=, segment=)`, one result
+type, and each object's mask from SAM2 in the same call when you ask for it. **`DetectorTraining`** ([`closed_set/training/`](closed_set/training/)) trains the closed-set model on
 your own classes.
 
 ## `ObjectDetector`: every class at once, with its masks
@@ -41,11 +41,11 @@ runs the same on any image you name.
 | Name | What it is |
 | --- | --- |
 | `ObjectDetector.from_weights(path_or_id, *, threshold=0.5, device=None, segmenter=None, local=None)` | A `DetectorTraining` out_dir (its best epoch; `out_dir/last` loads the last the same way), any folder `save_pretrained` wrote a transformers RT-DETR and its image processor to, or a Hugging Face id. `segmenter` names SAM2 as a folder or an id, `facebook/sam2-hiera-large` when left out. An id is read from the folder `scripts/model_weights/fetch.py` writes when that is there, else from the Hugging Face cache, else downloaded; `local=True` reads this machine alone. `device` (`"cpu"`, `"cuda"`, `"mps"`) runs both models there; left out, `WILLY_DEVICE` or the first of CUDA, MPS and the CPU |
-| `ObjectDetector.from_config(tree, *, backend=None)` | What the tree's `models.pipeline` builds for a cell (`kind: closed_set` is RT-DETR; `zero_shot` is GroundingDINO, the VLM, or both behind the router), or the backend named, from its block: `closed_set` from `models.rtdetr` (its threshold too), `grounded_sam` from `models.objectdetector`, `vlm` from `models.pipeline.zero_shot.vlm`, `router` from the last two. SAM2 is `models.segmenter`. Takes a loaded tree, its `AppConfig` or its models block |
-| `detector.backend`, `detector.open_vocabulary` | Which model answers (`closed_set`, `grounded_sam`, `vlm`, `router`), and whether it reads text |
+| `ObjectDetector.from_config(tree, *, backend=None)` | What the tree's `models.pipeline` builds for a cell (`kind: closed_set` is RT-DETR, `zero_shot` the VLM), or the backend named, from its block: `closed_set` from `models.rtdetr` (its threshold too), `vlm` from `models.pipeline.zero_shot.vlm`. SAM2 is `models.segmenter`, and every model reads its weights from the tree's `models.weights_root`. Takes a loaded tree, its `AppConfig` or its models block |
+| `detector.backend`, `detector.open_vocabulary` | Which model answers (`closed_set` or `vlm`), and whether it reads text |
 | `detector.classes` | Every class name a closed-set model knows, in id order: exactly its `id2label`; `()` for an open-vocabulary one |
 | `detector.detect(image_bgr, *, prompt=None, classes=None, threshold=None, segment=False)` | The objects found, as `Detections`. `image_bgr` is an OpenCV BGR image or an image file's path. A closed-set detector answers with every class, `classes` narrowing the call to those names, exactly but for case and blanks; an open-vocabulary one takes exactly one of `prompt` and `classes`. `threshold` stands in for the detector's own for this call |
-| `Detections` | A frozen sequence of `DetectedObject`, the highest score first, with the question it answered: `classes` looked for, `threshold` (`None` where the model gives no score), `image_hw`, `segmented`, `backend` (the route a router took) and `prompt` (the text the model read). `of(label)`, `labels`, `counts`, `render()` (what `print` shows), `draw(image)`, `write_drawing(image, path)`, `to_dict(masks=True)`, `from_dict(data)` |
+| `Detections` | A frozen sequence of `DetectedObject`, the highest score first, with the question it answered: `classes` looked for, `threshold` (`None` where the model gives no score), `image_hw`, `segmented`, `backend` (the model that answered) and `prompt` (the text the model read). `of(label)`, `labels`, `counts`, `render()` (what `print` shows), `draw(image)`, `write_drawing(image, path)`, `to_dict(masks=True)`, `from_dict(data)` |
 | `DetectedObject` | `label`, `score`, `box` (`x0, y0, x1, y1` in the image's pixels), `centre` (the box's), `mask` (the image's height by width, `True` on the object, read-only; `None` without `segment=True`), `mask_score` (SAM2's predicted IoU of the mask) |
 
 **What one call costs.** One RT-DETR pass over the image. `segment=True` adds one SAM2 pass: the image is encoded once
@@ -54,15 +54,15 @@ SAM2 nothing. Building loads RT-DETR, and the first `segment=True` with a box to
 kept, so build one detector and reuse it. Calls on one detector take turns under a lock, so threads may share it; two
 detectors hold two copies of both models. How long a call takes is not measured yet.
 
-## `ObjectDetector` with a prompt: GroundingDINO, the VLM and the router
+## `ObjectDetector` with a prompt: the VLM
 
-The same door reads text. `from_config` builds what a cell's `models.pipeline` builds, GroundingDINO as shipped, or the
+The same door reads text. `from_config` builds what a cell's `models.pipeline` builds, the VLM as shipped, or the
 backend you name; a call names exactly one of a prompt or classes:
 
 ```python
 from willy import ObjectDetector, load_tree
 
-detector = ObjectDetector.from_config(load_tree())                 # the cell's own; backend="vlm" names another
+detector = ObjectDetector.from_config(load_tree())                 # the cell's own; backend= names one
 found = detector.detect(frame_bgr, prompt="the red cube", segment=True)   # every box for the prompt, with its mask
 found = detector.detect(frame_bgr, classes=["red cube", "blue bin"])      # several kinds in one call
 print(found)                                                       # which backend answered, and each object
@@ -71,16 +71,14 @@ print(found)                                                       # which backe
 | `backend` | The model | Reads | Score and `threshold` | Built from |
 | --- | --- | --- | --- | --- |
 | `closed_set` | RT-DETR | no text: `classes=` narrows its trained classes, a prompt is refused | its score; `threshold` | `models.rtdetr`, or `from_weights` |
-| `grounded_sam` | GroundingDINO | a prompt or classes | its score; `threshold` | `models.objectdetector` |
 | `vlm` | the VLM (Qwen3-VL) | a prompt or classes, the harder sentences too | none: a VLM writes boxes, so `Detections.threshold` is `None` and a `threshold` is refused | `models.pipeline.zero_shot.vlm`, the process's one copy, which a cell's console shares |
-| `router` | GroundingDINO, and the VLM for the prompts the cell's router sends there (another language, a negation, a comparison) | a prompt or classes | GroundingDINO's where it answers; `Detections.backend` names the route | both blocks; the VLM loads at the first prompt routed to it |
 
-Every box found for a prompt comes back under the prompt: GroundingDINO grounds a sub-phrase ("cube" of "the red
-cube") and the VLM writes its own words, and both are the prompt's here, as a cell takes them for its task's object.
+Every box found for a prompt comes back under the prompt: the VLM writes its own words, and they are the prompt's
+here, as a cell takes them for its task's object.
 Classes are found as the cell finds its sorting rules and bins, one class list in one call (`"red cube | blue bin"`),
 each box under the description the model gave it; a box it gave none, or two, is neither and is left out, as a cell
 keeps it out of its targets. [`examples/offline/perception/detect_with_a_prompt.py`](../../../examples/offline/perception/detect_with_a_prompt.py)
-runs it on any image you name, its third argument the backend.
+runs it on any image you name.
 
 **The masks are the cell's masks.** Of the three masks SAM2 proposes for a box the first is kept, and cleaned as
 `Sam2Segmenter` cleans its one (opened, closed, its largest piece kept), so a box cut in the batch comes out as the
@@ -96,7 +94,7 @@ leaves the masks out, and `mask_encoding` says which (`"coco_rle"` or `None`).
 
 | Refusal | When |
 | --- | --- |
-| `FileNotFoundError` | A folder that holds no detector, naming what it lacks (`config.json`, the weights, `preprocessor_config.json`); an out_dir whose run kept only its last epoch, naming `last/`; a path that is not there, naming where it looked; a `local` block of `from_config` whose folder is missing, naming the key and the fetch (the detector's when it is built, SAM2's at the first mask); an image file that is not there |
+| `FileNotFoundError` | A folder that holds no detector, naming what it lacks (`config.json`, the weights, `preprocessor_config.json`); an out_dir whose run kept only its last epoch, naming `last/`; a path that is not there, naming where it looked; a model of `from_config` whose weights are not on this machine, naming the key, the folder looked in and the fetch (RT-DETR's when it is built, SAM2's at the first mask, the VLM's at its first answer); an image file that is not there |
 | `ValueError` | Another kind of checkpoint (a SAM2 folder given as the detector, or a detector as SAM2); a class name the model does not know, listing every class it knows, so a misspelt piece never reads as an empty board; `classes=[]`; a threshold outside 0 to 1; `segment=True` on a detector built without SAM2; an image that is not height x width x 3 `uint8`; a tree with no `models.rtdetr` block; `of()` a class the call did not look for |
 | `TypeError` | `from_weights(None)`, which is what a report's `model_dir` is when its run wrote no model; `from_config` of something that is no config |
 | `ConfigError` | `from_config` of a tree that did not load |
@@ -135,16 +133,15 @@ apply to it as well.
 | [`types.py`](types.py) | `Detection`, the frozen box, label and score every backend emits |
 | [`closed_set/detector.py`](closed_set/detector.py) | `RtDetrObjectDetector`: the trained classes (`classes`), a prompt read only as a class-name filter, `detect_all(image, prompt, threshold=)` |
 | [`closed_set/training/`](closed_set/training/) | `DetectorTraining`: COCO or YOLO in, the best epoch and the last out ([`src/models/README.md`](../README.md), training) |
-| [`zero_shot/detector.py`](zero_shot/detector.py) | `GroundingDinoObjectDetector`: a prompt read as text, `detect_all(image, prompt, threshold=)` |
 
 ## Status
 
 | Capability | Evidence |
 | --- | --- |
 | `ObjectDetector`: every class, the filter, the refusals, one SAM2 call for every box | unit tests on a CPU with stand-ins, the real RT-DETR and SAM2 classes at toy size, and the loading of a `DetectorTraining`-shaped folder |
-| `ObjectDetector` with a prompt or classes: GroundingDINO, the VLM, the router, and `from_config` building each from its block | unit tests with stand-ins for the three models (the router is the cell's own `RuleBasedRouter`) |
+| `ObjectDetector` with a prompt or classes: the VLM, and `from_config` building each backend from its block | unit tests with stand-ins for the models |
 | SAM2-large on a GPU cutting a batch as it cuts each box alone | `tests/test_an_object_detector_on_real_weights_inference.py`, written and not run yet |
-| GroundingDINO, the VLM or the router on real weights through this door | not run yet; the cell runs the same models through its own perception every pick |
+| The VLM on real weights through this door | not run yet; the cell runs the same model through its own perception every pick |
 | A chess board, or any real camera frame | never touched |
 
 Tests: `tests/test_an_object_detector_finds_every_class_at_once.py`,

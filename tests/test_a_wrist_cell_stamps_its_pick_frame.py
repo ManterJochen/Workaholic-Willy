@@ -18,6 +18,7 @@ from unittest import mock
 import numpy as np
 
 from src.camera.setup.image_taking.frames import RGBDFrame
+from src.config.schema.runtime import RuntimeConfig
 from src.geometry import Frame, Pose, Transform
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.autonomous_grasp import cells
@@ -82,9 +83,8 @@ def _source(calibration: object | None = None) -> RealSenseVisionPerceptionSourc
     )
 
 
-#: The tree the wiring reads: the cell's fresh-frame attempts and its declared tool frame, at the flange.
+#: The tree the wiring reads: its declared tool frame, at the flange. The fresh-frame attempts are every cell's, 3.
 _TREE = SimpleNamespace(
-    safety=SimpleNamespace(planning_world=SimpleNamespace(perceived=SimpleNamespace(fresh_frame_attempts=2))),
     gripper=SimpleNamespace(tool_frame=SimpleNamespace(source="willy", offset_mm=(0.0, 0.0, 0.0),
                                                        rotation_quat_xyzw=(0.0, 0.0, 0.0, 1.0),
                                                        verify_tolerance_mm=1.0)),
@@ -97,8 +97,9 @@ def _build_real_cell(*, resolver: object, arm: object, perception: RealSenseVisi
     multi = None if fused is None else SimpleNamespace(sources=fused)
     service = SimpleNamespace(runtime=SimpleNamespace(orchestrator=SimpleNamespace(
         frame_resolver=resolver, arm=arm, camera_frame_resolvers=resolvers or {}, multi_camera_perception=multi)))
-    app_cfg = SimpleNamespace(camera=SimpleNamespace(cameras=SimpleNamespace(primary_rig_id="wrist")))
-    with mock.patch.object(cells, "build_real_components", return_value=(None, perception, None, multi, None)), \
+    app_cfg = SimpleNamespace(camera=SimpleNamespace(cameras=SimpleNamespace(primary_rig_id="wrist")),
+                              runtime=RuntimeConfig())
+    with mock.patch.object(cells, "build_real_components", return_value=(None, perception, None, multi)), \
          mock.patch.object(AutonomousGraspService, "from_robot_config", return_value=service):
         cells.build_real_cell(_TREE, app_config=app_cfg)  # type: ignore[arg-type]
 

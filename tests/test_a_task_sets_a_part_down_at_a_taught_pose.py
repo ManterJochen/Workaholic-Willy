@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 
+from src.config.schema.robot.safety_schema import SupportPlaneConfig
 from src.geometry import Pose
 from src.robot.core import MotionStatus
 from src.robot.safety.planning.band import PoseVerdict
@@ -109,7 +110,7 @@ class TheHangTests(unittest.TestCase):
     def test_a_part_off_a_raised_support_hangs_from_the_declared_one(self) -> None:
         log: list[Any] = []
         arm = _declaring(log, 60.0)
-        arm.config.grasping.support.height_mm = -10.0  # type: ignore[attr-defined]
+        arm.config.safety.planning_world.support_plane = SupportPlaneConfig(height_mm=-10.0)  # type: ignore[attr-defined]
         ran = run(["part"], arm=arm)
 
         np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, GRASP_Z_MM + 10.0), _line_in(ran)[1])

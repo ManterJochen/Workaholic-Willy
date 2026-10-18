@@ -75,10 +75,11 @@ class ConfigLoaderTests(unittest.TestCase):
                 "    frame_quality: 66\n",
                 encoding="utf-8",
             )
-            (root / "camera" / "stereomatcher.qa.yaml").write_text(
-                "stereomatcher:\n"
-                "  uniquenessRatio: 12\n"
-                "  speckleRange: null\n",
+            (root / "camera" / "hand_eye.qa.yaml").write_text(
+                "hand_eye:\n"
+                "  eye_to_hand:\n"
+                "    min_samples: 12\n"
+                "    min_distance_mm: null\n",
                 encoding="utf-8",
             )
             (root / "camera" / "cam.qa.yaml").write_text(
@@ -107,33 +108,24 @@ class ConfigLoaderTests(unittest.TestCase):
         self.assertEqual(cfg.runtime.image_encoding.frame_quality, 66)
         # A plain `null` overlay leaf KEEPS the base value, and the sibling the overlay never
         # named survives untouched -- the two halves of deep-merge, shown on one block.
-        self.assertEqual(cfg.camera.stereomatcher.uniqueness_ratio, 12)   # overlay wins
-        self.assertEqual(cfg.camera.stereomatcher.speckle_range, 1)       # null KEEPS the base
-        self.assertEqual(cfg.camera.stereomatcher.temporal_alpha, 0.0)    # untouched sibling
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_samples, 12)         # overlay wins
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_distance_mm, 40.0)   # null KEEPS the base
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_angle, 10.0)         # untouched sibling
         self.assertEqual([rig.rig_id for rig in cfg.camera.cameras.rigs], ["qa_rig"])
 
     def test_profile_overlay_reset_sentinel_unsets_a_base_value(self) -> None:
         # A plain `null` overlay leaf KEEPS the base (test above); the reset sentinel "__null__" is the one
-        # way a profile overlay can force a base field back to None. This is how the `sim` profile holds
-        # models.*.optim.torch_dtype at unset whatever the base says — the sim detector's validated
-        # fp32-weights recall path (fp16 was measured to drop the small overhead cube). The base leaves
-        # torch_dtype unset too since 2026-09-29, so attn_implementation ("eager") proves the reset here.
+        # way a profile overlay can force a base field back to None. Shown on the closed-set detector's block,
+        # which the base writes and a cell with no closed-set detector may unset. (The `sim` profile's model
+        # overlays used it on `optim.torch_dtype` until both left on 2026-10-17.)
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = _copy_data_tree(tmp_dir)
-            (root / "models" / "object.qa.yaml").write_text(
-                "objectdetector:\n"
-                "  optim:\n"
-                '    torch_dtype: "__null__"\n'
-                '    attn_implementation: "__null__"\n',
-                encoding="utf-8",
-            )
+            (root / "models" / "object.qa.yaml").write_text('rtdetr: "__null__"\n', encoding="utf-8")
             set_active_profile("qa")
             cfg = load_config(root)
 
-        optim = cfg.models.objectdetector.optim
-        self.assertIsNone(optim.torch_dtype)          # unset in the base as well since 2026-09-29
-        self.assertIsNone(optim.attn_implementation)  # base "eager" reset to None by the sentinel
-        self.assertTrue(optim.channels_last)          # a field the overlay didn't touch keeps its base value
+        self.assertIsNone(cfg.models.rtdetr)                   # the base's block reset to None by the sentinel
+        self.assertEqual(cfg.models.pipeline.kind, "zero_shot")  # a key the overlay didn't touch keeps its base value
 
     def test_env_substitution_supports_defaults_and_required_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -234,18 +226,21 @@ class ProfileChainTests(unittest.TestCase):
     @staticmethod
     def _write_layers(root: Path) -> None:
         # Two scalars in ONE block is the whole point: the top layer must win on the key it names
-        # and leave its sibling untouched. `stereomatcher` is the vehicle because it is the
-        # smallest real block that still has two independent scalars -- `runtime.image_encoding`
-        # was the original one and is down to a single field since the dead-key sweep.
-        (root / "camera" / "stereomatcher.base.yaml").write_text(
-            "stereomatcher:\n"
-            "  uniquenessRatio: 12\n"
-            "  speckleRange: 2\n",
+        # and leave its sibling untouched. `hand_eye.eye_to_hand` is the vehicle, a real block with
+        # two independent scalars: `runtime.image_encoding` was the original one and is down to a
+        # single field since the dead-key sweep, and `stereomatcher`, the one after it, left the
+        # tree on 2026-10-17.
+        (root / "camera" / "hand_eye.base.yaml").write_text(
+            "hand_eye:\n"
+            "  eye_to_hand:\n"
+            "    min_samples: 12\n"
+            "    min_distance_mm: 20.0\n",
             encoding="utf-8",
         )
-        (root / "camera" / "stereomatcher.top.yaml").write_text(
-            "stereomatcher:\n"
-            "  speckleRange: 4\n",
+        (root / "camera" / "hand_eye.top.yaml").write_text(
+            "hand_eye:\n"
+            "  eye_to_hand:\n"
+            "    min_distance_mm: 30.0\n",
             encoding="utf-8",
         )
 
@@ -256,8 +251,8 @@ class ProfileChainTests(unittest.TestCase):
             set_active_profile("base,top")
             cfg = load_config(root)
 
-        self.assertEqual(cfg.camera.stereomatcher.speckle_range, 4)      # top layer wins
-        self.assertEqual(cfg.camera.stereomatcher.uniqueness_ratio, 12)  # base layer survives
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_distance_mm, 30.0)  # top layer wins
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_samples, 12)        # base layer survives
 
     def test_layer_order_is_significant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -266,7 +261,7 @@ class ProfileChainTests(unittest.TestCase):
             set_active_profile("top,base")
             reversed_cfg = load_config(root)
 
-        self.assertEqual(reversed_cfg.camera.stereomatcher.speckle_range, 2)
+        self.assertEqual(reversed_cfg.camera.hand_eye.eye_to_hand.min_distance_mm, 20.0)
 
     def test_a_single_layer_behaves_exactly_as_before(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -275,8 +270,8 @@ class ProfileChainTests(unittest.TestCase):
             set_active_profile("base")
             cfg = load_config(root)
 
-        self.assertEqual(cfg.camera.stereomatcher.uniqueness_ratio, 12)
-        self.assertEqual(cfg.camera.stereomatcher.speckle_range, 2)
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_samples, 12)
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_distance_mm, 20.0)
 
     def test_whitespace_and_trailing_separators_are_tolerated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -285,7 +280,7 @@ class ProfileChainTests(unittest.TestCase):
             set_active_profile(" base , top , ")
             cfg = load_config(root)
 
-        self.assertEqual(cfg.camera.stereomatcher.speckle_range, 4)
+        self.assertEqual(cfg.camera.hand_eye.eye_to_hand.min_distance_mm, 30.0)
 
     def test_every_layer_must_exist(self) -> None:
         """Fail closed PER LAYER. A typo'd layer would otherwise merge as a silent no-op, and the cell
@@ -307,8 +302,8 @@ class ProfileChainTests(unittest.TestCase):
             set_active_profile("base,top")
             two = load_config(root)
 
-        self.assertEqual(one.camera.stereomatcher.speckle_range, 2)
-        self.assertEqual(two.camera.stereomatcher.speckle_range, 4)
+        self.assertEqual(one.camera.hand_eye.eye_to_hand.min_distance_mm, 20.0)
+        self.assertEqual(two.camera.hand_eye.eye_to_hand.min_distance_mm, 30.0)
 
     def test_profile_only_model_files_merge_across_layers(self) -> None:
         """A profile-only model file refined by a later layer must MERGE, not collide: the second layer

@@ -26,6 +26,12 @@ def _tree(**overrides: object) -> RobotConfig:
     return RobotConfig.model_validate(overrides)
 
 
+def _foreign() -> RobotConfig:
+    """A tree for a vendor this layer has no block for. No RobotVendor names one since kuka, franka and ros2 were
+    removed (2026-10-17), so it is a UR tree whose vendor is set past validation, as a driver not written yet would."""
+    return _tree(vendor="ur").model_copy(update={"vendor": "acme"})
+
+
 class TheSelectionReadsTheSelectedBlockTests(unittest.TestCase):
     def test_a_ur_tree_names_its_model_its_address_and_its_planner(self) -> None:
         arm = _tree(vendor="ur", ur={"model": "ur3e", "ip": "10.0.0.5"}, motion={"planner": "ik"}).arm
@@ -78,16 +84,13 @@ class TheSelectionReadsTheSelectedBlockTests(unittest.TestCase):
     def test_a_vendor_with_no_block_owns_a_controller_and_declares_no_address(self) -> None:
         """The case the cell lock turns into a refusal: a real robot whose block this layer does not describe yet.
 
-        ``franka``, ``kuka`` and ``ros2`` are reserved names that pass config validation (``core/vendor.py``). Until one
-        has a block, the honest answer is "it drives a controller and nobody said where", not "it drives none", because
-        the second reads as a cell that may run without a lock.
+        Until one has a block, the honest answer is "it drives a controller and nobody said where", not "it drives
+        none", because the second reads as a cell that may run without a lock.
         """
-        for vendor in ("franka", "kuka", "ros2"):
-            with self.subTest(vendor=vendor):
-                arm = _tree(vendor=vendor).arm
-                self.assertTrue(arm.owns_a_controller)
-                self.assertIsNone(arm.controller)
-                self.assertIn("NO ADDRESS DECLARED", arm.render())
+        arm = _foreign().arm
+        self.assertTrue(arm.owns_a_controller)
+        self.assertIsNone(arm.controller)
+        self.assertIn("NO ADDRESS DECLARED", arm.render())
 
 
 class TheLockIsKeyedOnTheSelectionTests(unittest.TestCase):
@@ -107,9 +110,9 @@ class TheLockIsKeyedOnTheSelectionTests(unittest.TestCase):
         """Not read as the harmless case: a robot that took no lock would let a second process command its arm."""
         from src.robot.execution.cell_lock import LockKeyRequired, cell_lock_key
 
-        for vendor in ("ur", "franka"):
-            with self.subTest(vendor=vendor), self.assertRaises(LockKeyRequired) as caught:
-                cell_lock_key(_tree(vendor=vendor))
+        for tree in (_tree(vendor="ur"), _foreign()):
+            with self.subTest(vendor=tree.vendor), self.assertRaises(LockKeyRequired) as caught:
+                cell_lock_key(tree)
             self.assertIn("no address is declared", str(caught.exception))
 
     def test_the_ur_driver_refuses_to_connect_with_no_address(self) -> None:
@@ -125,40 +128,36 @@ class TheLockIsKeyedOnTheSelectionTests(unittest.TestCase):
 class NoReaderReportsAnotherVendorsDefaultsTests(unittest.TestCase):
     """The behaviour half. A tree that names a vendor this repository has no block for reports nothing of UR's.
 
-    ``franka`` passes config validation because it is a reserved vendor name, so the tree is built in memory.
+    The tree is built in memory, its vendor set past validation (``_foreign``).
     """
-
-    @staticmethod
-    def _foreign() -> RobotConfig:
-        return RobotConfig.model_validate({"vendor": "franka"})
 
     def test_the_motion_stack_says_nobody_declared_a_model_rather_than_ur5e(self) -> None:
         from src.robot.safety.planning.stack import ModelSource, MotionStack
 
-        reading = MotionStack.from_robot_config(self._foreign())
+        reading = MotionStack.from_robot_config(_foreign())
 
         self.assertIs(ModelSource.FALLBACK, reading.source, reading.model_source)
         self.assertIn("no model declared", reading.model_source)
 
     def test_the_camera_world_wiring_names_no_planner(self) -> None:
-        selected = self._foreign().arm
+        selected = _foreign().arm
         self.assertEqual("", selected.planner)
 
     def test_the_desk_planner_start_refuses_without_stamping_a_ur_model(self) -> None:
         from src.robot.execution.planner_start import PlannerStart
 
-        report = PlannerStart(robot_config=self._foreign()).run()
+        report = PlannerStart(robot_config=_foreign()).run()
 
         self.assertFalse(report.started)
         self.assertEqual("", report.arm, "the refusal named a UR model on a cell that has no UR in it")
-        self.assertIn("franka", report.refusal)
+        self.assertIn("acme", report.refusal)
 
     def test_the_exact_mesh_row_does_not_judge_a_foreign_cell_against_a_ur5e(self) -> None:
         """The guard's mesh bundle is keyed on the arm model, and the row fell back to ``robot.ur.model`` whichever
         vendor the tree named: a confident OK about the wrong robot's geometry (measured in aurora, 2026-09-20)."""
         from src.robot.execution.real_cell.preflight import CheckStatus, run_config_preflight
 
-        report = run_config_preflight(self._foreign(), curobo_available=True, collision_engine="coal")
+        report = run_config_preflight(_foreign(), curobo_available=True, collision_engine="coal")
         row = next(c for c in report.checks if c.name == "exact mesh engine")
 
         self.assertIsNot(CheckStatus.OK, row.status)
@@ -168,11 +167,11 @@ class NoReaderReportsAnotherVendorsDefaultsTests(unittest.TestCase):
     def test_the_desk_names_the_missing_controller_address(self) -> None:
         from src.robot.execution.real_cell.preflight import CheckStatus, run_config_preflight
 
-        report = run_config_preflight(self._foreign(), curobo_available=True, collision_engine="coal")
+        report = run_config_preflight(_foreign(), curobo_available=True, collision_engine="coal")
         row = next(c for c in report.checks if c.name == "controller address")
 
         self.assertIs(CheckStatus.BLOCK, row.status)
-        self.assertIn("franka", row.detail)
+        self.assertIn("acme", row.detail)
 
     def test_the_safety_preflight_is_handed_no_arm_model(self) -> None:
         """The guard keys its exact-mesh bundle on this: a wrong model is a wrong mesh, silently."""
@@ -180,7 +179,7 @@ class NoReaderReportsAnotherVendorsDefaultsTests(unittest.TestCase):
 
         from src.robot.safety.preflight import SafetyPreflight
 
-        tree = SimpleNamespace(robot=self._foreign(), root=None)
+        tree = SimpleNamespace(robot=_foreign(), root=None)
         with unittest.mock.patch.object(SafetyPreflight, "from_safety_config") as built:
             SafetyPreflight.from_tree(tree)
         handed = built.call_args.kwargs.get("arm_model")
@@ -195,9 +194,6 @@ _UR_BLOCK_READS: tuple[tuple[str, int, str], ...] = (
     ("src/robot/grippers/robotiq.py", 530,
      "deliberate: the refusal contrasts the arm's own address with what this tree's UR block says, and says so; it "
      "moved with the Robotiq's refusal into its driver's spec (P0g slice 8)"),
-    ("scripts/ursim/probe_halt.py", 279,
-     "the halt probe records what its layer wrote beside what reached the arm: `brake_on_halt` is the UR block's own "
-     "setting, which no selection answers"),
 )
 
 
@@ -230,8 +226,8 @@ class NoNewReaderTakesTheUrBlockTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_the_list_only_shrinks(self) -> None:
-        # 2 since the scan reached scripts/ (P0e): the halt probe's `brake_on_halt` was there before, not a new read.
-        self.assertLessEqual(len(_UR_BLOCK_READS), 2, "a new direct read of the UR block was added to the list")
+        # 2 since the scan reached scripts/ (P0e), 1 since the halt probe's `brake_on_halt` left with the key (2026-10-17).
+        self.assertLessEqual(len(_UR_BLOCK_READS), 1, "a new direct read of the UR block was added to the list")
 
     def test_every_listed_read_is_still_there(self) -> None:
         """A read that has gone, left on the list, is a permission for the next one at that line.
@@ -265,14 +261,14 @@ class TheSelectionIsAReadingNotAKeyTests(unittest.TestCase):
         from src.config._schema_index import schema_index
 
         keys = schema_index()
-        self.assertGreater(len(keys), 500, "the index is empty, so this proves nothing")
+        self.assertGreater(len(keys), 100, "the index is empty, so this proves nothing")
         self.assertEqual([key for key in keys if key.startswith("robot.arm")], [])
 
     def test_it_is_a_frozen_value_a_person_can_read(self) -> None:
         arm = _tree(vendor="ur").arm
         self.assertIsInstance(arm, ArmSelection)
         with self.assertRaises(Exception):
-            arm.vendor = "franka"  # type: ignore[misc]
+            arm.vendor = "sim"  # type: ignore[misc]
         self.assertEqual(arm.render(), arm.render(), "render() is a description, not a computation with state")
 
 

@@ -79,7 +79,7 @@ class _OnTheRealModel(unittest.TestCase):
         shared_vlm().forget()
         self.holder = VlmHolder.from_parts()
         self.addCleanup(self._release)
-        self.vlm = VlmConfig(model_id=MODEL_ID, model_path=MODEL_PATH, local=True)
+        self.vlm = VlmConfig(model_id=MODEL_PATH or MODEL_ID)  # a folder of weights is its own id
         status = self.holder.load_for(self.vlm)
         self.assertEqual(status.state, "ready", status.cause)
 
@@ -115,7 +115,7 @@ class TheOwnersSentencesOnTheRealModelTests(_OnTheRealModel):
                   return_to="wartepose")),
             ("Stopp!", dict(intent="stop")),
             ("Hallo Willy, wie geht es dir?", dict(intent="none")),
-            # A German noun the router takes for English: the card must get it in English.
+            # A German noun the phrase reading takes for English: the card must get it in English.
             ("Nimm die Mutter",
              dict(intent="task", object=("nut",), place=None, place_pose=None, scope="once")),
             # The model answers until_empty with the count (measured); the card reads one part.

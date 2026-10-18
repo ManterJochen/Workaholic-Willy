@@ -7,8 +7,9 @@
  * `#` in every URL an operator is asked to type at a cell.
  *
  * The providers, outermost first (build plan 4.7): the language (German unless English was chosen), the person's
- * preferences (view, voice output, theme), the ONE shared cell poll and the cell stream, and the run on screen,
- * rebuilt from the server after a reload. Every screen reads these; none polls the cell on its own.
+ * preferences (view, voice output, theme), the ONE shared cell poll and the cell stream, the cell's task settings (how a
+ * task starts, for every browser), and the run on screen, rebuilt from the server after a reload. Every screen reads
+ * these; none polls the cell on its own.
  */
 
 import { StrictMode } from 'react'
@@ -18,6 +19,7 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { I18nProvider } from './i18n'
 import { PrefsProvider } from './model/prefs'
+import { TaskSettingsProvider } from './model/taskSettings'
 import { CellProvider } from './model/useCell'
 import { RunProvider } from './model/useRun'
 import './styles.css'
@@ -28,9 +30,11 @@ createRoot(document.getElementById('root')!).render(
       <I18nProvider>
         <PrefsProvider>
           <CellProvider>
-            <RunProvider>
-              <App />
-            </RunProvider>
+            <TaskSettingsProvider>
+              <RunProvider>
+                <App />
+              </RunProvider>
+            </TaskSettingsProvider>
           </CellProvider>
         </PrefsProvider>
       </I18nProvider>

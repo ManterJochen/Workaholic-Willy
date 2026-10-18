@@ -6,7 +6,8 @@ owner's UM7 control and the only thing that can see a transposed rotation or a p
 cells that work today. Captured on the unchanged tree (2026-09-15), for the three registry hands on ur5e and ur3e, under
 the sim's declared tool frame and an undeclared one:
 
-* the self filter's hand spheres, and the carried part capsule and box hung from their tip;
+* the self filter's hand spheres (the carried part's capsule and box hung from their tip left the golden on
+  2026-10-17, when no cell modelled one; the spheres' bytes are as they were);
 * the planner's tool0 spheres for each committed map, placed as the builder placed them (the Hand-E one 20 mm plate out);
 * for six arms and each hand, a sha256 of every (name, vertices, faces, frame) the exact mesh guard would be handed,
   taken with the collision engine patched out, so it runs where Coal does not.
@@ -104,7 +105,7 @@ def _planner_hand(hand: str, frame: dict[str, Any]) -> Any:
 
 
 def _filter_capture() -> dict[str, Any]:
-    from src.robot.safety.planning.self_envelope import carried_part_box, hand_spheres, payload_capsule
+    from src.robot.safety.planning.self_envelope import hand_spheres
 
     out: dict[str, Any] = {}
     for frame_name, frame in _FRAMES.items():
@@ -116,16 +117,7 @@ def _filter_capture() -> dict[str, Any]:
                 if spheres is None:
                     out[key] = None
                     continue
-                capsule = payload_capsule(hand, spheres, length_mm=120.0, lateral_margin_mm=10.0)
-                # Captured before S07 as carried_part_box(spheres, ...); S07 gave it the hand, whose placement now
-                # says which way the part hangs. The numbers are compared, so the call may change and the bytes not.
-                dims, centre = carried_part_box(hand, spheres, grip_width_mm=60.0, length_mm=120.0,
-                                                lateral_margin_mm=10.0)
-                out[key] = {
-                    "spheres": [[_r(s.start_mm), _r(s.radius_mm), s.frame] for s in spheres],
-                    "payload_capsule": [_r(capsule.start_mm), _r(capsule.end_mm), _r(capsule.radius_mm), capsule.frame],
-                    "carried_part_box": [_r(dims), _r(centre)],
-                }
+                out[key] = {"spheres": [[_r(s.start_mm), _r(s.radius_mm), s.frame] for s in spheres]}
     return out
 
 

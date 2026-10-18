@@ -1,4 +1,4 @@
-"""Phase U12 — runbook manifest, consolidated soak gate, docs links.
+"""Phase U12 — runbook manifest, the soak gate over a log, docs links.
 
 This module locks the Phase U12 deliverables:
 
@@ -7,14 +7,9 @@ This module locks the Phase U12 deliverables:
 2. Every listed runbook file exists and contains all five required H2
    sections (``Trigger`` / ``Diagnose`` / ``Mitigate`` / ``Verify`` /
    ``Rollback``).
-3. :func:`build_soak_report` produces ``\u2265 2000`` attempts, a
-   13-key gate dict, ``passes=True``, and a populated
-   ``easy_attempt_wall_time`` block on the current baseline.
-4. Two back-to-back builds yield byte-identical KPI + scenarios + gate
-   sections (determinism).
-5. The ``--soak-report`` CLI exits ``0``, writes the JSON artifact, and
-   the artifact round-trips through :mod:`json`.
-6. ``docs/Quickstart.md`` and the three operator READMEs reference
+3. The soak gate over a real log (``--records-gate``) and over a sim log (``--sim-soak-report``) can
+   fail, and passes a clean log. The consolidated synthetic soak report left on 2026-10-16.
+4. ``docs/Quickstart.md`` and the three operator READMEs reference
    ``docs/runbooks/`` so on-call operators can find the runbooks from
    any entry-point document.
 """
@@ -29,12 +24,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.robot.grasping.replay.soak import (
-    SoakScenarioSpec,
-    SOAK_MIN_ATTEMPTS,
-    build_soak_report,
-    generate_soak_records,
-)
+from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -53,21 +43,19 @@ _DOC_LINK_TARGETS = (
     "src/robot/README.md",
     "src/config/README.md",
 )
-_EXPECTED_GATE_KEYS = (
-    "min_attempts_met",
-    "untyped_outcomes_zero",
-    "unbounded_retry_loops_zero",
-    "telemetry_offenders_zero",
-    "extra_type_offenders_zero",
-    "dead_loop_rate_within_gate",
-    "pick_success_rate_non_regression",
-    "slo_packs_pass",
-    "drift_gate_pass",
-    "ood_gate_pass",
-    "failure_taxonomy_classifier_pass",
-    "easy_attempt_wall_time_within_budget",
-    "passes",
-)
+
+
+def _records(attempts: int, *, failed_every: int = 100, mode: str = "easy") -> list[GraspAttemptRecord]:
+    """A clean log: every ``failed_every``-th attempt found no grasp, every other one succeeded with its execution
+    block. No dead loop, every outcome typed."""
+    return [
+        GraspAttemptRecord.new(
+            attempt_id=f"log-{index:05d}", mode=mode, timestamp=float(index),
+            final_outcome="no_valid_grasp" if index % failed_every == failed_every - 1 else "succeeded",
+            execution=None if index % failed_every == failed_every - 1 else {"outcome": "executed"},
+        )
+        for index in range(attempts)
+    ]
 
 
 def _read(path: Path) -> str:
@@ -206,175 +194,8 @@ class DocLinksToRunbooksTests(unittest.TestCase):
             )
 
 
-class BuildU12SoakReportTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.payload, cls.violations = build_soak_report(_REPO_ROOT)
-
-    def test_report_shape_and_gate_keys(self) -> None:
-        self.assertEqual(self.payload["capability_group"], "soak_gate")
-        self.assertEqual(self.payload["report_version"], 1)
-        self.assertGreaterEqual(
-            int(self.payload["total_attempts"]), SOAK_MIN_ATTEMPTS
-        )
-        gate = self.payload["gate"]
-        self.assertIsInstance(gate, dict)
-        for key in _EXPECTED_GATE_KEYS:
-            self.assertIn(key, gate, f"gate missing key {key!r}")
-        # No extra keys beyond the locked set — keeps the contract honest.
-        self.assertEqual(set(gate.keys()), set(_EXPECTED_GATE_KEYS))
-
-    def test_gate_passes_on_current_baseline(self) -> None:
-        self.assertEqual(
-            tuple(self.violations),
-            (),
-            f"unexpected violations: {self.violations}",
-        )
-        self.assertTrue(bool(self.payload["gate"]["passes"]))
-
-    def test_easy_wall_time_block_finite_and_within_budget(self) -> None:
-        block = self.payload["easy_attempt_wall_time"]
-        self.assertEqual(block["capability_group"], "soak_gate")
-        for key in ("current_p95_s", "baseline_p95_s", "budget_p95_s"):
-            value = block[key]
-            self.assertIsNotNone(value, f"{key} unexpectedly None")
-            self.assertIsInstance(value, float)
-            self.assertGreater(float(value), 0.0)
-        self.assertTrue(bool(block["within_budget"]))
-        self.assertAlmostEqual(
-            float(block["budget_multiplier"]), 1.05, places=6
-        )
-
-    def test_scenarios_meet_minimum_attempts(self) -> None:
-        scenarios = self.payload["scenarios"]
-        self.assertGreaterEqual(len(scenarios), 3)
-        total = sum(int(s["attempts"]) for s in scenarios)
-        self.assertGreaterEqual(total, SOAK_MIN_ATTEMPTS)
-        # Seeds must be unique so the soak streams cannot accidentally
-        # collide on identical attempt_ids.
-        seeds = [int(s["seed"]) for s in scenarios]
-        self.assertEqual(len(seeds), len(set(seeds)))
-
-    def test_the_taxonomy_leg_FAILS_when_the_classifier_stops_classifying(self) -> None:
-        """⛔ THE LEG WAS INERT, AND A DEAD CLASSIFIER PASSED IT. MEASURED 2026-09-10: the synthetic
-        soak stream stamps no ``extra.*_evidence`` flag anywhere, so all 168 of its failures already
-        classify as ``unclassified`` (coverage 0.0). A classifier that names nothing produces the
-        same 168 and the same 0.0, the ``failure_taxonomy`` block comes out byte-identical, and the
-        gate still says ``passes``. The soak carried a taxonomy section that could not tell a working
-        classifier from a deleted one.
-
-        So the leg is judged against the LABELED pack instead, whose rows carry
-        ``extra.expected_root_cause``. This test kills the classifier and requires the gate to
-        notice."""
-        from unittest import mock
-
-        from src.robot.grasping.replay import failure_taxonomy
-
-        def _names_nothing(final_outcome, extra, *, attempt_id="<unnamed>"):  # noqa: ANN001
-            return failure_taxonomy.TaxonomyVerdict(
-                primary=failure_taxonomy.FailureRootCause.UNCLASSIFIED,
-                also_matched=(),
-                evidence={"final_outcome": final_outcome, "rules_fired": {}},
-            )
-
-        with mock.patch.object(failure_taxonomy, "classify_symptoms", _names_nothing):
-            dead_payload, dead_violations = build_soak_report(_REPO_ROOT)
-
-        self.assertEqual(
-            dead_payload["failure_taxonomy"],
-            self.payload["failure_taxonomy"],
-            "the synthetic taxonomy block CHANGED under a dead classifier. If this ever fails, "
-            "the stream grew evidence flags and this test's premise needs re-measuring",
-        )
-        self.assertFalse(
-            bool(dead_payload["gate"]["passes"]),
-            "a classifier that names nothing still passed the soak gate",
-        )
-        self.assertIn("failure_taxonomy_classifier_failed", dead_violations)
-
-    def test_the_classifier_leg_reports_what_it_judged(self) -> None:
-        """A gate key with no numbers behind it cannot be argued with."""
-        block = self.payload["failure_taxonomy_classifier"]
-        self.assertEqual(block["mismatches"], [])
-        self.assertGreaterEqual(int(block["judged_failures"]), 60)
-        self.assertAlmostEqual(float(block["label_agreement"]), 1.0, places=6)
-        self.assertGreaterEqual(float(block["coverage_fraction"]), 0.95)
-        self.assertTrue(bool(block["passes_gate"]))
-
-    def test_determinism_two_builds_match(self) -> None:
-        payload_a, _ = build_soak_report(_REPO_ROOT)
-        payload_b, _ = build_soak_report(_REPO_ROOT)
-        for key in ("kpi", "scenarios", "gate", "total_attempts"):
-            self.assertEqual(
-                payload_a[key],
-                payload_b[key],
-                f"non-deterministic key {key!r}",
-            )
-
-
-class SoakReportCLITests(unittest.TestCase):
-    """Smoke the ``--soak-report`` CLI: exit 0 + writes a valid JSON."""
-
-    def test_cli_writes_artifact_and_exits_zero(self) -> None:
-        # Write to the same canonical location the CLI uses by default
-        # (``logs/u12/soak_report.json``) so we also lock the default
-        # path contract. K4: the file IS git-tracked and byte-stable (the
-        # baseline_path is now POSIX-normalized); its regen-stability is
-        # guarded by ``test_committed_report_is_regen_stable`` below.
-        out_path = _REPO_ROOT / "logs" / "u12" / "soak_report.json"
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "src.robot.grasping.replay",
-                "--soak-report",
-            ],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        self.assertEqual(
-            result.returncode,
-            0,
-            f"CLI exited {result.returncode}\nstdout={result.stdout}"
-            f"\nstderr={result.stderr}",
-        )
-        self.assertTrue(
-            out_path.is_file(), f"CLI did not write {out_path}"
-        )
-        payload = json.loads(out_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload.get("capability_group"), "soak_gate")
-        self.assertEqual(payload.get("report_version"), 1)
-        self.assertTrue(bool(payload["gate"]["passes"]))
-
-    def test_committed_report_is_regen_stable(self) -> None:
-        # K4: the committed soak report must stay byte-in-sync with a fresh regen, or the golden silently
-        # rots (it had drifted on Windows via a backslash baseline_path). Object-equality (like the U+
-        # baseline guard) catches value + path-separator drift. The three lines that used to sit here
-        # called this test platform-locked and named a conftest allow-list. MEASURED 2026-09-10: that
-        # list gated on an environment variable nothing in the tree ever set, so this ran on no box at
-        # all; opened by hand it passes here first try, which is the evidence the
-        # "float/BLAS-sensitive" reason never had.
-        committed = json.loads(
-            (_REPO_ROOT / "logs" / "u12" / "soak_report.json").read_text(encoding="utf-8")
-        )
-        payload, _violations = build_soak_report(_REPO_ROOT)
-        self.assertEqual(
-            payload,
-            committed,
-            msg=(
-                "committed logs/u12/soak_report.json drifted from a fresh regen — re-run "
-                "`python -m src.robot.grasping.replay --soak-report` on the canonical "
-                "platform and recommit."
-            ),
-        )
-
-
 class RecordsGateTests(unittest.TestCase):
-    """K2: --records-gate applies the record-intrinsic soak thresholds over a REAL log -- unlike the
-    synthetic --soak-report (which passes by construction), this CAN fail, and marks the pack-dependent
-    keys not_applicable."""
+    """K2: --records-gate applies the soak thresholds over a REAL log, and this CAN fail."""
 
     def _run_records_gate(self, log_path: Path) -> tuple[int, dict]:
         result = subprocess.run(
@@ -393,13 +214,11 @@ class RecordsGateTests(unittest.TestCase):
         return result.returncode, json.loads(result.stdout)
 
     def test_records_gate_can_fail_on_real_log(self) -> None:
-        # The dense canonical pack is small (< 2000) and has a high dead-loop rate, so the record-intrinsic
-        # gate honestly FAILS (exit 1) -- the whole point of a real-log gate.
-        pack = (
-            _REPO_ROOT / "tests" / "data" / "replay"
-            / "replay_dense_canonical_v1.jsonl"
-        )
-        rc, payload = self._run_records_gate(pack)
+        # A log far short of the 2000-attempt floor honestly FAILS (exit 1) -- the whole point of a real-log gate.
+        with tempfile.TemporaryDirectory() as td:
+            pack = Path(td) / "short.jsonl"
+            pack.write_text("\n".join(r.to_json() for r in _records(12)) + "\n", encoding="utf-8")
+            rc, payload = self._run_records_gate(pack)
         self.assertEqual(rc, 1)
         self.assertEqual(payload["mode"], "records-gate")
         self.assertEqual(
@@ -409,25 +228,10 @@ class RecordsGateTests(unittest.TestCase):
         self.assertTrue(
             any("min_attempts" in v for v in payload["violations"])
         )
-        # pack-dependent keys are not judgeable from a record log alone
-        self.assertEqual(payload["gate"]["slo_packs_pass"], "not_applicable")
-        self.assertEqual(payload["gate"]["drift_gate_pass"], "not_applicable")
 
     def test_records_gate_passes_on_good_log(self) -> None:
-        # A >= 2000-record log of mostly-successful attempts (no dead loops, valid outcomes) passes the
-        # record-intrinsic gate (exit 0); the pack-dependent keys stay not_applicable.
-        records = generate_soak_records(
-            SoakScenarioSpec(
-                name="good",
-                mode="easy",
-                attempts=2100,
-                failure_class_weights={"succeeded": 99.0, "no_valid_grasp": 1.0},
-                recovery_success_rate=0.0,
-                cycle_time_mean_s=1.5,
-                cycle_time_jitter_s=0.2,
-                seed=7,
-            )
-        )
+        # A >= 2000-record log of mostly-successful attempts (no dead loops, valid outcomes) passes the gate (exit 0).
+        records = _records(2100)
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "good.jsonl"
             log.write_text(
@@ -438,13 +242,12 @@ class RecordsGateTests(unittest.TestCase):
         self.assertEqual(rc, 0, msg=str(payload["violations"]))
         self.assertTrue(payload["gate"]["passes"])
         self.assertTrue(payload["gate"]["min_attempts_met"])
-        self.assertEqual(payload["gate"]["slo_packs_pass"], "not_applicable")
 
 
 class SimSoakReportTests(unittest.TestCase):
     """S4: --sim-soak-report runs the record-intrinsic gate over a REAL sim log + writes a persistent
-    report with an honest sim provenance banner. AUGMENTS the synthetic --soak-report (which stays
-    byte-identical). pick_success_rate is REPORTED but not gated; a smaller honest sim min_attempts floor."""
+    report with an honest sim provenance banner. pick_success_rate is REPORTED but not gated; a smaller honest sim
+    min_attempts floor."""
 
     def _run(self, log_path: Path, *, min_attempts: int, out_path: Path) -> tuple[int, dict]:
         result = subprocess.run(
@@ -452,21 +255,15 @@ class SimSoakReportTests(unittest.TestCase):
                 sys.executable, "-m", "src.robot.grasping.replay",
                 "--sim-soak-report", str(log_path),
                 "--sim-min-attempts", str(min_attempts),
-                "--baseline-out", str(out_path),
+                "--out", str(out_path),
             ],
             cwd=_REPO_ROOT, capture_output=True, text=True, timeout=300,
         )
         return result.returncode, json.loads(result.stdout)
 
     @staticmethod
-    def _good_records(attempts: int, *, success: float = 99.0, seed: int = 5):
-        return generate_soak_records(
-            SoakScenarioSpec(
-                name="sim", mode="dense_clutter", attempts=attempts,
-                failure_class_weights={"succeeded": success, "no_valid_grasp": 1.0},
-                recovery_success_rate=0.0, cycle_time_mean_s=3.5, cycle_time_jitter_s=0.5, seed=seed,
-            )
-        )
+    def _good_records(attempts: int, *, failed_every: int = 100) -> list[GraspAttemptRecord]:
+        return _records(attempts, failed_every=failed_every, mode="dense_clutter")
 
     def _write(self, td: str, records) -> Path:  # noqa: ANN001
         log = Path(td) / "sim.jsonl"
@@ -484,8 +281,6 @@ class SimSoakReportTests(unittest.TestCase):
             self.assertTrue(out.exists())
             report = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(report["provenance"]["input"], "real_sim_grasp_record_log")
-            self.assertIsNone(report["baseline_pick_rate"])  # pick_success NOT gated cross-population
-            self.assertEqual(report["gate"]["slo_packs_pass"], "not_applicable")
             self.assertEqual(report["min_attempts_floor"], 300)
             self.assertIn("min_attempts floor=300", report["provenance"]["note"])
             # De-shouted by the docs/prose rewrite, same sentence: `soak_cli.py` emitted
@@ -507,27 +302,14 @@ class SimSoakReportTests(unittest.TestCase):
 
     def test_pick_success_reported_not_gated(self) -> None:
         # A LOW-success but integrity-clean log (enough attempts, valid outcomes, no dead loops) still
-        # PASSES -- pick_success is reported, not gated against the (incomparable) synthetic baseline.
+        # PASSES -- pick_success is reported, not gated.
         with tempfile.TemporaryDirectory() as td:
-            log = self._write(td, self._good_records(320, success=1.0))  # ~50% success
+            log = self._write(td, self._good_records(320, failed_every=2))  # 50% success
             out = Path(td) / "r.json"
             rc, payload = self._run(log, min_attempts=300, out_path=out)
             self.assertEqual(rc, 0, msg=str(payload.get("violations")))
             report = json.loads(out.read_text(encoding="utf-8"))
             self.assertLess(report["kpi"]["pick_success_rate"], 0.9)  # genuinely low, yet the gate passed
-
-
-class SyntheticSoakUnchangedByS4Tests(unittest.TestCase):
-    """S4 must AUGMENT, not alter: the synthetic soak report stays byte-identical (S4 only added a
-    defaulted min_attempts param to evaluate_soak_gate_over_records, which build_soak_report doesn't call)."""
-
-    def test_synthetic_soak_determinism_holds(self) -> None:
-        p1, v1 = build_soak_report(_REPO_ROOT)
-        p2, v2 = build_soak_report(_REPO_ROOT)
-        self.assertEqual(p1["kpi"], p2["kpi"])
-        self.assertEqual(p1["gate"], p2["gate"])
-        self.assertEqual(list(v1), list(v2))
-        self.assertEqual(p1["provenance"]["input"], "synthetic_generator")  # unchanged banner
 
 
 if __name__ == "__main__":  # pragma: no cover

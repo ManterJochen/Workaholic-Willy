@@ -48,6 +48,7 @@ from src.contracts import UNSET, Maybe
 from src.robot.constants import CUROBO_PLANNER_LOG_FILE, create_robot_logger
 from src.robot.core import MotionCommand, MotionResult, MotionSent, MotionStatus
 from src.robot.core.arm_capabilities import HaltState, MoveEnd, halted_refusal
+from src.robot.core.cell_gate import CellOccupied, holding
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.safety.planning import (
     CuroboPlanClient,
@@ -181,12 +182,6 @@ class CuroboPlanner:
         registered once, the first time the planner is reached. The default of none
         leaves the planner with the world it booted with, which is its own robot model
         plus a generic table and nothing of this cell.
-    require_registration
-        With a world declared and this true, the default, a registration the planner
-        does not confirm in full raises :class:`CuroboUnavailableError` instead of
-        planning. The client returns 0 and logs that planning continues against the
-        previous world, and an obstacle the planner never received is one it will route
-        straight through.
     world_meshes
         The declared meshes of the cell, from
         :func:`~src.robot.safety.planning.world.build_planner_meshes`, registered with the
@@ -207,7 +202,6 @@ class CuroboPlanner:
         acc: float | None = None,
         world_cuboids: Sequence[dict[str, object]] | None = None,
         world_meshes: Sequence[dict[str, object]] | None = None,
-        require_registration: bool = True,
         live_world: "LivePlannerWorld | None" = None,
         self_envelope: "Callable[[], SelfEnvelope | None] | None" = None,
         on_perceived_obstacles: "Callable[[Sequence[Any]], object] | None" = None,
@@ -233,7 +227,9 @@ class CuroboPlanner:
         self._client: CuroboPlanClient | None = None
         self._world_cuboids = [dict(c) for c in (world_cuboids or ())]
         self._world_meshes = [dict(m) for m in (world_meshes or ())]
-        self._require_registration = bool(require_registration)
+        #: The other arms of the cell as declared boxes beside the cell's own (``set_partner_cuboids``); empty in a cell
+        #: of one arm.
+        self._partner_cuboids: list[dict] = []
         self._world_registered = False
         #: The cell as the cameras see it, asked immediately before every plan. `None` is the
         #: unchanged path: the declared world is registered once and never revisited.
@@ -247,13 +243,6 @@ class CuroboPlanner:
         #: ignored: the preflight answers how many guards took the boxes, which is a number for a
         #: report rather than a decision to make here.
         self._on_perceived_obstacles = on_perceived_obstacles
-        #: Collision-sphere slots the sidecar reserves for a carried payload. At 0 the
-        #: sidecar robot config is untouched and `attach_payload` refuses, which is the
-        #: unchanged path.
-        self._attach_spheres = 0
-        #: Whether this sidecar may hold a carried part: set as an attach is handed to it, whatever it answers,
-        #: and cleared by a detach it confirmed or by closing it. `detach_payload` asks nothing while it is clear.
-        self._payload_handed = False
         #: The names of the boxes the camera saw that the planner holds now, as the last refresh it confirmed
         #: handed them over; `()` while it holds none, and `None` where nobody can say: a refused refresh, a
         #: world set by hand, a restarted sidecar. Only these are ever asked to be set aside
@@ -287,10 +276,6 @@ class CuroboPlanner:
         if self._starting:
             return "starting"
         return "ready" if self._client is not None else "off"
-
-    def enable_payload(self, sphere_slots: int) -> None:
-        """Reserve collision spheres for a carried part. It is called before the planner starts."""
-        self._attach_spheres = max(0, int(sphere_slots))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -337,19 +322,11 @@ class CuroboPlanner:
             made = self._client_factory()
             client = cast("CuroboPlanClient", PlannerFrameClient(made)) if self._controller_yaw_deg == 180 else made
             if self._reservation is not None:
-                # For the same reason as the spheres below, and first: the slots have to be in the
-                # sidecar environment before it spawns, and an injected factory never sees the config.
+                # The slots have to be in the sidecar environment before it spawns, and an injected factory never sees
+                # the config, so they are handed over here.
                 reserve = getattr(client, "reserve_world", None)
                 if callable(reserve):
                     reserve(self._reservation)
-            if self._attach_spheres > 0:
-                # The sphere budget has to be in the sidecar environment before it
-                # spawns, because it decides which robot config gets built. It is set
-                # here rather than in the factory, so a caller that injects its own
-                # factory still gets the behaviour.
-                setter = getattr(client, "reserve_attach_spheres", None)
-                if callable(setter):
-                    setter(self._attach_spheres)
             client.start()
             refusal = (
                 self._descriptor_check(SidecarIdentity.from_client(client))
@@ -376,32 +353,44 @@ class CuroboPlanner:
         about. A guard that fires once and then waves everything through afterwards is worse
         than either answer.
         """
-        if self._world_registered or not (self._world_cuboids or self._world_meshes):
+        partners = self._partner_cuboids
+        cuboids = self._world_cuboids + partners
+        if self._world_registered or not (cuboids or self._world_meshes):
             return
-        expected = len(self._world_cuboids) + len(self._world_meshes)
+        expected = len(cuboids) + len(self._world_meshes)
         # Meshes are named only when there are some: a client from before meshes existed takes one
         # argument, and a cell that declares none should not need a newer one.
         count = (
-            client.set_world(list(self._world_cuboids), [dict(m) for m in self._world_meshes])
-            if self._world_meshes else client.set_world(list(self._world_cuboids))
+            client.set_world(list(cuboids), [dict(m) for m in self._world_meshes])
+            if self._world_meshes else client.set_world(list(cuboids))
         )
         if count == expected:
-            self._world_registered = True
+            # Registered as current only where the cell handed no other arms meanwhile (from another arm's thread):
+            # then the next plan registers again.
+            self._world_registered = partners is self._partner_cuboids
             # The declared world alone: whatever the camera saw before is gone from the planner.
             self._seen_held = self._guard_held = ()
             self.logger.info("registered %d cell obstacle(s) with the planner", count)
             return
-        message = (
-            f"the planner confirmed {count} of {expected} declared cell obstacle(s). "
-            "It is now planning against a world that is missing some of your cell, and an obstacle it "
-            "never received is one it will route straight through."
+        # A world confirmed in part refuses the motion on every cell (2026-10-17): no switch plans on anyway.
+        raise CuroboUnavailableError(
+            f"the planner confirmed {count} of {expected} declared cell obstacle(s). It would be planning against a "
+            "world that is missing some of your cell, and an obstacle it never received is one it would route "
+            "straight through. Refusing to plan."
         )
-        if self._require_registration:
-            raise CuroboUnavailableError(
-                message + " Refusing to plan. Set safety.planning_world.require_registration false to "
-                "plan anyway, deliberately."
-            )
-        self.logger.error("%s Planning anyway: require_registration is off.", message)
+
+    def set_partner_cuboids(self, cuboids: "Sequence[dict]") -> None:
+        """The other arms of the cell as boxes in this planner's world from the next plan on, or none (owner,
+        2026-10-15).
+
+        Declared boxes beside the cell's own, named ``arm_<arm>_<part>``, so the planner keeps them and plans round
+        them, and the exact guard judges the hulls they hold. A live world sends them with every refresh; a planner
+        without one registers its world again before its next plan whenever they changed.
+        """
+        partners = [dict(cuboid) for cuboid in cuboids]
+        if partners != self._partner_cuboids:
+            self._partner_cuboids = partners
+            self._world_registered = False
 
     def set_live_world(self, world: "LivePlannerWorld | None") -> None:
         """Point this planner at a different live world, or at none.
@@ -444,8 +433,8 @@ class CuroboPlanner:
                 client=client,
                 self_envelope=envelope,
                 near_point_mm=near_point_mm,
-                require_registration=self._require_registration,
                 goal_keep_out=goal_keep_out,
+                partner_cuboids=self._partner_cuboids,
             )
         except CameraWorldUnavailable as exc:
             # Raised on, not refused: a camera that stayed silent, blind or stale through its attempts
@@ -492,59 +481,6 @@ class CuroboPlanner:
         """What the most recent refresh did, for a report and for an operator asking why."""
         return self._last_refresh
 
-    def attach_payload(
-        self, joints: "Sequence[float]", dims_mm: "Sequence[float]", centre_mm: "Sequence[float]"
-    ) -> bool:
-        """Tell the planner the gripper is carrying a box, so later plans route the box around too.
-
-        ``dims_mm`` are the sides of the box along the tool0 axes and ``centre_mm`` is its
-        centre in tool0, as ``self_envelope.carried_part_box`` places them, along the hand's placed
-        approach. A distance along tool0 +Z alone would not follow a hand that approaches along
-        another axis, as the Isaac cell's hand does. It
-        returns ``False`` where the planner could not attach, including a sidecar
-        started with no sphere budget: a cell that cannot model its payload carries on
-        and says so rather than stopping mid-pick.
-        """
-        dims_m = [float(d) / 1000.0 for d in dims_mm]
-        pose = [*(float(c) / 1000.0 for c in centre_mm), 1.0, 0.0, 0.0, 0.0]
-        try:
-            client = self._client_or_start()
-            # From here the sidecar may hold the part whatever it answers: a False is a refusal or a reply that
-            # never came, and the attach behind a timeout can still land.
-            self._payload_handed = True
-            return client.attach_payload(list(joints), dims_m, pose)
-        except CuroboUnavailableError as exc:
-            # The client logs that it is planning as if the gripper were empty when the
-            # sidecar answers with a refusal. Where the sidecar is gone the exception
-            # flies past that line, so without this the one case in which nothing is
-            # modelled would be the one case nobody is told about.
-            self.logger.error("payload NOT attached (%s); the planner is routing as if the gripper were "
-                         "empty", exc)
-            return False
-
-    def detach_payload(self) -> bool:
-        """Take the carried box off the planner's model; ``True`` without asking where none was handed to it.
-
-        A sidecar that was never handed a part since it last confirmed a detach holds none, and it is not
-        asked: one started with no sphere budget has no attachment link, and cuRobo's detach raises on it
-        (measured 2026-09-23 on the UR10 descriptor and this project's GPU: ``ValueError: attached_object not
-        found in spheres``, answered as ``detached: false``). Asked anyway, a place after a grasp that modelled
-        nothing reported DETACH_FAILED. Wherever an attach was handed over, confirmed or not, the sidecar is
-        asked and its answer is the answer: a detach it does not confirm, or a sidecar that is gone, is
-        ``False``, and the next detach asks again.
-        """
-        if self._client is None or not self._payload_handed:
-            return True
-        try:
-            detached = bool(self._client.detach_payload())
-        except CuroboUnavailableError as exc:
-            self.logger.error("payload NOT detached (%s); the planner will keep routing around a part "
-                         "the gripper no longer holds", exc)
-            return False
-        if detached:
-            self._payload_handed = False
-        return detached
-
     def set_world(self, cuboids: list[dict]) -> int:
         """Register scene obstacles into the cuRobo collision world, or 0 where the planner is away.
 
@@ -554,7 +490,7 @@ class CuroboPlanner:
         logged and nothing to notice it by. The simulator driver merges the same way, and
         this is the side whose arm can hurt someone.
         """
-        merged = merge_planner_worlds(self._world_cuboids, cuboids)
+        merged = merge_planner_worlds(self._world_cuboids + self._partner_cuboids, cuboids)
         # A world set by hand is no refresh's: whatever of it the camera saw, the guard was not handed it.
         self._seen_held = self._guard_held = None
         try:
@@ -590,7 +526,6 @@ class CuroboPlanner:
             if self._client is not None:
                 self._client.close()
                 self._client = None
-            self._payload_handed = False
             self._seen_held = self._guard_held = None
 
     def retire(self, why: str = _RETIRED) -> None:
@@ -678,8 +613,8 @@ class CuroboPlanner:
         ``ignore_perceived`` asks the same with the boxes the camera saw set aside, by name: the arm asks it where only
         those boxes may refuse the planner's world, and the exact guard, which holds the same boxes, decides them (the
         owner's Option 1). The names have to be exactly the camera boxes the last refresh this glue confirmed handed the
-        planner (:meth:`perceived_in_world`), none of them a declared fixture's, and no part may be carried
-        (:attr:`carries_part`); anything else raises before the sidecar is asked. ``None``, the default, asks as this
+        planner (:meth:`perceived_in_world`), none of them a declared fixture's; anything else raises before the sidecar
+        is asked. ``None``, the default, asks as this
         method always did.
 
         Raises ``CuroboUnavailableError`` where the planner cannot be reached or its client reports no refused samples,
@@ -716,20 +651,12 @@ class CuroboPlanner:
         but near the motion's goal, where the guard holds the fine world (``fine_world``); ``None`` alike."""
         return self._guard_held
 
-    @property
-    def carries_part(self) -> bool:
-        """Whether this planner may hold a carried part: an attach was handed to it and no detach it confirmed since."""
-        return self._payload_handed
-
     def _set_aside_refusal(self, names: "tuple[str, ...]") -> "str | None":
         """Why the camera boxes ``names`` cannot be set aside in the planner's world, or ``None`` where they can."""
         declared = sorted({str(box.get("name")) for box in self._world_cuboids} & set(names))
         if declared:
             return (f"the declared fixtures {declared} carry the names of boxes the camera saw, and a declared fixture is "
                     "never set aside: give them names of their own")
-        if self._payload_handed:
-            return ("a part may be carried, which only the planner models, so no box the camera saw is set aside while "
-                    "it may be")
         held = self._seen_held
         if held is None:
             return ("nobody can say which boxes the camera saw the planner holds now: its world is no refresh it "
@@ -752,7 +679,7 @@ class CuroboPlanner:
     ) -> JointCheckVerdict:
         """Ask cuRobo whether every configuration of a joint path is admissible, in UR joint order.
 
-        The same planner, the same world and the same attached payload a plan gets, so a joint
+        The same planner and the same world a plan gets, so a joint
         path is judged against the cell the planner actually holds rather than against a second
         model that agreed with it when somebody last looked. The world is refreshed first for the
         reason :meth:`_refresh_world` gives: a world registered once is a photograph.
@@ -820,15 +747,26 @@ class CuroboPlanner:
         carries the controller's state where it can be read.
 
         The halt latch ends the list where it is (CANCELLED, naming the waypoint): it is read before every waypoint,
-        and a halted connection sends none. With ``robot.ur.brake_on_halt`` a halt brakes the leg in flight and no
+        and a halted connection sends none. On a UR a halt brakes the leg in flight and no
         later waypoint follows; without it the leg in flight runs to its end and the next one is not sent. A halt
         that came after the path began ends it even where it was cleared before the leg in flight ended: the latch's
         count of halts (``halt_requests``) is taken before the first waypoint and read before each.
+
+        In a cell of several arms the whole list is one span of the cell (``cell_gate.holding``): the space it sweeps
+        from where the arm stands is reserved before the first waypoint, or nothing is sent.
         """
-        v = vel if vel is not None else self._vel
-        a = acc if acc is not None else self._acc
-        total = len(traj_ur)
         commanded: dict[str, Any] = {"target_pose": pose, "target_joints": target_joints}
+        try:
+            with holding(self._transport, lambda: [self._transport.read_joints(), *traj_ur]):
+                return self._run_waypoints(traj_ur, command, commanded,
+                                           vel if vel is not None else self._vel, acc if acc is not None else self._acc)
+        except CellOccupied as exc:
+            return exc.refusal(command, **commanded)
+
+    def _run_waypoints(self, traj_ur: "Sequence[Sequence[float]]", command: MotionCommand,
+                       commanded: "dict[str, Any]", v: float | None, a: float | None) -> MotionResult:
+        """The body of :meth:`execute`: one blocking ``moveJ`` per waypoint, the halt read before each."""
+        total = len(traj_ur)
         halts_before = _halt_requests_of(self._transport)
         for index, waypoint in enumerate(traj_ur):
             halted = _halt_on(self._transport)

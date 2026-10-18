@@ -1,4 +1,4 @@
-"""Camera-system, rig-variant, stereo-matcher and eye-to-hand schemas."""
+"""Camera-system, rig-variant and eye-to-hand schemas."""
 
 from __future__ import annotations
 
@@ -40,21 +40,18 @@ def _check_positive_pair(pair: tuple[int, int], name: str) -> None:
         raise ValueError(f"{name} must contain two positive values")
 
 
-def _refuse_stereo_extrinsics(rig: BaseRigConfig) -> None:
-    """Refuse a calibration on a stereo rig. The planner world and the pick path take depth from
-    RGB-D rigs only, so a calibrated stereo rig would be a camera every reader refuses later."""
-    if rig.extrinsics is not None:
-        raise ValueError(
-            f"camera.cameras.rigs[{rig.rig_id!r}] is a {rig.source!r} rig; stereo rigs carry no extrinsics "
-            "until their own step, because the planner world and the pick path take depth from RGB-D rigs only")
-
-
 # ---------------------------------------------------------------------------
 # Webcam pair
 # ---------------------------------------------------------------------------
 
 class WebcamPairRigConfig(BaseRigConfig):
-    """Two independent USB cameras configured as a stereo pair."""
+    """Two independent USB cameras configured as a stereo pair.
+
+    A depth camera of the cell like an RGB-D rig once its stereo calibration is written to
+    ``calibration_paths.stereo_map_file``: its colour is the left image rectified and its depth is
+    matched on it (``StereoDepthStreamer``), and it carries ``extrinsics``, its hand-eye calibration,
+    as an RGB-D rig does.
+    """
 
     source: Literal["webcam_pair"]
 
@@ -75,7 +72,6 @@ class WebcamPairRigConfig(BaseRigConfig):
 
     @model_validator(mode="after")
     def _validate_capture_settings(self) -> WebcamPairRigConfig:
-        _refuse_stereo_extrinsics(self)
         _check_positive_pair(self.frame_size, "frame_size")
         if self.min_pairs > self.max_pairs:
             raise ValueError("min_pairs must be <= max_pairs")
@@ -93,7 +89,11 @@ class WebcamPairRigConfig(BaseRigConfig):
 # ---------------------------------------------------------------------------
 
 class SingleDeviceRigConfig(BaseRigConfig):
-    """Single capture device that delivers a side-by-side stereo image."""
+    """Single capture device that delivers a side-by-side stereo image.
+
+    A depth camera of the cell once its stereo calibration is written, as a webcam pair is
+    (:class:`WebcamPairRigConfig`).
+    """
 
     source: Literal["single_device"]
 
@@ -123,7 +123,6 @@ class SingleDeviceRigConfig(BaseRigConfig):
 
     @model_validator(mode="after")
     def _validate_capture_settings(self) -> SingleDeviceRigConfig:
-        _refuse_stereo_extrinsics(self)
         _check_positive_pair(self.device_frame_size, "device_frame_size")
         _check_positive_pair(self.per_eye_frame_size, "per_eye_frame_size")
         if self.min_pairs > self.max_pairs:
@@ -365,81 +364,6 @@ class CameraSystemConfig(StrictModel):
                     f"the same serial_number is configured on more than one RGB-D rig: {shared}. "
                     "Both rigs would bind the same physical camera."
                 )
-        return self
-
-
-# ---------------------------------------------------------------------------
-# Stereo matcher (SGBM + post-filters)
-# ---------------------------------------------------------------------------
-
-class WlsFilterConfig(StrictModel):
-    """Optional WLS (Weighted Least Squares) post-filter for SGBM disparity.
-
-    Smooths disparity in low-texture regions while preserving edges. Needs ``cv2.ximgproc``, which
-    ships with ``opencv-contrib-python``.
-    """
-
-    enabled: bool = False
-    lambda_: float = Field(8000.0, alias="lambda")
-    sigma_color: float = 1.5
-    lr_check: bool = True
-
-
-class StereoMatcherConfig(StrictModel):
-    """SGBM disparity parameters plus optional post-processing knobs.
-
-    YAML keeps the OpenCV-native spelling through ``camelCase`` aliases (``numDisparities``,
-    ``blockSize``); Python reaches the same fields under their snake_case attribute names
-    (``num_disparities``, ``block_size``).
-    """
-
-    min_disparity: int = Field(alias="minDisparity")
-    num_disparities: int = Field(alias="numDisparities")
-    block_size: int = Field(alias="blockSize")
-    p1: int | None = Field(default=None, ge=0)
-    p2: int | None = Field(default=None, ge=0)
-    #: Percent by which the best match must beat the runner-up before it is trusted. Raising it
-    #: trades wrong depths on textureless surfaces for holes where nothing wins clearly.
-    uniqueness_ratio: int = Field(alias="uniquenessRatio", ge=0)
-    #: Largest blob of similar disparity still treated as noise and cleared. A speck at the wrong
-    #: depth is worse than a hole, because a grasp can be planned onto it. ``0`` disables it.
-    speckle_window_size: int = Field(alias="speckleWindowSize", ge=0)
-    #: Disparity spread allowed inside one blob before it reads as a separate surface rather than
-    #: one speckle. It acts only through ``speckle_window_size``; on its own it changes nothing.
-    speckle_range: int = Field(alias="speckleRange", ge=0)
-    #: Tolerance (px) of the left-right consistency check: a pixel survives only if matching
-    #: left-to-right and right-to-left agree within it. Guards against occlusion-edge depths, which
-    #: are exactly the depths a grasp planner would otherwise aim at. ``-1`` disables the check.
-    disp12_max_diff: int = Field(alias="disp12MaxDiff")
-
-    # --- Quality knobs, all optional ---
-    mode: Literal["sgbm", "sgbm_3way"] = "sgbm"
-    subpixel: bool = True
-    temporal_alpha: float = Field(
-        0.0,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Exponential moving average for disparity in realtime mode. "
-            "0 = disabled (default), 1 = no smoothing (always latest), "
-            "0<α<1 weights the previous frame by (1-α)."
-        ),
-    )
-    wls: WlsFilterConfig = Field(default_factory=WlsFilterConfig)  # type: ignore[arg-type]
-
-    @model_validator(mode="after")
-    def _validate_sgbm_params(self) -> StereoMatcherConfig:
-        if self.num_disparities <= 0 or self.num_disparities % 16 != 0:
-            raise ValueError(
-                f"num_disparities must be a positive multiple of 16 "
-                f"(got {self.num_disparities})"
-            )
-        if self.block_size < 1 or self.block_size % 2 == 0:
-            raise ValueError(
-                f"block_size must be a positive odd integer (got {self.block_size})"
-            )
-        if self.p1 is not None and self.p2 is not None and self.p2 < self.p1:
-            raise ValueError("p2 must be >= p1 when both are configured")
         return self
 
 

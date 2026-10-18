@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     # declared frame puts it, then the planner margin.
     body = HAND.hand_body(hand, arm=arm, coupling_mm=exact.get("coupling_mm"),
                           rotation_xyzw=tuple(args.tool_rotation_xyzw))
-    composed, adjusted, _ = COMPOSE.compose_with_counts(
+    composed, adjusted = COMPOSE.compose_with_counts(
         yaml.safe_load(source.read_text(encoding="utf-8")), bodies=[body], margin_mm=args.planner_margin_mm,
     )
     planner = MotionPlanner(MotionPlannerCfg.create(robot=copy.deepcopy(composed), scene_model={"cuboid": {}}))

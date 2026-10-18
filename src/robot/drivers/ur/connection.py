@@ -11,9 +11,9 @@ It provides:
     - inverse kinematics, through ``ik``;
     - the DH rows and the TCP the controller computes those with, ``controller_kinematics`` (read from its primary
       interface, nothing sent) and ``active_tcp_offset``;
-    - the steady gate, ``wait_until_steady``, on ``isSteady`` or on the joint speeds (``robot.safety.dwell.steady_signal``);
+    - the steady gate, ``wait_until_steady``, on the joint speeds, ``isSteady`` where they cannot be read;
     - the low-level move wrappers ``moveJ`` and ``moveL``;
-    - the halt latch ("halt now"), and with ``robot.ur.brake_on_halt`` the watched move a halt brakes;
+    - the halt latch ("halt now"), and the watched move a halt brakes;
     - the hand-guiding primitives, teach mode, the RTDE watchdog and a fresh control
       program, which ``URTransport`` offers as ``ControllerFreedrive`` and
       :mod:`src.robot.drivers.planned.freedrive` puts together into a session.
@@ -229,8 +229,6 @@ def _read_line(sock: socket.socket) -> str:
     return data.decode("utf-8", errors="replace").strip()
 
 
-#: What :meth:`URConnection.wait_until_steady` may read (``robot.safety.dwell.steady_signal``).
-STEADY_SIGNALS: tuple[str, ...] = ("is_steady", "joint_speeds")
 #: How many reads in a row, :data:`_POLL_S` apart, every joint has to be slower than :data:`_STILL_RAD_S` for the arm to
 #: count as steady from its joint speeds.
 _QUIET_READS = 3
@@ -374,11 +372,6 @@ class URConnection:
         vel:          The default joint velocity in rad/s.
         acc:          The default joint acceleration in rad/s^2.
         frequency:    The RTDE exchange frequency in Hz. 0 means the default, 125 Hz.
-        brake_on_halt: ``robot.ur.brake_on_halt``. Off: every move is the synchronous ur_rtde call it always was, and a
-                      halt latches. On: a move is sent asynchronously and watched, and a halt brakes it (:meth:`moveJ`).
-        steady_signal: ``robot.safety.dwell.steady_signal``, what :meth:`wait_until_steady` reads: ``"is_steady"``, the
-                      controller's ``isSteady`` as always, or ``"joint_speeds"``, every joint slower than 0.01 rad/s on
-                      three reads in a row 8 ms apart.
         clock, sleep: The monotonic clock and the sleep a watched move polls with; a test hands in its own. The clock is
                       ``perf_counter``: ``time.monotonic`` ticks in 15.6 ms steps on Windows, two RTDE cycles.
 
@@ -393,8 +386,6 @@ class URConnection:
         acc: float = 0.5,
         frequency: float = 0.0,
         *,
-        brake_on_halt: bool = False,
-        steady_signal: str = "is_steady",
         clock: "Callable[[], float]" = time.perf_counter,
         sleep: "Callable[[float], None]" = time.sleep,
     ):
@@ -404,15 +395,7 @@ class URConnection:
         self.vel = vel
         self.acc = acc
         self.frequency = frequency
-        self.brake_on_halt = bool(brake_on_halt)
-        if steady_signal not in STEADY_SIGNALS:
-            raise ValueError(f"steady_signal is one of {', '.join(STEADY_SIGNALS)}, got {steady_signal!r}")
-        self.steady_signal = steady_signal
         self.logger = create_robot_logger("URConnection", UR_CONNECTION_LOG_FILE)
-        if steady_signal == "joint_speeds":
-            self.logger.info("The steady gate reads the joint speeds (robot.safety.dwell.steady_signal: joint_speeds): "
-                             "every joint under %.2f rad/s on %d reads %.0f ms apart, isSteady where they cannot be read.",
-                             _STILL_RAD_S, _QUIET_READS, _POLL_S * 1000.0)
 
         self._ctrl: RTDEControlInterface | None = None
         self._recv: RTDEReceiveInterface | None = None
@@ -463,8 +446,8 @@ class URConnection:
 
         Nothing is sent from the calling thread, which is usually not the one moving the arm: ur_rtde runs a
         synchronous move in the control script's main loop, and a ``stopJ`` from another thread waits behind it. The
-        move in flight is the moving thread's to end: braked under control with ``brake_on_halt``, run to its end
-        without. A second request keeps the first record.
+        move in flight is the moving thread's to end: it brakes it under control (:meth:`_move_and_wait`). A second
+        request keeps the first record.
         """
         with self._halt_lock:
             if self._halt_state is not None:
@@ -477,8 +460,7 @@ class URConnection:
             self._halt.set()
         self.logger.warning("Halt requested (%s); %s.", state.reason,
                             "the move in flight is braked by the thread that sent it" if state.in_motion
-                            and self.brake_on_halt else "the move in flight runs to its end and nothing after it is "
-                            "sent" if state.in_motion else "no move is in flight")
+                            else "no move is in flight")
         return state
 
     def clear_halt(self) -> None:
@@ -922,8 +904,9 @@ class URConnection:
         interface sends (:data:`_PRIMARY_PORTS`: the read-only port first, then the primary one), over a connection of
         its own that is only ever read: nothing is sent, nothing moves, no setting changes. They are the rows its
         ``getForwardKinematics`` and ``getInverseKinematics`` compute on, so a solver here on them answers what the
-        controller answers (``robot.safety.ik_quality.line_ik``, ``singularity_fk``). Both the rows and a failure are
-        logged once and kept until the next connect; a failure keeps every caller on the controller's own answers.
+        controller answers (a line solved here, the singularity check on the arm's own chain). Both the rows and a
+        failure are logged once and kept until the next connect; a failure keeps every caller on the controller's own
+        answers.
         """
         self._require_connected()
         with self._kinematics_lock:
@@ -932,7 +915,12 @@ class URConnection:
             epoch = self._kinematics_epoch
             read: ControllerKinematics | None = None
             tried: list[str] = []
-            for port in _PRIMARY_PORTS:
+            # No address, no controller to read: the arm refuses to connect without one, so only a double's connection
+            # gets here, and a socket opened to "" reaches whatever listens on this machine (a URSim on Linux and in
+            # WSL) or waits out its timeout (Windows), on every arm since the check runs on the arm's own chain.
+            if not self.ip:
+                tried.append("no controller address to read them from")
+            for port in _PRIMARY_PORTS if self.ip else ():
                 try:
                     read = _read_kinematics_info(self.ip, port)
                     break
@@ -1012,10 +1000,8 @@ class URConnection:
         It returns ``True`` when a synchronous move completes, or an asynchronous one
         starts. While the halt latch is set it returns ``False`` and sends nothing.
 
-        With ``brake_on_halt`` off, as shipped, the call is the one it always was: ur_rtde's synchronous ``moveJ``,
-        whose answer is returned. On, a synchronous move is sent asynchronously and watched by this thread
-        (:meth:`_move_and_wait`): a halt brakes it, and ``True`` comes only with the arm at the target.
-        :attr:`last_move_end` says how it ended.
+        A synchronous move is sent asynchronously and watched by this thread (:meth:`_move_and_wait`): a halt brakes
+        it, and ``True`` comes only with the arm at the target. :attr:`last_move_end` says how it ended.
         """
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
@@ -1023,9 +1009,9 @@ class URConnection:
         a = acc if acc is not None else self.acc
         if self.refuse_if_halted(_JOINT):
             return False
-        if self.brake_on_halt and not asynchronous:
+        if not asynchronous:
             return self._move_and_wait(_JOINT, [float(q) for q in joint_positions], v, a)
-        return self._send_as_always(_JOINT, self._ctrl.moveJ, joint_positions, v, a, asynchronous)
+        return self._send_asynchronously(_JOINT, self._ctrl.moveJ, joint_positions, v, a)
 
     def moveL(
         self,
@@ -1036,8 +1022,8 @@ class URConnection:
     ) -> bool:
         """A linear, meaning Cartesian, move.
 
-        ``tcp_pose`` is ``[x, y, z, rx, ry, rz]`` in metres with an axis-angle rotation. The halt latch and
-        ``brake_on_halt`` work as for :meth:`moveJ`; a line is braked with ``stopL``, along the line.
+        ``tcp_pose`` is ``[x, y, z, rx, ry, rz]`` in metres with an axis-angle rotation. The halt latch and the brake
+        work as for :meth:`moveJ`; a line is braked with ``stopL``, along the line.
         """
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
@@ -1045,29 +1031,21 @@ class URConnection:
         a = acc if acc is not None else self.acc
         if self.refuse_if_halted(_LINE):
             return False
-        if self.brake_on_halt and not asynchronous:
+        if not asynchronous:
             return self._move_and_wait(_LINE, [float(p) for p in tcp_pose], v, a)
-        return self._send_as_always(_LINE, self._ctrl.moveL, tcp_pose, v, a, asynchronous)
+        return self._send_asynchronously(_LINE, self._ctrl.moveL, tcp_pose, v, a)
 
-    def _send_as_always(self, kind: str, send: "Callable[..., bool]", target: "Sequence[float]", v: float, a: float,
-                        asynchronous: bool) -> bool:
-        """The move as ur_rtde always took it: one call, its answer returned (``brake_on_halt`` off, or the caller's own
-        asynchronous move). The latch is asked again in one step with the mark of the move in flight, right before it."""
-        if not self._begin_move(kind, in_flight=not asynchronous):
+    def _send_asynchronously(self, kind: str, send: "Callable[..., bool]", target: "Sequence[float]", v: float,
+                             a: float) -> bool:
+        """The caller's own asynchronous move, as ur_rtde takes it: one call, its answer returned, nobody watching it.
+        The latch is asked again in one step with the mark of the move, right before it."""
+        if not self._begin_move(kind, in_flight=False):
             return False
         self._last_end = MoveEnd.SENT
-        if asynchronous:
-            return send(target, v, a, asynchronous)
-        ended = False
-        try:
-            answer = send(target, v, a, asynchronous)
-            ended = True
-            return answer
-        finally:
-            self._end_move(unconfirmed=not ended)
+        return send(target, v, a, True)
 
     # ------------------------------------------------------------------
-    # The watched move (robot.ur.brake_on_halt)
+    # The watched move
     # ------------------------------------------------------------------
     #
     # ur_rtde's control script runs a synchronous move in its main loop, so nothing reaches it until the move ends: a
@@ -1253,8 +1231,8 @@ class URConnection:
 
         It stops an asynchronous move of the caller's own. It does not stop a synchronous move another thread is in:
         the control script runs that move in its main loop and reads the stop only after it ended, which is why the
-        arm's ``stop()`` latches the halt instead (:meth:`request_halt`), and why a move ``brake_on_halt`` is to brake
-        is sent asynchronously. ``scripts/ursim/probe_halt.py`` M0 measures it.
+        arm's ``stop()`` latches the halt instead (:meth:`request_halt`), and why every move is sent asynchronously and
+        watched. ``scripts/ursim/probe_halt.py`` M0 measures it.
 
         Parameters:
             deceleration: The rate, in rad/s^2 for stopJ and m/s^2 for stopL.
@@ -1332,9 +1310,9 @@ class URConnection:
         to the real settle time, and it never returns before the controller reports
         ``isSteady``.
 
-        With :attr:`steady_signal` ``"joint_speeds"`` (``robot.safety.dwell.steady_signal``) the joint
-        speeds decide instead, read every 8 ms (:meth:`_steady_from_joint_speeds`), and ``isSteady``
-        only where they cannot be read; the timeout and its ``False`` are the same.
+        The joint speeds decide, read every 8 ms (:meth:`_steady_from_joint_speeds`), and ``isSteady``
+        only where they cannot be read; the timeout and its ``False`` are the same (the owner's cell's,
+        ``robot.safety.dwell.steady_signal: joint_speeds`` until 2026-10-17).
 
         Parameters
         ----------
@@ -1361,10 +1339,9 @@ class URConnection:
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
 
-        if self.steady_signal == "joint_speeds":
-            steady = self._steady_from_joint_speeds(timeout_s)
-            if steady is not None:
-                return steady
+        steady = self._steady_from_joint_speeds(timeout_s)
+        if steady is not None:
+            return steady
 
         if timeout_s <= 0:
             if self._ctrl.isSteady():
@@ -1386,8 +1363,8 @@ class URConnection:
             _time.sleep(interval)
 
     def _steady_from_joint_speeds(self, timeout_s: float) -> bool | None:
-        """Steady from the joint speeds (``robot.safety.dwell.steady_signal: joint_speeds``); ``None`` where they cannot
-        be read, and ``isSteady`` decides as it always did.
+        """Steady from the joint speeds; ``None`` where they cannot be read, and ``isSteady`` decides as it always
+        did.
 
         Steady is every joint slower than :data:`_STILL_RAD_S`, the brake's own stillness, on :data:`_QUIET_READS` reads
         in a row :data:`_POLL_S` apart: a local read of what the receive interface last got, no round trip, where

@@ -1,4 +1,4 @@
-"""Live-camera perception: an RGB-D frame, GroundingDINO, SAM2, one :class:`PerceptionFrame`.
+"""Live-camera perception: an RGB-D frame, the cell's detector, SAM2, one :class:`PerceptionFrame`.
 
 This is the real-hardware twin of ``willy_sim/perception/vision.py``'s
 :class:`MultiObjectVisionPerceptionSource`, with the Isaac session-stepping removed and an RGB-D
@@ -17,8 +17,8 @@ mask edges, is unmeasured until a camera exists. The two robustness fixes carrie
 source, top-referenced depth over holes and mask completion, are the right starting point and not a
 proven answer.
 
-Where a cell hides a task's own places from its detector (``robot.grasping.hide_own_places``, the
-owner, 2026-10-08 night), a pick hands :meth:`RealSenseVisionPerceptionSource.acquire` a ``hide``:
+Where a cell hides a task's own places from its detector (every cell, the owner, 2026-10-08
+night), a pick hands :meth:`RealSenseVisionPerceptionSource.acquire` a ``hide``:
 the detector then reads a copy of the frame whose pixels standing in the regions the task keeps out
 (its bin, the circles about its drops) are painted in the colour round them (:func:`kept_out_pixels`,
 :func:`painted_copy`), so it boxes none of the parts already placed. The segmenter, the colour check,
@@ -41,7 +41,6 @@ from src.robot.core.shutter_motion import PICK_FRAME_BURST_GRABS, PICK_FRAME_WAR
 from src.robot.grasping.types.perception import PerceptionFrame
 from src.robot.perception.colour_check import (
     ColourCheck,
-    ColourClipped,
     ask_colour,
     colour_named,
     judge_colour,
@@ -151,9 +150,9 @@ class RealSenseVisionPerceptionSource:
         ``detector.detect_all(bgr, prompt) -> [Detection]`` and
         ``segmenter.segment_detection(bgr, det) -> SegmentationResult`` (``.mask`` HxW, ``.label`` str).
     prompt
-        The GroundingDINO phrase(s). A multi-phrase prompt grounds every object (the neighbour clutter
-        the dense sampler needs), not only the target. :meth:`set_prompt` changes it, together with
-        ``object_labels``, between frames.
+        What the detector grounds. A class list (``"cube | screwdriver | mug"``) grounds every kind it
+        names, each on its own (the neighbour clutter the dense sampler needs), not only the target.
+        :meth:`set_prompt` changes it, together with ``object_labels``, between frames.
     object_labels
         Optional canonical labels (the known object names). When given, a detection's free-form
         label is mapped onto the one whose every word it holds (:meth:`_canonical_label`), so an
@@ -175,13 +174,9 @@ class RealSenseVisionPerceptionSource:
         ``NONE``. :mod:`mask_completion` carries the measurement behind that default.
     colour_check
         What a part mapped onto an object label whose words name a colour goes by when its pixels say
-        another (:mod:`colour_check`, ``robot.grasping.colour_check``): ``on``, the default, gives it
-        a label no object carries, so it stays a neighbour and is never a target; ``log`` judges and
-        logs and changes nothing; ``off`` judges nothing.
-    colour_check_clipped
-        Whether the pixels a channel of which the camera clipped count (``robot.grasping.colour_check_clipped``):
-        ``exclude``, the default (the owner, 2026-10-09), leaves them out of the colour's counts, so an orange part
-        whose red clips is not read as yellow; ``keep`` counts them, as before.
+        another (:mod:`colour_check`): ``on``, the default and every cell's, gives it a label no object
+        carries, so it stays a neighbour and is never a target; ``off``, the library's ``locate``, judges
+        nothing.
     """
 
     def __init__(
@@ -198,7 +193,6 @@ class RealSenseVisionPerceptionSource:
         burst_grabs: int = PICK_FRAME_BURST_GRABS,
         mask_completion: MaskCompletion = DEFAULT_MASK_COMPLETION,
         colour_check: ColourCheck | str = ColourCheck.ON,
-        colour_check_clipped: ColourClipped | str = ColourClipped.EXCLUDE,
     ) -> None:
         # Either a ready-made perception backend, or the detector plus segmenter pair, which is
         # composed into the same backend here rather than run as a two-stage chain by this source.
@@ -227,8 +221,6 @@ class RealSenseVisionPerceptionSource:
         self._mask_completion = MaskCompletion(mask_completion)
         #: What a part whose pixels contradict its object label's colour goes by (:mod:`colour_check`).
         self._colour_check = ColourCheck(colour_check)
-        #: Whether a channel the camera clipped leaves its pixel out of the colour's counts.
-        self._colour_check_clipped = ColourClipped(colour_check_clipped)
         #: "override" if a calibrated K was supplied, else "factory". D1 provenance.
         self.intrinsics_source = "override" if intrinsics is not None else "factory"
         #: The stamp of a camera on the wrist (the arm's TCP reader, the rig's shutter tolerance, and
@@ -263,7 +255,7 @@ class RealSenseVisionPerceptionSource:
 
     @property
     def colour_check(self) -> ColourCheck:
-        """What a part whose pixels contradict its object label's colour goes by: ``on``, ``log`` or ``off``."""
+        """What a part whose pixels contradict its object label's colour goes by: ``on`` or ``off``."""
         return self._colour_check
 
     def set_prompt(self, prompt: str, *, object_labels: tuple[str, ...] = (), kind: str = "") -> None:
@@ -314,20 +306,18 @@ class RealSenseVisionPerceptionSource:
         Only a part mapped onto an object label is judged, and only where that label's head names one colour
         (:func:`~src.robot.perception.colour_check.colour_named`), on its mask as segmented. An unsure verdict asks the
         backend for one colour word on a crop of the detection's box; no answer refuses the part. What it came to is
-        logged with what the detector called the part, whatever the switch: ``log`` leaves the label as it is.
+        logged with what the detector called the part.
         """
         if self._colour_check is ColourCheck.OFF or label not in self._object_labels:
             return label
         wanted = colour_named(label)
         if wanted is None:
             return label
-        verdict = judge_colour(bgr, mask, wanted, clipped=self._colour_check_clipped)
+        verdict = judge_colour(bgr, mask, wanted)
         if verdict.unsure:
             verdict = verdict.answered(ask_colour(self._backend, bgr, getattr(det, "box", None)))
-        logged_only = not verdict.agrees and self._colour_check is ColourCheck.LOG
-        _LOG.info("%s; the detector said %r%s", verdict.said(label), said,
-                  "; logged only (colour_check: log), it stays a target" if logged_only else "")
-        if verdict.agrees or logged_only:
+        _LOG.info("%s; the detector said %r", verdict.said(label), said)
+        if verdict.agrees:
             return label
         return refused_label(verdict, label)
 

@@ -1,16 +1,19 @@
-"""Smoke-exercise the live-camera PerceptionSource against a real RGB-D camera. No robot, no motion.
+"""Smoke-exercise the live-camera PerceptionSource against a real depth camera. No robot, no motion.
 
     (S) Needs a real Intel RealSense (D435/D435i) + `pip install -r requirements.txt`
-        (`requirements-cpu.txt` on a CPU box; both pin pyrealsense2) + the perception models
-        (GroundingDINO + SAM2, on the GPU box). Bucket (3).
+        (`requirements-cpu.txt` on a CPU box; both pin pyrealsense2) + the perception models the
+        cell's `models.pipeline` names (the VLM and SAM2, or RT-DETR and SAM2, on the GPU box).
+        Bucket (3).
 
     python -m src.robot.perception --prompt "a red cube"
-    python -m src.robot.perception --prompt "cube ; screwdriver ; mug"   # multi-phrase clutter
+    python -m src.robot.perception --prompt "cube | screwdriver | mug"   # several kinds: the clutter
     python -m src.robot.perception --rig realsense_d435 --warmup 10
 
 This is the smallest proof that the whole vision front-end works end to end on a physical camera
-before any of it is wired to a robot: open the RGB-D rig, grab a frame, run GroundingDINO + SAM2,
-and print what came back, meaning intrinsics, per-object mask pixel counts, and (the real-hardware
+before any of it is wired to a robot: open the depth rig (an RGB-D camera, or a stereo pair through
+its stereo calibration), grab a frame, run the cell's detector and SAM2, built as a cell builds them
+(`PerceptionSpec.from_config(models).build()`), and print what came back, meaning intrinsics,
+per-object mask pixel counts, and (the real-hardware
 risk) how much of the depth inside each mask is holes. A high hole fraction means the grasp-depth
 top-referencing is sampling very little real surface, which is a bench-tuning signal, not a code
 bug.
@@ -35,10 +38,10 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 
 if TYPE_CHECKING:
-    from src.config.schema.camera import RGBDDeviceRigConfig
+    from src.camera.orchestration.camera import CameraRigConfig
 
 
-def _find_rgbd_rig(camera_cfg: Any, rig_id: str | None) -> RGBDDeviceRigConfig:
+def _find_depth_rig(camera_cfg: Any, rig_id: str | None) -> CameraRigConfig:
     """Pick the rig to open: the one named by ``--rig``, else the cell's own primary.
 
     This tool and the cell have to name the same camera, and twice now they have not. A bench run
@@ -63,9 +66,13 @@ def _find_rgbd_rig(camera_cfg: Any, rig_id: str | None) -> RGBDDeviceRigConfig:
 
     A disabled rig is a warning and a rig with no depth is a refusal, and the difference is not
     severity. ``enabled: false`` is a config state the operator may be about to change, and this is
-    the tool they check with first. A missing depth channel is a fact about the hardware that no
-    config edit repairs, and this whole exerciser exists to report depth.
+    the tool they check with first. A stereo pair without its stereo calibration has no depth until
+    a step that is not a config edit, the calibration, has run, and this whole exerciser exists to
+    report depth. Since 2026-10-17 a stereo rig with its stereo calibration is a depth rig like an
+    RGB-D one: the cell takes it as its primary, and this tool opens it as the cell does.
     """
+    from src.camera.setup.image_taking.stereo_depth import stereo_calibration_refusal  # noqa: PLC0415
+
     cameras = getattr(camera_cfg, "cameras", None)
     rigs = list(getattr(cameras, "rigs", []) or [])
     if rig_id is None:
@@ -80,24 +87,24 @@ def _find_rgbd_rig(camera_cfg: Any, rig_id: str | None) -> RGBDDeviceRigConfig:
         raise SystemExit(
             f"no rig with rig_id={rig_id!r}; configured rigs: {sorted(r.rig_id for r in rigs)}."
         )
-    if getattr(named, "source", None) != "rgbd":
+    uncalibrated = stereo_calibration_refusal(named)
+    if uncalibrated is not None:
         # The same fact the cell refuses on, in words an operator can carry between the two tools.
         #
         # It names the rigs that would work rather than the flag that would name one. Telling an
         # operator to pass --rig leaves them reading the config to find out with what, and the answer
         # is already in hand here. An empty list is the more useful of the two messages: it says the
         # cell has no depth at all, which is a different problem from the wrong rig.
-        rgbd = sorted(r.rig_id for r in rigs if getattr(r, "source", None) == "rgbd")
+        depth = sorted(r.rig_id for r in rigs if stereo_calibration_refusal(r) is None)
         available = (
-            f"RGB-D rigs in this config: {rgbd}. Name one with --rig."
-            if rgbd
-            else "This config declares no RGB-D rig at all, so there is nothing for this tool to "
-                 "open and no cell built from it can pick."
+            f"Rigs in this config that give depth now: {depth}. Name one with --rig."
+            if depth
+            else "No rig in this config gives depth yet, so there is nothing for this tool to open "
+                 "and no cell built from it can pick."
         )
         raise SystemExit(
-            f"rig {rig_id!r} is a {getattr(named, 'source', '?')!r} rig and this exerciser reports "
-            "depth, which it has none of. `build_real_components` refuses the same rig for the same "
-            f"reason: a grasp is synthesised from depth. {available}"
+            f"{uncalibrated} This exerciser reports depth, and `build_real_components` refuses the "
+            f"same rig for the same reason: a grasp is synthesised from depth. {available}"
         )
     if not getattr(named, "enabled", True):
         # Not a refusal. Proving a rig works is how an operator decides to switch it on.
@@ -106,7 +113,7 @@ def _find_rgbd_rig(camera_cfg: Any, rig_id: str | None) -> RGBDDeviceRigConfig:
             "before enabling it is what this tool is for. A cell will refuse it until it is on.",
             flush=True,
         )
-    return cast("RGBDDeviceRigConfig", named)
+    return cast("CameraRigConfig", named)
 
 
 class _RawDepthTap:
@@ -159,8 +166,11 @@ def _backend_note(rig: Any) -> str:
     Selecting on ``source == "rgbd"`` can pick a rig the generic OpenCV path drives, which returns
     an empty depth channel on a device whose depth lives behind its vendor SDK. Unannounced, that
     surfaces three frames later as a RuntimeError about intrinsics. Finding it is what this tool is
-    for, so it is announced, not refused.
+    for, so it is announced, not refused. A stereo rig has no driver to choose: its depth is matched
+    on its rectified pair.
     """
+    if getattr(rig, "source", "rgbd") != "rgbd":
+        return ""
     backend = getattr(rig, "rgbd_backend", None)
     if backend == "realsense":
         return ""
@@ -235,7 +245,8 @@ def _print_frame_health(frame: Any, tap: Any, *, backend_note: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Grab one RGB-D frame, detect+segment, print stats. No robot.")
-    ap.add_argument("--prompt", default="an object", help="GroundingDINO phrase(s); ' ; '-separate for clutter")
+    ap.add_argument("--prompt", default="an object",
+                    help="what to ground; ' | '-separate several kinds, each grounded on its own")
     # The default is the only rig whose `source` is `rgbd`, which is what the cell selects, so the
     # help string names RGB-D rather than the RealSense driver.
     ap.add_argument(
@@ -251,28 +262,31 @@ def main(argv: list[str] | None = None) -> int:
     # Deferred: config is light, but the streamer pulls pyrealsense2 and the factory pulls torch.
     from src.config import load_config
     from src.camera.orchestration.camera import Camera
-    from src.models.factory import build_object_detector, build_segmenter
+    from src.contracts import UNSET
+    from src.models.perception_spec import PerceptionSpec
     from src.robot.perception import RealSenseVisionPerceptionSource
 
     cfg = load_config()
-    rig = _find_rgbd_rig(cfg.camera, args.rig)
+    rig = _find_depth_rig(cfg.camera, args.rig)
     # Through the camera noun, exactly as `build_real_components` does. This exerciser exists to
     # prove the same chain the cell runs before a robot is involved: if the two acquire their frames
     # differently, a green bench run stops being evidence about the cell. `open_disabled`, because
     # checking a rig before switching it on is what this tool is for; it is the only caller that
     # lifts that refusal, and it says so once the device is open.
-    camera = Camera.from_config(cfg.camera, rig_id=rig.rig_id, open_disabled=True)
+    robot_cfg = getattr(cfg, "robot", None)
+    camera = Camera.from_config(cfg.camera, rig_id=rig.rig_id, open_disabled=True,
+                                workspace=robot_cfg.motion.workspace if robot_cfg is not None else UNSET)
     handle = camera.handle()
     # See `_RawDepthTap`: the adapter overwrites the depth inside every mask before returning the
     # frame, so counting holes on `frame.depth_map` yields 0.0 % or 100.0 % and nothing else. The
     # tap keeps the depth of the frame the masks were cut from, and costs no extra device frame.
     tap = _RawDepthTap(handle)
     backend_note = _backend_note(rig)
-    detector = build_object_detector(cfg.models)
-    segmenter = build_segmenter(cfg.models)
+    # The stack a cell builds from the same models section, so a green bench run is evidence about the cell.
+    backend = PerceptionSpec.from_config(cfg.models).build()
     # One grab, not a pick frame's burst: the holes counted are the tap's, one grab's depth.
     source = RealSenseVisionPerceptionSource(
-        streamer=tap, detector=detector, segmenter=segmenter,
+        streamer=tap, backend=backend,
         prompt=args.prompt, warmup_grabs=args.warmup, burst_grabs=1,
     )
 

@@ -10,13 +10,9 @@ Registered:
 * :mod:`.sim`, the Isaac-backed sim arm.
 * :mod:`.dummy`, the pure-Python sim arm for offline development.
 
-``kuka``, ``franka`` and ``ros2`` are reserved names with no driver here: a config may name them, and
-:func:`create_arm` refuses them. KUKA's EthernetKRL driver was deleted on 2026-09-19; KUKA returns over ROS 2.
-
 Vendor isolation
 ----------------
-No module outside this package imports a vendor SDK such as ``ur_rtde``, ``franky`` or
-``rclpy`` directly. The :mod:`.registry` factories defer an SDK import until
+No module outside this package imports a vendor SDK such as ``ur_rtde`` directly. The :mod:`.registry` factories defer an SDK import until
 :func:`create_arm` runs, so importing this package on a machine without the UR SDK
 works.
 

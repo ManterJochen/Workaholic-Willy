@@ -87,10 +87,10 @@ def _pairs(kinematics: dict, rename: "dict[str, str] | None" = None) -> set:
     return {frozenset((rename.get(a, a), rename.get(b, b))) for a, b in checked}
 
 
-def _compose(config: dict, bodies: list, margin_mm: float = 0.0, attach: int = 0) -> dict:
+def _compose(config: dict, bodies: list, margin_mm: float = 0.0) -> dict:
     from src.robot.safety.planning._curobo_body_links import compose_sidecar_config
 
-    return compose_sidecar_config(config, bodies=bodies, margin_mm=margin_mm, attach_spheres=attach)
+    return compose_sidecar_config(config, bodies=bodies, margin_mm=margin_mm)
 
 
 class TheHandIsAFixedLinkUnderTool0Tests(unittest.TestCase):
@@ -214,11 +214,11 @@ class TheHandSitsWhereTheGuardPutsItTests(unittest.TestCase):
 
 
 class TheOrderPutsTheHandInEveryTableTests(unittest.TestCase):
-    def test_the_margin_and_the_payload_reach_the_hand(self) -> None:
+    def test_the_margin_reaches_the_hand(self) -> None:
         body = _link("robotiq_hande", _SIM, [20.0]).to_dict()
-        kin = _compose(_arm_only(), [body], margin_mm=10.0, attach=16)["robot_cfg"]["kinematics"]
+        kin = _compose(_arm_only(), [body], margin_mm=10.0)["robot_cfg"]["kinematics"]
         self.assertEqual(kin["self_collision_buffer"]["hand"], 0.005)
-        self.assertIn("attached_object", kin["self_collision_ignore"]["hand"])
+        self.assertNotIn("attached_object", kin["self_collision_ignore"]["hand"], "no carried part's link is composed")
 
     def test_the_margin_before_the_body_leaves_the_hand_without_it(self) -> None:
         """The control for the order."""
@@ -252,7 +252,7 @@ class WhatTheSidecarSaysOfTheHandTests(unittest.TestCase):
         from src.robot.safety.planning._curobo_body_links import body_report
 
         link = _link("robotiq_hande", _SIM, [20.0])
-        composed = _compose(_arm_only(), [link.to_dict()], margin_mm=10.0, attach=16)
+        composed = _compose(_arm_only(), [link.to_dict()], margin_mm=10.0)
         (row,) = body_report(composed, ["hand"])
         self.assertEqual(row["spheres_sha256"], link.spheres_sha256)
         self.assertEqual((row["parent"], row["spheres"], row["slots"]), ("tool0", len(link.spheres), 0))

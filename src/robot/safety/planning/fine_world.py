@@ -62,7 +62,7 @@ FINE_REACH_MM: Final[float] = 150.0
 #: only ever met where the part itself is.
 FINE_LABEL_MM: Final[float] = 5.0
 #: The voxel the fine world counts a cluster's points in for the camera world's noise rule, millimetres: the camera
-#: world's own thinning voxel, so a cluster is noise here where it would be noise there (``perceived.min_points``).
+#: world's own thinning voxel, so a cluster is noise here where it would be noise there (``WorldBuildTuning.min_points``).
 FINE_NOISE_VOXEL_MM: Final[float] = 10.0
 #: How far past a held target's box, in BASE x and y, a pixel no part owns is the target's own fringe, millimetres: the
 #: box already stands the camera world's margin round the target's points, and the D415 smears a part's far edge 6 to

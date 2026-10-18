@@ -10,8 +10,8 @@ WORKSPACE_REJECTED, and that refusal reads at the pendant like a broken guard ra
 parked robot, so it is worth one connection to find out before the first pick.
 
 Every bound below is derived from the operator's own YAML rather than hardcoded: the box is
-`robot.workspace_limits`, and each of its six faces is pulled in by `safety.limits.
-workspace_margin_mm`, which is the same shrink `SafetyPreflight.from_safety_config` applies before
+`robot.motion.workspace`, and each of its six faces is pulled in by the 20 mm every cell keeps
+(`WORKSPACE_MARGIN_MM`), which is the same shrink `SafetyPreflight.from_safety_config` applies before
 the workspace guard ever sees the box. So the number in the YAML is not the number that refuses, and
 a pose sitting in that margin skin is already refused even though it is inside the declared box.
 
@@ -99,7 +99,7 @@ def main() -> int:
 
     # Three of the refusals below never reach the controller, and this check blamed it anyway.
     # Measured on the shipped tree 2026-09-10: `connect()` raised `RobotConnectionError` for
-    # `safety.payload.enforce` with `mass_kg: 0.0` and the handler printed "the controller did not
+    # `safety.payload.mass_kg: 0.0` and the handler printed "the controller did not
     # answer ... is the controller reachable, is the robot in REMOTE control", sending an operator
     # to the cabinet for a value in their own YAML. The UR driver refuses on three configurations
     # (an unweighed payload, a declared mass still carrying the [0, 0, 0] CoG marker, and an
@@ -135,8 +135,10 @@ def main() -> int:
 def _read_and_judge(arm: Any, config: Any) -> int:
     """Read the connected arm's pose and state, and hold them against the box its config declares."""
     caps = arm.capabilities
-    box = config.workspace_limits
-    margin = float(config.safety.limits.workspace_margin_mm)
+    from src.robot.safety.workspace import WORKSPACE_MARGIN_MM
+
+    box = config.motion.workspace
+    margin = WORKSPACE_MARGIN_MM
     wrong: list[str] = []
     print(f"{caps.vendor} {caps.model}: connected, box shrunk by {margin:g} mm on every face")
 
@@ -146,7 +148,7 @@ def _read_and_judge(arm: Any, config: Any) -> int:
     if pose.frame is not Frame.BASE:
         # The box is declared in BASE. A pose tagged anything else cannot be compared against
         # it, and comparing anyway would answer a question nobody asked.
-        wrong.append(f"the arm reports its pose in {pose.frame.value}, but workspace_limits "
+        wrong.append(f"the arm reports its pose in {pose.frame.value}, but robot.motion.workspace "
                      f"is declared in {Frame.BASE.value}")
         print(f"  workspace            NOT COMPARABLE <- pose frame is not {Frame.BASE.value}")
     else:
@@ -157,7 +159,7 @@ def _read_and_judge(arm: Any, config: Any) -> int:
         ):
             face_lo, face_hi = low + margin, high - margin
             if face_lo >= face_hi:
-                wrong.append(f"workspace_margin_mm={margin:g} inverts {axis} "
+                wrong.append(f"the {margin:g} mm workspace margin inverts {axis} "
                              f"[{low:g}, {high:g}]; the preflight will refuse to build")
                 print(f"  workspace {axis:10s} INVERTED    margin is wider than the axis")
             elif not face_lo <= value <= face_hi:

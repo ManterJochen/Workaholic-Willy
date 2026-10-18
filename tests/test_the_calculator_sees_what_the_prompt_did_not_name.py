@@ -1,14 +1,14 @@
 """The calculator sees what the prompt did not name, by the planner world's rules, and refuses nothing for it where there
 is room.
 
-``robot.grasping.scene_obstacles`` (the cell fixes' Track A) hands the calculator the depth around the part: what the
+The scene (the cell fixes' Track A, every cell's) hands the calculator the depth around the part: what the
 camera world keeps there is an obstacle, the support the part stands on is not. The pins here are the other side of
 ``test_a_boxed_in_part_gets_no_grasp_and_says_so.py``:
 
 * an isolated part, a part with cubes 40-70 mm off (E3's photo layout) and a part drawn onto an empty patch of the owner's
   real, tilted, noisy mat keep every grasp SFE offered without the scene;
 * the rim of a mask cut a little short is the part's own edge, not a neighbour;
-* off is the calculator of before, byte for byte; a cell's tree turns both switches on, a deep cell builds with them;
+* off is the calculator of before, byte for byte; every cell built from a tree runs both, a deep cell builds with them;
 * a tilted approach is offered only through space this frame's depth saw (contract 5), and the push gets the world rule's
   points (contract 2).
 """
@@ -21,6 +21,8 @@ import unittest
 from typing import Any
 
 import numpy as np
+
+from src.robot.grasping.collision.support_resolver import TABLE_CLEARANCE_MM
 from scipy import ndimage
 
 from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import (
@@ -75,8 +77,7 @@ def scene_off_calculator() -> Any:
     cfg = _hande()
     return build_calculator(cfg, camera_matrix=np.array([[FOCAL, 0.0, WIDTH / 2.0], [0.0, FOCAL, HEIGHT / 2.0],
                                                          [0.0, 0.0, 1.0]]),
-                            max_grip_width_mm=cfg.gripper.max_width_mm, min_grip_width_mm=cfg.gripper.min_width_mm,
-                            support_footprint_geometry=True, support_footprint_inflate_mm=0.0)
+                            max_grip_width_mm=cfg.gripper.max_width_mm, min_grip_width_mm=cfg.gripper.min_width_mm)
 
 
 def same_grasps(a: Any, b: Any) -> bool:
@@ -137,7 +138,7 @@ class NoFalseRefusalOnTheRealMatTests(unittest.TestCase):
     PATCHES = ((-341.0, -782.0), (9.0, -572.0))
 
     def _run(self, name: str, x: float, y: float, height_mm: float) -> tuple[Any, Any, Any]:
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
         from src.robot.grasping.collision import SupportPlane
         from src.robot.safety.planning.self_envelope import ROBOT_BASES
         from src.robot.safety.planning.support_surfaces import find_supports
@@ -168,16 +169,14 @@ class NoFalseRefusalOnTheRealMatTests(unittest.TestCase):
             if scene:
                 extra["scene_obstacles"] = owner_rules()
             calc = build_calculator(cfg, camera_matrix=k, max_grip_width_mm=cfg.gripper.max_width_mm,
-                                    min_grip_width_mm=cfg.gripper.min_width_mm, support_footprint_geometry=True,
-                                    support_footprint_inflate_mm=0.0, **extra)
+                                    min_grip_width_mm=cfg.gripper.min_width_mm, **extra)
             return calc.compute_result(
-                SimpleNamespace(mask=mask, label="part", score=1.0), drawn, pixel_to_mm=None, dense_sampling=False,
-                other_object_masks=[],
+                SimpleNamespace(mask=mask, label="part", score=1.0), drawn, other_object_masks=[],
                 camera_to_base=Transform.from_matrix(t, from_frame=Frame.CAMERA, to_frame=Frame.BASE),
                 support_plane=SupportPlane(normal=np.array([0.0, 0.0, 1.0]), offset_mm=float(support),
                                            frame=Frame.BASE),
-                min_table_clearance_mm=float(cfg.grasping.support.min_clearance_mm),
-                gripper_model=build_gripper_geometry(cfg.grasping.gripper_geometry),
+                min_table_clearance_mm=TABLE_CLEARANCE_MM,
+                gripper_model=jaw_envelope(cfg),
                 **({"support_model": model} if with_model else {}))
 
         return run(False, False), run(True, True), (x, y)
@@ -202,8 +201,8 @@ class NoFalseRefusalOnTheRealMatTests(unittest.TestCase):
 
 
 class TheSwitchesTests(unittest.TestCase):
-    """Track A test 7: off is the calculator without the keyword, byte for byte; the cell's tree turns both on; a deep
-    cell builds with them."""
+    """Track A test 7: off is the calculator without the keyword, byte for byte; every cell built from a tree runs both;
+    a deep cell builds with them."""
 
     def test_off_is_the_calculator_of_before_byte_for_byte(self) -> None:
         from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import boxed_in_bar
@@ -226,11 +225,6 @@ class TheSwitchesTests(unittest.TestCase):
         calc = build_rehearsal_components(cfg)[0]
         self.assertIsNotNone(calc._scene_obstacles)  # noqa: SLF001
         self.assertTrue(calc._side_approaches)  # noqa: SLF001
-        off = cfg.model_copy(update={"grasping": cfg.grasping.model_copy(
-            update={"scene_obstacles": False, "side_approaches": False})})
-        plain = build_rehearsal_components(off)[0]
-        self.assertIsNone(plain._scene_obstacles)  # noqa: SLF001
-        self.assertFalse(plain._side_approaches)  # noqa: SLF001
 
     def test_the_cell_hands_SFE_side_approaches_and_a_corridor_test(self) -> None:
         result = compute(calculator(scene=True, side=True), isolated())
@@ -282,14 +276,15 @@ class TheRulesAreTheWorldsTests(unittest.TestCase):
         from src.robot.grasping.generation.scene_obstacles import SceneObstacleRules
         from tests._cell_2026_10_01 import owner_robot
 
-        robot = owner_robot(include_fixtures=True)
+        robot = owner_robot()
         robot["safety"]["self_collision"].update(
             min_distance_mm=10.0,
             fixtures=[{"name": "tray", "center_mm": [0.0, -600.0, 20.0], "half_extents_mm": [50.0, 50.0, 20.0]}])
         rules = SceneObstacleRules.from_robot_config(RobotConfig.model_validate(robot))
         self.assertEqual(["tray"], [box.name for box in rules.declared_boxes])
         self.assertEqual(10.0, rules.declared_distance_mm)
-        self.assertIn("tray", [body.name for body in rules.declared])
+        # A fixture stays the guard's (2026-10-17): the camera world drops nothing it sees about one as the fixture's.
+        self.assertEqual(["support_plane"], [body.name for body in rules.declared])
 
     def test_a_tree_with_no_planning_world_has_no_bench(self) -> None:
         from src.config.loader import load_robot_section

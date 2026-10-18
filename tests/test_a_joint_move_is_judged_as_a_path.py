@@ -69,7 +69,7 @@ def _arm(
     # `move_home` boxes the home pose, which it reads through the controller's own FK. A pose
     # inside the shipped workspace box, so the box is not what these tests are measuring.
     fake.always("controller_fk", controller_pose([0.4, 0.0, 0.3, 0.0, 3.14159, 0.0]))
-    arm: Any = planned_arm(kit_tree(planner_kind, safety={"payload": {"enforce": False}}), transport=fake,
+    arm: Any = planned_arm(kit_tree(planner_kind, safety={}), transport=fake,
                            home_joints=home)
     if planner_kind == "curobo":
         arm._curobo = planner if planner is not None else _RecordingPlanner()
@@ -114,7 +114,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
         self.assertGreater(len(planner.checked), 2, "the planner saw the endpoints and no line")
         np.testing.assert_allclose(planner.checked[0], _HERE, atol=1e-9)
         np.testing.assert_allclose(planner.checked[-1], _THERE, atol=1e-9)
-        self.assertEqual(3.0, planner.clearance_mm, "the line was not judged at safety.planned_motion's clearance")
+        self.assertEqual(3.0, planner.clearance_mm, "the line was not judged at path_samples.LINE_CLEARANCE_MM")
 
     def test_one_movej_reaches_the_controller_and_it_is_the_goal(self) -> None:
         arm = _arm()

@@ -26,12 +26,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import GraspingSupportConfig
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.geometry import Pose
 from src.robot.core import MotionCommand, MotionResult, MotionStatus
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator, PickOutcome
@@ -205,7 +204,7 @@ class _Boxed:
             points = self._base(post, handed, kwargs) if post.any() and beside else np.zeros((0, 3))
             return GraspResult(
                 reasons=(GraspFailureReason.ALL_COLLIDED, GraspFailureReason.RESCAN_RECOMMENDED),
-                telemetry={"support_footprint_refused": {"seen_corridor": self.seen}},
+                telemetry={"body_refused": {"seen_corridor": self.seen}},
                 metadata={"scene_obstacle_points_base_mm": points, "scene_points_world_rule_base_mm": points,
                           **({"scene_obstacle_part_points": np.ones(len(points), dtype=bool)} if self.named else {})})
         grasp = _top_down(self.scene.centre("part"), width_mm=40.0, label="part")
@@ -259,7 +258,7 @@ class _TwoPosts(_Boxed):
             seen = np.vstack(points)
             return GraspResult(
                 reasons=(GraspFailureReason.ALL_COLLIDED, GraspFailureReason.RESCAN_RECOMMENDED),
-                telemetry={"support_footprint_refused": {"seen_corridor": self.seen}},
+                telemetry={"body_refused": {"seen_corridor": self.seen}},
                 metadata={"scene_obstacle_points_base_mm": seen, "scene_points_world_rule_base_mm": seen})
         return GraspResult(candidates=(_top_down(self.scene.centre("part"), width_mm=40.0, label="part"),),
                            top_score=0.9)
@@ -307,7 +306,7 @@ class _Cell:
             frame_resolver=EyeInHandFrameResolver(t_cam_to_tool=camera_to_tool()), policy=self.policy,
             gripper=self.hand, max_attempts=3, primary_camera_id="wrist", gripper_model=HAND_E,  # type: ignore[arg-type]
             looks=(LOOK_PLUS_Y,), target_label="part",
-            support_config=GraspingSupportConfig(height_mm=0.0, refine_from_target=False), **wiring,
+            declared_support=DeclaredSupport(), **wiring,
         )
         if gate:
             self.orchestrator.push_gate = PushGate(budgets=PushBudgets(), distance_mm=30.0, cell=PushCell(
@@ -588,7 +587,7 @@ class TheBlockerIsNeverThePartOrTheRobotTests(unittest.TestCase):
 
 
 #: A mat 55 mm tall under the part and the post, as on the owner's cell: no support model reads it, the bench reads under
-#: the post, and the part's grasp is planned on what its own cloud reads (``refine_from_target``), the mat.
+#: the post, and the part's grasp is planned on what its own cloud reads (``resolve_support_plane``), the mat.
 MAT_TOP_MM = 55.0
 MAT = Box((-200.0, -800.0, 0.0), (120.0, -560.0, MAT_TOP_MM), "mat")
 
@@ -603,7 +602,7 @@ def _mat_cell(**wiring: Any) -> "_Cell":
     cell.scene.boxes = [_on_the_mat(CUBE), _on_the_mat(POST), MAT]
     # No support model reads the mat here, as none reads it under the parts inside a pile: the bench reads under the post.
     cell.world.tuning = replace(TUNING, support_surfaces=False)
-    cell.orchestrator.support_config = GraspingSupportConfig(height_mm=0.0, refine_from_target=True)
+    cell.orchestrator.declared_support = DeclaredSupport()
     return cell
 
 
@@ -661,44 +660,19 @@ class ABlockerInsideAPileOnAMatIsTakenAwayTests(unittest.TestCase):
         self.assertIs(bench, _plane_at_least(bench, None, (10.0, -700.0)))
 
 
-def _models_a_carried_part(arm: Any, length_mm: float) -> None:
-    """The arm models a carried part ``length_mm`` past the fingertips, as a UR arm with ``planning_world.payload``."""
-    arm.payload_declined_reason = lambda: None
-    arm.config = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(
-        payload=SimpleNamespace(length_mm=length_mm))))
+class ABlockerIsTakenWhateverItReachesPastTheFingertipsTests(unittest.TestCase):
+    """No cell models a part in the jaws (2026-10-17), so no blocker is refused for reaching past a modelled one: the
+    post, gripped at half its 40 mm, reaches about 10 mm past the Hand-E's fingertips and is set aside as every blocker
+    is. Until then a cell that modelled the carried part refused a blocker reaching past it (``too_long_to_carry``, the
+    lead's review of 2026-10-02)."""
 
-
-class ABlockerThePlannerCannotCarryIsNotTakenTests(unittest.TestCase):
-    """Between the close and the release only the planner holds a part (the console's rule): it models one
-    ``safety.planning_world.payload.length_mm`` past the fingertips. A blocker reaching further would be carried partly
-    where nobody judges it, so it is not taken (the lead's review of 2026-10-02). The post, gripped at half its 40 mm,
-    reaches about 10 mm past the Hand-E's fingertips."""
-
-    def test_a_blocker_reaching_past_the_modelled_part_is_not_taken(self) -> None:
+    def test_the_post_is_set_aside(self) -> None:
         cell = _Cell()
-        _models_a_carried_part(cell.arm, length_mm=2.0)
-
-        cell.run()
-
-        self.assertEqual([], cell.hand.commands)
-        self.assertEqual("too_long_to_carry", cell.orchestrator.blockers[0].code)
-        self.assertIn("2 mm", cell.orchestrator.blockers[0].sentence)
-        self.assertTrue(cell.orchestrator.pushes, "the push was not considered after the blocker")
-
-    def test_a_blocker_within_the_modelled_part_is_set_aside(self) -> None:
-        cell = _Cell()
-        _models_a_carried_part(cell.arm, length_mm=60.0)
 
         report = cell.run()
 
         self.assertEqual("set_aside", report.attempts[0].blocker)
         self.assertEqual(["close", "open", "close"], cell.hand.commands)
-
-    def test_an_arm_that_models_no_carried_part_takes_it_as_before(self) -> None:
-        """A desk arm models nothing, as for every part it picks: nothing changes there."""
-        report = _Cell().run()
-
-        self.assertEqual("set_aside", report.attempts[0].blocker)
 
 
 def _refusing_the_line_down_to(cell: "_Cell", label: str, *, status: MotionStatus) -> list[Any]:
@@ -804,7 +778,7 @@ class ABlockerGraspRefusedInTheAirGoesBackToTheLookTests(unittest.TestCase):
 
 
 class ABlockerIsTriedOnItsNextGraspTests(unittest.TestCase):
-    """``recovery.blocker_grasp_tries`` (the owner, 2026-10-03): a blocker's grasps are tried best first, each judged
+    """Three tries (the owner, 2026-10-03, every cell's since 2026-10-16): a blocker's grasps are tried best first, each judged
     from the look before the arm leaves for it (``GraspExecutionPolicy.refusal_ahead``). A grasp refused there costs no
     motion; one refused once the arm stood over the blocker sends the arm back to the look first; the next grasp is
     tried, the count the gate allows at most."""

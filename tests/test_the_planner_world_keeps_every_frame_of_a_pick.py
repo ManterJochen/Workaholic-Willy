@@ -437,7 +437,7 @@ class WhatIsHeldAndForHowLongTests(unittest.TestCase):
         self.assertFalse(_covered(_boxes(gone), _BESIDE_CENTRE), gone.render())
 
     def test_a_place_over_the_rim_holds_the_pick_s_frames_again_once(self) -> None:
-        """The place that carries its part straight over a bin's rim (``robot.place.carry: over_the_rim``, 2026-10-09)
+        """The place that carries its part straight over a bin's rim (``robot.motion.place.carry: over_the_rim``, 2026-10-09)
         judges the way in against what the pick's looks saw: the frames the pick held when it ended are held again,
         once, and a new pick's hold forgets them."""
         world, camera = _world()

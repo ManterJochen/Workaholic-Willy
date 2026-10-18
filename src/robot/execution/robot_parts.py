@@ -117,7 +117,7 @@ def construct_arm(robot_cfg: "RobotConfig") -> RobotArm:
     if vendor is RobotVendor.DUMMY:
         # Dummy arm ignores the config tree entirely.
         return create_arm(RobotVendor.DUMMY)
-    # UR, KUKA, etc. take the full schema config tree.
+    # The UR takes the full schema config tree.
     return create_arm(vendor, config=robot_cfg)
 
 

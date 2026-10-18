@@ -36,6 +36,8 @@ class _Service:
         self.calls = 0
         self.label: Any = "UNTOUCHED"
         self.recording: list[Any] = []
+        #: Where the cell's own records go, as the service says it: a cell keeps its records (2026-10-17).
+        self.records: Any = ("logs/grasp_records.jsonl", {"robot_vendor": "ur"})
 
     def pick(self) -> _Report:
         outcome = self.outcomes[self.calls]
@@ -44,8 +46,10 @@ class _Service:
             raise RuntimeError("driver lost the arm")
         return _Report(outcome, lift_mm=60.0 if outcome == "succeeded" else 0.0)
 
-    def enable_record_logging(self, path: Any, provenance: Any = None) -> None:
+    def enable_record_logging(self, path: Any, provenance: Any = None) -> Any:
         self.recording.append(path)
+        before, self.records = self.records, (path, provenance)
+        return before
 
     def set_target_label(self, label: Any) -> None:
         self.label = label
@@ -145,16 +149,16 @@ class PerCampaignSettingsTests(unittest.TestCase):
         self.assertTrue(report.raised)
         self.assertIsNone(service.label)
 
-    def test_recording_is_switched_on_and_off_around_the_campaign(self) -> None:
+    def test_a_corpus_of_its_own_records_the_campaign_and_gives_the_cells_record_log_back(self) -> None:
         service, report = _run(["succeeded"], recording=Recording.to_file("logs/x.jsonl"))
-        self.assertEqual(service.recording, ["logs/x.jsonl", None])
+        self.assertEqual(service.recording, ["logs/x.jsonl", "logs/grasp_records.jsonl"])
+        self.assertEqual(service.records, ("logs/grasp_records.jsonl", {"robot_vendor": "ur"}))
         self.assertTrue(report.recording.enabled)
 
     def test_recording_has_no_default_at_either_factory(self) -> None:
-        """⛔⛔ THE LARGEST MEANING-CHANGING PIECE OF CONTEXT IN THE AREA. The shipped tree has
-        `record_log_path: null`, so this runner writes no corpus while the console writes one, on the
-        same cell and the same config. "Run ten picks and measure the rate offline" therefore works
-        through the browser and silently produces nothing through the CLI.
+        """Whether a campaign keeps a corpus of its own is said where it is built. Until 2026-10-17 the shipped
+        tree recorded nothing, so this runner wrote no corpus while the console wrote one, on the same cell and the
+        same config; a cell keeps its records since, and a campaign's own corpus is still asked for by name.
         """
         import inspect
 
@@ -172,7 +176,7 @@ class ReportShapeTests(unittest.TestCase):
         self.assertTrue(text.endswith(report.summary()))
         self.assertIn("run 0: succeeded", text)
         self.assertIn("rule:", text)
-        self.assertIn("recording nothing", text)
+        self.assertIn("recording to the cell's own record log", text)
 
     def test_to_dict_is_json_safe(self) -> None:
         import json

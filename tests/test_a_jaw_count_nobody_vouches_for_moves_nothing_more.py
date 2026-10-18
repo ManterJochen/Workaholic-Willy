@@ -7,21 +7,18 @@ DO0 switched at the pendant is the tool I/O's level flipped behind the program's
 
 Pinned:
 
-* before ``next_target`` or a rescan drives the looks again (a wrist pick handed looks), the toggle's count is read
-  (``why_toggle_count_unknown``, nothing asked or sent): one nobody can vouch for ends the pick as a gripper fault,
-  with no look driven again and nothing moved, and ``PickRun`` and the console run stop on it; the report and its
-  record say the re-pick never ran (``re_pick_refused``). A push refused before it read the jaws (no neighbour within
-  25 mm) therefore never hands the looks a hand nobody vouches for. A re-pick that drives no look, a fixed camera's or
-  that of a wrist pick handed no look, reads nothing more: its own check before the arm moves asks where the jaws
-  stand, as at every pick start;
+* no re-pick drives a look again: a wrist pick handed looks rescans nothing (``next_target``, which drove them again
+  after a read of the count, left on 2026-10-16), so a pick whose count went unknown at its last look, its push
+  refused before it read the jaws (no neighbour within 25 mm), ends after its looks with nothing more moved, written
+  or asked. A re-pick that drives no look, a fixed camera's or that of a wrist pick handed no look, asks where the
+  jaws stand in its own check before the arm moves, as at every pick start;
 * during a push, before each contact leg and once the up leg ended, the count is read again: one nobody can vouch for
   (DO0 switched while the push drove) stops the push where the arm stands, with no further motion, not even back to
   the look; the report needs a person, ``PickRun`` and the console run stop, and the service starts no further pick
   until a person decides;
 * a gripper that measures its width (the Robotiq socket driver) found not connected before a push, or whose width
   read fails there (a socket that stopped answering), ends the pick as a gripper fault, as a toggle nobody vouches for
-  does, and the campaign stops; a connected one whose jaws read closed is a plain refusal the pick falls through on,
-  as before.
+  does, and the campaign stops; a connected one whose jaws read closed is a plain refusal, as before.
 """
 
 from __future__ import annotations
@@ -34,7 +31,6 @@ from src.config.schema.robot.robot_schema import GripperConfig
 from src.geometry import Frame, Transform
 from src.robot.core import RobotError
 from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome, GraspMode
-from src.robot.execution.autonomous_grasp.record_logging import to_attempt_record
 from src.robot.execution.pick_run import PickOutcome, PickRun, Recording
 from src.robot.grasping.loop.pick_loop import PickOutcome as LoopOutcome
 from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
@@ -75,23 +71,6 @@ def _written_since_the_spoil(cell: _PushCell) -> list[Any]:
             if isinstance(event, tuple) and event[:2] == ("DO", 0)]
 
 
-def _said(kind: str) -> str:
-    return "somebody switched it" if kind == "switched" else "could not be read"
-
-
-def _recorded(cell: _PushCell) -> list[Any]:
-    """Every report the service's pick returns, in order."""
-    reports: list[Any] = []
-    pick = cell.service.pick
-
-    def recorded(**keywords: Any) -> Any:
-        reports.append(pick(**keywords))
-        return reports[-1]
-
-    cell.service.pick = recorded  # type: ignore[method-assign]
-    return reports
-
-
 def _spoiled_at_the_last_look(test: unittest.TestCase, kind: str, **keywords: Any) -> _PushCell:
     """The cell, whose count nobody can vouch for from the moment the last look is ranked."""
     holder: dict[str, Any] = {}
@@ -106,93 +85,34 @@ def _spoiled_at_the_last_look(test: unittest.TestCase, kind: str, **keywords: An
     return cell
 
 
-class BeforeNextTargetOrARescanPicksAgainTests(unittest.TestCase):
-    """The push was refused before it read the jaws (no neighbour within 25 mm of the part), the count went unknown at
-    the last look, and the pick falls through to next_target, which would drive the looks again: its read of the count
-    ends the pick there."""
+class APickWhoseCountWentUnknownAtItsLastLookDrivesNothingMoreTests(unittest.TestCase):
+    """The push was refused before it read the jaws (no neighbour within 25 mm of the part) and the count went unknown
+    at the last look. A wrist pick handed looks picks nothing again: it ends after its looks."""
 
-    def test_next_target_ends_as_a_gripper_fault_before_it_drives_a_look(self) -> None:
+    def test_it_ends_after_its_looks_with_nothing_more_moved_written_or_asked(self) -> None:
         for kind in ("switched", "unreadable"):
             with self.subTest(count=kind):
                 cell = _spoiled_at_the_last_look(self, kind, boxes=(CUBE, FAR_POST))
-                reports = _recorded(cell)
 
                 with mock.patch("builtins.input", side_effect=AssertionError("asked at the terminal")):
-                    run = cell.campaign(runs=2)
+                    report = cell.service.pick(look=list(LOOKS))
 
-                self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "next_target drove a look on a hand nobody vouches for")
+                self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "a look was driven again")
                 self.assertEqual(3, len(cell.camera.taken))
                 self.assertEqual([], cell.arm.pushes)
-                self.assertEqual(1, len(reports), "a second pick started on a hand nobody vouches for")
-                self.assertEqual([PickOutcome.RAISED, PickOutcome.CANCELLED], [a.outcome for a in run.attempts],
-                                 run.render())
-                self.assertIn("the gripper needs a person, so the campaign stops", run.attempts[0].detail)
-                report = reports[0]
-                self.assertIs(AutonomousGraspOutcome.EXECUTION_FAILED, report.outcome)
-                self.assertIn("next_target", report.gripper_fault)
-                self.assertIn("nobody can say where the jaws stand", report.gripper_fault.lower())
-                self.assertIn(_said(kind), report.gripper_fault)
-                self.assertFalse(report.needs_person)
-                self.assertEqual(["next_target"], report.telemetry["recovery_trail_actions"])
                 self.assertEqual("no_blocking_neighbour", report.telemetry["pushes"][0]["code"])
-                self.assertIn("gripper    needs a person:", report.render())
+                self.assertEqual([], report.telemetry["recovery_trail_actions"], "the pick picked again")
                 self.assertEqual([], cell.nobody.asked, "a person was asked")
                 self.assertEqual([], _written_since_the_spoil(cell), "DO0 was written")
                 self.assertEqual(0, cell.jaws.commands_sent)
                 self.assertEqual([], cell.policy.executed)
 
-    def test_a_console_run_stops_on_it_asking_nobody(self) -> None:
-        from api.runs import RunState
-        from tests.test_a_console_run_stops_and_looks_as_a_campaign_does import _drive
-
-        cell = _spoiled_at_the_last_look(self, "switched", boxes=(CUBE, FAR_POST))
-        cell.service.configured_looks = LOOKS
-
-        with mock.patch("builtins.input", side_effect=AssertionError("asked at the terminal")):
-            run, _hub = _drive(cell.service, picks=2)
-
-        self.assertIs(RunState.FAILED, run.state)
-        self.assertEqual(1, run.attempted, "the run picked again on a hand nobody vouches for")
-        self.assertIn("the gripper needs a person, so the run stops", run.error)
-        self.assertIn("somebody switched it", run.error)
-        self.assertEqual(_keys(*LOOKS), cell.joint_moves())
-        self.assertEqual([], cell.nobody.asked, "a person was asked")
-        self.assertEqual([], _written_since_the_spoil(cell), "DO0 was written")
-
-    def test_its_record_says_the_re_pick_never_ran(self) -> None:
-        """The trail's last step names the next_target whose pick the hand refused: the report, and the record logged
-        from it, say that pick never ran (``re_pick_refused``), beside ``stage`` ``before_the_re_pick``."""
-        cell = _spoiled_at_the_last_look(self, "switched", boxes=(CUBE, FAR_POST))
-
-        with mock.patch("builtins.input", side_effect=AssertionError("asked at the terminal")):
-            report = cell.service.pick(look=list(LOOKS))
-
-        self.assertEqual(("before_the_re_pick", "gripper_fault"),
-                         (report.telemetry["stage"], report.telemetry.get("re_pick_refused")))
-        self.assertEqual(["next_target"], [row["action"] for row in report.recovery_actions])
-        record = to_attempt_record(report, attempt_id="the-re-pick-refused")
-        self.assertEqual(("before_the_re_pick", "gripper_fault"),
-                         (record.extra.get("stage"), record.extra.get("re_pick_refused")))
-
-    def test_a_count_that_stands_lets_next_target_drive_the_looks_again(self) -> None:
-        """The control: the count stands, and next_target runs the looks again for the part, as before."""
-        cell = _PushCell(self, boxes=(CUBE, FAR_POST))
-
-        with mock.patch("builtins.input", side_effect=AssertionError("asked at the terminal")):
-            report = cell.service.pick(look=list(LOOKS))
-
-        self.assertEqual(_keys(*LOOKS, *LOOKS), cell.joint_moves())
-        self.assertEqual("", report.gripper_fault)
-        self.assertEqual(["next_target"], report.telemetry["recovery_trail_actions"])
-        cell.assert_the_jaws_untouched(self)
-
 
 class ARePickThatDrivesNoLookReadsNothingMoreTests(unittest.TestCase):
-    """The owner's words: the count is read before ``next_target`` or a rescan drives any look. A re-pick that drives
-    none reads nothing more: a fixed camera's rescan, and the rescan of a wrist pick handed no look, perceive where the
-    arm stands, and the pick's own check before the arm moves asks where the jaws stand, as at every pick start. The
-    real execution policy on the toggle, DO0 switched at the pendant as the first frame is ranked, the part free on the
-    second, and a person at the terminal who looks and says open."""
+    """A re-pick drives no look: a fixed camera's rescan, and the rescan of a wrist pick handed no look, perceive where
+    the arm stands, and the pick's own check before the arm moves asks where the jaws stand, as at every pick start.
+    The real execution policy on the toggle, DO0 switched at the pendant as the first frame is ranked, the part free
+    on the second, and a person at the terminal who looks and says open."""
 
     def _cell(self) -> _PushCell:
         holder: dict[str, Any] = {}
@@ -212,8 +132,6 @@ class ARePickThatDrivesNoLookReadsNothingMoreTests(unittest.TestCase):
     def _assert_asked_at_the_approach_and_picked(self, cell: _PushCell, report: Any) -> None:
         self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.render())
         self.assertEqual("", report.gripper_fault)
-        self.assertNotEqual("before_the_re_pick", report.telemetry.get("stage"))
-        self.assertNotIn("re_pick_refused", report.telemetry)
         self.assertEqual(["rescan"], report.telemetry["recovery_trail_actions"])
         self.assertEqual(2, len(cell.camera.taken), "the rescan did not perceive again")
         (question,) = cell.person.asked  # type: ignore[attr-defined]
@@ -425,7 +343,7 @@ class AWidthGripperFoundNotConnectedBeforeAPushTests(unittest.TestCase):
             run = cell.campaign(runs=2)
 
         self.assertEqual([], cell.arm.pushes)
-        self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "next_target drove the looks again on a hand not connected")
+        self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "a look was driven again on a hand not connected")
         self.assertEqual([PickOutcome.RAISED, PickOutcome.CANCELLED], [a.outcome for a in run.attempts], run.render())
         self.assertIn("the gripper needs a person, so the campaign stops", run.attempts[0].detail)
         report = run.last
@@ -456,7 +374,7 @@ class AWidthGripperFoundNotConnectedBeforeAPushTests(unittest.TestCase):
 
         self.assertTrue(robotiq.is_connected)
         self.assertEqual([], cell.arm.pushes)
-        self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "next_target drove the looks again on a hand nobody can read")
+        self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "a look was driven again on a hand nobody can read")
         self.assertEqual([PickOutcome.RAISED, PickOutcome.CANCELLED], [a.outcome for a in run.attempts], run.render())
         self.assertIn("the gripper needs a person, so the campaign stops", run.attempts[0].detail)
         report = run.last
@@ -485,7 +403,7 @@ class AWidthGripperFoundNotConnectedBeforeAPushTests(unittest.TestCase):
         self.assertIn("not connected", run.error)
         self.assertEqual(_keys(*LOOKS), cell.joint_moves())
 
-    def test_a_connected_one_whose_jaws_read_closed_is_a_refusal_the_pick_falls_through_on(self) -> None:
+    def test_a_connected_one_whose_jaws_read_closed_is_a_plain_refusal(self) -> None:
         cell = _PushCell(self)
         cell.orchestrator.gripper = _MeasuresItsWidth(connected=True, width_mm=10.0)
 
@@ -494,8 +412,8 @@ class AWidthGripperFoundNotConnectedBeforeAPushTests(unittest.TestCase):
         self.assertEqual([], cell.arm.pushes)
         self.assertEqual("refused_jaws_closed", report.telemetry["pushes"][0]["code"])
         self.assertEqual("", report.gripper_fault)
-        self.assertEqual(["next_target"], report.telemetry["recovery_trail_actions"])
-        self.assertEqual(_keys(*LOOKS, *LOOKS), cell.joint_moves())
+        self.assertEqual([], report.telemetry["recovery_trail_actions"])
+        self.assertEqual(_keys(*LOOKS), cell.joint_moves())
 
 
 if __name__ == "__main__":  # pragma: no cover

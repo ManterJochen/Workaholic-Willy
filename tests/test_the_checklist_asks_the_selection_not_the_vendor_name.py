@@ -1,10 +1,11 @@
 """The checklist's planner rows follow the arm the tree selects, not the spelling of its vendor (P0i i1).
 
-A carried part and a camera world are the planner's to model, and the desk asked for them only where ``robot.vendor``
-read ``"ur"``. The selection already says the fact those rows need (``RobotConfig.arm``: a vendor whose driver reads
-``robot.motion.planner`` names a planner, and one that drives a controller of its own owns one), so a vendor that joins
-the UR in reading the key gets the rows by that fact alone. The Franka stands in for it here: its driver is not
-written yet, so each test adds it to the vendors whose driver reads the key, as P1 will.
+A camera world is the planner's to model (and a carried part was, until 2026-10-17), and the desk asked for it only
+where ``robot.vendor`` read ``"ur"``. The selection already says the fact those rows need (``RobotConfig.arm``: a vendor
+whose driver reads ``robot.motion.planner`` names a planner, and one that drives a controller of its own owns one), so a
+vendor that joins the UR in reading the key gets the rows by that fact alone. A vendor with no driver here stands in for
+it (``acme``, its tree set past validation, since no RobotVendor names one), and the first test adds it to the vendors
+whose driver reads the key.
 """
 
 from __future__ import annotations
@@ -15,7 +16,11 @@ from unittest import mock
 from src.config.schema.robot import RobotConfig, robot_schema
 from src.robot.execution.real_cell.preflight import run_config_preflight
 
-_PLANNER_ROWS = ("carried part", "camera world")
+_PLANNER_ROWS = ("camera world",)
+
+
+def _foreign() -> RobotConfig:
+    return RobotConfig.model_validate({"vendor": "ur"}).model_copy(update={"vendor": "acme"})
 
 
 def _rows(config: RobotConfig) -> set[str]:
@@ -25,8 +30,8 @@ def _rows(config: RobotConfig) -> set[str]:
 
 class TheChecklistAsksTheSelectionTests(unittest.TestCase):
     def test_a_vendor_whose_driver_reads_the_planner_gets_the_planner_rows(self) -> None:
-        with mock.patch.object(robot_schema, "_HONOURS_THE_PLANNER_KEY", frozenset({"ur", "franka"})):
-            config = RobotConfig.model_validate({"vendor": "franka"})
+        with mock.patch.object(robot_schema, "_HONOURS_THE_PLANNER_KEY", frozenset({"ur", "acme"})):
+            config = _foreign()
             self.assertEqual(config.arm.planner, "curobo")
             rows = _rows(config)
         for name in _PLANNER_ROWS:
@@ -34,7 +39,7 @@ class TheChecklistAsksTheSelectionTests(unittest.TestCase):
 
     def test_a_vendor_whose_driver_reads_no_planner_gets_none_of_them(self) -> None:
         """The other half, a control: the old gate on the name "ur" gave the same answer here."""
-        config = RobotConfig.model_validate({"vendor": "franka"})
+        config = _foreign()
         self.assertEqual(config.arm.planner, "")
         rows = _rows(config)
         for name in _PLANNER_ROWS:

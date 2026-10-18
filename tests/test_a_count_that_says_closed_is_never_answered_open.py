@@ -207,7 +207,8 @@ class AStopInTheCarryOpensOnlyByOneChangeTests(ConsoleCase):
         cell = self.scripted([Scripted("part"), Scripted("part")])
 
         def brake_in_the_carry(_kind: str, _index: int) -> None:
-            if pressed or cell.arm.payload_model().value != "planner_and_filter":
+            # In the carry: the first motion once the count says the jaws closed on the part.
+            if pressed or not cell.jaws.jaws_closed:
                 return
             pressed["answer"] = self.client.post("/v1/cell/brake").json()
 
@@ -252,7 +253,7 @@ class AStopInTheCarryOpensOnlyByOneChangeTests(ConsoleCase):
         cell, stopped = self._halted_in_the_carry()
         self.refused(self.client.post("/v1/task/restart", json={"run_id": stopped["id"]}), 409, "part_still_held")
         self.refused(self.client.post("/v1/cell/home", json={"to": "home"}), 409, "part_still_held")
-        before, detached = cell.do0_changes(), cell.arm.calls.count("detach_payload")
+        before = cell.do0_changes()
 
         checked, answered = self._check("open", "abort")
 
@@ -264,8 +265,7 @@ class AStopInTheCarryOpensOnlyByOneChangeTests(ConsoleCase):
         self.assertEqual((409, "jaws_not_open"), (checked.status_code, checked.json()["code"]), checked.text)
         self.assertEqual(0, cell.do0_changes() - before)
         now = self.client.get("/v1/cell").json()
-        self.assertEqual(("closed", "planner_and_filter"), (now["hand"]["jaws"], now["payload_model"]))
-        self.assertEqual(detached, cell.arm.calls.count("detach_payload"), "the planner was told the hand is empty")
+        self.assertEqual("closed", now["hand"]["jaws"])
         self.refused(self.client.post("/v1/task/restart", json={"run_id": stopped["id"]}), 409, "part_still_held")
         self.refused(self.client.post("/v1/cell/home", json={"to": "home"}), 409, "part_still_held")
 
@@ -279,7 +279,7 @@ class AStopInTheCarryOpensOnlyByOneChangeTests(ConsoleCase):
         self.assertEqual([("open_now", 200)], [(asked["stage"], status) for asked, status in answered])
         self.assertEqual(1, cell.do0_changes() - before, "open now is exactly one change of DO0")
         now = self.client.get("/v1/cell").json()
-        self.assertEqual(("open", "none"), (now["hand"]["jaws"], now["payload_model"]))
+        self.assertEqual("open", now["hand"]["jaws"])
         self.assertTrue(now["countdown_due"], "a person held the part at the jaws: the next motion counts down")
         restart = self.client.post("/v1/task/restart", json={"run_id": stopped["id"]})
         self.assertEqual(202, restart.status_code, restart.text)

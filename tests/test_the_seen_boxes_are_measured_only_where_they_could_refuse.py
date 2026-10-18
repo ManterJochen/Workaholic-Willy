@@ -25,7 +25,7 @@ import numpy as np
 
 from src.robot.grasping.generation import scene_obstacles
 from src.robot.grasping.generation.scene_obstacles import SOFT_SLACK_MM, WHOLE_SLACK_MM, SeenEnvelope
-from src.robot.grasping.generation.support_footprint import _rolled
+from src.robot.grasping.generation.hand import _rolled
 
 GUARD_MM = 3.0
 #: Where the grasps stand: over the owner's mat, 56 mm over the bench.
@@ -34,11 +34,11 @@ CENTRE = np.array([0.0, -650.0, 56.0])
 
 @lru_cache(maxsize=None)
 def _hand() -> "tuple[Any, float]":
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
     from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
 
     cfg = hande_cell()
-    return build_gripper_geometry(cfg.grasping.gripper_geometry), float(cfg.gripper.max_width_mm)
+    return jaw_envelope(cfg), float(cfg.gripper.max_width_mm)
 
 
 def _turn(yaw: float = 0.0, pitch: float = 0.0) -> np.ndarray:

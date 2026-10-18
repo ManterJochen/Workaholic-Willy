@@ -35,10 +35,8 @@ class _Rig:
 def _config(*rigs: _Rig) -> SimpleNamespace:
     return SimpleNamespace(
         camera=SimpleNamespace(cameras=SimpleNamespace(rigs=list(rigs))),
-        models=SimpleNamespace(
-            handdetect=SimpleNamespace(model_path="does/not/matter.task"),
-            gesturedetect=SimpleNamespace(model_path="does/not/matter.task"),
-        ),
+        # The folder the bundles are read from; the finder is a stand-in, so nothing reads it here.
+        models=SimpleNamespace(weights_root="does/not/matter"),
     )
 
 

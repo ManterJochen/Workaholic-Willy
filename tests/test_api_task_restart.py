@@ -180,16 +180,6 @@ class TheHandBeforeARestartTests(ConsoleCase):
         self.assertEqual("finished", self.finished(restarted.json()["id"])["stop_code"])
 
 
-def _stack(backend: str, weights_present: bool | None) -> Any:
-    """What ``GET /v1/diagnostics`` says the cell grounds with: the route guard's one reading of the perception stack."""
-    from api.schemas import PerceptionStackOut
-
-    return PerceptionStackOut(
-        pipeline_configured=True, kind="zero_shot", backend=backend, segmenter="sam2", router_enabled=backend == "vlm",
-        vlm_model_id="Qwen/Qwen3-VL-4B-Instruct" if backend == "vlm" else None, vlm_weights_present=weights_present,
-        vlm_on_unavailable="refuse", detail="scripted")
-
-
 class ARestartKeepsTheRefusalsOfANewTaskTests(ConsoleCase):
     """Build plan 1.3.5: a Restart refuses every refusal of 1.3.2 but ``restart_required``, read against the cell as it
     is now: the record outlives a rebuild, and what the cell grounds or sees may have changed since the stop."""
@@ -224,28 +214,6 @@ class ARestartKeepsTheRefusalsOfANewTaskTests(ConsoleCase):
         self.assertIn("live planner world", refused["message"])
         self.assertEqual(moved, cell.motions())
         self.assertEqual(stopped["id"], self.cell.recovery.run_id)  # type: ignore[union-attr]
-
-    def test_an_object_phrase_the_cell_would_now_ground_wrong(self) -> None:
-        self.scripted([Scripted("failed")] * 3 + [Scripted("part")])
-        with patch("api.routers.diagnostics._perception", return_value=_stack("vlm", True)):
-            stopped = self._stopped(object="den grünen Würfel")
-        with patch("api.routers.diagnostics._perception", return_value=_stack("grounded_sam", None)):
-            self.refused(self.client.post("/v1/task/restart", json={"run_id": stopped["id"]}), 422,
-                         "prompt_not_routable")
-        with patch("api.routers.diagnostics._perception", return_value=_stack("vlm", True)):
-            restarted = self.client.post("/v1/task/restart", json={"run_id": stopped["id"]})
-        self.assertEqual(202, restarted.status_code, restarted.text)
-        self.assertEqual("finished", self.finished(restarted.json()["id"])["stop_code"])
-
-    def test_a_target_phrase_the_cell_would_now_ground_wrong(self) -> None:
-        cell = self._wrist_cell("die blaue Kiste")
-        with patch("api.routers.diagnostics._perception", return_value=_stack("vlm", True)):
-            stopped = self._stopped(object="red cube", place={"kind": "camera", "phrase": "die blaue Kiste"})
-        moved = list(cell.motions())
-        with patch("api.routers.diagnostics._perception", return_value=_stack("grounded_sam", None)):
-            self.refused(self.client.post("/v1/task/restart", json={"run_id": stopped["id"]}), 422,
-                         "target_not_routable")
-        self.assertEqual(moved, cell.motions())
 
     def test_an_empty_object_the_rehearsal_took_on_a_cell_that_grounds_a_phrase(self) -> None:
         """Q7 A+: the rehearsal picks what it shows; rebuilt as a cell whose detector grounds a phrase, the same plan

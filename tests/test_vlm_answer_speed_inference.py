@@ -89,7 +89,10 @@ class AnswerSpeedInferenceTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         from src.models.vlm import Qwen3VLGrounder
 
-        cls.grounder = Qwen3VLGrounder(model_id=MODEL_ID, local=True, preload=True)
+        cls.grounder = Qwen3VLGrounder(model_id=MODEL_ID)
+        # The plain answer unless a test names a setting: the owner's cell's (both lookups at 10) are the constructor's.
+        cls.grounder.configure(prompt_lookup_tokens=0, text_prompt_lookup_tokens=0, stop_at_answer_end=True)
+        cls.grounder.ensure_loaded()
         cls.image = _scene()
         cls.passes = [0]
 

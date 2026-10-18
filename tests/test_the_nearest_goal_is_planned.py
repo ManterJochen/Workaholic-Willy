@@ -8,9 +8,9 @@ joint-limit guard's window, ranks them on the branch the arm holds first and by 
 after it, and screens each with the planner and the endpoint gate. Then, in that order:
 
 * the straight joint line to each admissible goal, judged by the local path gate and by the planner at
-  ``safety.planned_motion.line_clearance_mm`` from its world; the first that passes runs as it is, one leg;
+  ``path_samples.LINE_CLEARANCE_MM`` from its world; the first that passes runs as it is, one leg;
 * only where no line passes, cuRobo plans in joint space to up to three of them, and a plan is taken where it ends on
-  the configuration asked for and swings no joint more than ``safety.planned_motion.max_detour_deg`` beyond its span;
+  the configuration asked for and swings no joint more than ``path_samples.MAX_DETOUR_DEG`` beyond its span;
 * a branch other than the arm's only once every goal on it failed, with a warning naming both;
 * no line and no plan is the no-plan refusal, and cuRobo is never left to choose a goal.
 
@@ -47,7 +47,7 @@ from src.robot.safety._ur_ik import nearest_goals, ur_branch, ur_flange_ik
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
 from src.robot.safety.path_samples import span_overshoot_rad
 from src.robot.safety.planning import CuroboUnavailableError, StateRefusal, StateRefusalKind, StateWhere
-from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm
+from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm, with_the_whole_envelope
 from tests._fake_transport import fake_transport
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 from tests._route_planner import RoutePlanner, line
@@ -65,11 +65,13 @@ _CANDLE = [0.0, -math.pi / 2.0, 0.0, -math.pi / 2.0, 0.0, 0.0]
 
 
 def _arm(planner: RoutePlanner, *, model: str = "ur5e", safety: "dict[str, Any] | None" = None) -> Any:
-    config = kit_tree("curobo", model=model, safety={"payload": {"enforce": False}, **(safety or {})},
-                      workspace_limits=OPEN_WORKSPACE)
+    config = kit_tree("curobo", model=model, safety={**(safety or {})}, motion={"workspace": OPEN_WORKSPACE})
     arm: Any = planned_arm(config, transport=fake_transport(joints=planner.here))
     arm._curobo = planner
-    # The local gate and the end have their own tests; this file reads which goal was asked for and how.
+    # The local gate and the end have their own tests; this file reads which goal was asked for and how, on the arm's
+    # whole envelope: its scenes stand wrist 3 and wrist 1 a full turn round, written for an arm without the window
+    # about home (every cell's default until 2026-10-17), which has its own tests.
+    with_the_whole_envelope(arm._preflight)
     arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None
     arm._gate_planned_config = lambda pose, joints: None
     return arm
@@ -106,22 +108,23 @@ class AClearLineRunsTests(unittest.TestCase):
         self.assertTrue(result.ok, result.message)
         self.assertEqual([], planner.named("plan_joint"), "cuRobo was asked to plan a line that was clear")
         (execute,) = planner.named("execute")
-        self.assertEqual(2, len(execute[1]), "a straight line is its two ends and nothing else")
-        np.testing.assert_allclose(execute[1][0], _HERE, atol=1e-12)
-        np.testing.assert_allclose(execute[1][1], _THERE, atol=1e-6)
+        # The gate found the arm at the line's start (every cuRobo arm gates its own sends): one moveJ, to its end.
+        self.assertEqual(1, len(execute[1]), "a straight line runs as one moveJ to its end and nothing else")
+        np.testing.assert_allclose(execute[1][0], _THERE, atol=1e-6)
 
-    def test_the_line_is_judged_at_the_configured_clearance_and_a_screen_at_none(self) -> None:
-        # The default is the owner's 3 mm since 2026-10-05, 10 before.
-        for clearance, safety in ((3.0, {}), (25.0, {"planned_motion": {"line_clearance_mm": 25.0}})):
-            with self.subTest(clearance_mm=clearance):
-                planner = RoutePlanner(here=_HERE)
-                _move(_arm(planner, safety=safety), _THERE)
-                (lined,) = planner.lines()
-                self.assertEqual(clearance, lined[3])
-                np.testing.assert_allclose(lined[1][0], _HERE, atol=1e-12)
-                np.testing.assert_allclose(lined[1][-1], _THERE, atol=1e-6)
-                screens = [c for c in planner.named("check") if len(c[1]) == 1]
-                self.assertTrue(screens and all(c[3] == 0.0 for c in screens))
+    def test_the_line_is_judged_at_the_line_clearance_and_a_screen_at_none(self) -> None:
+        # The owner's 3 mm since 2026-10-05, every cell's since 2026-10-17 (path_samples.LINE_CLEARANCE_MM).
+        from src.robot.safety.path_samples import LINE_CLEARANCE_MM
+
+        planner = RoutePlanner(here=_HERE)
+        _move(_arm(planner), _THERE)
+        (lined,) = planner.lines()
+        self.assertEqual(LINE_CLEARANCE_MM, lined[3])
+        self.assertEqual(3.0, LINE_CLEARANCE_MM)
+        np.testing.assert_allclose(lined[1][0], _HERE, atol=1e-12)
+        np.testing.assert_allclose(lined[1][-1], _THERE, atol=1e-6)
+        screens = [c for c in planner.named("check") if len(c[1]) == 1]
+        self.assertTrue(screens and all(c[3] == 0.0 for c in screens))
 
     def test_a_joint_goes_on_its_full_turn_nearest_the_arm(self) -> None:
         """Wrist 3 stands at 5.0; the goal's wrist 3 angle is -0.983, and 5.3 is the same angle one turn on."""
@@ -148,12 +151,16 @@ class AClearLineRunsTests(unittest.TestCase):
                 self.assertTrue(lower[axis] <= value <= upper[axis], f"{_UR_JOINT_NAMES[axis]} asked at {value}")
 
     def test_the_guards_window_narrows_the_planners(self) -> None:
-        """A cell that limits wrist 3 to +-100 deg (less a 5 deg margin) is never asked to go one turn on."""
-        limits = {"joint_limits": {"min_deg": [-360.0] * 5 + [-100.0], "max_deg": [360.0] * 5 + [100.0]}}
+        """An arm whose wrist 3 is rated +-100 deg (less a 5 deg margin; its description stood in for) is never asked to
+        go one turn on."""
+        from unittest import mock
+
+        self.enterContext(mock.patch("src.robot.safety.joint_limits.resolve_joint_limits_deg",
+                                     return_value=([-360.0] * 5 + [-100.0], [360.0] * 5 + [100.0])))
         here = [*_HERE[:5], 1.5]
         end = [*_THERE[:5], 1.2]
         planner = RoutePlanner(here=here)
-        arm = _arm(planner, safety=limits)
+        arm = _arm(planner)
         self.assertAlmostEqual(math.radians(95.0), arm.goal_joint_window()[1][5])
         _move(arm, end)
         self.assertAlmostEqual(1.2, _executed_goal(planner)[5], places=6)
@@ -167,9 +174,12 @@ class AClearLineRunsTests(unittest.TestCase):
 
 class WhatIsRefusedBeforeAnythingIsAskedTests(unittest.TestCase):
     def test_a_goal_no_turn_of_which_the_guard_admits_is_refused_and_cuRobo_is_never_asked(self) -> None:
-        limits = {"joint_limits": {"min_deg": [-360.0] * 5 + [-30.0], "max_deg": [360.0] * 5 + [30.0]}}
+        from unittest import mock
+
+        self.enterContext(mock.patch("src.robot.safety.joint_limits.resolve_joint_limits_deg",
+                                     return_value=([-360.0] * 5 + [-30.0], [360.0] * 5 + [30.0])))
         planner = RoutePlanner(here=[*_HERE[:5], 0.0])
-        result = _move(_arm(planner, safety=limits), [*_THERE[:5], 2.0])
+        result = _move(_arm(planner), [*_THERE[:5], 2.0])
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status)
         self.assertIn("joint window", result.message or "")
         self.assertIn("never left to choose", result.message or "")
@@ -281,8 +291,9 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         self.assertIs(False, asked[2], "the plan refreshed the world the line and the screens were judged in")
         # The plan is a straight 21-waypoint line. Shortened to its two ends it is the line refused at the clearance,
         # and judged at that clearance it is refused again, so the plan runs as cuRobo returned it (found porting
-        # 85f082b to dev, 2026-09-25; before, it ran as the refused line).
-        self.assertEqual(21, len(planner.named("execute")[0][1]))
+        # 85f082b to dev, 2026-09-25; before, it ran as the refused line), less its first waypoint, where the gate found
+        # the arm.
+        self.assertEqual(20, len(planner.named("execute")[0][1]))
 
     def test_a_line_the_local_gate_refuses_is_planned_around(self) -> None:
         planner = RoutePlanner(here=_HERE)
@@ -328,7 +339,7 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         _move(_arm(planner), _THERE)
         (execute,) = planner.named("execute")
         dense = [tuple(w) for w in returned[0]]
-        self.assertEqual(3, len(execute[1]), "the corner of a bent plan was dropped or the plan was not shortened")
+        self.assertEqual(2, len(execute[1]), "the corner of a bent plan was dropped or the plan was not shortened")
         self.assertTrue(all(w in dense for w in execute[1]), "a waypoint ran that cuRobo never returned")
 
     def test_a_plan_that_ends_off_the_goal_it_was_asked_for_is_not_taken(self) -> None:
@@ -578,12 +589,17 @@ class TheDetourBoundTests(unittest.TestCase):
         result = _move(_arm(planner), _THERE)
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status)
         self.assertIn("wrist_3_joint 90.0 deg", result.message or "", "the refusal names the worst detour")
-        self.assertIn("max_detour_deg", result.message or "")
+        self.assertIn("the 45 deg any joint of a plan may swing past its span", result.message or "")
         self.assertEqual([], planner.named("execute"))
 
-    def test_the_bound_is_the_configured_one(self) -> None:
+    def test_the_bound_is_max_detour_deg(self) -> None:
+        """The bound the arm holds a plan to is ``path_samples.MAX_DETOUR_DEG``, 45 on every cell: held at 75 here, the
+        60 degree plan the bound refuses runs."""
+        from unittest import mock
+
         planner = self._planner(degrees_first=60.0, degrees_rest=None)
-        result = _move(_arm(planner, safety={"planned_motion": {"max_detour_deg": 75.0}}), _THERE)
+        with mock.patch("src.robot.drivers.planned.arm.MAX_DETOUR_DEG", 75.0):
+            result = _move(_arm(planner), _THERE)
         self.assertTrue(result.ok, result.message)
         self.assertEqual(1, len(planner.named("plan_joint")))
 

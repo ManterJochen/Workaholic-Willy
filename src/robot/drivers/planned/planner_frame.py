@@ -6,7 +6,8 @@ Each arm description states the first as ``base.controller_yaw_deg``, and since 
 that says 180 is planned through this client, and one that says 0 through none
 (``tests/test_the_planner_turns_as_the_description_says.py``).
 The planner's tool0 is the DH flange turned half a turn about Z to 0.0001 mm, and 1019 mm from it without the turn
-(``scripts/curobo/probe_payload_attach.py``, ``frame``).
+(measured 2026-09-18 by the carried part's probe, deleted with it on 2026-10-17;
+``scripts/curobo/probe_ur_planner_frame.py`` holds the turn through this client).
 
 A planner handed the controller's frame unturned plans to the goal mirrored through the base axis
 and routes around a mirrored cell. The Isaac cell does not meet this, because its world, its goals

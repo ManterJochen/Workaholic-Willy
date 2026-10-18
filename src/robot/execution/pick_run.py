@@ -27,14 +27,15 @@ things around it.
    ``__exit__``, so a caller who returns from inside the ``with`` never sees it, and it is the only
    place "the gripper did not release" is reported. It is on the report here.
 
-4. Record logging is off by default. The shipped tree has ``record_log_path: null``, so
-   `from_robot_config` wires nothing and a caller that wants a JSONL corpus asks for one. `Recording`
-   is an argument with no default, and the report says which way it went.
+4. A cell keeps its records (since 2026-10-17): `from_robot_config` appends every pick to the file the
+   tree names, else to the log folder's ``grasp_records.jsonl``. A campaign that wants a corpus of its own
+   asks for one; it records there for the campaign and gives the cell's record log back after it.
+   `Recording` is an argument with no default, and the report says which way it went.
 
 Two more are the owner's, 2026-09-24. Where each pick looks from (``look``): a wrist camera sees what
 the arm points it at, and a pick ends above its own grasp, so every pick of a wrist cell first moves to
 the looks the program declares, else the ones its cell profile configures
-(``robot.look_joint_positions_deg``), else home on a wrist camera (`src.robot.execution.looks`); a
+(``robot.motion.look_deg``), else home on a wrist camera (`src.robot.execution.looks`); a
 fixed camera's arm moves only to looks the program or the profile names. A wrist camera's looks are
 fused, each with the ones before, until a grasp is safe (2026-09-28). And ``put_back``: a part lifted is put back where it was grasped, so one part
 serves a whole campaign; a part that could not be put back stops the campaign, because the next pick
@@ -54,9 +55,9 @@ are kept for training, one file per pick (`src.robot.execution.record_views`), n
 owner's of 2026-10-15, no switch.
 
 And one of 2026-09-30: a campaign is what a cell's recovery counts across (``service.start_campaign``): the push
-budgets of ``nudge_target`` (1 per part, 2 per pick, 5 per campaign) and the parts ``next_target`` skips.
-``push_mm`` is how far a push moves a part, the config's 30 mm when unset, refused with a sentence above the cell's
-ceiling or the hard cap of 50 mm and under 10 mm.
+budgets of ``nudge_target`` (1 per part, 2 per pick, 5 per campaign) and the regions its task keeps out.
+``push_mm`` is how far a push moves a part, the owner's 30 mm when unset, refused with a sentence above the hard cap
+of 50 mm and under 10 mm.
 """
 
 from __future__ import annotations
@@ -174,12 +175,13 @@ class PassRule:
 
 @dataclass(frozen=True, slots=True)
 class Recording:
-    """Where a campaign appends its attempt records, one JSON line each, or that it appends none.
+    """Where a campaign appends its attempt records, one JSON line each, or that it keeps no corpus of its own.
 
     A noun rather than an optional path, so that "this run produced no corpus" is something the report states.
 
     Attributes:
-        path (str): The JSONL file the records are appended to; ``""`` records nothing (default: "").
+        path (str): The JSONL file the records are appended to; ``""`` keeps no corpus of the campaign's own, and
+            the cell's record log keeps every pick as ever (default: "").
         provenance (Mapping[str, Any]): Stamped into every record: who ran it, which build, why (default: {}).
     """
 
@@ -188,13 +190,13 @@ class Recording:
 
     @property
     def enabled(self) -> bool:
-        """Whether anything is recorded: ``True`` when a path is set."""
+        """Whether the campaign keeps a corpus of its own: ``True`` when a path is set."""
         return bool(self.path)
 
     @classmethod
     def off(cls) -> "Recording":
-        """Record nothing: the default of a config-driven cell, whose shipped ``robot.yaml`` sets ``record_log_path:
-        null``.
+        """Keep no corpus of the campaign's own: the cell's records go where its tree says (``grasping.record_log_path``,
+        else the log folder's ``grasp_records.jsonl``).
 
         Returns:
             Recording: One with no path.
@@ -222,9 +224,9 @@ class Recording:
         """Where the records go, as a person reads it.
 
         Returns:
-            str: ``"recording to <path>"`` or ``"recording nothing"``.
+            str: ``"recording to <path>"`` or ``"recording to the cell's own record log"``.
         """
-        return f"recording to {self.path}" if self.enabled else "recording nothing"
+        return f"recording to {self.path}" if self.enabled else "recording to the cell's own record log"
 
 
 @dataclass(frozen=True, slots=True)
@@ -632,18 +634,17 @@ class PickRun:
     #: Ask every pick to see both jaw contact faces of its chosen grasp before it grips (`service.pick`'s `both_faces`,
     #: which says how a pick whose looks show both nowhere ends): the owner's switch for safety-critical processes.
     #: Off, the default and the fast one. A wrist camera looks on for both; a fixed camera grips only a grasp its
-    #: cameras showed both faces of. The cell's natural orientation (`robot.natural_closing_axis`) and a motion naming a
+    #: cameras showed both faces of. The cell's natural orientation (`robot.motion.natural_closing_axis`) and a motion naming a
     #: closing axis (`GraspMotion(closing_axis=...)`) choose the way round before the faces are judged, so both work
     #: with it. A cell whose motion turns every grasp about base Z before it closes
     #: (`GraspMotion(align_closing_to_base_x=True)`) would grip faces nobody judged: its first pick raises before anything
     #: moves, and the campaign stops on it.
     both_faces: bool = False
     #: How far a push of a failed part moves it, in mm, on a cell whose recovery pushes (`nudge_target`, dense_clutter):
-    #: unset, the config's `recovery.fixture.push_distance_mm` (30 mm, also where no fixture is declared). A request up
-    #: to the cell's `recovery.fixture.max_nudge_mm` (the hard cap without a fixture) is taken as asked; above it,
-    #: above the hard cap of 50 mm, or under 10 mm it is refused with a sentence, never shortened: the last two at the
-    #: factory, the cell's ceiling as the campaign starts, before anything moves. The campaign's push budgets (1 per
-    #: part, 2 per pick, 5 per campaign) start with it.
+    #: unset, the owner's 30 mm, which may go longer, up to 50 mm, where it opens too little room. A request up to the
+    #: hard cap of 50 mm is taken as asked; above it, or under 10 mm, it is refused with a sentence at the factory,
+    #: never shortened, before anything moves. The campaign's push budgets (1 per part, 2 per pick, 5 per campaign)
+    #: start with it.
     push_mm: "Maybe[float]" = UNSET
 
     # --- two doors -----------------------------------------------------------------------------
@@ -701,7 +702,7 @@ class PickRun:
             both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen: the switch for
                 safety-critical processes; a wrist camera looks on for both (default: False).
             push_mm (Maybe[float]): How far a push of a failed part moves it, in millimetres, on a cell whose recovery
-                pushes; unset is the config's ``recovery.fixture.push_distance_mm`` (default: UNSET).
+                pushes; unset is the owner's 30 mm (default: UNSET).
 
         Returns:
             PickRun: The campaign; nothing has moved yet. :meth:`execute` runs it.
@@ -774,7 +775,7 @@ class PickRun:
             both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen: the switch for
                 safety-critical processes; a wrist camera looks on for both (default: False).
             push_mm (Maybe[float]): How far a push of a failed part moves it, in millimetres, on a cell whose recovery
-                pushes; unset is the config's ``recovery.fixture.push_distance_mm`` (default: UNSET).
+                pushes; unset is the owner's 30 mm (default: UNSET).
 
         Returns:
             PickRun: The campaign; :meth:`execute` runs it.
@@ -827,7 +828,14 @@ class PickRun:
                 error=f"{type(exc).__name__}: {exc}",
             )
 
+        from src.robot.execution.cell import ConnectedArms  # noqa: PLC0415
+
         session = self.cell.connected(announce=self.announce)
+        if isinstance(session, ConnectedArms):
+            return PickRunReport(
+                requested=self.runs, attempts=(), rule=self.rule, recording=self.recording,
+                error="a pick run drives a cell of one arm; this cell has several: run it on one of cell.arms",
+            )
         try:
             session.__enter__()
         except Exception as exc:  # noqa: BLE001 (connect is a transaction and has rolled itself back)
@@ -915,8 +923,8 @@ class PickRun:
 
     def _drive(self, service: Any, *, teardown: "TeardownReport | None") -> PickRunReport:
         """The loop, and the three per-campaign settings that must be put back afterwards."""
-        # The campaign first: its push distance is the first thing that can be refused against the cell's own ceiling,
-        # before anything else is set. It starts the campaign's push budgets and the parts next_target skips.
+        # The campaign first: its push distance is the first thing that can be refused, before anything else is set.
+        # It starts the campaign's push budgets.
         refused = self._start_campaign(service)
         if refused:
             return PickRunReport(requested=self.runs, attempts=(), rule=self.rule, recording=self.recording,
@@ -926,8 +934,10 @@ class PickRun:
         previous_prompt: Any = None
         if chosen(self.prompt):
             previous_prompt = service.set_prompt(self.prompt)
+        # The cell's own record log, given back after the campaign: a cell keeps its records (2026-10-17).
+        cells_records: Any = None
         if self.recording.enabled:
-            service.enable_record_logging(
+            cells_records = service.enable_record_logging(
                 self.recording.path, provenance=dict(self.recording.provenance) or None
             )
         if chosen(self.target_label):
@@ -977,7 +987,7 @@ class PickRun:
                         )
                     # And so does a hand that needs a person: a gripper that raised, or a toggle that would not
                     # start the pick on jaws it believes closed with nobody at a terminal to say otherwise, or a hand
-                    # nobody can vouch for mid-pick (a toggle's count, read by a push or before next_target drives
+                    # nobody can vouch for mid-pick (a toggle's count, read by a push or before a rescan drives
                     # the looks again; a gripper that measures its width, found not connected or unreadable by a
                     # push). The next run would perceive again for a hand that still cannot start (owner's decisions,
                     # 2026-09-24 and 2026-09-30). A string, so a double that answers every attribute is not read as one.
@@ -1052,7 +1062,8 @@ class PickRun:
                 # After the label, so a campaign that set both ends on the filter the prompt replaced.
                 service.set_prompt(previous_prompt)
             if self.recording.enabled:
-                service.enable_record_logging(None)
+                path, provenance = cells_records or (None, None)
+                service.enable_record_logging(path, provenance=provenance)
             if shown is not None:
                 shown.done(service)
 
@@ -1276,7 +1287,7 @@ def configured_looks_of(service: Any) -> "tuple[LookPose, ...]":
     """The looks ``service``'s cell profile configures (``configured_looks``), or none.
 
     Only a tuple of looks counts, each a :class:`~src.robot.core.JointPositions` or ``"home"``, as the service reads
-    them from ``robot.look_joint_positions_deg``: a double that answers every attribute, a list, or a raw row of
+    them from ``robot.motion.look_deg``: a double that answers every attribute, a list, or a raw row of
     numbers is read as none, so it never becomes a place the arm is sent. The rule a campaign and the console share.
     """
     from src.robot.core.joint_positions import JointPositions  # noqa: PLC0415
@@ -1291,12 +1302,10 @@ def configured_looks_of(service: Any) -> "tuple[LookPose, ...]":
 
 def _checked_push_mm(push_mm: "Maybe[float]") -> "Maybe[float]":
     """A campaign's push distance, refused at the factory above the hard cap of 50 mm or under 10 mm, before a cell is
-    built (``push_planner.resolve_push_distance`` against the cap alone; the cell's own ceiling is the campaign's)."""
+    built (``push_planner.resolve_push_distance``)."""
     if not chosen(push_mm):
         return push_mm
     from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
-        DEFAULT_PUSH_DISTANCE_MM,
-        PUSH_DISTANCE_CAP_MM,
         PushRefusal,
         resolve_push_distance,
     )
@@ -1305,7 +1314,7 @@ def _checked_push_mm(push_mm: "Maybe[float]") -> "Maybe[float]":
         requested = float(push_mm)
     except (TypeError, ValueError):
         raise ValueError(f"PickRun(push_mm=...) is a number of mm, not {push_mm!r}") from None
-    resolved = resolve_push_distance(requested, default_mm=DEFAULT_PUSH_DISTANCE_MM, ceiling_mm=PUSH_DISTANCE_CAP_MM)
+    resolved = resolve_push_distance(requested)
     if isinstance(resolved, PushRefusal):
         raise ValueError(f"PickRun(push_mm={push_mm!r}) refused: {resolved.sentence}")
     return requested

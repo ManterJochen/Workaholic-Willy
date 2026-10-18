@@ -86,6 +86,12 @@ And two where a motion leaves space out of the world it plans against:
 
 A recorded step prints its numbers and the decision it feeds, and never changes the exit code: its
 answer is a measurement, not a pass.
+
+The probe sweeps the field's voxel (``--voxel-mm``) and holds eight camera boxes, where a cell's camera
+world is fixed since 2026-10-17 at the owner's cell's numbers (``perceived.CAMERA_FIELD_VOXEL_MM`` and
+``CAMERA_MAX_BOXES``) and no key of a tree cuts it otherwise. So the planner it starts takes everything
+from the reservation the probe cell's config asks for, as a cell's does, but the grid and the box slots,
+which it cuts to the probe's own world (:func:`_probe_reservation`).
 """
 
 from __future__ import annotations
@@ -125,6 +131,7 @@ from src.robot.safety.planning.live_world import (  # noqa: E402
     refresh_planner_world,
 )
 from src.robot.safety.planning._curobo_protocol import PERCEIVED_FIELD, PERCEIVED_NEAR_FIELD  # noqa: E402
+from src.robot.safety.planning.fine_world import FINE_REACH_MM  # noqa: E402
 from src.robot.safety.planning.perceived import (  # noqa: E402
     NEAR_VOXEL_MM,
     LinkCapsule,
@@ -134,10 +141,11 @@ from src.robot.safety.planning.perceived import (  # noqa: E402
     WorldBuildLimits,
     WorldBuildTuning,
     build_voxel_field,
+    near_grid_extent,
     voxel_grid_extent,
 )
 from src.robot.safety.planning.reservation import PlannerReservation  # noqa: E402
-from src.robot.safety.planning.world import planner_cuboid  # noqa: E402
+from src.robot.safety.planning.world import build_planner_cuboids, planner_cuboid  # noqa: E402
 
 #: A camera on a mast over the bench, looking straight down from a metre up. The numbers are a
 #: plausible cell rather than any particular one: what is being proved is the chain, not a layout.
@@ -206,7 +214,27 @@ _FAR_X_MM = 5000.0
 _FIELD_FILE = Path(tempfile.gettempdir()) / "willy_probe_live_world_field.npy"
 
 
-def _probe_cell(voxel_mm: float) -> RobotConfig:
+#: The camera boxes this probe's world holds, and its planner has slots for beside the declared ones.
+_PROBE_BOXES = 8
+
+
+def _probe_reservation(voxel_mm: float) -> PlannerReservation:
+    """The planner this probe starts: the reservation the probe cell's config asks for, with the field's grid cut at
+    ``voxel_mm`` (none at 0) and slots for :data:`_PROBE_BOXES` camera boxes, the probe's own world."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    cell = _probe_cell()
+    world = cell.safety.planning_world
+    own = PlannerReservation.from_parts(
+        declared_cuboids=len(build_planner_cuboids(world)),
+        perceived_boxes=_PROBE_BOXES, meshes=len(world.meshes), grid_extent=voxel_grid_extent(_LIMITS, voxel_mm),
+        near_extent=near_grid_extent(_LIMITS, voxel_mm, FINE_REACH_MM),
+    )
+    return replace(PlannerReservation.from_config(robot_cfg=cell), cuboid_slots=own.cuboid_slots,
+                   voxel_grid=own.voxel_grid)
+
+
+def _probe_cell() -> RobotConfig:
     """This probe's cell as a robot config: workspace, bench, one declared mesh, live scene, and its hand."""
     return RobotConfig.model_validate({
         "vendor": "ur",
@@ -217,29 +245,26 @@ def _probe_cell(voxel_mm: float) -> RobotConfig:
             "source": "willy", "offset_mm": [0.0, 132.0, 0.0],
             "rotation_quat_xyzw": [-0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
         }},
-        "workspace_limits": {"x_min": _LIMITS.x_mm[0], "x_max": _LIMITS.x_mm[1],
-                             "y_min": _LIMITS.y_mm[0], "y_max": _LIMITS.y_mm[1],
-                             "z_min": _LIMITS.z_mm[0], "z_max": _LIMITS.z_mm[1]},
+        "motion": {"workspace": {"x_min": _LIMITS.x_mm[0], "x_max": _LIMITS.x_mm[1],
+                                 "y_min": _LIMITS.y_mm[0], "y_max": _LIMITS.y_mm[1],
+                                 "z_min": _LIMITS.z_mm[0], "z_max": _LIMITS.z_mm[1]}},
         "safety": {
-            "payload": {"enforce": False},
             "planning_world": {
-                "enabled": True,
                 "support_plane": {"height_mm": 0.0, "extent_mm": [1200.0, 1000.0], "thickness_mm": 50.0,
                                   "center_mm": [400.0, 0.0]},
-                "perceived": {"voxel_field_mm": voxel_mm, "max_boxes": 8, "pixel_stride": 1},
                 "meshes": [{"name": "probe_mesh_wall", "path": "willy_probe_live_world_wall.obj"}],
             },
         },
     })
 
 
-def _probe_hand_link(voxel_mm: float) -> dict[str, Any]:
+def _probe_hand_link() -> dict[str, Any]:
     """The hand body this probe's planner starts with, derived from the probe cell's own gripper declaration."""
     from src.contracts import chosen
     from src.robot.safety.planning.body_link import HandLink
     from src.robot.safety.planning.hand import planner_hand
 
-    hand = planner_hand(_probe_cell(voxel_mm))
+    hand = planner_hand(_probe_cell())
     if not chosen(hand):
         raise ValueError("the probe cell names no hand, so its planner has no hand body to start with")
     return HandLink.from_hand(hand, arm=_HAND_MODEL).to_dict()
@@ -940,7 +965,7 @@ def _step_jaw_region(client: CuroboPlanClient, tuning: WorldBuildTuning, voxel_m
     from src.robot.safety.planning.hand import planner_hand
     from src.robot.safety.planning.self_envelope import goal_keep_out
 
-    cell = _probe_cell(voxel_mm)
+    cell = _probe_cell()
     frame = cell.gripper.tool_frame
     flange = np.eye(4)
     flange[:3, :3] = _quat_matrix(_GOAL_QUAT_WXYZ)
@@ -1283,11 +1308,11 @@ def main(argv: "list[str] | None" = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    tuning = WorldBuildTuning(pixel_stride=1, voxel_field_mm=args.voxel_mm, max_boxes=8)
+    tuning = WorldBuildTuning(pixel_stride=1, voxel_field_mm=args.voxel_mm, max_boxes=_PROBE_BOXES)
     extent = voxel_grid_extent(_LIMITS, tuning.voxel_field_mm)
-    # The client is sized the way a cell sizes it: from a robot config describing this probe's cell, not
-    # from a string built by hand, so the probe exercises the reservation the arms start their planner with.
-    planned = PlannerReservation.from_config(robot_cfg=_probe_cell(args.voxel_mm))
+    # The client is sized the way a cell sizes it, from a robot config describing this probe's cell, but for the grid
+    # and the box slots, which are cut to the probe's own world (:func:`_probe_reservation`).
+    planned = _probe_reservation(args.voxel_mm)
     reservation = planned.voxel_grid
     print(f"planner reservation: {planned.render()}")
 
@@ -1296,7 +1321,7 @@ def main(argv: "list[str] | None" = None) -> int:
     from src.config.arms import curobo_descriptor_name
 
     client = CuroboPlanClient(
-        robot_config=curobo_descriptor_name(_HAND_MODEL), body_links=[_probe_hand_link(args.voxel_mm)],
+        robot_config=curobo_descriptor_name(_HAND_MODEL), body_links=[_probe_hand_link()],
     )
     client.reserve_world(planned)
     started = time.perf_counter()

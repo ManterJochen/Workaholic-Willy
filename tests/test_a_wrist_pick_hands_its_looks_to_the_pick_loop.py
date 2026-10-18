@@ -37,7 +37,6 @@ from src.robot.core import JointPositions
 from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome, AutonomousGraspService, GraspMode
 from src.robot.execution.pick_run import PickRun, Recording
 from src.robot.grasping.collision.gripper_model import ParallelJawGripperModel
-from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
 from src.robot.grasping.motion.execution_policy import PolicyOutcome, PolicyReport
 from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver, StaticCameraToBaseResolver
 from src.robot.grasping.types.perception import PerceptionFrame
@@ -108,8 +107,7 @@ class _Cell:
     """The pick service on the looking arm, its wrist camera, the watching calculator and the recording policy."""
 
     def __init__(self, *, grasps_on: tuple[int, ...] | None = None, refuse: tuple[JointPositions, ...] = (),
-                 unvouched: tuple[JointPositions, ...] = (), fixed: bool = False, deciding: bool = False,
-                 max_attempts: int = 1) -> None:
+                 unvouched: tuple[JointPositions, ...] = (), fixed: bool = False, max_attempts: int = 1) -> None:
         self.arm = LookingArm(_poses(), refuse=refuse, unvouched=unvouched)
         self.camera = WristCamera(self.arm)
         self.calculator = _Watching(self.camera, grasps_on=grasps_on)
@@ -117,14 +115,10 @@ class _Cell:
         resolver: Any = (StaticCameraToBaseResolver(transform=Transform.from_matrix(
             camera_looking_at(bearing_deg=0.0), from_frame=Frame.CAMERA, to_frame=Frame.BASE)) if fixed
             else EyeInHandFrameResolver(t_cam_to_tool=camera_to_tool()))
-        wiring: dict[str, Any] = {}
-        if deciding:
-            policy = DecisionPolicy(enabled=True)
-            wiring = {"decision_policy": policy, "decision_engine": DecisionEngine(policy=policy)}
         self.service = AutonomousGraspService.from_components(
             arm=self.arm, calculator=self.calculator, perception=self.camera,  # type: ignore[arg-type]
-            mode=GraspMode.AUTO if deciding else GraspMode.EASY, policy=self.policy,  # type: ignore[arg-type]
-            frame_resolver=resolver, max_attempts=max_attempts, **wiring,
+            mode=GraspMode.EASY, policy=self.policy,  # type: ignore[arg-type]
+            frame_resolver=resolver, max_attempts=max_attempts,
         )
         self.orchestrator = self.service.runtime.orchestrator
         self.orchestrator.gripper_model = HAND_E
@@ -320,51 +314,11 @@ class BothJawFacesTests(unittest.TestCase):
         self.assertIsNone(report.jaw_faces_seen)
         self.assertIs(False, report.both_faces)
 
-    def test_on_the_decision_path_a_grasp_whose_faces_were_not_both_seen_is_not_gripped(self) -> None:
-        """Red before: the decision layer decided ``GRASP_NOW`` on the looks' grasp and the service handed it on
-        without asking whether both contact faces were seen, so a pick that asked for both gripped with the face at
-        jaw 1 unseen. Addendum 1: with the switch on and no look showing both, do not grip; ``NO_VALID_GRASP``, naming
-        the face."""
-        cell = _Cell(deciding=True)
-        with tempfile.TemporaryDirectory() as folder, \
-                self.assertLogs("src.robot.execution.autonomous_grasp.service", "WARNING") as said:
-            cell.service.enable_record_logging(Path(folder) / "picks.jsonl")
-            report = cell.service.pick(look=[LOOK_PLUS_X, LOOK_PLUS_Y], both_faces=True)
-            (record,) = [json.loads(line) for line in (Path(folder) / "picks.jsonl").read_text().splitlines()]
-
-        self.assertTrue(any("the contact face at jaw 1 of the chosen grasp was not seen" in line
-                            and "does not grip" in line for line in said.output), said.output)
-        self.assertIs(AutonomousGraspOutcome.NO_VALID_GRASP, report.outcome, report.failure_summary())
-        self.assertEqual([], cell.policy.executed, "a grasp whose contact face nobody saw was gripped")
-        self.assertEqual([_key(LOOK_PLUS_X), _key(LOOK_PLUS_Y)], cell.joints_moved_to(), "the arm was sent on")
-        self.assertIsNotNone(report.decision, "the engine's own word is kept beside the refusal")
-        self.assertEqual((False, True), report.jaw_faces_seen)
-        self.assertIs(True, report.both_faces)
-        self.assertIn("the contact face at jaw 1 of the chosen grasp was not seen", report.failure_summary())
-        self.assertNotIn("jaw 2 of the chosen grasp", report.failure_summary())
-        self.assertEqual("no_valid_grasp", record["final_outcome"])
-        self.assertIs(True, record["extra"]["both_faces"])
-        _looks_handed_back(self, cell.orchestrator)
-
-    def test_on_the_decision_path_both_faces_seen_or_not_asked_for_grips(self) -> None:
-        """The controls: the switch refuses only a grasp whose faces were not both seen, and off it changes nothing."""
-        for looks, asked, faces in (([LOOK_PLUS_X, LOOK_MINUS_X], True, (True, True)),
-                                    ([LOOK_PLUS_X, LOOK_MINUS_X], False, (False, True))):
-            with self.subTest(both_faces=asked):
-                cell = _Cell(deciding=True)
-
-                report = cell.service.pick(look=looks, both_faces=asked)
-
-                self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.failure_summary())
-                self.assertEqual(faces, report.jaw_faces_seen)
-                self.assertEqual(1, len(cell.policy.executed))
-                self.assertIs(asked, report.both_faces)
-
     def test_a_hand_with_no_jaw_faces_has_none_to_see(self) -> None:
-        """A suction cup closes on no two faces: the switch asks nothing of it, on the decision path as in the loop."""
+        """A suction cup closes on no two faces: the switch asks nothing of it."""
         from src.robot.grasping.collision.gripper_model import SuctionCupGripperModel
 
-        cell = _Cell(deciding=True)
+        cell = _Cell()
         cell.orchestrator.gripper_model = SuctionCupGripperModel()
 
         report = cell.service.pick(look=[LOOK_PLUS_X, LOOK_PLUS_Y], both_faces=True)
@@ -377,8 +331,7 @@ class BothJawFacesTests(unittest.TestCase):
     def test_on_the_open_loop_a_grasp_whose_faces_were_not_both_seen_is_not_gripped(self) -> None:
         """The pick loop's fail-closed ending (addendum 1), on the path ``PickRun`` and the console take: with the switch
         on and no look showing both contact faces (this arm generates no view), the loop ends the pick
-        ``NO_VALID_GRASP`` and grips nothing, and the report names the face. The decision path refuses the same grasp
-        itself (the test above)."""
+        ``NO_VALID_GRASP`` and grips nothing, and the report names the face."""
         cell = _Cell()
 
         report = cell.service.pick(look=[LOOK_PLUS_X, LOOK_PLUS_Y], both_faces=True)
@@ -392,54 +345,27 @@ class BothJawFacesTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# The decision layer decides on the fused looks
+# A pick that reaches no look, and a stop between looks
 # ---------------------------------------------------------------------------------------------------------------------
 
 
-class TheDecisionLayerDecidesOnTheFusedLooksTests(unittest.TestCase):
-    def test_a_grasp_now_on_the_looks_is_picked_without_looking_again(self) -> None:
-        """Red before: the decision layer decided on the first look's frame alone (an object and no grasp) and the
-        service stopped looking there."""
-        cell = _Cell(grasps_on=(1,), deciding=True)
-
-        report = cell.service.pick(look=[LOOK_PLUS_X, LOOK_MINUS_X])
-
-        self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.failure_summary())
-        self.assertIsNotNone(report.decision)
-        self.assertEqual([_key(LOOK_PLUS_X), _key(LOOK_MINUS_X)], cell.joints_moved_to())
-        self.assertEqual(2, len(cell.camera.taken), "the pick looked around a second time after the decision")
-        self.assertEqual((_label(LOOK_PLUS_X), _label(LOOK_MINUS_X)), report.looks)
-        self.assertEqual((_label(LOOK_MINUS_X), _label(LOOK_PLUS_X)), report.looks_fused)
-        self.assertEqual(1, len(cell.policy.executed))
-        _looks_handed_back(self, cell.orchestrator)
-
-    def test_no_grasp_from_any_look_is_decided_on_the_last_look_judged(self) -> None:
-        cell = _Cell(grasps_on=(), deciding=True)
-
-        report = cell.service.pick(look=[LOOK_PLUS_X, LOOK_MINUS_X])
-
-        self.assertIs(AutonomousGraspOutcome.DECISION_RECOVER_PENDING, report.outcome)
-        self.assertEqual([_key(LOOK_PLUS_X), _key(LOOK_MINUS_X)], cell.joints_moved_to())
-        self.assertEqual((_label(LOOK_PLUS_X), _label(LOOK_MINUS_X)), report.looks)
-        self.assertEqual(1, report.telemetry["n_segmentations"], "what the judged look's frame held")
-        self.assertIn("no_candidates_generated", report.telemetry["reasons"])
-        self.assertEqual([], cell.policy.executed)
-        _looks_handed_back(self, cell.orchestrator)
-
+class APickThatReachesNoLookOrIsStoppedTests(unittest.TestCase):
     def test_a_pick_that_reaches_no_look_is_refused_as_before(self) -> None:
-        cell = _Cell(refuse=(LOOK_PLUS_X, LOOK_MINUS_X), deciding=True)
+        cell = _Cell(refuse=(LOOK_PLUS_X, LOOK_MINUS_X))
 
         report = cell.service.pick(look=[LOOK_PLUS_X, LOOK_MINUS_X])
 
         self.assertIs(AutonomousGraspOutcome.EXECUTION_FAILED, report.outcome)
-        self.assertIsNone(report.pick_report)
+        assert report.pick_report is not None
+        (attempt,) = report.pick_report.attempts
+        self.assertEqual(("look_refused", "workspace_rejected"), (attempt.action, attempt.motion_status))
         self.assertEqual([], cell.camera.taken)
         self.assertEqual("look", report.telemetry["stage"])
         self.assertIn("outside the cable window", report.failure_summary())
         _looks_handed_back(self, cell.orchestrator)
 
     def test_a_stop_between_looks_is_a_cancel(self) -> None:
-        cell = _Cell(grasps_on=(), deciding=True)
+        cell = _Cell(grasps_on=())
         cell.service.set_cancel_check(lambda: len(cell.camera.taken) > 0)
 
         report = cell.service.pick(look=[LOOK_PLUS_X, LOOK_MINUS_X])

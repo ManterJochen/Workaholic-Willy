@@ -47,6 +47,7 @@ from src.robot.safety._ur_kinematics import (
     ur_link_transforms_mm_many,
 )
 from src.robot.safety.planning.self_envelope import self_envelope
+from tests._arm_kit import WEIGHED_PAYLOAD
 from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import AWAY, _arm, _backend
 from tests.test_a_line_is_solved_on_the_controller_s_own_kinematics import _DELTAS
 
@@ -217,7 +218,7 @@ def _connected(rows: "ControllerKinematics | None", *, fk_rows: "ControllerKinem
     tool register, which reports ``rows`` as its kinematics info and ``tcp`` as its active TCP."""
     arm = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur", "ur": {"ip": "127.0.0.1", "model": "ur10"},
-        "safety": {"payload": {"enforce": False}},
+        "safety": {"payload": WEIGHED_PAYLOAD},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, _TCP_MM],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},

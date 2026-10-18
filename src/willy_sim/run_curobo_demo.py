@@ -7,8 +7,8 @@ neighbours, and stitches the two takes side by side so the contrast is the messa
               onto base-X, the reachable blind-IK branch, and the jaw drives straight into the +X
               column, ramming the blocker out of the bin. There is no collision-aware planning.
 * ``curobo``: the planned approach (``motion_planner="curobo"``). cuRobo plans the gripper, as
-              mesh-fit tool0 spheres, collision-free around the registered obstacles, threads the
-              corridor-clear -Y close, lifts the cube and leaves the blocker untouched.
+              mesh-fit tool0 spheres, collision-free around the registered obstacles, lifts the cube and
+              leaves the blocker untouched.
 
 Two clean processes (Isaac plus the cuRobo sidecar), then an offline side-by-side compose that needs
 no Isaac:
@@ -32,18 +32,40 @@ import numpy as np
 
 from src.robot.safety.planning.world import planner_cuboid
 
-from src.willy_sim.run_dense_demo_endgame import CINE_POS_M, CINE_RES, _banner
 from src.willy_sim.run_dense_pick import _blocking_specs, build_service
 from src.robot.core.camera_world import CameraWorldDecline
 
 _DEMO_DIR = "logs/demo/curobo"
+# The cinematic camera: a side three-quarter view of the bin, the one the dense demos film from.
+CINE_POS_M = (2.05, -1.82, 1.68)
+CINE_RES = (1100, 760)
 _CINE_TARGET = (0.47, -0.09, 0.04)  # frame the red target + the +X blocker
 _PLANNERS: dict[str, dict] = {
     "blind": {"title": "BLIND straight-line  (no motion planning)",
               "caption": "open-loop IK -> the jaw drives into the +X column", "color": (60, 60, 235)},
     "curobo": {"title": "cuRobo motion planning",
-               "caption": "collision-free plan -> threads the corridor-clear grasp", "color": (90, 220, 90)},
+               "caption": "collision-free plan -> lifts the cube, the blocker untouched", "color": (90, 220, 90)},
 }
+
+
+def _banner(frame_bgr, title, caption, state, color):  # noqa: ANN001, ANN202
+    """Draw a top title banner + a bottom state caption on a BGR frame: the overlay that says why."""
+    import cv2  # type: ignore[import-not-found]
+
+    img = np.ascontiguousarray(frame_bgr).copy()
+    h, w = img.shape[:2]
+    # top title bar
+    bar = img.copy()
+    cv2.rectangle(bar, (0, 0), (w, 64), (20, 20, 20), -1)
+    img = cv2.addWeighted(bar, 0.55, img, 0.45, 0)
+    cv2.rectangle(img, (0, 62), (w, 66), color, -1)
+    cv2.putText(img, title, (18, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 5, cv2.LINE_AA)
+    cv2.putText(img, title, (18, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2, cv2.LINE_AA)
+    # bottom caption + live state
+    text = caption if not state else f"{caption}    [{state}]"
+    cv2.putText(img, text, (18, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.66, (0, 0, 0), 5, cv2.LINE_AA)
+    cv2.putText(img, text, (18, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.66, (255, 255, 255), 2, cv2.LINE_AA)
+    return img
 
 
 def record(planner: str, *, out_path: str | None = None, headless: bool = True, fps: int = 18,
@@ -56,13 +78,12 @@ def record(planner: str, *, out_path: str | None = None, headless: bool = True, 
     out.parent.mkdir(parents=True, exist_ok=True)
     is_curobo = planner == "curobo"
 
-    # blind: default IK, align_closing_to_base_x on and no G12; ik keeps no straight line, so the policy
-    # refuses this pick before the jaws open. curobo: align off, and G12 selects the corridor-clear -Y
-    # close at an 8 mm margin, with an interpolated vertical retreat.
+    # blind: default IK and align_closing_to_base_x on; ik keeps no straight line, so the policy refuses
+    # this pick before the jaws open. curobo: align off, with an interpolated vertical retreat.
     service, arm, gripper, handles, cfg, target_idx, target_label = build_service(
         prompt="the red cube", headless=headless, blocking=True,
         motion_planner="curobo" if is_curobo else "ik",
-        enable_g12=is_curobo, approach_margin_mm=8.0, retreat_steps=5 if is_curobo else 1,
+        retreat_steps=5 if is_curobo else 1,
         camera_world=CameraWorldDecline("run_curobo_demo: this runner plans without a live camera world"),
     )
     session = arm.session

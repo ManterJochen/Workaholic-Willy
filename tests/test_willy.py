@@ -198,7 +198,7 @@ class ASafetyPreflightFromATreeTests(unittest.TestCase):
         tree = load_tree(None).with_values({"robot.gripper.model": "robotiq_2f85"})
         robot = tree.robot
         by_hand = SafetyPreflight.from_safety_config(
-            robot.safety, robot.workspace_limits, hand=planner_hand(robot, data_dir=tree.root),
+            robot.safety, robot.motion.workspace, hand=planner_hand(robot, data_dir=tree.root),
             arm_model=robot.ur.model)
         self.assertEqual(by_hand.guard_names, SafetyPreflight.from_tree(tree).guard_names)
         self.assertIn("self_collision", SafetyPreflight.from_tree(tree).guard_names)

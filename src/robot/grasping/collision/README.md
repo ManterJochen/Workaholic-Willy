@@ -58,22 +58,12 @@ X closes between the contacts, Y is the binormal, Z is the approach.
 
 A third end-effector is a model that satisfies the strategy; nothing else changes.
 
-`robot.grasping.gripper_geometry` selects the envelope, and `build_gripper_geometry` in
-[`execution/autonomous_grasp/builders.py`](../../execution/autonomous_grasp/builders.py) builds it:
-
-```yaml
-grasping:
-  gripper_geometry:
-    kind: parallel_jaw          # parallel_jaw or suction
-    outer_margin_mm: 0.0        # a skin inflating every box on all six sides
-    parallel_jaw: { finger_length_mm: 39.98, palm_depth_mm: 35.0, palm_width_mm: 70.0 }
-    suction:      { cup_radius_mm: 15.0, shaft_length_mm: 40.0, mount_radius_mm: 30.0 }
-```
-
-The defaults are `ParallelJawGripperModel()` with no arguments, measured off a real two-finger gripper's
-collision shapes at the worst case over its aperture. A cell that names a hand (`robot.gripper.model`)
-does not write this block: the loader fills every unset number and the kind from that hand's registry
-file.
+A cell plans the jaw its tree names (`robot.gripper.model`): `jaw_envelope(robot_config)` in
+[`gripper_model.py`](gripper_model.py) builds it from that hand's registry file, `config/grippers/<model>.yaml`,
+and a tree that names no hand plans the 2F-85's, which are `ParallelJawGripperModel()`'s own defaults, measured
+off a real two-finger gripper's collision shapes at the worst case over its aperture. No key restates the
+envelope (the owner's cleanup of 2026-10-17 took `robot.grasping.gripper_geometry`, refused at load since). A
+suction cup's envelope is built by whoever plans one, as `SuctionCupGripperModel(...)`.
 
 ## What it refuses
 

@@ -30,7 +30,12 @@ import numpy as np
 from src.calibration.stereo.manager import StereoCam3D
 from src.camera.setup.image_taking.frames import AnyFrame, RGBDFrame, StereoFrame
 from src.config.schema.camera import RGBDDeviceRigConfig
-from src.models.handdetection.constants import HAND_FINDER_LOG_FILE, MODELS_LOG_DIR
+from src.models.handdetection.constants import (
+    HAND_FINDER_LOG_FILE,
+    MIN_DEPTH_SAMPLES,
+    MODELS_LOG_DIR,
+    PALM_PATCH_RADIUS_PX,
+)
 from src.models.handdetection.landmarks import draw_hand_landmarks
 from src.models.handdetection.types import (
     GestureReading,
@@ -98,8 +103,13 @@ class OneCamera:
         return [str(self.camera.rig_id)]
 
     def is_rgbd(self, rig_id: str) -> bool:
-        """The rig's own declaration, the same test `FrameProvider.is_rgbd` makes."""
+        """Whether the camera hands out colour and depth: an RGB-D rig, and a stereo rig through its stereo calibration,
+        whose owner (`Camera.gives_depth`) answers as an RGB-D one does. An owner without that answer is asked what
+        `FrameProvider.is_rgbd` asks, the rig's own declaration."""
         self._require(rig_id)
+        gives_depth = getattr(self.camera, "gives_depth", None)
+        if isinstance(gives_depth, bool):
+            return gives_depth
         return isinstance(self.camera.rig, RGBDDeviceRigConfig)
 
     def grab(self, rig_id: str) -> AnyFrame:
@@ -216,10 +226,11 @@ class HandFinder:
     rig_ids:
         Search order. Defaults to every rig the provider knows, primary first.
     palm_patch_radius_px:
-        Radius of the disc around the palm centre whose median depth is taken.
+        Radius of the disc around the palm centre whose median depth is taken; the owner's cell's 15 px
+        (`constants.PALM_PATCH_RADIUS_PX`) unless a caller names another.
     min_depth_samples:
         How many valid depth pixels that disc must hold before its median is trusted. Below this
-        the median is noise rather than a measurement.
+        the median is noise rather than a measurement; the owner's cell's 20 (`constants.MIN_DEPTH_SAMPLES`).
     """
 
     def __init__(
@@ -232,8 +243,8 @@ class HandFinder:
         stereo: Optional[StereoCam3D] = None,
         camera_matrices: Optional[Mapping[str, np.ndarray]] = None,
         rig_ids: Optional[Sequence[str]] = None,
-        palm_patch_radius_px: int = 15,
-        min_depth_samples: int = 20,
+        palm_patch_radius_px: int = PALM_PATCH_RADIUS_PX,
+        min_depth_samples: int = MIN_DEPTH_SAMPLES,
     ) -> None:
         self.logger = create_logger("HandFinder", HAND_FINDER_LOG_FILE, log_dir=MODELS_LOG_DIR)
         self.observer = observer

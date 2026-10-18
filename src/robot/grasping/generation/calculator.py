@@ -1,24 +1,27 @@
-"""Geometry-first grasp calculator compatibility adapter.
+"""The analytic grasp calculator: a segmentation mask and a depth image in, ranked :class:`GraspPoint` candidates out.
 
-The stack runs in five stages:
+The stack runs in four stages:
 
-1. masked depth to metric point cloud,
-2. local surface normals,
-3. antipodal contact-pair search,
-4. 6D grasp-pose generation,
-5. transparent geometric/stability/reachability scoring.
+1. the policy gates and the masked depth to a metric point cloud,
+2. what the camera saw beside the part, as obstacles (``scene_obstacles``),
+3. the support-footprint stage: the part's own body over the support it stands on (``body_grasps``), planned in BASE
+   so the hand clears the support instead of being filtered for it,
+4. the collision, table, workspace and IK filters, and the base-frame candidates.
 
-The robot pipelines depend on the public :class:`GraspCalculator` name
-and its small ``compute(...)`` contract, which returns
-:class:`GraspPoint` objects.
+The stage needs a CAMERA->BASE transform and a BASE support plane; without both a call offers nothing and says why.
+The silhouette stage, which anchored grasps on the visible surface and let the filters refuse what did not fit, left
+on 2026-10-16 with its dense and geometry-first samplers (the owner's cleanup): at a cell the support-footprint stage
+replaced its candidates on every call.
+
+The robot pipelines depend on the public :class:`GraspCalculator` name and its small ``compute(...)`` contract, which
+returns :class:`GraspPoint` objects.
 """
 
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Sequence
-from typing import Any, TYPE_CHECKING
+from typing import Any, Final, TYPE_CHECKING
 
 import numpy as np
 
@@ -52,69 +55,36 @@ from src.robot.grasping.generation.scene_obstacles import (
     scene_obstacle_points,
     why_no_grasp,
 )
-from src.robot.grasping.generation.support_footprint import (
-    DEFAULT_FLOOR_MARGIN_MM,
-    JAW_SIDE_ROOM_MM,
-    HandFloor,
-    SupportFootprintJaw,
-    reconstruct_support_prism,
-)
+from src.robot.grasping.generation.hand import HandFloor, SupportFootprintJaw
+from src.robot.grasping.generation.support_prism import DEFAULT_FLOOR_MARGIN_MM, reconstruct_support_prism
 from src.robot.grasping.contacts import (
-    ContactPair,
-    dense_surface_samples,
     scene_collision_cloud,
 )
 from src.robot.grasping.geometry import (
     CameraIntrinsics,
-    CloudOutlierConfig,
-    apply_cloud_outlier_filter,
     depth_unit_to_mm,
     masked_point_cloud,
     validate_transform,
 )
 from src.robot.grasping.planning import (
-    GraspPose,
     IKResult,
     IKService,
 )
-from src.robot.grasping.planning.reachability import IKQualityMetrics
 from src.robot.grasping.scoring import (
-    FeasibilityInputs,
-    FeasibilityScoreConfig,
-    GeometricScoreConfig,
     GraspScoreBreakdown,
-    GraspScoreWeights,
-    ReachabilityScoreConfig,
     WorkspaceBox,
-    feasibility_grasp_score,
-    rank_grasp_poses,
-    rerank_breakdowns_with_feasibility,
 )
 from src.robot.grasping.visualization import DebugDrawConfig
 from src.robot.grasping.types.perception import SegmentationLike
 from src.utility.log_cfg import create_logger
 
-from src.robot.grasping.generation._candidate_generator import (
-    _GraspCandidateGenerator,
-    _mask_non_convexity as _mask_non_convexity,  # re-export: the name stays importable here
-)
 from src.robot.grasping.generation._debug_renderer import _DebugRenderer
 from src.robot.grasping.generation._camera_geometry import _SharedGeometryUtil
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint, fingers_held_at, outer_first
 from src.robot.grasping.generation.mask_analyzer import MaskAnalyzer
-from src.robot.grasping.types.modes import (
-    GraspSamplingMode,
-    mode_to_dense_sampling,
-    resolve_grasp_sampling_mode,
-)
 from src.robot.grasping.scoring.topology_risk import topology_risk_from_mask
 from src.robot.grasping.scoring.occlusion import approach_clearance_mm, occlusion_ratio
-from src.robot.grasping.scoring.corridor import (
-    CorridorAnalysisConfig,
-    CorridorAnalysisInputs,
-    analyze_corridor,
-)
 from src.robot.grasping.generation.deformables import DeformableClass, DeformableHandlingStrategy
 from src.robot.grasping.generation._calculator_validation import validate_calculator_args
 
@@ -127,13 +97,6 @@ if TYPE_CHECKING:
 from src.robot.grasping.scoring.semantic_policy import SemanticPolicy
 
 
-# RL shadow-only feasibility config: enable the two IK-quality sub-signals (Jacobian conditioning +
-# joint-margin) so ``feasibility_grasp_score`` maps the per-candidate ``IKQualityMetrics`` onto a
-# [0, 1] reachability score. Used only to stamp ``metadata["shadow"]["feasibility_score"]`` on the
-# RL ranking rows: a pre-execution predictor of the descent-timeout and reachability failures the
-# deterministic geometric score is blind to. It never feeds ``GraspPoint.score``, the ranking order,
-# or the success-model feature vector.
-_SHADOW_FEASIBILITY_CONFIG = FeasibilityScoreConfig(ik_quality_enabled=True, joint_margin_enabled=True)
 
 # ``SegmentationLike`` (the ``.mask`` protocol these accept) is imported from
 # ``grasping.types.perception`` above.
@@ -173,6 +136,12 @@ def _segmentation_metadata(segmentation: object) -> dict:
 
 
 
+#: The voxel the part's own cloud and the neighbours' are thinned to, millimetres: what reads them whole, the support
+#: under the part, its heights in the telemetry and the post-hoc filter's scene. The stage reads the part at full
+#: resolution (it thins at 3 mm itself, ``reconstruct_support_prism``). The number every cell ran with.
+CLOUD_VOXEL_MM: Final[float] = 8.0
+
+
 def _validate_camera_to_base_transform(
     value: Transform | np.ndarray,
     *,
@@ -199,163 +168,43 @@ class GraspCalculator:
         approach_vector_cam: np.ndarray | None = None,
         max_grip_width_mm: float = 150.0,
         min_grip_width_mm: float = 5.0,
-        axis_end_fraction: float = 0.4,
         camera_matrix: np.ndarray | None = None,
-        normal_radius_mm: float = 18.0,
         max_candidates: int = 12,
-        geometry_voxel_size_mm: float = 8.0,
-        max_geometry_points: int = 700,
-        dense_runtime_budget_ms: float = 150.0,
-        dense_non_convexity_threshold: float = 0.15,
         topology_risk_threshold: float | None = None,
-        friction_coefficient: float | None = None,
         heavy_occlusion_threshold: float | None = None,
         deformable_strategy: DeformableHandlingStrategy | None = None,
-        corridor_risk_per_candidate: bool = False,
-        oblique_approach: bool = False,          # generate grasps at multiple approach angles (top-down
-        oblique_tilt_deg: float = 30.0,          # + tilted variants) so an oblique gap-threading grasp is
-        oblique_azimuths: int = 4,               # proposed where a top-down one rams. Default-off.
         ik_service: "IKService | None" = None,
-        grasp_depth_reference: str = "centre",
-        grasp_top_penetration_mm: float = 0.0,
-        grasp_top_quantile: float = 10.0,
-        depth_band_mm: float | None = None,
-        depth_band_near_pct: float = 10.0,
-        cloud_outlier_filter: "CloudOutlierConfig | None" = None,
-        feasibility_weight: float = 0.0,
-        feasibility_config: "FeasibilityScoreConfig | None" = None,
         gripper_model: GripperGeometryStrategy | None = None,
-        # When the silhouette is near-isotropic its principal axis is numerically degenerate, so the
-        # closing direction it implies is noise. This spends that free yaw on the direction the arm
-        # can actually reach instead: radial, from base to grasp. Needs a BASE-frame transform to mean
-        # anything. Default False keeps the path byte-identical. See generation/_isotropic_closing.py.
-        isotropic_radial_closing: bool = False,
-        # A parallel jaw closes across an object that stands on something, so its closing axis lies in
-        # the support plane: 98.9 % of the datagen reference's 28 332 true jaw labels are exactly
-        # horizontal. Zeroing z in the CAMERA frame lands the axis in the image plane instead; on this
-        # rig's 36.87 deg obliques that is a median 8.78 deg off horizontal on 94.4 % of executed
-        # candidates, and it is why ``not_antipodal`` is 42 % of wrong candidates on objects standing
-        # completely free. Levelling is worth +10 pp of top-1 (22.0 -> 32.1 %) over all 270 reference
-        # scenes, so the default is True; False reproduces the unlevelled axis byte-for-byte. Needs a
-        # CAMERA->BASE transform; without one the direction of "up" is unknown and nothing is levelled.
-        # See generation/_camera_geometry.py::level_axis_to_support_plane.
-        level_closing_to_support_plane: bool = True,
-        # Support-footprint enumeration replaces the silhouette geometry stage: it reconstructs the
-        # target as its footprint extruded onto the support plane and solves for an anchor height that
-        # clears the table, instead of anchoring on the visible surface and being filtered afterwards.
-        # Measured top-1 on the D5 reference: 58.5 % against the silhouette path's 27.2 %, better on
-        # all four scene families, precision 77.5 % against 8.9 %. Through the real calculator at the
-        # D5 gate it moves top-1 24.29 -> 43.50 % and precision 22.08 -> 63.59 %, better on packed,
-        # pile and sparse; ``bin`` falls 12.5 -> 8.3 % on that 24-object subset while measuring
-        # 27.6 % against 14.5 % on the full 152-object set. That is why the default is True; False
-        # restores the silhouette stage. It needs a BASE-frame support plane and a CAMERA->BASE
-        # transform, and without both it silently cannot run, so the path is byte-identical when the
-        # inputs are missing. See support_footprint.py.
-        support_footprint_geometry: bool = True,
-        support_footprint_inflate_mm: float = 0.0,
-        # The rim SFE's footprint input loses, millimetres at the part (``robot.grasping.geometry.footprint_rim_mm``, the
-        # owner's "Ja, für Montag", 2026-10-09): a look's mask eroded by ceil(rim * fx / z) px for the cloud SFE builds
-        # its footprint from and for nothing else, never more than 30 % of the mask (footprint_rim.py). The D415 smears a
-        # part's far edge into a ramp of depths the mask's outer ~3 px lie on, and SFE's hull follows the ramp: on 23 of
-        # the cell's recorded grey cubes the centre lay 2.53 mm off at the median, 0.77 mm with a 2 mm rim and
-        # ``support_footprint_inflate_mm`` at 1.25 giving the faces back. The pick loop reads it here and cuts the same
-        # rim off the looks it fuses (``compute(footprint_points_base_mm=...)``). With a rim, every mask pixel SFE does not
-        # read is placed in the part's visual hull (footprint_hull.py, ``_with_the_hull``), and ``inflate_mm`` 0.0 is
-        # right: 0.58 mm on those cubes. 0.0, the default here (a cell's tree gives 2.0), is SFE's input of before, byte
-        # for byte.
+        # The rim the stage's footprint input loses, millimetres at the part: a look's mask eroded by ceil(rim * fx / z)
+        # px for the cloud the stage reads and for nothing else, never more than 30 % of the mask (footprint_rim.py),
+        # every mask pixel the stage does not read placed in the part's visual hull (footprint_hull.py,
+        # ``_with_the_hull``). A cell's calculator cuts ``footprint_rim.FOOTPRINT_RIM_MM`` (``build_calculator``);
+        # 0.0, the default here, reads the mask whole, without a hull.
         support_footprint_rim_mm: float = 0.0,
-        # Keep the silhouette candidates when SFE produced nothing (``reconstruct_support_prism`` in
-        # support_footprint.py gives up below 20 cloud points), instead of letting its empty list
-        # replace them. Default False. Over the 354 jaw-graspable reference objects it moves top-1
-        # 43.5 -> 43.8 %, which is one object: paired, 1 rescued and 0 destroyed. It hands candidates
-        # to 108 more objects and 106 of those gain only invalid ones (no-valid-candidate 85 -> 191),
-        # dragging precision 63.6 -> 59.3 % and coverage-per-candidate 70.0 -> 51.2 %. Where SFE
-        # abstains the silhouette cannot grasp the object either, so refusing is the answer.
-        support_footprint_fallback: bool = False,
-        # Give SFE the target cloud at full resolution instead of the 8 mm-voxelised one built for
-        # the contact search. See the call site: SFE refuses below 20 points, the point count is set
-        # by an unrelated downsample knob, and SFE re-voxelises at 3 mm anyway, so the pre-downsample
-        # is both arbitrary and destructive. Over the 354 jaw-graspable reference objects: top-1
-        # 43.5 -> 46.3 %, candidate precision 63.6 -> 64.1 %, ranking gap 41 -> 38 objects, at
-        # +5.2 ms median (79.4 -> 84.6); paired per object, 24 rescued against 10 lost, net +14.
-        # Default True on that measurement; False restores the voxelised input.
-        support_footprint_full_resolution: bool = True,
-        # Let SFE reason about the palm, which the collision envelope carries and the planner does
-        # not. Two models of one gripper: SFE plans the table clearance from finger points (27 mm
-        # wide), ``ParallelJawGripperModel`` re-checks it with the palm (70 mm wide) included, so on
-        # a tilted grasp the palm hangs below everything the planner looked at. The gap is 8.00 mm
-        # offline over a 50-120 mm height sweep and 8.0 mm on-box (SFE planning 6.0 mm of clearance
-        # where the envelope granted -2.0), which is exactly the 35.0 vs 27.0 mm the two height
-        # requirements differ by at 90 degrees of tilt.
-        #
-        # The direction is fail-safe, so this buys no safety, and it buys no candidates either.
-        # Measured on the D5 reference (n=1555 view-objects with a jaw label, all 270 scenes), paired
-        # per object:
-        #
-        #   sfe       -> sfe_palm         top-1 41.9 -> 41.4 %   0 rescued,  9 lost
-        #   sfe_fused -> sfe_fused_palm   top-1 54.7 -> 54.4 %   3 rescued,  8 lost
-        #
-        # Purely subtractive, and precision does not rise to pay for it (65.7 -> 64.8 % plain,
-        # 69.8 -> 69.7 % fused). The relocation the height solve could buy does not materialise: the
-        # heights it lands on are already taken by the finger requirement or are above the object.
-        # Default False.
-        #
-        # The losses are the open question. The reference calls a grasp valid by matching an analytic
-        # D5 label and not by any table check, so the 9 lost grasps match ground truth. Either those
-        # labels do not model the palm (they are generated for a floating-base 2F-85, which has no
-        # collision in Isaac at all) or this palm term is stricter than the real hardware. The flag
-        # makes that answerable once the reference labels are settled, and the 8 mm it closes is real
-        # (8.00 -> 0.00 mm of planner optimism over a 50-120 mm height sweep).
-        support_footprint_palm_aware: bool = False,
-        # An experiment knob, not a config key, and deliberately not in the schema. SFE blends five
-        # measured margins into one rank, and the first, `cone_slack` (`1 - contact_angle/cone`), is
-        # the only one that measurably separates: on 414 `sfe_fused` candidate lists the contact angle
-        # alone orders valid before invalid at within-list AUC 0.6907 against the full blend's 0.5698,
-        # and ranking by it alone measured top-1 86.23 % against 83.09 % (26 lists rescued, 13 lost,
-        # +3.14 pp, McNemar chi2 3.69 on 39 discordant; p ~ 0.055, suggestive and not significant, on
-        # a denominator that is not the ladder's). None keeps the shipped blend, byte-identical.
-        support_footprint_score_weights: "tuple[float, float, float, float, float] | None" = None,
-        # How far above the support a target point still counts as the support, for SFE. None keeps
-        # the stage's own ``DEFAULT_FLOOR_MARGIN_MM`` (2.0), which the D5 numbers above were measured
-        # with in a simulator whose calibration is exact, and is byte-identical. A real cell reads its
-        # table as high as its hand-eye and depth error, and states that error as
-        # ``safety.planning_world.perceived.plane_clearance_mm``; ``Scene.from_robot_config`` passes
-        # the larger of the two, and a construction site for a real cell should pass the same.
+        # How far above the support a target point still counts as the support, for the stage. None keeps the
+        # stage's own ``DEFAULT_FLOOR_MARGIN_MM`` (2.0). A real cell reads its table as high as its hand-eye and depth
+        # error, which every cell's camera world holds in its bench band (``perceived.CAMERA_BENCH_BAND_MM``);
+        # ``Scene.from_robot_config`` passes the larger of the two.
         support_footprint_floor_margin_mm: float | None = None,
-        # What the camera saw beside the part, as obstacles (``robot.grasping.scene_obstacles``, fix plan Track A). A
+        # What the camera saw beside the part, as obstacles (every cell's, fix plan Track A). A
         # prompt names one part, and on the owner's cell the calculator saw that part alone: it offered grasps whose open
         # fingers stood inside the parts beside the Zollstock, and the guard refused all of them. With rules, every
         # compute reads the depth around the part by the planner world's own rules (see scene_obstacles.py), hands it
-        # to SFE and to the post-hoc filter, keeps the open hand off the support solids and the declared boxes the guard
-        # holds, and says why a part got no grasp. A pre-filter: the guard judges every motion either way. None, the
-        # default, is the calculator of before, byte for byte.
+        # to the stage and to the post-hoc filter, keeps the open hand off the support solids and the declared boxes the
+        # guard holds, and says why a part got no grasp. A pre-filter: the guard judges every motion either way. None,
+        # the default, reads the part alone.
         scene_obstacles: "SceneObstacleRules | None" = None,
-        # Side approaches in SFE (``robot.grasping.side_approaches``, the owner's "gleichwertig nach Geometrie"): every
-        # tilt the hand fits at is a candidate, ranked by the room it keeps, and only space this frame's depth saw counts
-        # as clear for a tilted one. False, the library default, is SFE as before.
+        # Side approaches (every cell's, the owner's "gleichwertig nach Geometrie"): a lean is
+        # ranked by the room it keeps. False, the library default, ranks every grasp as the stage does.
         side_approaches: bool = False,
     ) -> None:
         validate_calculator_args(
             min_grip_width_mm=min_grip_width_mm,
             max_grip_width_mm=max_grip_width_mm,
-            normal_radius_mm=normal_radius_mm,
             max_candidates=max_candidates,
-            geometry_voxel_size_mm=geometry_voxel_size_mm,
-            max_geometry_points=max_geometry_points,
-            dense_runtime_budget_ms=dense_runtime_budget_ms,
-            dense_non_convexity_threshold=dense_non_convexity_threshold,
             topology_risk_threshold=topology_risk_threshold,
-            friction_coefficient=friction_coefficient,
             heavy_occlusion_threshold=heavy_occlusion_threshold,
             deformable_strategy=deformable_strategy,
-            grasp_depth_reference=grasp_depth_reference,
-            grasp_top_penetration_mm=grasp_top_penetration_mm,
-            grasp_top_quantile=grasp_top_quantile,
-            depth_band_mm=depth_band_mm,
-            depth_band_near_pct=depth_band_near_pct,
-            cloud_outlier_filter=cloud_outlier_filter,
-            feasibility_weight=feasibility_weight,
-            feasibility_config=feasibility_config,
         )
 
         self.analyzer = mask_analyzer or MaskAnalyzer()
@@ -375,19 +224,12 @@ class GraspCalculator:
         norm = float(np.linalg.norm(approach))
         if norm < 1e-12:
             raise ValueError("approach_vector_cam cannot be the zero vector")
+        #: The approach :meth:`plan_multifinger` plans along where it is handed none, CAMERA frame.
         self.approach_cam = approach / norm
 
         self.topology_risk_threshold: float | None = (
             float(topology_risk_threshold)
             if topology_risk_threshold is not None
-            else None
-        )
-        # Optional Coulomb friction coefficient. When set, every
-        # parallel-jaw contact pair is certified analytically and the
-        # certificate is stamped onto each candidate's metadata.
-        self.friction_coefficient: float | None = (
-            float(friction_coefficient)
-            if friction_coefficient is not None
             else None
         )
         # Optional occlusion-rejection threshold. ``None`` disables the gate
@@ -406,18 +248,6 @@ class GraspCalculator:
         self.deformable_strategy: DeformableHandlingStrategy | None = (
             deformable_strategy
         )
-        # Optional per-candidate corridor-risk producer, off by default. It runs when this flag is
-        # set or when the caller passes ``corridor_config`` to ``compute()``; with neither there are
-        # no analyze_corridor calls, no metadata stamp, and ranking and telemetry are unchanged.
-        # When it runs, analyze_corridor is called once per surviving candidate and stamps
-        # ``corridor_blockage_confidence`` in [0,1] (higher = more blocked = more uncertain) on each
-        # GraspPoint.metadata. It is the non-circular per-candidate uncertainty signal the re-ranker
-        # consumes. Cost: N depth-marches.
-        self.corridor_risk_per_candidate: bool = bool(corridor_risk_per_candidate)
-        # Oblique/multi-angle approach generation (default-off; see _candidate_generator).
-        self._oblique_approach: bool = bool(oblique_approach)
-        self._oblique_tilt_deg: float = float(oblique_tilt_deg)
-        self._oblique_azimuths: int = int(oblique_azimuths)
         # Optional default IK reachability oracle (vendor-injected). When set, every compute() that is
         # not handed a per-call ``ik_service`` uses this one, so the live pick path (orchestrator) gets
         # the IK filter (e.g. drop near-singular grasps) without threading a service through every
@@ -425,72 +255,18 @@ class GraspCalculator:
         self._default_ik_service: "IKService | None" = ik_service
         self.max_grip_mm = float(max_grip_width_mm)
         self.min_grip_mm = float(min_grip_width_mm)
-        self.axis_end_frac = float(np.clip(axis_end_fraction, 0.05, 0.5))
-        self.normal_radius_mm = float(normal_radius_mm)
         self.max_candidates = int(max_candidates)
         #: The named parts' surfaces of the frame asked last (:meth:`_named_surface_of`), by the mask's identity.
         self._named_surfaces: dict[int, tuple[Any, Any, tuple[float, bytes], np.ndarray]] = {}
         #: The frame asked last as a scene view (:meth:`_frame_view`), with the depth it was made of and its placing.
         self._held_frame: "tuple[Any, tuple[float, bytes, bytes], SceneView] | None" = None
-        self.geometry_voxel_size_mm = float(geometry_voxel_size_mm)
-        self.max_geometry_points = int(max_geometry_points)
-        self.dense_runtime_budget_ms = float(dense_runtime_budget_ms)
-        self.dense_non_convexity_threshold = float(dense_non_convexity_threshold)
-        # Silhouette grasp-depth reference + penetration. The defaults ("centre", 0.0) give a
-        # median-referenced grasp depth with no penetration. "top" references a near-surface quantile
-        # of the masked depth; the penetration descends every silhouette candidate below its
-        # referenced surface so the fingers wrap the object instead of resting on it. The dense
-        # path is unchanged by both: it builds its own cloud and finds its own contacts, so a
-        # silhouette-level depth reference does not apply to it.
-        #
-        # That sentence used to say the dense path "uses real point-cloud contacts", which was the
-        # word for something it could not do. While the producers replaced the depth under each mask
-        # with one scalar, the dense sampler measured no curvature and found no opposing normals on
-        # any object: 660 samples and 0 pairs, because every normal on a plane points the same way.
-        # The contacts are real now because the input is.
-        self._grasp_depth_reference = str(grasp_depth_reference)
-        self._grasp_top_penetration_mm = float(grasp_top_penetration_mm)
-        self._grasp_top_quantile = float(grasp_top_quantile)
-        # Optional robust depth-band cleaning of the under-mask depth. On real (non-uniform) depth,
-        # mask-edge table bleed leaves finite pixels deeper than the object top, pulling the median
-        # (centre reference) toward the table; the band keeps only [near surface, near + band] so centre
-        # re-references the top. Default None is off: valid_depth and the clouds are unchanged.
-        self._depth_band_mm = None if depth_band_mm is None else float(depth_band_mm)
-        self._depth_band_near_pct = float(depth_band_near_pct)
-        # Optional point-cloud outlier filter (kNN-distance / radius). Applied to the geometry cloud +
-        # the dense samples before normal estimation. A real-hardware robustness lever (stereo/RGB-D
-        # speckle); a no-op in the clean Isaac sim. Default None never calls the filter, which keeps
-        # the path byte-identical.
-        self._cloud_outlier_filter = cloud_outlier_filter
-        # The feasibility ranking axis. Off unless feasibility_weight > 0 and a config is given. When
-        # on, the IK survivors are re-ranked with the feasibility term using the per-candidate IK
-        # quality that only exists after the reachability filter; when off, no feasibility inputs are
-        # fed, so the score layout and the success-model feas_* features stay byte-identical (NaN).
-        # The weights reuse the default geo/stab/reach (matching the up-front rank) plus this weight.
-        # Trap: enabling the ik_quality sub-signal moves the UR5e overhead sim pick 10/10 -> 0/10 at
-        # every weight, because the good overhead top-down grasp is itself near-singular (high cond#),
-        # so "demote high-cond#" demotes the good grasp. It is not a validated improvement for that
-        # cell; default-off keeps it byte-identical.
-        self._feasibility_config = feasibility_config
-        self._feasibility_weights: GraspScoreWeights | None = (
-            GraspScoreWeights(feasibility=float(feasibility_weight))
-            if (feasibility_weight > 0.0 and feasibility_config is not None)
-            else None
-        )
         # Default gripper collision envelope for this calculator (parallel-jaw or suction). A per-call
         # ``compute(gripper_model=...)`` wins; when both are None the checker falls back to a
-        # ParallelJawGripperModel() default, so leaving this unset is byte-identical.
+        # ParallelJawGripperModel() default.
         self._gripper_model = gripper_model
-        self._isotropic_radial_closing = bool(isotropic_radial_closing)
-        self._level_closing_to_support_plane = bool(level_closing_to_support_plane)
-        self._support_footprint_geometry = bool(support_footprint_geometry)
-        self._support_footprint_inflate_mm = float(support_footprint_inflate_mm)
         if not (np.isfinite(support_footprint_rim_mm) and support_footprint_rim_mm >= 0.0):
             raise ValueError(f"support_footprint_rim_mm must be finite and >= 0, got {support_footprint_rim_mm!r}")
         self._support_footprint_rim_mm = float(support_footprint_rim_mm)
-        self._support_footprint_fallback = bool(support_footprint_fallback)
-        self._support_footprint_full_resolution = bool(support_footprint_full_resolution)
-        self._support_footprint_palm_aware = bool(support_footprint_palm_aware)
         if support_footprint_floor_margin_mm is not None and not (
                 np.isfinite(support_footprint_floor_margin_mm) and support_footprint_floor_margin_mm >= 0.0):
             raise ValueError("support_footprint_floor_margin_mm must be finite and >= 0, got "
@@ -501,22 +277,6 @@ class GraspCalculator:
             raise TypeError(f"scene_obstacles takes SceneObstacleRules or None, got {type(scene_obstacles).__name__}")
         self._scene_obstacles: SceneObstacleRules | None = scene_obstacles
         self._side_approaches = bool(side_approaches)
-        # The float() sweep is what makes YAML's ints and numpy scalars behave; naming the five
-        # elements keeps the shape the callee promises. Widening it to "some floats" would let a
-        # four-weight config reach the scorer silently short.
-        self._support_footprint_score_weights: "tuple[float, float, float, float, float] | None" = (
-            None if support_footprint_score_weights is None
-            else (float(support_footprint_score_weights[0]),
-                  float(support_footprint_score_weights[1]),
-                  float(support_footprint_score_weights[2]),
-                  float(support_footprint_score_weights[3]),
-                  float(support_footprint_score_weights[4])))
-        # Memory of whether the previous dense call exceeded the
-        # runtime budget. When True and the current call's
-        # ``dense_sampling`` is left to "auto", the heuristic suppresses
-        # dense regardless of the convexity / clutter signals, so the
-        # budget overrun is not paid twice in a row.
-        self._dense_last_overran: bool = False
         _camera_matrix = (
             np.asarray(camera_matrix, dtype=np.float64)
             if camera_matrix is not None
@@ -526,31 +286,8 @@ class GraspCalculator:
             raise ValueError(f"camera_matrix must be (3, 3), got {_camera_matrix.shape}")
         # The shared camera-geometry helper owns the calibrated K + the loud-once synthetic-intrinsics
         # latch (the fallback synthesizes focal=width/2, which back-projects to metrically wrong 3D:
-        # fine for silhouette ranking, but never trust a BASE-frame metric grasp on it; pass a real
-        # camera_matrix on hardware). Constructed once here and shared with the generator so the
-        # warning fires once ever.
+        # never trust a BASE-frame metric grasp on it; pass a real camera_matrix on hardware).
         self._geom = _SharedGeometryUtil(camera_matrix=_camera_matrix, logger=self.logger)
-        # The candidate generator owns the pose-generation cluster. Loose injection of the (already
-        # validated / normalised) config; the cross-call dense-overrun latch stays facade-owned and is read
-        # via a getter closure (single source of truth, no setter).
-        self._generator = _GraspCandidateGenerator(
-            geom=self._geom,
-            approach_cam=self.approach_cam,
-            min_grip_mm=self.min_grip_mm,
-            # The widest span the silhouette and antipodal paths offer: the stroke less the room beside each jaw, the
-            # rule SFE keeps as its ``width_safety_mm``.
-            max_grip_mm=max(self.min_grip_mm, self.max_grip_mm - 2.0 * JAW_SIDE_ROOM_MM),
-            max_candidates=self.max_candidates,
-            max_geometry_points=self.max_geometry_points,
-            normal_radius_mm=self.normal_radius_mm,
-            axis_end_frac=self.axis_end_frac,
-            dense_non_convexity_threshold=self.dense_non_convexity_threshold,
-            friction_coefficient=self.friction_coefficient,
-            dense_overran_getter=lambda: self._dense_last_overran,
-            oblique_approach=self._oblique_approach,
-            oblique_tilt_deg=self._oblique_tilt_deg,
-            oblique_azimuths=self._oblique_azimuths,
-        )
 
         # Most recent compute() telemetry, exposed for ops/debugging.
         # Populated on every compute() call (including early returns).
@@ -571,37 +308,27 @@ class GraspCalculator:
         self._last_draw: dict[str, Any] | None = None
         # Opt-in switch so the live pick path (``pick_loop``) forwards the
         # perception frame's rgb into ``compute`` and the grasp-point overlay above is rendered
-        # per pick. Default False: pick_loop forwards ``rgb_image=None``, which is byte-identical
-        # and costs no render; a runner flips it on for ``--debug-frames``.
+        # per pick. Default False: pick_loop forwards ``rgb_image=None``, which costs no render; a
+        # runner flips it on for ``--debug-frames``.
         self.render_debug_images: bool = False
-        # Whether SFE runs its fine search where its coarse grid finds few grasps. True, the default, is the search as
-        # it always was. The pick loop turns it off for one ranking at a time where it may leave a part's fine search
-        # for later (``robot.grasping.fine_pass_waits``): the result then says ``support_footprint_fine: "deferred"``
-        # and holds the coarse grid's grasps alone, and the loop asks again in full before it takes that part.
-        self.sfe_fine_pass: bool = True
-        # Whether SFE builds each closing line's grasps at once (``robot.grasping.batched_builds``, set by
-        # ``build_calculator``): the same candidates, refusal counts and telemetry, to the bit, in a tenth of the time
-        # on a boxed-in part (2026-10-09). False, the default, builds them one at a time, as before.
-        self.sfe_batched: bool = False
         #: Whether the cell's hand opens only as wide as a grasp needs before it closes (lever G, 2026-10-13: a Robotiq
         #: hand told a width): the part's body is then searched for jaws that open to each span and the room beside
         #: each jaw, and each such grasp carries that opening (``score_components["support_footprint"]["open_width_mm"]``),
         #: which the execution opens to and the guard holds the fingers at. Off, a hand that opens fully.
         self.opens_as_needed: bool = False
-        #: Whether the part's bores are searched for grasps from inside (``robot.grasping.inner_grasps``, on as shipped,
-        #: set by ``build_calculator`` for a Robotiq hand): the fingers come down narrow into a bore and open onto its
+        #: Whether the part's bores are searched for grasps from inside (set by ``build_calculator`` for a Robotiq
+        #: hand): the fingers come down narrow into a bore and open onto its
         #: wall (``generation.inner_grasps``). Each such grasp ranks after every outer grasp, here as in the stage
         #: (``types.grasp_point.grips_from_inside``). Off, a calculator built without the config's word, searches no
         #: bore, and every result is as before.
         self.inner_grasps: bool = False
-
 
     @property
     def camera_matrix(self) -> "np.ndarray | None":
         """The calibrated intrinsics this calculator was built with, or ``None``.
 
         Read by the orchestrator (``loop/pick_loop.py``) to back-project this view's target cloud for
-        the support-plane refinement under ``support.refine_from_target``.
+        the support-plane refinement (``support_resolver.resolve_support_plane``).
 
         It returns the calibrated K and never the synthesized fallback. ``self._geom.intrinsics()``
         invents ``focal = width / 2`` when no calibration was supplied, which is good enough to rank
@@ -616,66 +343,14 @@ class GraspCalculator:
 
     @property
     def support_footprint_rim_mm(self) -> float:
-        """The rim SFE's footprint input loses, millimetres at the part (``robot.grasping.geometry.footprint_rim_mm``),
-        0.0 for none.
+        """The rim the stage's footprint input loses, millimetres at the part (a cell's:
+        ``footprint_rim.FOOTPRINT_RIM_MM``), 0.0 for none.
 
         Read by the pick loop (``loop/pick_loop.py``), which cuts the same rim off the looks' surfaces it fuses and hands
         the result beside the fused cloud (``compute(footprint_points_base_mm=...)``): one number, so a look's own input
         and a fused one lose the same rim. Read-only for the same reason as :attr:`camera_matrix`.
         """
         return self._support_footprint_rim_mm
-
-    def _resolve_grasp_depth(
-        self, valid_depth: np.ndarray, median_depth_mm: float, scale: float
-    ) -> float:
-        """The silhouette grasp-depth reference (camera-frame mm, before the penetration descend).
-
-        ``"centre"`` (default) returns ``median_depth_mm`` unchanged. ``"top"`` returns a near-surface
-        quantile of the masked depth (a smaller depth is nearer the object top); a low percentile references
-        the top robustly, ignoring the few nearest speckle pixels a pure ``min`` would latch onto.
-
-        "top" is worse, and monotonically so; the default stays "centre". The 2F-85 fingertip reaches
-        28.72 mm past the grasp centre, so a higher anchor buys table clearance. On the gate subset
-        (n=354, ``neighbours`` rung):
-
-        ==============  ==========  ===========  ========
-        reference       precision   top-1        coverage
-        ==============  ==========  ===========  ========
-        centre (q50)    22.08 %     24.29 %      28.53 %
-        top, q=25       19.44 %     22.03 %      27.68 %
-        top, q=10       18.24 %     21.47 %      27.40 %
-        ==============  ==========  ===========  ========
-
-        It does exactly what it promises and that is not enough: rank-0 "no candidate" falls 65.4 % ->
-        60.2 %, so 5.2 pp more objects do clear the table, but every failure reason rises with it
-        (``anchor_outside`` 0.1 -> 1.0 %, ``below_table`` itself 5.6 -> 7.2 %) and valid falls 8.0 ->
-        7.1 %. The contact patch runs 14.4 mm behind the grasp centre and 23.6 mm in front, so lifting
-        the anchor onto the top face puts most of the patch in the air above the object: it buys table
-        clearance by giving up grip, one-for-one and then some. The estimate that 47.3 % of
-        below_table candidates are savable by a higher anchor is an upper bound over clearance alone
-        and does not account for the grip cost."""
-        if self._grasp_depth_reference == "top":
-            near_depth = float(np.percentile(valid_depth, self._grasp_top_quantile))
-            return near_depth * scale
-        return median_depth_mm
-
-    def _apply_depth_band(
-        self, valid_depth: np.ndarray, scale: float
-    ) -> "tuple[np.ndarray, float | None]":
-        """Optionally clean the under-mask depth band (for real non-uniform depth).
-
-        Returns ``(valid_depth_for_reference, cloud_max_depth_mm)``. Off (``depth_band_mm is None``) returns
-        ``(valid_depth, None)`` unchanged. On: ``near = percentile(valid_depth, near_pct)`` is the robust
-        object-top surface; keep only depths ``<= near + depth_band_mm`` (rejecting the deeper mask-edge table
-        bleed), and cap the geometry/dense clouds at the same ``max_depth_mm`` (non-empty keep set guaranteed)."""
-        if self._depth_band_mm is None:
-            return valid_depth, None
-        near_mm = float(np.percentile(valid_depth, self._depth_band_near_pct)) * scale
-        max_keep_mm = near_mm + self._depth_band_mm
-        banded = valid_depth[valid_depth * scale <= max_keep_mm]
-        if banded.size == 0:  # defensive: a degenerate band leaves the reference unfiltered, no cap
-            return valid_depth, None
-        return banded, max_keep_mm
 
     def _support_footprint_jaw(
         self, gripper_model: GripperGeometryStrategy | None, min_table_clearance_mm: float,
@@ -705,14 +380,14 @@ class GraspCalculator:
 
     def _without_the_rim(
         self, mask: np.ndarray, sfe_mask: np.ndarray, depth_mm: np.ndarray, intrinsics: CameraIntrinsics,
-        max_depth_mm: float | None, telemetry: dict,
+        telemetry: dict,
     ) -> "tuple[np.ndarray, bool]":
         """``sfe_mask`` less the rim of ``mask`` (:attr:`support_footprint_rim_mm`, ``footprint_rim``), and whether that
         took a point off SFE's input; the rim in pixels and the points it took are stamped
         (``support_footprint_rim_px``, ``support_footprint_rim_points``) and said in the log, every compute.
 
-        A point is a pixel with a depth the cloud keeps (1 mm and over, and within the depth band where one is set).
-        Where the rim would leave SFE no point the mask had, nothing is cut: a footprint is never built from nothing.
+        A point is a pixel with a depth the cloud keeps (1 mm and over). Where the rim would leave SFE no point the mask
+        had, nothing is cut: a footprint is never built from nothing.
         """
         rim = footprint_rim(mask, depth_mm, intrinsics.fx, self._support_footprint_rim_mm)
 
@@ -720,8 +395,6 @@ class GraspCalculator:
             depth = depth_mm[pixels]
             with np.errstate(invalid="ignore"):
                 kept = np.isfinite(depth) & (depth >= 1.0)
-                if max_depth_mm is not None:
-                    kept &= depth <= max_depth_mm
             return int(np.count_nonzero(kept))
 
         cut = sfe_mask & rim.mask
@@ -737,19 +410,17 @@ class GraspCalculator:
         return cut, off > 0
 
     def _read_for_the_footprint(
-        self, mask: np.ndarray, sfe_mask: np.ndarray, depth_mm: np.ndarray, intrinsics: CameraIntrinsics,
-        max_depth_mm: float | None, *, fused: bool,
+        self, mask: np.ndarray, sfe_mask: np.ndarray, depth_mm: np.ndarray, intrinsics: CameraIntrinsics, *,
+        fused: bool,
     ) -> np.ndarray:
         """The pixels of ``mask`` whose depth SFE reads for its footprint: ``sfe_mask`` (the mask less its depth steps,
         and here less its rim), less its rim too where the footprint comes fused from the pick loop's looks, which cut
-        it there (``fused``), where the depth is one the cloud keeps (1 mm and over, and within the depth band)."""
+        it there (``fused``), where the depth is one the cloud keeps (1 mm and over)."""
         read = sfe_mask
         if fused:
             read = read & footprint_rim(mask, depth_mm, intrinsics.fx, self._support_footprint_rim_mm).mask
         with np.errstate(invalid="ignore"):
             kept = np.isfinite(depth_mm) & (depth_mm >= 1.0)
-            if max_depth_mm is not None:
-                kept &= depth_mm <= max_depth_mm
         return read & kept
 
     def _with_the_hull(
@@ -814,17 +485,15 @@ class GraspCalculator:
         segmentation: SegmentationLike,
         depth_map: np.ndarray,
         T_cam_to_base: Transform | np.ndarray | None = None,
-        pixel_to_mm: float | None = None,
-        point_3d_cam: np.ndarray | None = None,
         unit: str = "mm",
         *,
         camera_to_base: Transform | np.ndarray | None = None,
         scene_points_mm: np.ndarray | None = None,
         rigid_obstacle_points_mm: np.ndarray | None = None,
         geometry_points_base_mm: np.ndarray | None = None,
-        # The fused cloud less its rim (``robot.grasping.geometry.footprint_rim_mm``): the same views' surfaces, each mask
-        # eroded as :attr:`support_footprint_rim_mm` says, BASE. Read beside ``geometry_points_base_mm`` alone, and by SFE
-        # alone, for the footprint it builds; everything else reads the fused cloud whole. None reads it whole.
+        # The fused cloud less its rim (:attr:`support_footprint_rim_mm`): the same views' surfaces, each mask eroded as
+        # the rim says, BASE. Read beside ``geometry_points_base_mm`` alone, by the stage alone, for the footprint it
+        # builds; everything else reads the fused cloud whole. None reads it whole.
         footprint_points_base_mm: np.ndarray | None = None,
         # The pick's other looks (``scene_obstacles.SceneView``): what they show beside the part joins this frame's
         # obstacles, as the guard holds the boxes of every look, and a point any look saw past counts as seen for a
@@ -833,43 +502,20 @@ class GraspCalculator:
         support_plane: SupportPlane | None = None,
         workspace: WorkspaceBox | None = None,
         gripper_model: GripperGeometryStrategy | None = None,
-        # The operator's corridor geometry, from ``grasping.occlusion``. None (default) leaves the
-        # per-candidate corridor producer as it is: it runs only when the
-        # ``corridor_risk_per_candidate`` constructor flag is set, and with hardcoded defaults.
-        #
-        # It arrives as a parameter rather than a constructor argument on purpose. A constructor
-        # argument that no caller passes, on any path, sim or real, leaves the config block dead;
-        # the feasibility block is that case. A per-call parameter is supplied by the orchestrator
-        # (like ``gripper_model`` and ``support_plane``), which is built from config in one place,
-        # so wiring it once wires it for every caller.
-        corridor_config: "CorridorAnalysisConfig | None" = None,
-        # The operator's feasibility re-rank, from ``grasping.feasibility``. None (default) uses the
-        # constructor's values. Supplied per call for the same reason as ``corridor_config``: the
-        # constructor arguments this block also carries are passed by no caller, on any path, sim or
-        # real.
-        feasibility_config: "FeasibilityScoreConfig | None" = None,
-        feasibility_weight: float | None = None,
         min_table_clearance_mm: float = 5.0,
         collision_margin_mm: float = 0.0,
         rgb_image: np.ndarray | None = None,
         debug_label: str | None = None,
         debug_config: DebugDrawConfig | None = None,
-        seed: int | None = None,
         ik_service: IKService | None = None,
-        dense_sampling: bool | None = None,
-        grasp_sampling_mode: GraspSamplingMode | bool | str | None = None,
         other_object_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None = None,
         semantic_policy: SemanticPolicy | None = None,
         deformable_class: DeformableClass | None = None,
         # The camera world's support model of this frame (``support_surfaces.SupportModel``, the fix plan's contract
         # 7), handed per call beside ``support_plane``. Read only with ``scene_obstacles``: a surface it holds decides
-        # what of its pixels is support, SFE's support is the higher of the plane and the model's reading under the
-        # part, and the open hand keeps the guard's distance from its solids. None reads the plane alone.
+        # what of its pixels is support, the stage's support is the higher of the plane and the model's reading under
+        # the part, and the open hand keeps the guard's distance from its solids. None reads the plane alone.
         support_model: Any = None,
-        # Who runs SFE's units in other processes (``src.robot.grasping.workers.SfeWorkers``, the cell's warm pool,
-        # ``robot.grasping.workers``), handed per call by the pick loop where the cell started one. The same candidates,
-        # counts and telemetry as without it, and a part it cannot answer for is searched here. None searches here.
-        sfe_workers: Any = None,
     ) -> list[GraspPoint]:
         """Generate ranked grasp candidates.
 
@@ -878,15 +524,14 @@ class GraspCalculator:
         passed as ``camera_to_base`` to make the frame direction explicit.
         A typed ``Transform`` must be ``CAMERA -> BASE``.
 
-        Optional ``support_plane`` / ``scene_points_mm`` arguments enable
-        collision-aware filtering before ranking, and ``workspace`` feeds
-        the reachability scorer with a real workspace box. When any of
-        these is provided, the corresponding stage is exposed in the
-        ``last_telemetry`` dict for ops debugging.
+        The grasps are planned in BASE over ``support_plane``, a BASE plane: without it and the transform the call
+        offers nothing, says so in ``last_telemetry`` (``support_footprint_ready``) and in the log, and names
+        ``NO_CANDIDATES_GENERATED``. ``scene_points_mm`` and ``workspace`` feed the post-hoc filters, each stage
+        exposed in ``last_telemetry`` for ops debugging.
         """
         # Fall back to the calculator's default IK oracle when no per-call service was passed, so the
         # live pick path (the orchestrator calls ``compute_result``, which calls ``compute``) gets the
-        # IK filter. None applies no filter, which is byte-identical.
+        # IK filter. None applies no filter.
         if ik_service is None:
             ik_service = self._default_ik_service
         # Same pattern for the gripper collision envelope: a per-call model wins, else the calculator's
@@ -894,17 +539,6 @@ class GraspCalculator:
         if gripper_model is None:
             gripper_model = self._gripper_model
         scale = depth_unit_to_mm(unit)
-        if seed is not None:
-            if not isinstance(seed, int) or seed < 0:
-                raise ValueError(f"seed must be a non-negative int, got {seed!r}")
-            # Reserved for future stochastic samplers (dense surface
-            # sampling, contact-point jitter). The current geometric and
-            # antipodal stages are deterministic by construction; the
-            # rng is built here so callers can rely on a single seeding
-            # boundary today even though no sampler consumes it yet.
-            self._rng = np.random.default_rng(seed)
-        else:
-            self._rng = np.random.default_rng()
         if T_cam_to_base is not None and camera_to_base is not None:
             raise ValueError("Pass only one of T_cam_to_base or camera_to_base.")
         transform_input = camera_to_base if camera_to_base is not None else T_cam_to_base
@@ -913,13 +547,6 @@ class GraspCalculator:
             if transform_input is not None
             else None
         )
-        # The support normal, in the CAMERA frame. This is what the closing axis has to lie
-        # perpendicular to; see _camera_geometry.level_axis_to_support_plane for why and for what the
-        # error costs. It prefers the caller's actual ``support_plane`` normal, so a tilted tray or a
-        # bin floor is handled by whoever knows about it, and falls back to BASE +Z, which is the
-        # right answer for every cell whose table is level. Without a CAMERA->BASE transform there is
-        # no way to know which direction is up, so nothing is levelled and the path is byte-identical.
-        #
         # The plane, in the frame the filter actually runs in. ``_apply_collision_filters`` sees
         # CAMERA-frame poses (it runs before ``_to_base_frame_only``), so a BASE-frame plane has to be
         # rotated in first. ``resolve_support_plane`` produces BASE; wiring it straight through
@@ -935,12 +562,6 @@ class GraspCalculator:
                     "support_plane is in BASE frame but no camera_to_base transform was given; "
                     "the table-clearance check cannot be placed and will not be skipped silently")
             plane_cam = support_plane.to_camera_frame(transform)
-        up_cam: np.ndarray | None = None
-        if self._level_closing_to_support_plane and transform is not None:
-            # Already camera-frame by construction above. When no plane is given, BASE +Z is the right
-            # answer for any level cell and gets rotated in the same way.
-            up_cam = (np.asarray(plane_cam.normal, dtype=np.float64) if plane_cam is not None
-                      else transform[:3, :3].T @ np.array([0.0, 0.0, 1.0]))
         # Reset per-call debug surface so a stale image cannot leak into
         # the next read of ``last_debug_image_png`` if this call returns early.
         self.last_debug_image_png = None
@@ -951,8 +572,6 @@ class GraspCalculator:
         seg_score = seg_meta.get("score") if seg_meta else None
         mask_confidence = float(seg_score) if isinstance(seg_score, (int, float)) else None
         telemetry: dict = {
-            "candidates_silhouette": 0,
-            "candidates_geometry": 0,
             "rejected_collision": 0,
             "rejected_table": 0,
             "rejected_workspace": 0,
@@ -960,27 +579,12 @@ class GraspCalculator:
             "best_score": 0.0,
         }
 
-        # ``grasp_sampling_mode`` (typed enum / bool / str alias / None)
-        # is the production-facing knob; ``dense_sampling`` is the legacy
-        # bool surface and keeps working. A mode supplied by the operator
-        # always wins; otherwise the legacy bool maps back to a mode so
-        # telemetry is always meaningful (a literal ``True`` here means
-        # ``DENSE_CLUTTER``, ``False`` means ``SINGLE_OBJECT``, ``None``
-        # means ``AUTO``).
-        if grasp_sampling_mode is not None:
-            resolved_mode = resolve_grasp_sampling_mode(grasp_sampling_mode)
-            dense_sampling = mode_to_dense_sampling(resolved_mode)
-        else:
-            resolved_mode = resolve_grasp_sampling_mode(dense_sampling)
-        telemetry["grasp_sampling_mode"] = resolved_mode.value
-
         mask_array = np.asarray(segmentation.mask)
         mask_has_any = bool(np.any(mask_array)) if mask_array.size > 0 else False
         # What the mask was, stamped before anything can reject it.
         #
         # The mask rejection below is the first early return in compute(), and without these two keys
-        # the telemetry names a stage and no cause: `candidates_silhouette: 0` is an initial value,
-        # not a measurement. An empty mask and a mask the analyzer found too small have nothing in
+        # the telemetry names no cause. An empty mask and a mask the analyzer found too small have nothing in
         # common except the word "rejected", and they need opposite fixes.
         telemetry["mask_pixels"] = int(np.count_nonzero(mask_array)) if mask_array.size else 0
         telemetry["mask_size"] = int(mask_array.size)
@@ -1028,9 +632,7 @@ class GraspCalculator:
         valid_depth = depth_under[np.isfinite(depth_under) & (depth_under > 0.0)]
         # The raw depth under the mask, and where the CAMERA thinks it is: stamped here, before any
         # early return can swallow it. A telemetry key that is absent precisely when the run fails is
-        # not a diagnostic, and a run whose silhouette generator produces no poses returns at
-        # `candidates_silhouette: 0`, before the cloud exists, so a probe placed next to the point
-        # cloud never runs on that failure.
+        # not a diagnostic.
         #
         # The two readings it separates, which need opposite fixes:
         #   masked depth ~= camera height                 -> the object is absent from the depth
@@ -1061,57 +663,26 @@ class GraspCalculator:
             )
 
         depth_confidence = float(valid_depth.size) / float(depth_under.size)
-        # Optionally clean the under-mask depth band (default-off byte-identical). depth_confidence
-        # above stays the original valid fraction; the band only re-references the depth + caps the clouds.
-        valid_depth, cloud_max_depth_mm = self._apply_depth_band(valid_depth, scale)
-        median_depth_mm = float(np.median(valid_depth)) * scale
         intrinsics = self._geom.intrinsics(depth_arr.shape)
-        effective_pixel_to_mm = (
-            float(pixel_to_mm)
-            if pixel_to_mm is not None
-            else self._geom.estimate_pixel_to_mm(median_depth_mm, depth_arr)
-        )
-        # Re-reference the silhouette centre depth (the pixel_to_mm scale above still uses the median).
-        # Default "centre" makes grasp_base_depth_mm the median_depth_mm (byte-identical); the
-        # penetration default 0.0 means no descend in the generator.
-        grasp_base_depth_mm = self._resolve_grasp_depth(valid_depth, median_depth_mm, scale)
-
-        silhouette_poses = self._generator.silhouette_contact_poses(
-            analysis=analysis,
-            depth_map=depth_arr,
-            median_depth_mm=grasp_base_depth_mm,
-            pixel_to_mm=effective_pixel_to_mm,
-            point_3d_cam=point_3d_cam,
-            scale_to_mm=scale,
-            depth_confidence=depth_confidence,
-            penetration_mm=self._grasp_top_penetration_mm,
-            up_cam=up_cam,
-        )
-        telemetry["candidates_silhouette"] = len(silhouette_poses)
-        telemetry["closing_levelled"] = up_cam is not None
-        # Whether the support-footprint stage will run: it needs a BASE support plane and a
-        # CAMERA->BASE transform. Decided here because it also decides whether an empty silhouette is
-        # the end of the attempt.
-        #
-        # It is not, when SFE runs. SFE replaces the silhouette candidates rather than adding to them
-        # (see the stage below), so the silhouette's answer was never the one taken, and an empty one
-        # vetoed a stage it does not feed. MEASURED 2026-09-23 on a ray-cast of the owner's cell, a
-        # D415 (fx 925, 1280x720) tilted 45 degrees, 500 mm from a 40 mm cube, Hand-E stroke 49.99:
-        # the silhouette spans the top face and the near side, measures 54.5 mm across, is refused as
-        # wider than the stroke, and every attempt returned no candidate before SFE was reached, in
-        # 5 of 5 noise seeds. With SFE reached, the same frames give a vertical 42 mm grasp on the part.
-        sfe_ready = (self._support_footprint_geometry and transform is not None
-                     and support_plane is not None and support_plane.frame is Frame.BASE)
-        if not silhouette_poses and not sfe_ready:
+        # The stage plans in BASE over the support the part stands on (``support_footprint_breakdowns``): its
+        # ``offset_mm`` is a height above the workspace, and a CAMERA-frame plane's offset is a depth, which taken for a
+        # height makes the table check inert. Without a CAMERA->BASE transform and a BASE plane it cannot place the
+        # table, and nothing is offered rather than a grasp nothing held against it.
+        telemetry["geometry_stage"] = "support_footprint"
+        ready = transform is not None and support_plane is not None and support_plane.frame is Frame.BASE
+        telemetry["support_footprint_ready"] = bool(ready)
+        if not ready:
+            said = ("the support-footprint stage plans in BASE over the support the part stands on, and this call gave "
+                    + ("no CAMERA->BASE transform" if transform is None else "no BASE support plane"))
+            telemetry[NO_GRASP_SAID] = said
+            self.logger.info("no grasp: %s", said)
             return self._finalize_empty(
                 telemetry,
-                reasons=(
-                    GraspFailureReason.NO_CANDIDATES_GENERATED,
-                    GraspFailureReason.RESCAN_RECOMMENDED,
-                ),
+                reasons=(GraspFailureReason.NO_CANDIDATES_GENERATED,),
                 depth_confidence=float(depth_confidence),
                 mask_confidence=mask_confidence,
             )
+        assert transform is not None and support_plane is not None  # narrowed by ready
 
         cloud = masked_point_cloud(
             segmentation.mask,
@@ -1119,157 +690,27 @@ class GraspCalculator:
             intrinsics,
             unit=unit,
             min_depth_mm=1.0,
-            max_depth_mm=cloud_max_depth_mm,  # None when the band is off; byte-identical
-            voxel_size_mm=self.geometry_voxel_size_mm,
+            voxel_size_mm=CLOUD_VOXEL_MM,
         )
-        # Where the target was seen, in BASE, whenever this view's own masked cloud is non-empty.
-        # The SFE stage stamps its own ``support_footprint_cloud_z_*`` keys, but SFE is not the
-        # only path: the silhouette generator runs without it, and a gate that went 10/10 -> 0/10
-        # with cuRobo refusing a TCP target at z=16.7 mm raised no rejection counter at all: 3
-        # candidates, all filters clean, and no telemetry saying what the object looked like. A
-        # masked depth image can pick up support-plane pixels at the mask edge, which drags a grasp
-        # to the object's base; the span between these two keys tells that apart from a short
-        # object, and the two need opposite fixes. Stamped only when a transform is available,
-        # because without one there is no BASE to report in, and skipped on the fused path when this
-        # view's cloud is empty and the injected fused cloud carries the geometry instead; SFE's
+        # Where the target was seen, in BASE, whenever this view's own masked cloud is non-empty. A masked depth image
+        # can pick up support-plane pixels at the mask edge, which drags a grasp to the object's base; the span between
+        # these two keys tells that apart from a short object, and the two need opposite fixes. Skipped on the fused
+        # path when this view's cloud is empty and the injected fused cloud carries the geometry instead; the stage's
         # keys cover that case.
-        if transform is not None and not cloud.is_empty:
+        if not cloud.is_empty:
             _cloud_base_z = (
                 np.asarray(cloud.points_mm, dtype=np.float64).reshape(-1, 3) @ transform[:3, :3].T
                 + transform[:3, 3]
             )[:, 2]
             telemetry["target_cloud_z_min_mm"] = round(float(_cloud_base_z.min()), 2)
             telemetry["target_cloud_z_max_mm"] = round(float(_cloud_base_z.max()), 2)
-        # (`target_depth_*` + `camera_base_z_mm` are stamped above the first early return, so a run
-        # that dies before the cloud exists still reports what it saw.)
-        # Optional outlier filter on the geometry cloud before contact search. None lets the same
-        # array flow through with no filter call, which is byte-identical. Defensive: if the filter
-        # would empty a non-empty cloud, keep the unfiltered points; a real speckle filter never
-        # removes a whole object surface.
-        geometry_points = cloud.points_mm
-        if self._cloud_outlier_filter is not None and not cloud.is_empty:
-            _keep = apply_cloud_outlier_filter(geometry_points, self._cloud_outlier_filter)
-            if _keep.size > 0:
-                geometry_points = geometry_points[_keep]
-        # (default-off) a fused multi-view target cloud (BASE frame) overrides the single-view
-        # geometry source so the antipodal generator searches real side-face contacts a top-down view
-        # cannot see. That was only true of the cloud's provenance and not of its content until the
-        # producers stopped flattening the depth under each mask: every camera contributed a sheet at
-        # its own view of the top face, so fusing two views fused two sheets and no side face existed
-        # to find. Transform BASE->CAMERA (the generator's frame) and force the geometry-first
-        # path: the mask-based dense sampler rebuilds the cloud from depth+mask, so it cannot consume
-        # a pre-built cloud. Default None leaves geometry_points and dense_decision unchanged, which
-        # is byte-identical.
-        _fused_geometry = False
-        if geometry_points_base_mm is not None and transform is not None:
-            _gb = np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
-            if _gb.size > 0:
-                _inv = np.linalg.inv(np.asarray(transform, dtype=np.float64))  # CAMERA->BASE inverted = BASE->CAMERA
-                _fc = (_inv[:3, :3] @ _gb.T).T + _inv[:3, 3]
-                if self._cloud_outlier_filter is not None and _fc.shape[0] > 0:
-                    _fkeep = apply_cloud_outlier_filter(_fc, self._cloud_outlier_filter)
-                    if _fkeep.size > 0:
-                        _fc = _fc[_fkeep]
-                geometry_points = _fc
-                _fused_geometry = True
-                telemetry["fused_geometry_points"] = int(_fc.shape[0])
-                telemetry["geometry_source"] = "fused_multiview"
-        # ``dense_sampling=None`` triggers automatic selection based on
-        # clutter (other_object_masks present) and mask non-convexity
-        # (1 - solidity > threshold). Explicit True/False is respected.
-        dense_decision = False if _fused_geometry else self._decide_dense_sampling(
-            dense_sampling=dense_sampling,
-            mask=segmentation.mask,
-            other_object_masks=other_object_masks,
-            telemetry=telemetry,
-        )
-        if sfe_ready and not self._support_footprint_fallback:
-            # SFE replaces every candidate of the stages below (``ranked_all = sfe_ranked`` further down, its fallback
-            # off), so the dense samples and the geometry-first contacts were computed and never taken: 0.84 s of every
-            # look on the owner's cell (2026-10-08), and the one branch here that read a clock (the dense budget). The
-            # candidates and the refusals are the same without them.
-            geometry_poses = []
-            telemetry["geometry_skipped"] = "replaced_by_support_footprint"
-        elif dense_decision:
-            # Dense runtime budget with silhouette fallback.
-            import time as _time
-
-            t0 = _time.monotonic()
-            samples = dense_surface_samples(
-                segmentation.mask,
-                depth_arr,
-                intrinsics,
-                unit=unit,
-                min_depth_mm=1.0,
-                max_depth_mm=cloud_max_depth_mm,  # None when the band is off; byte-identical
-                voxel_size_mm=self.geometry_voxel_size_mm,
-                max_points=self.max_geometry_points,
-                cloud_outlier_filter=self._cloud_outlier_filter,  # None keeps it byte-identical
-                # `normal_radius_mm` is deliberately not forwarded, and that is a discrepancy
-                # rather than a decision. This sampler defaults to 12.0 mm while the
-                # geometry-first path uses `self.normal_radius_mm`, 18.0 by default, so one
-                # pipeline estimates surface normals at two radii depending on which branch it
-                # took. Not corrected here because forwarding it moves the dense rung's measured
-                # numbers, and that rung measured 28.4 % coverage against 28.5 % for the branch
-                # beside it: a number that small is not worth moving without re-running the
-                # ladder that produced it.
-            )
-            dense_geometry_poses = self._generator.dense_geometry_poses(
-                samples,
-                analysis=analysis,
-                depth_confidence=depth_confidence,
-            )
-            dense_elapsed_ms = (_time.monotonic() - t0) * 1000.0
-            telemetry["dense_runtime_ms"] = float(dense_elapsed_ms)
-            telemetry["dense_sampling_points"] = int(samples.size)
-            if dense_elapsed_ms > self.dense_runtime_budget_ms:
-                telemetry["dense_timeout"] = True
-                # ``dense_timeout`` already signals the overrun; the
-                # extra ``dense_fallback`` key tells routing logic which
-                # path actually produced the candidates so downstream
-                # tools never have to infer it from runtime numbers.
-                telemetry["dense_fallback"] = "silhouette_after_overrun"
-                self._dense_last_overran = True
-                self.logger.warning(
-                    "Dense sampling overran budget: %.1f ms > %.1f ms; "
-                    "falling back to silhouette geometry for this call.",
-                    dense_elapsed_ms,
-                    self.dense_runtime_budget_ms,
-                )
-                # `geometry_points`, the same array every other call site uses, and not
-                # `cloud.points_mm`. This branch reached past the outlier filter applied above, so a
-                # call that overran its dense budget searched contacts on unfiltered points while an
-                # identical call that did not overrun searched filtered ones. Invisible while the
-                # perception producer flattened the depth under each mask, because a plane has no
-                # outliers to remove; on a measured surface the filter is the thing that keeps a
-                # speckle pixel in front of the part from becoming a contact.
-                geometry_poses = [] if cloud.is_empty else self._generator.geometry_first_poses(
-                    self._generator.limit_geometry_points(geometry_points),
-                    analysis=analysis,
-                    depth_confidence=depth_confidence,
-                )
-            else:
-                telemetry["dense_timeout"] = False
-                telemetry["dense_fallback"] = "none"
-                self._dense_last_overran = False
-                geometry_poses = dense_geometry_poses
-        else:
-            # When a fused cloud was injected (dense_decision forced False above), the single-view
-            # ``cloud`` may be empty even though the fused cloud is not, so the guard also reads
-            # _fused_geometry.
-            geometry_poses = [] if (cloud.is_empty and not _fused_geometry) else self._generator.geometry_first_poses(
-                self._generator.limit_geometry_points(geometry_points),
-                analysis=analysis,
-                depth_confidence=depth_confidence,
-            )
+        if geometry_points_base_mm is not None and np.asarray(geometry_points_base_mm).size > 0:
+            telemetry["fused_geometry_points"] = int(np.asarray(geometry_points_base_mm).reshape(-1, 3).shape[0])
+            telemetry["geometry_source"] = "fused_multiview"
         if other_object_masks:
-            # The same outlier filter the target cloud gets. Every other cloud in this method is
-            # filtered and this one was not, which cost nothing while the perception producer
-            # flattened the depth under a mask: a plane has no outliers. On a measured surface it is
-            # the asymmetry that matters most, because the collision veto is one point
-            # (`collision_checker.py`, `if colliding_indices:`), so a single speckle pixel on a
-            # neighbour can reject every candidate on the target. `None`, the default, means no
-            # filter call and the same array as before.
+            # The other parts the detector named in this frame, as a cloud: the collision veto is one point
+            # (`collision_checker.py`, `if colliding_indices:`), so the post-hoc filter and the stage keep the hand off
+            # every one of them.
             neighbours = scene_collision_cloud(
                 list(other_object_masks),
                 depth_arr,
@@ -1277,12 +718,8 @@ class GraspCalculator:
                 target_index=None,
                 unit=unit,
                 min_depth_mm=1.0,
-                voxel_size_mm=self.geometry_voxel_size_mm,
+                voxel_size_mm=CLOUD_VOXEL_MM,
             )
-            if self._cloud_outlier_filter is not None and neighbours.size > 0:
-                _nkeep = apply_cloud_outlier_filter(neighbours, self._cloud_outlier_filter)
-                if _nkeep.size > 0:  # a filter that empties a real surface is a filter, not a scene
-                    neighbours = neighbours[_nkeep]
             if neighbours.size > 0:
                 telemetry["scene_neighbour_points"] = int(neighbours.shape[0])
                 if scene_points_mm is None:
@@ -1292,259 +729,171 @@ class GraspCalculator:
                         [np.asarray(scene_points_mm, dtype=np.float64), neighbours]
                     )
         # What the camera saw beside the part, by the planner world's rules (fix plan Track A). It joins the scene
-        # points the way the neighbours' masks do above, so SFE's grid and the post-hoc filter both see it.
+        # points the way the neighbours' masks do above, so the stage's grid and the post-hoc filter both see it.
         scene: SceneObstacles | None = None
         seen_envelope: SeenEnvelope | None = None
         hand_floor: HandFloor | None = None
         scene_support_mm: float | None = None
         if self._scene_obstacles is not None:
             telemetry["candidates_final_source"] = "prompt_only"
-            if transform is not None:
-                scene_support_mm = self._scene_support_mm(
-                    support_plane, support_model, cloud, geometry_points_base_mm, transform, telemetry)
-                # The other parts the detector named in this frame: a finger may come to their measured surface
-                # (the owner, 2026-10-05: "Finger dürfen streifen"), where the cell lets the fingers touch parts. Their
-                # surfaces as the pick offers them to the camera world, each part its own owner, in every look.
-                named: list[np.ndarray] = []
-                if other_object_masks and float(self._scene_obstacles.part_soft_mm) > 0.0:
-                    for other in other_object_masks:
-                        if np.shape(other) == mask_bool.shape:
-                            named.append(self._named_surface_of(other, depth_map, scale, intrinsics, transform))
-                # What the pick's other looks show beside the part joins this frame's before a box is built: the
-                # guard holds the boxes of every look, and a grasp offered against this look's alone met a wall only
-                # another look saw (2026-10-13, T4).
-                scene = scene_obstacle_points(
-                    depth_arr * scale, mask_bool, intrinsics, transform, rules=self._scene_obstacles,
-                    support_height_mm=scene_support_mm, support_model=support_model, named=named, looks=scene_views,
-                    part_base_mm=geometry_points_base_mm, view=self._frame_view(depth_map, scale, intrinsics, transform))
-                if scene_views:
-                    telemetry["scene_views"] = len(scene_views)
-                telemetry["scene_obstacle_points"] = int(scene.points_base_mm.shape[0])
-                telemetry["scene_obstacle_clusters"] = int(scene.clusters)
-                telemetry["scene_obstacle_world_rule_points"] = int(scene.world_rule_base_mm.shape[0])
-                telemetry["candidates_final_source"] = "scene"
-                self.logger.info("scene obstacles: %s", scene.render())
-                # The boxes the camera world will hold for these neighbours: the open hand keeps the guard's distance
-                # from them, or the guard refuses the grasp once the arm stood over it (the owner, 2026-10-03).
-                telemetry["scene_seen_boxes"] = len(scene.boxes)
-                seen_envelope = SeenEnvelope.of(
-                    scene.boxes, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
-                    open_width_mm=self.max_grip_mm, distance_mm=self._scene_obstacles.support_distance_mm)
-                # The solids the guard holds under the part stand over the reading by its band and allowance, and the
-                # guard keeps its distance from their tops: SFE plans the hand's height on them, not on the reading,
-                # or the filter below refuses every grasp it lowered (``support_footprint.HandFloor``).
-                held = tuple(getattr(support_model, "solids", ()) or ()) if support_model is not None else ()
-                if held:
-                    hand_floor = HandFloor(solids=held, distance_mm=float(self._scene_obstacles.support_distance_mm),
-                                           fingers_to_the_reading=bool(self._scene_obstacles.fingers_to_the_reading),
-                                           finger_floor_drop_mm=float(self._scene_obstacles.finger_floor_drop_mm))
-                if scene.points_base_mm.shape[0]:
-                    _to_cam = np.linalg.inv(np.asarray(transform, dtype=np.float64))
-                    _scene_cam = scene.points_base_mm @ _to_cam[:3, :3].T + _to_cam[:3, 3]
-                    scene_points_mm = (_scene_cam if scene_points_mm is None
-                                       else np.vstack([np.asarray(scene_points_mm, dtype=np.float64), _scene_cam]))
-        telemetry["candidates_geometry"] = len(geometry_poses)
-        ranking_config = GeometricScoreConfig(
-            min_width_mm=self.min_grip_mm,
-            max_width_mm=self.max_grip_mm,
-        )
-        reachability_config = (
-            ReachabilityScoreConfig(
-                workspace=workspace,
-                preferred_approach_axis=self.approach_cam,
-            )
-            if workspace is not None
-            else None
-        )
-        ranked_silhouette = rank_grasp_poses(
-            silhouette_poses,
-            geometric_config=ranking_config,
-            reachability_config=reachability_config,
-            max_results=self.max_candidates,
-        )
-        remaining = max(self.max_candidates - len(ranked_silhouette), 0)
-        ranked_geometry = (
-            rank_grasp_poses(
-                geometry_poses,
-                geometric_config=ranking_config,
-                reachability_config=reachability_config,
-                max_results=remaining,
-            )
-            if remaining > 0 and geometry_poses
-            else []
-        )
-        ranked_all: Sequence[GraspScoreBreakdown] = (
-            *ranked_silhouette,
-            *ranked_geometry,
-        )
+            scene_support_mm = self._scene_support_mm(
+                support_plane, support_model, cloud, geometry_points_base_mm, transform, telemetry)
+            # The other parts the detector named in this frame: a finger may come to their measured surface
+            # (the owner, 2026-10-05: "Finger dürfen streifen"), where the cell lets the fingers touch parts. Their
+            # surfaces as the pick offers them to the camera world, each part its own owner, in every look.
+            named: list[np.ndarray] = []
+            if other_object_masks and float(self._scene_obstacles.part_soft_mm) > 0.0:
+                for other in other_object_masks:
+                    if np.shape(other) == mask_bool.shape:
+                        named.append(self._named_surface_of(other, depth_map, scale, intrinsics, transform))
+            # What the pick's other looks show beside the part joins this frame's before a box is built: the
+            # guard holds the boxes of every look, and a grasp offered against this look's alone met a wall only
+            # another look saw (2026-10-13, T4).
+            scene = scene_obstacle_points(
+                depth_arr * scale, mask_bool, intrinsics, transform, rules=self._scene_obstacles,
+                support_height_mm=scene_support_mm, support_model=support_model, named=named, looks=scene_views,
+                part_base_mm=geometry_points_base_mm, view=self._frame_view(depth_map, scale, intrinsics, transform))
+            if scene_views:
+                telemetry["scene_views"] = len(scene_views)
+            telemetry["scene_obstacle_points"] = int(scene.points_base_mm.shape[0])
+            telemetry["scene_obstacle_clusters"] = int(scene.clusters)
+            telemetry["scene_obstacle_world_rule_points"] = int(scene.world_rule_base_mm.shape[0])
+            telemetry["candidates_final_source"] = "scene"
+            self.logger.info("scene obstacles: %s", scene.render())
+            # The boxes the camera world will hold for these neighbours: the open hand keeps the guard's distance
+            # from them, or the guard refuses the grasp once the arm stood over it (the owner, 2026-10-03).
+            telemetry["scene_seen_boxes"] = len(scene.boxes)
+            seen_envelope = SeenEnvelope.of(
+                scene.boxes, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
+                open_width_mm=self.max_grip_mm, distance_mm=self._scene_obstacles.support_distance_mm)
+            # The solids the guard holds under the part stand over the reading by its band and allowance, and the
+            # guard keeps its distance from their tops: the stage plans the hand's height on them, not on the
+            # reading, or the filter below refuses every grasp it lowered (``hand.HandFloor``).
+            held = tuple(getattr(support_model, "solids", ()) or ()) if support_model is not None else ()
+            if held:
+                hand_floor = HandFloor(solids=held, distance_mm=float(self._scene_obstacles.support_distance_mm),
+                                       fingers_to_the_reading=bool(self._scene_obstacles.fingers_to_the_reading),
+                                       finger_floor_drop_mm=float(self._scene_obstacles.finger_floor_drop_mm))
+            if scene.points_base_mm.shape[0]:
+                _to_cam = np.linalg.inv(np.asarray(transform, dtype=np.float64))
+                _scene_cam = scene.points_base_mm @ _to_cam[:3, :3].T + _to_cam[:3, 3]
+                scene_points_mm = (_scene_cam if scene_points_mm is None
+                                   else np.vstack([np.asarray(scene_points_mm, dtype=np.float64), _scene_cam]))
 
-        # Support-footprint enumeration. Default on: ``support_footprint_geometry`` is True and
-        # ``grasping.geometry.stage`` defaults to ``support_footprint``. When on it replaces
-        # everything above rather than adding to it: SFE plans the support clearance instead of being
-        # filtered for it, and mixing its candidates with silhouette ones would let a candidate that
-        # was never checked against the table outrank one that was. It needs a BASE support plane and
-        # a CAMERA->BASE transform; with either missing it cannot place the table, so the silhouette
-        # path stands and the telemetry says which one ran. Its own score is kept:
-        # ``rank_grasp_poses`` is not applied, because on this data the geometric ranker is
-        # anti-correlated with validity (AUC 0.419).
-        # The key is added only when the stage is enabled. Stamping "silhouette" on the default path
-        # would change the telemetry contract for every caller that has not opted in, and default-off
-        # has to mean byte-identical including what gets logged.
-        if self._support_footprint_geometry:
-            telemetry["geometry_stage"] = "silhouette"
-            # The BASE frame is not optional here: SFE reads ``offset_mm`` as a height above the
-            # workspace. A CAMERA-frame plane's offset is a depth, and taking it for a height
-            # makes the table check inert. (``sfe_ready`` is decided above, beside the silhouette.)
-            telemetry["support_footprint_ready"] = bool(sfe_ready)
-            if sfe_ready:
-                assert transform is not None and support_plane is not None  # narrowed by sfe_ready
-                # SFE's input at full resolution. ``cloud`` was voxelised at
-                # ``geometry_voxel_size_mm`` (8 mm by default) for the contact search, and handing
-                # that to SFE couples two numbers that have nothing to do with each other:
-                # ``reconstruct_support_prism`` refuses below 20 points, and how many points an
-                # object has is decided by a downsample knob. A ~32 mm cube is 4x4 = 16 cells at
-                # 8 mm and falls off that cliff; measured on the multiview sim gate, that loses
-                # every candidate with all four rejection counters at zero and scores 0/5.
-                # The pre-downsample is also redundant: ``reconstruct_support_prism`` voxelises at
-                # its own ``voxel_mm`` default of 3 mm, so this discards resolution SFE would thin
-                # more finely.
-                #
-                # And without the mask pixels that measure the background behind the part's edge.
-                # SFE's footprint is a convex hull of every point above the floor, so a band of table
-                # seen past the far edge through depth-to-colour misregistration pulls a face out to
-                # it; at a 45-degree view that is 40 mm behind a 40 mm part. See depth_steps.py. Only
-                # SFE's input is trimmed, and a mask with no step inside it gives the same cloud.
-                sfe_cloud = cloud
-                # The pixels of this look whose depth SFE reads for the footprint, where the cell cuts a rim: every
-                # other pixel of the mask is placed in the part's visual hull below (``footprint_hull``).
-                hull_read: np.ndarray | None = None
-                if not cloud.is_empty:
-                    depth_mm = depth_arr * scale
-                    behind = pixels_behind_depth_steps(mask_bool, depth_mm)
-                    telemetry["support_footprint_depth_step_pixels"] = int(np.count_nonzero(behind))
-                    sfe_mask = mask_bool & ~behind
-                    # And without the mask's rim, where the cell cuts one (``support_footprint_rim_mm``): the ramp of
-                    # depths the D415 smears a far edge into lies on it, and the hull follows the ramp. A fused cloud
-                    # comes with its rim cut by the pick loop (``footprint_points_base_mm``), so it is cut here only
-                    # where SFE reads this look alone.
-                    rimmed = False
-                    if self._support_footprint_rim_mm > 0.0 and geometry_points_base_mm is None:
-                        sfe_mask, rimmed = self._without_the_rim(
-                            mask_bool, sfe_mask, depth_mm, intrinsics, cloud_max_depth_mm, telemetry)
-                    if self._support_footprint_rim_mm > 0.0:
-                        hull_read = self._read_for_the_footprint(
-                            mask_bool, sfe_mask, depth_mm, intrinsics, cloud_max_depth_mm,
-                            fused=geometry_points_base_mm is not None)
-                    if self._support_footprint_full_resolution or behind.any() or rimmed:
-                        sfe_cloud = masked_point_cloud(
-                            sfe_mask, depth_arr, intrinsics, unit=unit, min_depth_mm=1.0,
-                            max_depth_mm=cloud_max_depth_mm,
-                            voxel_size_mm=(None if self._support_footprint_full_resolution
-                                           else self.geometry_voxel_size_mm),
-                        )
-                if geometry_points_base_mm is not None:
-                    target_base = np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
-                    whole_cloud = target_base
-                    if footprint_points_base_mm is not None:
-                        target_base = self._fused_footprint(target_base, footprint_points_base_mm, telemetry)
-                    if target_base is whole_cloud:
-                        # The fused cloud is read whole, its rim with it: no pixel of this look went unread.
-                        hull_read = None
-                else:
-                    target_base = (transform[:3, :3] @ np.asarray(
-                        sfe_cloud.points_mm, dtype=np.float64).reshape(-1, 3).T).T + transform[:3, 3]
-                obstacles_base = None
-                if scene is not None and scene.part_points is not None and bool(scene.part_points.any()):
-                    # A named neighbour's points leave the grid: the boxes the camera world builds of them hold the
-                    # fingers to their measured surface (``SeenEnvelope.into_parts_mm``), the rest of the hand to the
-                    # guard's distance. What nobody named stays in the grid.
-                    obstacles_base = scene.points_base_mm[~scene.part_points]
-                elif scene_points_mm is not None and np.asarray(scene_points_mm).size > 0:
-                    _sp = np.asarray(scene_points_mm, dtype=np.float64).reshape(-1, 3)
-                    obstacles_base = (transform[:3, :3] @ _sp.T).T + transform[:3, 3]
-                # Declared geometry stays out of the sparse cloud above and gets its own,
-                # undilated grid inside the generator; see support_footprint._ObstacleSet.
-                rigid_base = None
-                if (rigid_obstacle_points_mm is not None
-                        and np.asarray(rigid_obstacle_points_mm).size > 0):
-                    _rp = np.asarray(rigid_obstacle_points_mm, dtype=np.float64).reshape(-1, 3)
-                    rigid_base = (transform[:3, :3] @ _rp.T).T + transform[:3, 3]
-                sfe_jaw = self._support_footprint_jaw(gripper_model, min_table_clearance_mm)
-                sfe_support_mm = (float(support_plane.offset_mm) if scene_support_mm is None
-                                  else max(float(support_plane.offset_mm), scene_support_mm))
-                # The points a camera measured, before the visual hull's join them: where the part is widest is read
-                # from these (``body_grasps._under_the_widest``); the mask's outline at the part's top, which how square
-                # a pad meets it is read on (``body_grasps._squared``), and its holes, where a bore is (L, 2026-10-15).
-                measured_base = target_base
-                outline_base, hole_base = self._mask_at_its_top(mask_bool, intrinsics, transform, measured_base,
-                                                                sfe_support_mm)
-                if hull_read is not None:
-                    target_base = self._with_the_hull(
-                        target_base, mask_bool, hull_read, intrinsics, transform, sfe_support_mm, telemetry)
-                # Only space this frame's depth saw counts as clear for a tilted approach (the fix plan's contract 5), and
-                # for an open finger over the part's own outline, in a bore or a gap (``body_grasps``).
-                seen_here = corridor_seen_in(depth_arr * scale, intrinsics, transform)
-                sfe_side: dict[str, Any] = {"corridor_seen": SeenInAnyFrame(
-                    (seen_here, *(view.seen() for view in scene_views))) if scene_views else seen_here}
-                if self._side_approaches:
-                    sfe_side["side_approaches"] = True
-                sfe_ranked, sfe_telemetry = support_footprint_breakdowns(
-                    target_base,
-                    camera_to_base=transform,
-                    support_height_mm=sfe_support_mm,
-                    jaw=sfe_jaw,
-                    obstacle_points_base_mm=obstacles_base,
-                    rigid_obstacle_points_base_mm=rigid_base,
-                    max_candidates=self.max_candidates,
-                    inflate_mm=self._support_footprint_inflate_mm,
-                    palm_aware=self._support_footprint_palm_aware,
-                    score_weights=self._support_footprint_score_weights,
-                    floor_margin_mm=self._support_footprint_floor_margin_mm,
-                    seen_envelope=seen_envelope,
-                    hand_floor=hand_floor,
-                    fine_pass=self.sfe_fine_pass,
-                    runner=sfe_workers,
-                    batched=self.sfe_batched,
-                    opens_as_needed=self.opens_as_needed,
-                    inner_grasps=self.inner_grasps,
-                    measured_base_mm=measured_base,
-                    outline_base_mm=outline_base,
-                    hole_base_mm=hole_base,
-                    **sfe_side,
-                )
-                telemetry.update(sfe_telemetry)
-                if self._scene_obstacles is not None:
-                    telemetry["scene_table_clearance_mm"] = float(sfe_jaw.table_clearance_mm)
-                if self._scene_obstacles is not None and not sfe_ranked:
-                    # What a "too short" reads against: how high the part stands over the support SFE planned on, and
-                    # how high it has to stand for this hand at any tilt of SFE's ladder.
-                    _floor = sfe_support_mm + (DEFAULT_FLOOR_MARGIN_MM if self._support_footprint_floor_margin_mm is None
-                                               else self._support_footprint_floor_margin_mm)
-                    _over = target_base[np.isfinite(target_base).all(axis=1) & (target_base[:, 2] > _floor), 2]
-                    if _over.size:
-                        telemetry["scene_part_height_mm"] = round(float(np.percentile(_over, 98.0)) - sfe_support_mm, 1)
-                    # The solid the guard holds under the part lifts the hand by as much as its top and distance stand
-                    # over the clearance the reading alone asks (``hand_floor``).
-                    _rise = 0.0
-                    if hand_floor is not None and _over.size:
-                        _under = hand_floor.at(target_base[np.isfinite(target_base).all(axis=1), :2], fingers=True)
-                        _under = _under[np.isfinite(_under)]
-                        if _under.size:
-                            _rise = max(0.0, float(_under.max()) - sfe_support_mm - float(sfe_jaw.table_clearance_mm))
-                    telemetry["scene_least_part_height_mm"] = round(least_part_height_mm(sfe_jaw) + _rise, 1)
-                telemetry["geometry_stage"] = "support_footprint"
-                # An abstention is not a rejection. SFE returns an empty list for two very different
-                # reasons: it looked and found no legal grasp, or it could not look at all;
-                # ``reconstruct_support_prism`` gives up below 20 surviving points. Replacing
-                # ``ranked_all`` unconditionally treats the second case as a veto, so a small or
-                # grazing-angle object loses the silhouette candidates that would have worked and
-                # the attempt reports no candidate with every rejection counter at zero; measured on
-                # the multiview sim gate: 3 silhouette candidates in, 16 cloud points, 0 out,
-                # 0/5 lifted.
-                if sfe_ranked or not self._support_footprint_fallback:
-                    ranked_all = tuple(sfe_ranked)
-                else:
-                    telemetry["geometry_stage"] = "silhouette_fallback"
+        # The support-footprint stage: the part's own body over its support (``body_grasps``), planned so the hand
+        # clears the support instead of being filtered for it. Its own score is kept: the calculator's geometric ranker
+        # is anti-correlated with validity on this data (AUC 0.419).
+        #
+        # The stage's input at full resolution, without the mask pixels that measure the background behind the part's
+        # edge: a band of table seen past the far edge through depth-to-colour misregistration pulls a face out to it;
+        # at a 45-degree view that is 40 mm behind a 40 mm part. See depth_steps.py. Only the stage's input is trimmed,
+        # and a mask with no step inside it gives the same cloud.
+        sfe_cloud = cloud
+        # The pixels of this look whose depth the stage reads for the footprint, where the cell cuts a rim: every other
+        # pixel of the mask is placed in the part's visual hull below (``footprint_hull``).
+        hull_read: np.ndarray | None = None
+        if not cloud.is_empty:
+            depth_mm = depth_arr * scale
+            behind = pixels_behind_depth_steps(mask_bool, depth_mm)
+            telemetry["support_footprint_depth_step_pixels"] = int(np.count_nonzero(behind))
+            sfe_mask = mask_bool & ~behind
+            # And without the mask's rim, where the cell cuts one (``support_footprint_rim_mm``): the ramp of depths
+            # the D415 smears a far edge into lies on it, and the hull follows the ramp. A fused cloud comes with its
+            # rim cut by the pick loop (``footprint_points_base_mm``), so it is cut here only where the stage reads
+            # this look alone.
+            if self._support_footprint_rim_mm > 0.0 and geometry_points_base_mm is None:
+                sfe_mask, _rimmed = self._without_the_rim(mask_bool, sfe_mask, depth_mm, intrinsics, telemetry)
+            if self._support_footprint_rim_mm > 0.0:
+                hull_read = self._read_for_the_footprint(
+                    mask_bool, sfe_mask, depth_mm, intrinsics, fused=geometry_points_base_mm is not None)
+            sfe_cloud = masked_point_cloud(sfe_mask, depth_arr, intrinsics, unit=unit, min_depth_mm=1.0,
+                                           voxel_size_mm=None)
+        if geometry_points_base_mm is not None:
+            target_base = np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
+            whole_cloud = target_base
+            if footprint_points_base_mm is not None:
+                target_base = self._fused_footprint(target_base, footprint_points_base_mm, telemetry)
+            if target_base is whole_cloud:
+                # The fused cloud is read whole, its rim with it: no pixel of this look went unread.
+                hull_read = None
+        else:
+            target_base = (transform[:3, :3] @ np.asarray(
+                sfe_cloud.points_mm, dtype=np.float64).reshape(-1, 3).T).T + transform[:3, 3]
+        obstacles_base = None
+        if scene is not None and scene.part_points is not None and bool(scene.part_points.any()):
+            # A named neighbour's points leave the grid: the boxes the camera world builds of them hold the
+            # fingers to their measured surface (``SeenEnvelope.into_parts_mm``), the rest of the hand to the
+            # guard's distance. What nobody named stays in the grid.
+            obstacles_base = scene.points_base_mm[~scene.part_points]
+        elif scene_points_mm is not None and np.asarray(scene_points_mm).size > 0:
+            _sp = np.asarray(scene_points_mm, dtype=np.float64).reshape(-1, 3)
+            obstacles_base = (transform[:3, :3] @ _sp.T).T + transform[:3, 3]
+        # Declared geometry stays out of the sparse cloud above and gets its own,
+        # undilated grid inside the generator; see hand._ObstacleSet.
+        rigid_base = None
+        if (rigid_obstacle_points_mm is not None
+                and np.asarray(rigid_obstacle_points_mm).size > 0):
+            _rp = np.asarray(rigid_obstacle_points_mm, dtype=np.float64).reshape(-1, 3)
+            rigid_base = (transform[:3, :3] @ _rp.T).T + transform[:3, 3]
+        sfe_jaw = self._support_footprint_jaw(gripper_model, min_table_clearance_mm)
+        sfe_support_mm = (float(support_plane.offset_mm) if scene_support_mm is None
+                          else max(float(support_plane.offset_mm), scene_support_mm))
+        # The points a camera measured, before the visual hull's join them: where the part is widest is read
+        # from these (``body_grasps._under_the_widest``); the mask's outline at the part's top, which how square
+        # a pad meets it is read on (``body_grasps._squared``), and its holes, where a bore is (L, 2026-10-15).
+        measured_base = target_base
+        outline_base, hole_base = self._mask_at_its_top(mask_bool, intrinsics, transform, measured_base,
+                                                        sfe_support_mm)
+        if hull_read is not None:
+            target_base = self._with_the_hull(
+                target_base, mask_bool, hull_read, intrinsics, transform, sfe_support_mm, telemetry)
+        # Only space this frame's depth saw counts as clear for a tilted approach (the fix plan's contract 5), and
+        # for an open finger over the part's own outline, in a bore or a gap (``body_grasps``).
+        seen_here = corridor_seen_in(depth_arr * scale, intrinsics, transform)
+        sfe_ranked, sfe_telemetry = support_footprint_breakdowns(
+            target_base,
+            camera_to_base=transform,
+            support_height_mm=sfe_support_mm,
+            jaw=sfe_jaw,
+            obstacle_points_base_mm=obstacles_base,
+            rigid_obstacle_points_base_mm=rigid_base,
+            max_candidates=self.max_candidates,
+            floor_margin_mm=self._support_footprint_floor_margin_mm,
+            side_approaches=self._side_approaches,
+            corridor_seen=(SeenInAnyFrame((seen_here, *(view.seen() for view in scene_views)))
+                           if scene_views else seen_here),
+            seen_envelope=seen_envelope,
+            hand_floor=hand_floor,
+            opens_as_needed=self.opens_as_needed,
+            inner_grasps=self.inner_grasps,
+            measured_base_mm=measured_base,
+            outline_base_mm=outline_base,
+            hole_base_mm=hole_base,
+        )
+        telemetry.update(sfe_telemetry)
+        if self._scene_obstacles is not None:
+            telemetry["scene_table_clearance_mm"] = float(sfe_jaw.table_clearance_mm)
+        if self._scene_obstacles is not None and not sfe_ranked:
+            # What a "too short" reads against: how high the part stands over the support the stage planned on, and
+            # how high it has to stand for this hand.
+            _floor = sfe_support_mm + (DEFAULT_FLOOR_MARGIN_MM if self._support_footprint_floor_margin_mm is None
+                                       else self._support_footprint_floor_margin_mm)
+            _over = target_base[np.isfinite(target_base).all(axis=1) & (target_base[:, 2] > _floor), 2]
+            if _over.size:
+                telemetry["scene_part_height_mm"] = round(float(np.percentile(_over, 98.0)) - sfe_support_mm, 1)
+            # The solid the guard holds under the part lifts the hand by as much as its top and distance stand
+            # over the clearance the reading alone asks (``hand_floor``).
+            _rise = 0.0
+            if hand_floor is not None and _over.size:
+                _under = hand_floor.at(target_base[np.isfinite(target_base).all(axis=1), :2], fingers=True)
+                _under = _under[np.isfinite(_under)]
+                if _under.size:
+                    _rise = max(0.0, float(_under.max()) - sfe_support_mm - float(sfe_jaw.table_clearance_mm))
+            telemetry["scene_least_part_height_mm"] = round(least_part_height_mm(sfe_jaw) + _rise, 1)
+        # An empty list is the stage's answer: it looked and found no legal grasp, or it could not look at all
+        # (``reconstruct_support_prism`` gives up below 20 surviving points). Refusing beats proposing a grasp nothing
+        # held against the support.
+        ranked_all: Sequence[GraspScoreBreakdown] = tuple(sfe_ranked)
 
         # Declared geometry rejoins the observed cloud for the post-hoc filter, which tests exact box
         # containment at margin 0 and therefore needs no separate treatment; the split above exists
@@ -1556,8 +905,7 @@ class GraspCalculator:
                 _rigid if scene_points_mm is None
                 else np.vstack([np.asarray(scene_points_mm, dtype=np.float64), _rigid])
             )
-        # Collision/IK filter + candidate build + per-candidate corridor + base-frame + sort + clearance/
-        # force-closure stamps.
+        # Collision/IK filter + candidate build + base-frame + sort + clearance stamps.
         candidates = self._filter_and_build_candidates(
             ranked_all,
             seg_meta=seg_meta,
@@ -1565,9 +913,6 @@ class GraspCalculator:
             support_plane=plane_cam,
             workspace=workspace,
             gripper_model=gripper_model,
-            corridor_config=corridor_config,
-            feasibility_config=feasibility_config,
-            feasibility_weight=feasibility_weight,
             min_table_clearance_mm=min_table_clearance_mm,
             collision_margin_mm=collision_margin_mm,
             ik_service=ik_service,
@@ -1603,12 +948,7 @@ class GraspCalculator:
         reasons = self._derive_failure_reasons(
             candidates=candidates,
             telemetry=telemetry,
-            had_filters=(
-                plane_cam is not None
-                or scene_points_mm is not None
-                or workspace is not None
-                or ik_service is not None
-            ),
+            had_filters=True,
             scene_obstacles=self._scene_obstacles is not None,
         )
         if self._scene_obstacles is not None and not candidates:
@@ -1628,7 +968,7 @@ class GraspCalculator:
             # Surface the CAMERA-frame neighbour collision cloud on the result so the
             # orchestrator can validate the approach/retreat sweep against it (the calculator only checks
             # the final grasp pose). The orchestrator transforms it to the candidate frame. Empty when no
-            # neighbours (single-object), so the validator sees NO_OBSTACLES (byte-identical).
+            # neighbours (single-object), so the validator sees NO_OBSTACLES.
             metadata={
                 **({
                     "scene_points_mm": np.asarray(scene_points_mm, dtype=np.float64).copy(),
@@ -1794,9 +1134,6 @@ class GraspCalculator:
         support_plane: SupportPlane | None,
         workspace: WorkspaceBox | None,
         gripper_model: GripperGeometryStrategy | None,
-        corridor_config: "CorridorAnalysisConfig | None",
-        feasibility_config: "FeasibilityScoreConfig | None",
-        feasibility_weight: float | None,
         min_table_clearance_mm: float,
         collision_margin_mm: float,
         ik_service: IKService | None,
@@ -1810,8 +1147,8 @@ class GraspCalculator:
         seen_boxes: Sequence[Any] = (),
     ) -> list[GraspPoint]:
         """The post-ranking stage of :meth:`compute`: collision/table/workspace + IK filtering, the
-        :class:`GraspPoint` build, the per-candidate corridor-risk stamp, the optional base-frame transform,
-        the final sort, and the approach-clearance / force-closure stamps. The ``telemetry`` dict is mutated
+        :class:`GraspPoint` build, the optional base-frame transform, the final sort, and the approach-clearance /
+        force-closure stamps. The ``telemetry`` dict is mutated
         in place. Returns the final sorted candidates."""
         # Collision / table / workspace filtering (camera-frame; matches
         # the frame the candidates were planned in).
@@ -1837,139 +1174,18 @@ class GraspCalculator:
                 telemetry=telemetry, seen_boxes=seen_boxes)
 
         telemetry.setdefault("rejected_ik", 0)
-        kept_quality: list[IKQualityMetrics | None] = []
-        feasibility_reranked = False
         if ik_service is not None:
-            ranked_all, kept_quality, ik_telemetry = self._apply_ik_filter(
+            ranked_all, ik_telemetry = self._apply_ik_filter(
                 ranked_all,
                 ik_service=ik_service,
                 transform=transform,
             )
             telemetry["rejected_ik"] = ik_telemetry["rejected_ik"]
-            # Feasibility re-rank of the IK survivors (default-off). The per-candidate IK quality only
-            # exists post-filter, so this demotion-only re-rank runs here, not in the up-front ranking.
-            # Off (weights None) feeds no feasibility inputs, so the order and the success-model feas_*
-            # stay byte-identical. Per-call (config-driven) values win over the constructor's; when
-            # neither is given the default path is untouched.
-            _feas_cfg = (
-                feasibility_config if feasibility_config is not None else self._feasibility_config
-            )
-            _feas_w = (
-                GraspScoreWeights(feasibility=float(feasibility_weight))
-                if (feasibility_weight is not None and feasibility_weight > 0.0
-                    and feasibility_config is not None)
-                else self._feasibility_weights
-            )
-            if (
-                _feas_w is not None
-                and _feas_cfg is not None
-                and ranked_all
-            ):
-                feas_inputs: list[FeasibilityInputs | None] = [
-                    FeasibilityInputs(ik_quality=q) for q in kept_quality
-                ]
-                ranked_all = rerank_breakdowns_with_feasibility(
-                    ranked_all,
-                    feas_inputs,
-                    weights=_feas_w,
-                    feasibility_config=_feas_cfg,
-                )
-                feasibility_reranked = True
 
         candidates = [self._to_grasp_point(score, seg_meta) for score in ranked_all]
-        # RL shadow-only feasibility_score: the IK filter above computed a per-candidate
-        # ``IKQualityMetrics``, Jacobian conditioning and joint margin, and the default path discards
-        # it. Routing it into ``metadata["shadow"]["feasibility_score"]`` gives the RL ranking rows a
-        # pre-execution reachability predictor; the descent-timeout failures of the sim are
-        # reachability failures the geometric score is blind to.
-        #
-        # Stamped only when the feasibility re-rank did not run, which is what
-        # ``feasibility_reranked`` records. The re-rank re-sorts ``ranked_all`` while ``kept_quality``
-        # keeps the order the IK filter left it in, so a stamp written afterwards would pair each
-        # candidate with another candidate's metrics. The flag is the condition the re-rank itself
-        # branches on, not the constructor field: the effective weights fall back to the per-call
-        # ``feasibility_weight`` and ``feasibility_config``, which is the path the pick loop takes.
-        # When the re-rank does run, the top-level ``feasibility_score`` is live and carries the same
-        # signal.
-        #
-        # Shadow precedence outranks the dead top-level ``0.0`` (``_shadow_aggregator``), while
-        # ``GraspPoint.score``, the deterministic order and the success-model vector are untouched.
-        if not feasibility_reranked and kept_quality:
-            for _cand, _q in zip(candidates, kept_quality):
-                if _q is not None:
-                    _cand.metadata.setdefault("shadow", {})["feasibility_score"] = round(
-                        feasibility_grasp_score(
-                            ik_quality=_q, approach_path=None, config=_SHADOW_FEASIBILITY_CONFIG
-                        ),
-                        4,
-                    )
-        # Per-candidate corridor-risk producer (default off).
-        # Runs in CAMERA frame (before the base-frame transform below, so depth+intrinsics agree with the
-        # pose) and index-aligned with ranked_all (candidates not yet sorted). The analyzer is pure +
-        # never raises on missing depth/intrinsics (returns a skipped report with neutral 0.5). The stamp
-        # rides through _to_base_frame_only (which copies metadata) and the sort below. Cost: N
-        # depth-marches (vs the single occlusion march). When off the ranking is byte-identical.
-        if (self.corridor_risk_per_candidate or corridor_config is not None) and ranked_all:
-            # The operator's geometry when `grasping.occlusion.directional_enabled` supplied one,
-            # otherwise the hardcoded defaults, which is byte-identical for every existing caller.
-            # This is the scoring half only: `hard_reject_enabled` is a separate switch and a
-            # separate question, because a change to how candidates are ranked and a change to
-            # which candidates are refused cannot be read apart from one run that moves both.
-            corridor_cfg = corridor_config if corridor_config is not None else CorridorAnalysisConfig()
-            masks_tuple = (
-                tuple(np.asarray(m) for m in other_object_masks)
-                if other_object_masks
-                else None
-            )
-            depth_for_corridor = np.asarray(depth_map, dtype=np.float64)
-            blocked_count = 0
-            max_blockage = 0.0
-            _corridor_trace = os.getenv("WILLY_CORRIDOR_TRACE")  # per-candidate corridor diagnostic (default off)
-            for _i, (cand, score) in enumerate(zip(candidates, ranked_all)):
-                pose = score.pose
-                report = analyze_corridor(
-                    CorridorAnalysisInputs(
-                        target_point_cam_mm=np.asarray(pose.position_mm, dtype=np.float64),
-                        approach_axis_cam=np.asarray(pose.approach_axis, dtype=np.float64),
-                        depth_map=depth_for_corridor,
-                        intrinsics=intrinsics,
-                        other_object_masks=masks_tuple,
-                        depth_scale_to_mm=float(scale),
-                    ),
-                    corridor_cfg,
-                )
-                conf = float(report.blockage_confidence)
-                # GraspPoint is frozen, but .metadata is a mutable dict (stamped in place).
-                cand.metadata["corridor_blockage_confidence"] = conf
-                cand.metadata["corridor_mode"] = report.mode.value
-                # RL shadow-only: alias the live per-candidate corridor risk into ``uncertainty_score`` so that
-                # RL ranking row (idx 0, otherwise a dead 0.0) carries a real approach-uncertainty signal,
-                # physically independent of the geometric score. Shadow-precedence, zero behavioural impact.
-                cand.metadata.setdefault("shadow", {})["uncertainty_score"] = conf
-                blocked_count += int(report.blocked)
-                max_blockage = max(max_blockage, conf)
-                if _corridor_trace:
-                    _p = np.round(np.asarray(pose.position_mm, dtype=np.float64), 1)
-                    print(
-                        f"[corridor-trace] cand{_i} pos={_p} mode={report.mode.value} conf={conf:.3f} "
-                        f"appr_clear={report.approach_clearance_mm:.0f} retr_clear={report.retreat_clearance_mm:.0f} "
-                        f"masks={'Y' if masks_tuple else 'N'}",
-                        flush=True,
-                    )
-            telemetry["corridor_candidates_analyzed"] = len(candidates)
-            telemetry["corridor_blocked_count"] = int(blocked_count)
-            telemetry["corridor_max_blockage_confidence"] = float(max_blockage)
         if transform is not None:
             candidates = self._to_base_frame_only(candidates, transform)
-            if self._isotropic_radial_closing:
-                # Applied here and not in the generator: "radial" is defined about the robot base, so it
-                # only exists once the candidates have left camera frame. Elongated silhouettes and
-                # tilted approaches are skipped inside, and the score is untouched (only the spin about
-                # the approach changes), so the ranking below is unperturbed.
-                from ._isotropic_closing import snap_isotropic_closing_to_radial
-
-                candidates = snap_isotropic_closing_to_radial(candidates)
-        # Best first, and every grasp from inside a bore after every outer grasp (``robot.grasping.inner_grasps``): it is
+        # Best first, and every grasp from inside a bore after every outer grasp: it is
         # taken where no outer grasp is. With none from inside, the order of the scores alone, as before: both sorts
         # keep grasps of equal keys in the order they came.
         candidates.sort(key=outer_first)
@@ -2003,17 +1219,6 @@ class GraspCalculator:
                 candidates[0].metadata["approach_clearance_mm"] = float(
                     clearance_mm
                 )
-        # Surface analytical force-closure stats. Only stamped
-        # when the operator opted in via ``friction_coefficient``; the
-        # heuristic-only telemetry shape is unchanged when the knob is
-        # disabled.
-        if self.friction_coefficient is not None:
-            telemetry["friction_coefficient"] = float(self.friction_coefficient)
-            telemetry["force_closure_certified_count"] = sum(
-                1
-                for grasp in candidates
-                if grasp.metadata.get("force_closure_certified") is True
-            )
         return candidates
 
     def compute_result(self, *args: Any, **kwargs: Any) -> GraspResult:
@@ -2117,24 +1322,6 @@ class GraspCalculator:
             )
         return planner.plan(request)
 
-    def _decide_dense_sampling(
-        self,
-        *,
-        dense_sampling: bool | None,
-        mask: np.ndarray,
-        other_object_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None,
-        telemetry: dict,
-    ) -> bool:
-        """Facade shim to the candidate generator. The method stays on the facade because it is called
-        directly and because the ``_dense_last_overran`` latch is facade-owned; the generator reads that
-        latch through its injected getter."""
-        return self._generator.decide_dense_sampling(
-            dense_sampling=dense_sampling,
-            mask=mask,
-            other_object_masks=other_object_masks,
-            telemetry=telemetry,
-        )
-
     def _finalize_empty(
         self,
         telemetry: dict,
@@ -2162,21 +1349,17 @@ class GraspCalculator:
         *,
         ik_service: IKService,
         transform: np.ndarray | None,
-    ) -> tuple[list[GraspScoreBreakdown], list[IKQualityMetrics | None], dict]:
+    ) -> tuple[list[GraspScoreBreakdown], dict]:
         """Drop candidates the IK service declares unreachable.
 
         Candidates are passed to the service in the final return frame:
         base frame when a ``camera_to_base`` / ``T_cam_to_base`` was
         supplied, otherwise camera frame. The IK adapter is expected to
         be configured for that frame.
-
-        Also returns the per-survivor ``IKQualityMetrics`` (index-aligned with the kept list, ``None`` when
-        the adapter publishes none); the feasibility re-rank consumes it.
         """
         from src.robot.grasping.planning import transform_grasp_pose
 
         kept: list[GraspScoreBreakdown] = []
-        kept_quality: list[IKQualityMetrics | None] = []
         rejected = 0
         target_frame = Frame.BASE if transform is not None else Frame.CAMERA
         for score in ranked:
@@ -2203,10 +1386,9 @@ class GraspCalculator:
                 )
             if result.reachable:
                 kept.append(score)
-                kept_quality.append(result.quality)
             else:
                 rejected += 1
-        return kept, kept_quality, {"rejected_ik": rejected}
+        return kept, {"rejected_ik": rejected}
 
     @staticmethod
     def _derive_failure_reasons(
@@ -2426,15 +1608,6 @@ class GraspCalculator:
             stage[key] = int(value) if key in REJECTION_KEYS else value
         return kept, stage
 
-    def _apply_force_closure_certificates(
-        self,
-        pairs: list[ContactPair],
-        poses: list[GraspPose],
-    ) -> int:
-        """Facade shim to the candidate generator's single force-closure certification site, kept on the
-        facade because it is called directly. Returns the count of certified candidates."""
-        return self._generator.apply_force_closure_certificates(pairs, poses)
-
     def _to_grasp_point(
         self,
         score: GraspScoreBreakdown,
@@ -2447,7 +1620,6 @@ class GraspCalculator:
             "geometric_score": round(score.geometric_score, 4),
             "stability_score": round(score.stability_score, 4),
             "reachability_score": round(score.reachability_score, 4),
-            "feasibility_score": round(score.feasibility_score, 4),
             "pose_confidence": round(float(pose.confidence), 4),
             "score_components": score.components,
         }

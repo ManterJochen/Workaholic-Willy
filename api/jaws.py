@@ -23,9 +23,9 @@ The question in the browser (:class:`BrowserJawQuestions`) is the structured sea
   gate :func:`before_change` let it out: no run holding the cell, the arm not halted, a stop record that a person has
   said the cell is clear of (or none), and the controller's own fields saying it can move;
 * an answer that leaves the jaws open stamps the console (``jaws_confirmed_at``; after "open now" also
-  ``jaws_opened_at``, so the next moving run counts down while a person's hand may still be at the jaws) and tells the
-  planner the hand is empty (``arm.detach_payload()``), but only where the hand itself says its jaws stand open by the
-  end: a solenoid whose feedback reads a part keeps them closed, and nothing is stamped then;
+  ``jaws_opened_at``, so the next moving run counts down while a person's hand may still be at the jaws), but only
+  where the hand itself says its jaws stand open by the end: a solenoid whose feedback reads a part keeps them closed,
+  and nothing is stamped then. No planner holds a part to forget (2026-10-17: a closed hand is judged as an empty one);
 * while a connect's or a check's questions are in progress, from the first question until the one change they led to
   is done and its stroke waited out, a question is pending (:func:`pending`), and every moving route refuses meanwhile.
   A check is pending from its very start: it marks itself before it reads the run lock, so a check and a run never go on
@@ -50,7 +50,6 @@ from api.codes import REFUSAL_STATUS, JawsChoice, RefusalCode
 from api.constants import API_LOG_DIR
 from api.events import CELL_STREAM, EventHub, Severity
 from api.schemas import HandOut, JawQuestionOut, JawsOut
-from src.robot.core.arm_capabilities import CarriesPayload
 from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -527,7 +526,7 @@ class BrowserJawQuestions:
             self._flow = flow
             return flow
 
-    def close_flow(self, flow: _Flow, *, opened: bool, refusal: str = "", detached: bool = False) -> None:
+    def close_flow(self, flow: _Flow, *, opened: bool, refusal: str = "") -> None:
         """End ``flow``, saying how (``cell.jaws_ended``, where it asked anything). Idempotent: once closed it stays so.
 
         ``opened``: the jaws stand open by its end. Otherwise its last question says why it ended: ``no_answer``,
@@ -546,9 +545,8 @@ class BrowserJawQuestions:
                 self.hub.publish(
                     CELL_STREAM, "cell.jaws_ended",
                     severity=Severity.SUCCESS if opened else Severity.WARN,
-                    human=_ended_said(outcome, refusal, detached),
+                    human=_ended_said(outcome, refusal),
                     question_id=last.out.question_id, outcome=outcome, refusal="" if opened else refusal,
-                    detached=bool(detached),
                 )
                 logger.info("Jaws questions of the %s ended %s%s.", flow.at, outcome,
                             f" ({refusal})" if refusal and not opened else "")
@@ -585,10 +583,10 @@ def _asked_said(out: JawQuestionOut, timeout_s: float) -> str:
             "answer is never 'open'.")
 
 
-def _ended_said(outcome: str, refusal: str, detached: bool) -> str:
+def _ended_said(outcome: str, refusal: str) -> str:
     """``cell.jaws_ended`` for a person."""
     if outcome == "open":
-        return "The jaws stand open" + ("; the planner was told the hand is empty." if detached else ".")
+        return "The jaws stand open."
     if outcome == "no_answer":
         return "Nobody answered the jaws question, so nothing was sent and the jaws are not taken for open."
     if outcome == "cancelled":
@@ -666,8 +664,8 @@ def answer(console: "Console", question_id: str, choice: str) -> PendingJawQuest
 def ended_open(console: "Console", opened: bool) -> None:
     """A question ended with the jaws standing open: stamp it through ``console.stamp_jaws_open(opened=opened)``
     (``opened`` after "open now": a person held the part at the jaws, so the next moving run counts down; the stamps are
-    read-only, and the countdown reads the order their methods keep) and tell the planner the hand is empty."""
-    _ended_open(console, opened=opened)
+    read-only, and the countdown reads the order their methods keep)."""
+    console.stamp_jaws_open(opened=opened)
 
 
 def before_change(console: "Console") -> Callable[[], str]:
@@ -821,8 +819,8 @@ def check(console: "Console") -> JawsOut:
             raise JawsRefused(RefusalCode.JAWS_NOT_OPEN, f"{refused}{f' {said}' if said else ''}")
         if not_open:
             raise JawsRefused(RefusalCode.JAWS_NOT_OPEN, not_open)
-        detached = _ended_open(console, opened=_rose(sent, _commands_sent(gripper)))
-        seam.close_flow(flow, opened=True, detached=detached)
+        console.stamp_jaws_open(opened=_rose(sent, _commands_sent(gripper)))
+        seam.close_flow(flow, opened=True)
     except JawsRefused as refusal:
         if flow is not None:
             seam.close_flow(flow, opened=False, refusal=refusal.message)
@@ -842,8 +840,8 @@ def open_jaws(console: "Console") -> JawsOut:
     hand is told its widest opening once, after every gate a change of the jaws passes (:func:`before_change`): refused,
     in this order, ``not_connected``, ``jaws_question_pending``, ``run_active``, ``halted``, ``controller_stopped`` and
     ``cell_not_cleared``; and ``jaws_not_open`` where the hand refused, cannot be told a width, or measures its width and
-    does not stand open and empty by the end. A part it held falls out of it: the console's confirm says so, and a person holds it. Once
-    open, the next motion counts down (a person's hand was at the jaws) and the planner is told the hand is empty.
+    does not stand open and empty by the end. A part it held falls out of it: the console's confirm says so, and a
+    person holds it. Once open, the next motion counts down (a person's hand was at the jaws).
     """
     from src.robot.core import RobotConnectionError, RobotError  # noqa: PLC0415
     from src.robot.core.gripper import (  # noqa: PLC0415
@@ -891,7 +889,7 @@ def open_jaws(console: "Console") -> JawsOut:
         raise JawsRefused(RefusalCode.JAWS_NOT_OPEN, f"the hand did not open ({type(exc).__name__}: {exc})") from exc
     if not_open:
         raise JawsRefused(RefusalCode.JAWS_NOT_OPEN, f"the hand was told to open, and {not_open}")
-    _ended_open(console, opened=True)
+    console.stamp_jaws_open(opened=True)
     logger.info("The jaws were opened where the arm stands, at a person's click.")
     return JawsOut(hand=hand_of(gripper), question=None)
 
@@ -926,12 +924,11 @@ def _not_open(gripper: Any) -> str:
         closed = getattr(gripper, "jaws_closed", None)
         if closed is True:
             return ("the hand keeps its jaws closed by the end (its feedback reads a part between them, or they were "
-                    "not opened), so they are not taken for open and the planner keeps its part")
+                    "not opened), so they are not taken for open")
         if closed is not False:
             return "the hand does not say its jaws stand open, so they are not taken for open"
         if hold_evidence_of(gripper) is HoldEvidence.HELD:
-            return ("the hand's feedback reads a part between its jaws, so they are not taken for open and the planner "
-                    "keeps its part")
+            return "the hand's feedback reads a part between its jaws, so they are not taken for open"
     except Exception as exc:  # noqa: BLE001 (a hand nobody can read holds whatever it holds)
         return f"the hand could not be read ({type(exc).__name__}: {exc}), so its jaws are not taken for open"
     return ""
@@ -965,11 +962,11 @@ class _ConnectWatch:
 
     def succeeded(self) -> None:
         """The connect came up: where a question was answered and the hand says its jaws stand open by the end, stamp
-        it and detach.
+        it.
 
         A connect that comes up need not have opened them: a solenoid that asks first and then connects by its feedback
         keeps them closed where the feedback reads a part between them. The person's answer alone is no open jaws, so
-        the hand is read again here; where it does not say open, nothing is stamped and the planner keeps its part.
+        the hand is read again here; where it does not say open, nothing is stamped.
         """
         try:
             if self._flow.asked:
@@ -978,9 +975,8 @@ class _ConnectWatch:
                     logger.warning("The connect came up with the jaws not open: %s.", not_open)
                     self._seam.close_flow(self._flow, opened=False, refusal=not_open)
                     return
-                opened = _rose(self._sent, _commands_sent(self._gripper))
-                detached = _ended_open(self._console, opened=opened)
-                self._seam.close_flow(self._flow, opened=True, detached=detached)
+                self._console.stamp_jaws_open(opened=_rose(self._sent, _commands_sent(self._gripper)))
+                self._seam.close_flow(self._flow, opened=True)
         finally:
             self._seam.close_flow(self._flow, opened=False, refusal="the connect ended without saying how")
 
@@ -1011,20 +1007,6 @@ def _asks_a_person(gripper: Any) -> bool:
         return toggle_without_sensor_of(gripper) is not None or getattr(gripper, "asks_at_connect", False) is True
     except Exception:  # noqa: BLE001 (a hand nobody can read may ask: it is asked about in the browser or not at all)
         return True
-
-
-def _ended_open(console: "Console", *, opened: bool) -> bool:
-    """Stamp a question that ended with the jaws open, then tell the planner the hand is empty; whether it was told."""
-    console.stamp_jaws_open(opened=opened)
-    arm = console.session.arm
-    if not isinstance(arm, CarriesPayload):
-        return False
-    try:
-        return bool(arm.detach_payload())
-    except Exception as exc:  # noqa: BLE001 (the jaws stand open whatever the planner answered; said, not raised)
-        logger.error("Telling the planner the hand is empty failed (%s: %s); the next pick attaches anew.",
-                     type(exc).__name__, exc)
-        return False
 
 
 def _commands_sent(gripper: Any) -> int | None:

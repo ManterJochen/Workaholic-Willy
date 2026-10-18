@@ -2,8 +2,8 @@
 
 The owner's cell, 2026-10-01 (fix plan RC2): every prompt grounded one box, so the calculator saw the Zollstock alone and
 offered grasps whose open fingers stood inside the parts beside it; the exact guard refused every one, and the pick
-failed with no reason a person could read. With ``robot.grasping.scene_obstacles`` the calculator reads the depth around
-the part by the planner world's rules (``generation/scene_obstacles.py``): a part boxed in gets no candidate, the reason
+failed with no reason a person could read. Since then every cell's calculator reads the depth around the part by the
+planner world's rules (``generation/scene_obstacles.py``): a part boxed in gets no candidate, the reason
 is ``ALL_COLLIDED`` (the one a push answers) and a sentence says a neighbour the camera saw is in the way. A neighbour on
 one side leaves the closing axis that keeps clear of it. The locator's door (``Located.scene``, example 13) says the same.
 
@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.grasping.collision.support_resolver import TABLE_CLEARANCE_MM
 from src.geometry import Frame, Transform
 from tests.test_a_side_grasp_never_goes_through_unseen_space import Box, Cylinder, DepthCamera, Plane
 
@@ -90,23 +91,23 @@ def calculator(*, scene: bool, rules: Any = None, side: bool = True, cell: Any =
     return build_calculator(cfg, camera_matrix=np.array([[FOCAL, 0.0, WIDTH / 2.0], [0.0, FOCAL, HEIGHT / 2.0],
                                                          [0.0, 0.0, 1.0]]),
                             max_grip_width_mm=cfg.gripper.max_width_mm, min_grip_width_mm=cfg.gripper.min_width_mm,
-                            support_footprint_geometry=True, support_footprint_inflate_mm=0.0, **extra)
+                            **extra)
 
 
 def compute(calc: Any, frame: Frame_, *, support_mm: float = MAT_MM, mask: "np.ndarray | None" = None,
             **kwargs: Any) -> Any:
     """``compute_result`` as the pick loop calls it: the part's mask, the frame's depth, the BASE support it resolved."""
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
     from src.robot.grasping.collision import SupportPlane
 
     cfg = _hande()
     seg = SimpleNamespace(mask=frame.mask if mask is None else mask, label="part", score=1.0)
     return calc.compute_result(
-        seg, frame.depth, pixel_to_mm=None, dense_sampling=False, other_object_masks=[],
+        seg, frame.depth, other_object_masks=[],
         camera_to_base=Transform.from_matrix(frame.camera_to_base, from_frame=Frame.CAMERA, to_frame=Frame.BASE),
         support_plane=SupportPlane(normal=np.array([0.0, 0.0, 1.0]), offset_mm=float(support_mm), frame=Frame.BASE),
-        min_table_clearance_mm=float(cfg.grasping.support.min_clearance_mm),
-        gripper_model=build_gripper_geometry(cfg.grasping.gripper_geometry), **kwargs)
+        min_table_clearance_mm=TABLE_CLEARANCE_MM,
+        gripper_model=jaw_envelope(cfg), **kwargs)
 
 
 # --- the scenes -------------------------------------------------------------------------------------------------------
@@ -139,10 +140,10 @@ def cubes_on_x(gap_mm: float = 20.0, side_mm: float = 40.0) -> Frame_:
 
 def open_fingers_hold(grasp: Any, points: np.ndarray) -> int:
     """How many of ``points`` stand inside the open Hand-E fingers of a BASE grasp."""
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
 
     cfg = _hande()
-    hand = build_gripper_geometry(cfg.grasping.gripper_geometry)
+    hand = jaw_envelope(cfg)
     turn = np.column_stack([grasp.axis, np.cross(grasp.approach, grasp.axis), grasp.approach])
     local = (np.asarray(points, dtype=np.float64) - grasp.position) @ turn
     return int(sum(int(box.contains_local_points(local).sum())
@@ -247,13 +248,12 @@ class TheLocatorSaysItTooTests(unittest.TestCase):
 
         cfg = _hande()
         world = cfg.safety.planning_world.model_copy(update={
-            "enabled": True,
             "support_plane": SupportPlaneConfig(height_mm=0.0, extent_mm=(900.0, 700.0), thickness_mm=50.0,
                                                 center_mm=(-10.0, -585.0))})
         safety = cfg.safety.model_copy(update={"planning_world": world})
-        limits = cfg.workspace_limits.model_copy(update={"x_min": -420.0, "x_max": 400.0, "y_min": -900.0,
+        limits = cfg.motion.workspace.model_copy(update={"x_min": -420.0, "x_max": 400.0, "y_min": -900.0,
                                                          "y_max": -270.0})
-        return cfg.model_copy(update={"safety": safety, "workspace_limits": limits})
+        return cfg.model_copy(update={"safety": safety, "motion": cfg.motion.model_copy(update={"workspace": limits})})
 
     def test_the_scene_has_no_grasp_and_says_a_neighbour_is_in_the_way(self) -> None:
         cell = self._cell()
@@ -263,13 +263,6 @@ class TheLocatorSaysItTooTests(unittest.TestCase):
         self.assertIn("meets a neighbour the camera saw beside the part", grasps.said)
         self.assertIn("meets a neighbour", grasps.render())
         self.assertEqual(grasps.said, grasps.to_dict()["said"])
-
-    def test_with_the_scene_switched_off_the_bar_gets_its_grasps_again(self) -> None:
-        cell = self._cell()
-        off = cell.model_copy(update={"grasping": cell.grasping.model_copy(update={"scene_obstacles": False})})
-        grasps = self._located(boxed_in_bar()).scene(0, off).grasps()
-        self.assertGreater(len(grasps.candidates), 0)
-        self.assertEqual(0, grasps.refused_by_obstacles)
 
     def test_room_beside_the_bar_leaves_its_grasps(self) -> None:
         grasps = self._located(boxed_in_bar(gap_mm=40.0)).scene(0, self._cell()).grasps()

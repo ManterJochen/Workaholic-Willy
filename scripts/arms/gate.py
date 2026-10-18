@@ -99,8 +99,7 @@ def _robot_config(arm: str, hand: str, coupling_mm: float, planner_margin_mm: fl
     return RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"model": arm},
-        "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "planner_margin_mm": float(planner_margin_mm)}},
+        "safety": {"self_collision": {"backend": "fcl", "planner_margin_mm": float(planner_margin_mm)}},
         "gripper": gripper,
     })
 
@@ -111,7 +110,6 @@ def measure(
     hand: str,
     coupling_mm: float,
     planner_margin_mm: float,
-    attach_spheres: int,
     guard_margin_mm: float,
     rotation_xyzw,
     random_n: int,
@@ -168,9 +166,6 @@ def measure(
         body_links=[link.to_dict(), *coupling_bodies(resolved, arm=arm)],
         default_q=retract,
         measure_only=True,
-        # The slots it records are the slots it starts with. A cell with payload spheres composes them into the
-        # config its sidecar hashes, so a file measured without them could never admit it.
-        attach_spheres=int(attach_spheres),
     ) as client:
         identity = client.identity
         explained = client.explain_joints(poses, name_pairs=True)
@@ -198,7 +193,7 @@ def measure(
     return CombinationEvidence(
         arm=arm, hand=hand, coupling_mm=float(coupling_mm),
         approach=placement.approach, closing=placement.closing,
-        planner_margin_mm=float(planner_margin_mm), attach_spheres=int(attach_spheres),
+        planner_margin_mm=float(planner_margin_mm),
         guard_margin_mm=float(guard_margin_mm),
         composed_sha256=str(identity.composed_sha256) if chosen(identity.composed_sha256) else "",
         urdf_sha256=str(identity.urdf_sha256) if chosen(identity.urdf_sha256) else "",
@@ -236,7 +231,6 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--coupling-mm", type=float, default=0.0)
     parser.add_argument("--planner-margin-mm", type=float, required=True,
                         help="the margin this cell plans at; a combination at another margin is another file")
-    parser.add_argument("--attach", type=int, default=0, help="collision sphere slots reserved for a payload")
     parser.add_argument("--plate", type=_plate_spec, action="append", default=None,
                         help="one coupling plate as the cell declares it, NAME:THICKNESS_MM[:X_MM,Y_MM] (repeatable, "
                              "flange first); takes the place of --coupling-mm")
@@ -263,7 +257,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     evidence = measure(
         arm=args.arm, hand=args.hand, coupling_mm=args.coupling_mm,
-        planner_margin_mm=args.planner_margin_mm, attach_spheres=args.attach,
+        planner_margin_mm=args.planner_margin_mm,
         guard_margin_mm=args.guard_margin_mm, rotation_xyzw=rotation, plates=args.plate,
         random_n=RANDOM_POSES if args.random is None else args.random,
         seed=SEED if args.seed is None else args.seed,

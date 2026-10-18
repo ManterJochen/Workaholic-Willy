@@ -38,7 +38,7 @@ from src.willy_sim.harness.instrumentation import (
     write_pick_artifacts,
     write_run_result,
 )
-from src.willy_sim.harness.modes import mode_service_kwargs, resolve_demo_mode
+from src.willy_sim.harness.modes import resolve_demo_mode
 from src.willy_sim.perception import GroundTruthPerceptionSource
 from src.robot.core.camera_world import CameraWorldDecline
 from src.willy_sim.harness.camera_world import SimCameraWorld
@@ -73,7 +73,6 @@ def build_service(
     continuous_guard: bool = False,      # per-waypoint collision-avoidance guard (needs WILLY_COAL_PREFIX)
     continuous_guard_margin_mm: float = 8.0,
     cell_kwargs: Mapping[str, Any] | None = None,  # which cell to boot (--robot-model / --profile)
-    radial_closing: bool = False,  # spend a symmetric object's free yaw on the reachable axis
 ):
     """Boot the scene and wire the full pick service from config.
 
@@ -122,17 +121,6 @@ def build_service(
         warmup_steps=sim.scene_setup.render_warmup_steps, ground_truth_depth=ground_truth_depth,
         grasp_lift_mm=grasp_lift_mm,
     )
-    # The cell declares whether this arm needs a radial close (robot.ur3e.yaml declares it for the
-    # UR3e); --radial-closing still forces it on for a cell that has not declared it.
-    _radial = bool(radial_closing or getattr(cell.robot.grasping, "isotropic_radial_closing", False))
-    # The banner says which generator the lever applies to. `isotropic_radial_closing` is an
-    # analytic-only knob: the learned generator decodes its own closing axis and has nothing to act
-    # on, and the factory logs that it is ignoring it. Printing a bare `True` under `calculator: deep`
-    # would describe the other path.
-    print(f"[grasp] isotropic_radial_closing={_radial} "
-          f"(cell={getattr(cell.robot.grasping, 'isotropic_radial_closing', False)}, "
-          f"flag={bool(radial_closing)}, analytic generator only)",
-          flush=True)
     calculator = build_calculator(
         cell.robot,
         data_dir=data_dir,
@@ -141,7 +129,6 @@ def build_service(
         camera_matrix=np.asarray(handles.camera.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,
-        isotropic_radial_closing=_radial,
     )
     resolver = StaticCameraToBaseResolver(transform=handles.camera_to_base)
     # Whether this cell has a CAMERA->BASE transform at all, said at build time. A resolver built
@@ -160,7 +147,6 @@ def build_service(
     service = AutonomousGraspService.from_components(
         arm=arm, calculator=calculator, perception=perception, gripper=gripper,
         mode=grasp_mode, frame_resolver=resolver, policy=policy, max_attempts=3,
-        **mode_service_kwargs(grasp_mode),
     )
     return service, arm, gripper, handles, cfg, cell
 
@@ -169,7 +155,6 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
              mode: str = "easy", record_log: str | None = None,
              debug_frames: str | None = None,
              cell_kwargs: Mapping[str, Any] | None = None,
-             radial_closing: bool = False,
              # False: the camera's own rendered depth reaches the pick. See build_service.
              ground_truth_depth: bool = True) -> GateResult:
     """Known-pose picks in Isaac Sim, the object re-placed each time, scored against the scene's ground truth. Runs
@@ -183,7 +168,6 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
         record_log (str | None): Append each attempt's record to this JSONL file (default: None).
         debug_frames (str | None): Write each pick's camera frames to this folder (default: None).
         cell_kwargs (Mapping[str, Any] | None): Extra settings for the simulated cell (default: None).
-        radial_closing (bool): Close every grasp radially, an isotropic jaw (default: False).
         ground_truth_depth (bool): Hand the pick the scene's ground-truth depth; ``False`` the camera's own rendered
             depth (default: True).
 
@@ -192,7 +176,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
     """
     service, arm, gripper, handles, cfg, cell = build_service(
         headless=headless, data_dir=data_dir, mode=mode, cell_kwargs=cell_kwargs,
-        radial_closing=radial_closing, ground_truth_depth=ground_truth_depth,
+        ground_truth_depth=ground_truth_depth,
         camera_world=CameraWorldDecline("run_m1_pick: known-pose pick, no camera world in this runner"),
     )
     if debug_frames:  # render the grasp-point overlay per pick. M1 ground-truth perception carries
@@ -253,7 +237,7 @@ def main() -> None:
     ap.add_argument("--no-headless", action="store_true", help="alias for --gui")
     ap.add_argument("--data-dir", type=str, default=None)
     ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto"],
-                    help="P1: grasp mode (easy=trust path; auto=real DecisionEngine)")
+                    help="P1: grasp mode (easy=trust path; auto=the automatic sampler)")
     ap.add_argument("--record-log", type=str, default=None,
                     help="P0: append one GraspAttemptRecord JSONL line per pick to this path "
                          "(the soak/KPI/RL data source; default off -> byte-identical)")
@@ -268,8 +252,7 @@ def main() -> None:
     args = ap.parse_args()
     result = run_gate(runs=args.runs, headless=not (args.gui or args.no_headless), data_dir=args.data_dir,
                       mode=args.mode, record_log=args.record_log, debug_frames=args.debug_frames,
-                      cell_kwargs=cell_profile_kwargs(args), radial_closing=args.radial_closing,
-                      ground_truth_depth=not args.rendered_depth)
+                      cell_kwargs=cell_profile_kwargs(args), ground_truth_depth=not args.rendered_depth)
     write_run_result(args.result_json, result.to_dict(), scene="m1", mode=args.mode)
 
 

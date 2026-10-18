@@ -23,7 +23,7 @@ the cell, as it is on every other motion of a pick. Nothing is said to the hand 
 motion of the arm, and the jaws stay as the last pick left them.
 
 A raw list of numbers is refused as a look, because its unit cannot be told: degrees read as radians is the mistake the
-desk check and the UR driver already name for ``robot.home_joint_positions``, and a look is where the arm goes next.
+desk check and the UR driver already name for ``robot.motion.home_deg``, and a look is where the arm goes next.
 
 A look the arm already stands at is not driven to (:func:`move_to_look`): where the controller is connected, the arm is
 not halted and at rest, every joint reads within :data:`AT_THE_LOOK_DEG` of the look's, and the tool stands where the
@@ -71,7 +71,7 @@ _AT_THE_LOOK_TURN_DEG: Final[float] = 0.1
 #: What the report of a look the arm already stood at says: the move had no length, and nothing reached the controller.
 ALREADY_THERE: Final[str] = "already there; nothing sent"
 
-#: The arm's own configured home as a look: ``robot.home_joint_positions`` (or ``home_joint_positions_deg``), reached
+#: The arm's own configured home as a look: ``robot.motion.home_deg``, reached
 #: through the arm's gated home verb. What a wrist camera looks from when a program names no look.
 HOME: Final = "home"
 

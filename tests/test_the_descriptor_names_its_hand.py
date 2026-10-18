@@ -182,7 +182,7 @@ class ThePlannedArmChecksWhatItLoadedTests(unittest.TestCase):
         from src.robot.safety.planning.hand import descriptor_refusal
 
         return CuroboPlanner(
-            fake_transport(joints=[0.0] * 6), client_factory=lambda: client, require_registration=False,
+            fake_transport(joints=[0.0] * 6), client_factory=lambda: client,
             descriptor_check=lambda identity: descriptor_refusal(identity, link, arm="ur5e"),
             joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
         )

@@ -3,21 +3,21 @@
 The push (``nudge_target``) runs inside the pick attempt, where the part, its neighbours, the table the looks saw and
 the part's keep-out are known (owner, 2026-09-29). The pick loop never decides on its own that it may push. The
 service hands it a :class:`PushGate` for one pick, built from the recovery policy
-(:func:`~src.robot.grasping.recovery.policy.push_permitted`: dense_clutter's profile, ``recovery.allowed_actions``,
-a budget that is not zero; no fixture is needed), from the cell (:class:`PushCell`: the open hand from the gripper
+(:func:`~src.robot.grasping.recovery.policy.push_permitted`: dense_clutter's profile, the actions the cell or the
+campaign allows, a budget that is not zero), from the cell (:class:`PushCell`: the open hand from the gripper
 registry, the workspace, the clearance the arm's line judge keeps, a declared container) and from the campaign
 (:class:`PushCampaign`: the push budgets and the distance its pushes run). Without a gate nothing pushes.
 
 A campaign (a ``PickRun``, a console run) keeps two things across its picks: the push budgets (1 per part, 2 per
-pick, 5 per campaign) and the parts ``next_target`` skips (:class:`~src.robot.grasping.recovery.exclusion_zones.
+pick, 5 per campaign) and the regions its task keeps out (:class:`~src.robot.grasping.recovery.exclusion_zones.
 ExclusionZones`). The service holds one and calls :meth:`PushCampaign.start_pick` as every pick starts.
 
 :class:`PickPush` is what one push the pick considered came to: refused before anything moved (the pick falls
 through to its next action), pushed (the arm went back to the look and looked again), or stopped where the arm is
 (a person decides; the campaign ends). A push refused because the controller cannot move ends the pick instead, as a
 stopped controller ends it anywhere, and so does one refused because nobody can say where a toggle hand's jaws stand,
-as a gripper fault. :class:`FailedPart` is the part a pick failed on, which ``next_target`` skips.
-:func:`support_points_of_views` is the table the looks saw, the points a push's landing is bounded by.
+as a gripper fault. :func:`support_points_of_views` is the table the looks saw, the points a push's landing is
+bounded by.
 
 Nothing here moves the arm, asks a person or touches the jaws.
 """
@@ -48,10 +48,8 @@ __all__ = [
     "REFUSED_PUSH_CELL_UNKNOWN",
     "REFUSED_STOP_REQUESTED",
     "TRIGGER_ALL_COLLIDED",
-    "TRIGGER_APPROACH_BLOCKED",
     "TRIGGER_GRASPS_REFUSED_AHEAD",
     "TRIGGER_NO_PART_GRASPABLE",
-    "FailedPart",
     "PickPush",
     "PushCampaign",
     "PushCell",
@@ -62,8 +60,6 @@ __all__ = [
 
 #: A push is considered because every grasp candidate of the part collided (``ALL_COLLIDED``, at least one did).
 TRIGGER_ALL_COLLIDED = "all_collided"
-#: A push is considered because every ranked candidate's approach sweep was blocked (approach validation on).
-TRIGGER_APPROACH_BLOCKED = "approach_path_blocked"
 #: The scene is changed because every grasp of the part was judged from the look and refused there, nothing moved (the
 #: joint window, the planner): a part no grasp can reach, as a part every grasp of which collided (2026-10-03).
 TRIGGER_GRASPS_REFUSED_AHEAD = "grasps_refused_ahead"
@@ -116,9 +112,9 @@ class PushCell:
     """What the cell is, as a push needs it: the open hand, the workspace, the hand's clearance and a container.
 
     ``hand`` is the open hand the planner sweeps (its fingers from the grasping geometry, its housing from the gripper
-    registry, :mod:`~src.robot.grasping.recovery.push_hand`). ``workspace`` is ``robot.workspace_limits``: every TCP
+    registry, :mod:`~src.robot.grasping.recovery.push_hand`). ``workspace`` is ``robot.motion.workspace``: every TCP
     point of a push stays 20 mm inside it, ``z_min`` included. ``hand_clearance_mm`` is how far the open hand keeps
-    from every neighbour point: the camera world's ``margin_mm`` plus the arm's ``line_clearance_mm`` (25 mm shipped),
+    from every neighbour point: the camera world's margin plus the arm's line clearance (6 + 3 = 9 mm on every cell),
     so the planner plans no push the arm's line judge would predictably refuse. ``container_interior`` is a declared
     container's interior box (``grasping.support.container``), the push box in place of the table the looks saw.
 
@@ -128,9 +124,9 @@ class PushCell:
     ``hand_clearance_mm`` for every point. ``guard_distance_mm`` is what the exact guard keeps from a camera box,
     ``self_collision.perceived_min_distance_mm``: the push's finger rides at least that far, and 1 mm, over the solids the
     camera world holds for what the part stands on. ``named_part_clearance_mm`` is how far the fingers come down from a
-    neighbour part the detector named on a rearranging push: where the guard holds a finger to such a part's measured
-    surface (``perceived.fingers_touch_parts``), the 1 mm a grasp's finger keeps (``scene_obstacles.SOFT_SLACK_MM``,
-    the owner, 2026-10-06); ``None`` keeps ``beside_part_clearance_mm`` for every neighbour.
+    neighbour part the detector named on a rearranging push: the guard holds a finger to such a part's measured surface
+    on every cell, so a cell's push takes the 1 mm a grasp's finger keeps (``scene_obstacles.SOFT_SLACK_MM``, the owner,
+    2026-10-06); ``None`` keeps ``beside_part_clearance_mm`` for every neighbour.
 
     ``closed_width_mm`` is how far apart the fingers stand once the hand closed its jaws in the air before it comes down
     to push: a hand told a width at its closed end (the owner, 2026-10-15: a Robotiq pushes with its jaws closed), a
@@ -176,11 +172,12 @@ class PushCell:
         """The cell's push inputs, read from a loaded robot config; a refusal with a sentence where they cannot be.
 
         The hand is :func:`~src.robot.grasping.recovery.push_hand.push_hand_from_robot_config` (a cell whose hand the
-        registry does not hold, or that carries a suction cup, is refused there). The clearance is
-        ``robot.safety.planning_world.perceived.margin_mm`` plus ``robot.safety.planned_motion.line_clearance_mm``;
-        beside the part it is :data:`BESIDE_THE_PART_CLEARANCE_MM` within that ``margin_mm``, and the guard's distance
-        is ``robot.safety.self_collision.perceived_min_distance_mm``. Beside a named part it is
-        ``scene_obstacles.SOFT_SLACK_MM`` where ``perceived.fingers_touch_parts`` is on, as at a grasp. A hand told a
+        registry does not hold, or that carries a suction cup, is refused there). The clearance is what the camera world
+        grows its boxes by (``perceived.CAMERA_BOX_MARGIN_MM``) plus the arm's line clearance
+        (``path_samples.LINE_CLEARANCE_MM``);
+        beside the part it is :data:`BESIDE_THE_PART_CLEARANCE_MM` within that margin, and the guard's distance is
+        ``robot.safety.self_collision.perceived_min_distance_mm``. Beside a named part it is
+        ``scene_obstacles.SOFT_SLACK_MM``, the fingers coming to a named part as at a grasp. A hand told a
         width (``calculator_factory.opens_as_needed``, a Robotiq) pushes closed to ``robot.gripper.closed_width_mm``, a
         toggle (:func:`toggles`) closed to the band it reports, ``robot.gripper.min_width_mm``, the fingers planned that
         far apart and :data:`~src.robot.core.gripper.FINGER_OPENING_SLACK_MM` more, as the guard is told them.
@@ -189,6 +186,8 @@ class PushCell:
         from src.robot.grasping.calculator_factory import opens_as_needed  # noqa: PLC0415
         from src.robot.grasping.generation.scene_obstacles import SOFT_SLACK_MM  # noqa: PLC0415
         from src.robot.grasping.recovery.push_hand import push_hand_from_robot_config  # noqa: PLC0415
+        from src.robot.safety.path_samples import LINE_CLEARANCE_MM  # noqa: PLC0415
+        from src.robot.safety.planning.perceived import CAMERA_BOX_MARGIN_MM  # noqa: PLC0415
 
         hand = push_hand_from_robot_config(robot)
         if isinstance(hand, PushRefusal):
@@ -198,22 +197,20 @@ class PushCell:
         if closed is not None:
             hand = replace(hand, open_width_mm=closed + FINGER_OPENING_SLACK_MM)
         try:
-            limits = robot.workspace_limits
+            limits = robot.motion.workspace
             workspace = AxisBox((float(limits.x_min), float(limits.y_min), float(limits.z_min)),
                                 (float(limits.x_max), float(limits.y_max), float(limits.z_max)))
-            safety = robot.safety
-            margin = float(safety.planning_world.perceived.margin_mm)
-            clearance = margin + float(safety.planned_motion.line_clearance_mm)
+            margin = CAMERA_BOX_MARGIN_MM
+            clearance = margin + LINE_CLEARANCE_MM
             container = getattr(getattr(getattr(robot, "grasping", None), "support", None), "container", None)
             interior = None
             if container is not None and bool(getattr(container, "interior_declared", False)):
                 interior = AxisBox(tuple(float(v) for v in container.interior_min_mm),  # type: ignore[arg-type]
                                    tuple(float(v) for v in container.interior_max_mm))  # type: ignore[arg-type]
-            touch = bool(getattr(safety.planning_world.perceived, "fingers_touch_parts", False))
             return cls(hand=hand, workspace=workspace, hand_clearance_mm=clearance, container_interior=interior,
                        beside_part_clearance_mm=BESIDE_THE_PART_CLEARANCE_MM, beside_part_mm=margin,
-                       guard_distance_mm=float(safety.self_collision.perceived_min_distance_mm),
-                       named_part_clearance_mm=SOFT_SLACK_MM if touch else None, closed_width_mm=closed)
+                       guard_distance_mm=float(robot.safety.self_collision.perceived_min_distance_mm),
+                       named_part_clearance_mm=SOFT_SLACK_MM, closed_width_mm=closed)
         except (AttributeError, TypeError, ValueError) as exc:
             return PushRefusal(
                 code=REFUSED_PUSH_CELL_UNKNOWN,
@@ -223,16 +220,15 @@ class PushCell:
 
 
 class PushCampaign:
-    """The pushes and the skipped parts of one campaign: its budgets, its exclusion zones and its push distance.
+    """The pushes of one campaign and what its task keeps out: its budgets, its exclusion regions and its push distance.
 
     ``distance_mm`` is the push every pick of the campaign makes (``push_mm`` of a ``PickRun`` or a console run,
-    settled against the config by ``resolve_push_distance``); ``None`` for a campaign that pushes nothing, whose
-    distance the config refused. ``longest_mm`` is how far a push may go where that distance opens too little room: the
-    cell's ``recovery.fixture.max_nudge_mm`` where nobody asked for a distance, ``None`` where someone did, whose push
-    is taken as asked. ``critical_parts`` is what the run said of its parts (the owner's switch, 2026-10-03), ``None``
-    where it said nothing and the cell's ``recovery.critical_parts`` stands. ``recovery_actions`` is what the run lets
-    recovery do (the owner, 2026-10-05: the console's ticks override the config for one run), ``None`` where the cell's
-    ``recovery.allowed_actions`` stands. ``blocker_is_the_pick`` says that a blocker a pick takes away is the part it
+    settled by ``resolve_push_distance``); ``None`` for a campaign that pushes nothing, whose distance was refused.
+    ``longest_mm`` is how far a push may go where that distance opens too little room: the owner's 50 mm where nobody
+    asked for a distance, ``None`` where someone did, whose push is taken as asked. ``critical_parts`` is what the run
+    said of its parts (the owner's switch, 2026-10-03), ``None`` where it said nothing and the cell's
+    ``runtime.task.critical_parts`` stands. ``recovery_actions`` is what the run lets recovery do (the owner,
+    2026-10-05: the console's ticks override the cell's for one run), ``None`` where the cell's stand. ``blocker_is_the_pick`` says that a blocker a pick takes away is the part it
     picks, set down by the caller where its parts go (the pick loop's ``blocker_is_the_pick``): a task that takes every
     part into one place says so (the owner, 2026-10-06). ``every_part`` says the campaign takes every part it names
     until none is left (a task's ``until_empty``): where no part it wants has a grasp, the scene is pushed, counted
@@ -263,9 +259,8 @@ class PushCampaign:
         self.zones = zones if zones is not None else ExclusionZones()
 
     def start_pick(self) -> int:
-        """A pick of this campaign starts: its own two pushes are available again, and zones past their lifetime
-        are dropped. Returns the pick's index, 1 for the first."""
-        self.zones.start_pick()
+        """A pick of this campaign starts: its own two pushes are available again. Returns the pick's index, 1 for the
+        first."""
         self.scene_budgets.start_pick()
         return self.budgets.start_pick()
 
@@ -274,11 +269,8 @@ class PushCampaign:
 class PushGate:
     """What lets one pick push: built by the service from the policy for that pick, and nothing pushes without it.
 
-    ``budgets`` and ``distance_mm`` are the campaign's. ``cell`` is the cell's push inputs. ``operator_box`` is the
-    declared fixture box (``recovery.fixture``), which only narrows the push box; ``None`` where no fixture is
-    declared, and the automatic push box alone bounds the push. ``on_approach_blocked`` is whether a
-    pick whose every approach sweep was blocked is a trigger too, which it is where approach validation runs.
-    ``blocker_grasp_tries`` is how many of a blocker's grasps clearing it tries (``recovery.blocker_grasp_tries``).
+    ``budgets`` and ``distance_mm`` are the campaign's. ``cell`` is the cell's push inputs; the automatic push box
+    bounds where a part lands. ``blocker_grasp_tries`` is how many of a blocker's grasps clearing it tries.
     ``critical_parts`` is the owner's switch (2026-10-03): ``False``, a boxed-in part is pushed first, and the push may
     rearrange the scene, with a blocker cleared where no push plans; ``True``, nothing is pushed, and a blocker is
     cleared instead. ``longest_mm`` is how far a push may go where the campaign's distance opens too little room
@@ -289,8 +281,6 @@ class PushGate:
     budgets: PushBudgets
     distance_mm: float
     cell: PushCell
-    operator_box: Optional[AxisBox] = None
-    on_approach_blocked: bool = False
     blocker_grasp_tries: int = 3
     critical_parts: bool = False
     longest_mm: Optional[float] = None
@@ -303,8 +293,7 @@ class PushGate:
 class PickPush:
     """What one push a pick considered came to.
 
-    ``trigger`` is why it was considered (:data:`TRIGGER_ALL_COLLIDED`, :data:`TRIGGER_APPROACH_BLOCKED`,
-    :data:`TRIGGER_GRASPS_REFUSED_AHEAD`, :data:`TRIGGER_NO_PART_GRASPABLE` for a push of the scene). ``code``
+    ``trigger`` is why it was considered (:data:`TRIGGER_ALL_COLLIDED`, :data:`TRIGGER_GRASPS_REFUSED_AHEAD`, :data:`TRIGGER_NO_PART_GRASPABLE` for a push of the scene). ``code``
     is what it came to: a ``PushOutcomeCode`` value where the push was driven or refused by
     :func:`~src.robot.grasping.recovery.push_motion.execute_push`; the planner's or the budgets' code, or a
     ``refused_*`` of the pick's own, where it was refused before that. ``sentence`` says it in words.
@@ -371,15 +360,6 @@ class PickPush:
                                   else [[round(float(v), 1) for v in corner] for corner in self.landing_box_xy_mm]),
             "leg_verdicts": list(self.leg_verdicts),
         }
-
-
-@dataclass(frozen=True, slots=True)
-class FailedPart:
-    """The part a pick failed on, as ``next_target`` skips it: its label, where it stood in BASE, its footprint."""
-
-    label: str
-    centre_mm: Vec3
-    footprint_diagonal_mm: Optional[float] = None
 
 
 def support_points_of_views(

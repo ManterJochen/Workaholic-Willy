@@ -238,6 +238,8 @@ def _h74_booted_cell(
     from src.geometry.quaternion import from_rotation_matrix, to_rotation_matrix
     from src.robot.core import JointPositions
     from src.robot.grasping.motion.execution_policy import _quaternion_from_axes
+    from src.robot.grasping.collision import SupportPlane
+    from src.robot.grasping.collision.support_resolver import bench_height_mm
     from src.robot.grasping.generation.calculator import GraspCalculator
     from src.robot.grasping.suction.scorer import AnalyticalSuctionScorer
     from src.robot.grasping.suction.synthesis import (
@@ -288,7 +290,9 @@ def _h74_booted_cell(
         camera_matrix=intr, max_grip_width_mm=max_w, min_grip_width_mm=cell.robot.gripper.min_width_mm,
     )
     try:
-        jaw = calc.compute(seg, frame.depth_map, camera_to_base=handles.camera_to_base, unit="mm")
+        # Over the bench the cell declares: the calculator plans every grasp in BASE over its support.
+        bench = SupportPlane(offset_mm=bench_height_mm(cell.robot), frame=Frame.BASE)
+        jaw = calc.compute(seg, frame.depth_map, camera_to_base=handles.camera_to_base, unit="mm", support_plane=bench)
     except Exception as exc:  # noqa: BLE001 (a calculator error on an ungraspable object is itself a failure)
         jaw = []
         log.append(f"[jaw] compute raised {type(exc).__name__}: {exc} (treated as no-grasp)")

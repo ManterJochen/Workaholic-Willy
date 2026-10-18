@@ -36,7 +36,7 @@ from api.codes import RunKind
 from api.constants import API_LOG_DIR, ROUTER_CELL_LOG_FILE
 from api.events import CELL_STREAM, Severity
 from api.lifecycle import CellState, CellTransitionError, ConnectRefused
-from api.readiness import HaltStateLike, ReadsHaltState, payload_model_of, refusal
+from api.readiness import HaltStateLike, ReadsHaltState, refusal
 from api.runs import RunConflict, RunRefused
 from api.schemas import (
     AcknowledgeIn,
@@ -48,7 +48,6 @@ from api.schemas import (
     HaltStateOut,
     HomeIn,
     MotionWarningOut,
-    PayloadModelName,
     PlannerOut,
     ReadinessOut,
     RecoveryOut,
@@ -157,7 +156,6 @@ def _render(cell: Console) -> CellOut:
         needs_person=_needs_person(session.service),
         halted=_halted(session.arm),
         planner=_planner(session.arm),
-        payload_model=_payload_model(session.arm),
         recovery=RecoveryOut(**record.to_dict()) if record is not None else None,
         jaws_confirmed_at=cell.jaws_confirmed_at,
         countdown_due=cell.countdown_due(),
@@ -225,14 +223,6 @@ def _planner(arm: Any) -> PlannerOut:
     except Exception:  # noqa: BLE001 (a panel read that fails is not ready, never a 500)
         state = "off"
     return PlannerOut(state=state if state in ("off", "starting", "ready") else "not_used")
-
-
-def _payload_model(arm: Any) -> PayloadModelName:
-    """What models the part the gripper carries now, as the arm says it; ``not_applicable`` for an arm that models no
-    part at all (the dummy, sim). ``unknown`` where it models parts and its answer could not be read, or is one this
-    console does not know: ``unknown`` is not in ``NO_PART_MODELLED``, so a part nobody can rule out keeps the stop card's
-    "no part held, now" gate shut. The gates read the same (``api.readiness.payload_model_of``)."""
-    return payload_model_of(arm)
 
 
 @router.get("", response_model=CellOut, summary="Where is the cell?")
@@ -471,8 +461,8 @@ def post_disconnect(cell: Annotated[Console, Depends(console)]) -> CellOut:
 
 @router.get("/facts", response_model=CellFactsOut, summary="What this cell is (read after build and after connect)")
 def get_facts(cell: Annotated[Console, Depends(console)]) -> CellFactsOut:
-    """Its cameras and looks, its hand's natural axis, push, the detector, the brake, the carried part and how its
-    moves are planned. Moves nothing."""
+    """Its cameras and looks, its hand's natural axis, push, the detector, the brake and how its moves are planned.
+    Moves nothing."""
     return gates.facts(cell)
 
 
@@ -492,10 +482,10 @@ def post_acknowledge(cell: Annotated[Console, Depends(console)], body: Acknowled
 
     ``jaws_empty: true`` is the person's word that the hand holds nothing: taken for a hand that cannot say it itself
     (a toggle answers the jaws question instead, and is taken only while its count says open; a hand that measures a
-    part refuses it), and then the planner is told the hand is empty too. A person's hands were at the jaws for it, so
+    part refuses it). A person's hands were at the jaws for it, so
     the next motion counts down 3 s first (owner decision Q2 = A); it answers no jaws question.
     """
-    from src.robot.core.arm_capabilities import CarriesPayload, SupportsHalt, halt_state_of  # noqa: PLC0415
+    from src.robot.core.arm_capabilities import SupportsHalt, halt_state_of  # noqa: PLC0415
     from src.robot.core.gripper import HoldEvidence, hold_evidence_of  # noqa: PLC0415
 
     session = cell.session
@@ -542,8 +532,6 @@ def post_acknowledge(cell: Annotated[Console, Depends(console)], body: Acknowled
         cleared.append("recovery")
     emptied = False
     if body.jaws_empty:
-        if isinstance(arm, CarriesPayload):
-            arm.detach_payload()
         cell.mark_jaws_emptied()
         # Hands were at the jaws: the next motion the robot makes by itself counts down first.
         cell.stamp_jaws_emptied()
@@ -583,8 +571,8 @@ def post_brake(cell: Annotated[Console, Depends(console)]) -> BrakeOut:
     """Halt now: stops the run and latches the arm; not an emergency stop; the red button is.
 
     The run stops commanding, and where the arm latches, every next motion and output switch is refused before
-    anything is sent, until a person confirms the cell is clear. Only where the arm also brakes a move in flight
-    (``robot.ur.brake_on_halt``, off as shipped) is that move braked under control; elsewhere the move in flight runs
+    anything is sent, until a person confirms the cell is clear. Where the arm also brakes a move in flight
+    (every UR) that move is braked under control; elsewhere the move in flight runs
     to its end and nothing after it is sent. A request over a socket depends on latency, an open tab and an awake
     laptop, which is why the red button stays the safety halt."""
     session = cell.session
@@ -630,7 +618,7 @@ def post_brake(cell: Annotated[Console, Depends(console)]) -> BrakeOut:
 
 def _named_pose(cell: Console, name: str) -> tuple[str, list[float]] | None:
     """A taught pose's label and joints (degrees), or ``None`` for a name nobody taught."""
-    pose = cell.robot().named_poses.get(name)
+    pose = cell.robot().motion.named_poses.get(name)
     if pose is None:
         return None
     return pose.label or name, [float(value) for value in pose.joints_deg]
@@ -653,7 +641,7 @@ def post_home(cell: Annotated[Console, Depends(console)], body: HomeIn) -> RunOu
     if to != "home":
         named = _named_pose(cell, to)
         if named is None:
-            known = ", ".join(sorted(cell.robot().named_poses)) or "none is"
+            known = ", ".join(sorted(cell.robot().motion.named_poses)) or "none is"
             raise refusal("unknown_pose", f"no pose called {to!r} was taught ({known}); Home is 'home'.", which="home")
         inputs["label"], inputs["joints_deg"] = named
     try:
@@ -672,7 +660,7 @@ def post_wave(cell: Annotated[Console, Depends(console)]) -> RunOut:
     console's answer to a greeting in the chat, at once or on a click as the app config says
     (``runtime.greeting.wave``), after a 3 s countdown where a person's hands were last at the arm.
 
-    Refused as a new task is, bar a carried part: during a run, on a halted or stopped controller, before the cell is
+    Refused as a new task is: during a run, on a halted or stopped controller, before the cell is
     cleared after a stop and while a Restart is required (a wave is no way back), while a person is needed, while the
     jaws question waits or a toggle's jaws are not confirmed, while a part is held, and on an arm whose motions are
     refused.
@@ -702,8 +690,8 @@ def post_planner(cell: Annotated[Console, Depends(console)]) -> RunOut:
     if active is not None:
         raise refusal("run_active", f"run {active.id} ({active.kind}) is active.", run_id=active.id)
     if _planner(session.arm).state == "not_used":
-        raise refusal("planner_not_used", ("this arm's motions go through no cuRobo planner (the dummy, an ik arm, a "
-                                           "KUKA): there is nothing to start."))
+        raise refusal("planner_not_used", ("this arm's motions go through no cuRobo planner (the dummy, an ik arm): "
+                                           "there is nothing to start."))
     try:
         run = cell.registry.start_kind(cell, RunKind.PLANNER, drive_planner)
     except RunConflict as busy:

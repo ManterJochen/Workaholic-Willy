@@ -2,7 +2,7 @@
 its twin, half a turn about its approach, before it waits for its branch or the arm changes one (the owner's window gap,
 2026-10-08: "passiert eh schon öfter").
 
-``robot.natural_closing_axis: "-y"`` stays: with it the wrist camera faces -y, onto the work area, parallel to the mat,
+``robot.motion.natural_closing_axis: "-y"`` stays: with it the wrist camera faces -y, onto the work area, parallel to the mat,
 and the owner set it on purpose. But that rule chooses one of a grasp's two equivalent wrist turns for every grasp, and
 inside the half-turn cable window the one it chooses can have no configuration on the branch the arm holds. On the cell
 (2026-10-07, 11:19, ``case1007.py`` of the stuck map) the natural turn of a grasp's line down needed wrist 3 at +90
@@ -59,12 +59,12 @@ def _radians(degrees: "tuple[float, ...]") -> list[float]:
 
 
 def _ur10(home_deg: "tuple[float, ...]") -> URRobotArm:
-    """The cell's UR10 on cuRobo with the cable window about ``home_deg``, on a controller double that records calls."""
+    """The cell's UR10 on cuRobo with the cable window about ``home_deg`` (every real arm's), on a controller double
+    that records calls."""
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
-        "safety": {"payload": {"enforce": False}, "joint_limits": {"within_half_turn_of_home": True}},
-        "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL}, "workspace_limits": OPEN_WORKSPACE,
-        "home_joint_positions": _radians(home_deg),
+        "vendor": "ur", "ur": {"model": "ur10"},
+        "motion": {"planner": "curobo", "workspace": OPEN_WORKSPACE, "home_deg": list(home_deg)},
+        "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL},
     }))
     arm._conn = MagicMock()
     arm._conn.is_connected = True
@@ -103,7 +103,7 @@ def _loop(arm: URRobotArm, *, both_faces: bool = False, closing_axis: Any = None
     loop.gripper_model = ParallelJawGripperModel(finger_width_mm=29.24, pad_length_mm=20.91, pad_ahead_mm=10.45)
     loop._wrist_housing_read = True
     loop._wrist_housing_cached = None
-    loop.calculator_for = lambda camera_id: None
+    loop.calculator = None
     return loop
 
 

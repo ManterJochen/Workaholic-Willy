@@ -30,6 +30,7 @@ from src.geometry import Frame, Pose
 from src.geometry.quaternion import angle_between
 
 __all__ = [
+    "FRESH_FRAME_ATTEMPTS",
     "PICK_FRAME_BURST_GRABS",
     "PICK_FRAME_WARMUP_GRABS",
     "ShutterMotion",
@@ -37,6 +38,15 @@ __all__ = [
     "StampedGrab",
     "camera_to_base_at_shutter",
 ]
+
+#: How many more times a camera is asked for a frame after one it cannot vouch for, before the caller raises instead of
+#: refusing: a wrist frame taken while the tool moved beyond its rig's tolerance (:class:`ShutterStamp`), and in the live
+#: planner world a frame that is missing, blind or too old, which is a camera problem rather than a fact about the cell
+#: (``LivePlannerWorld.fresh_frame_attempts``, after which every verb raises ``CameraWorldUnavailable`` and a pick
+#: campaign stops). 3, so a dead camera is asked four times; a RealSense grab that blocks costs one grab timeout per
+#: reading. It was ``robot.safety.planning_world.perceived.fresh_frame_attempts`` until the owner's cleanup of
+#: 2026-10-17 fixed it at the owner's cell's 3.
+FRESH_FRAME_ATTEMPTS = 3
 
 #: Frames a pick frame grabs and throws away before the frame it keeps (``RealSenseVisionPerceptionSource``'s
 #: ``warmup_grabs``), so a physical camera's auto-exposure has settled. On a camera the arm carries they come before

@@ -10,9 +10,9 @@ synthetic parts read as a camera straight above reads them, 0.4 mm of noise:
 * a ring 70 mm across with a 44 mm bore: too wide as a whole, held by one wall with a finger in the bore; a ring with a
   30 mm bore offers none, a 29 by 10.8 mm finger does not go into a 30 mm bore;
 * a six-lobed star 70 mm across, which SFE's hull makes wider than the stroke: held;
-* a neighbour standing where an open finger would come down refuses that grasp;
-* both stages' grasps ranked together, robust first, by score, every grasp of SFE kept and a body's near one left out
-  unless it opens the jaws otherwise (``merged_ranking``).
+* a neighbour standing where an open finger would come down refuses that grasp.
+
+SFE's prism offered no grasp on the ring and the star; it left with its search on 2026-10-16 (the owner's cleanup).
 """
 
 from __future__ import annotations
@@ -24,12 +24,8 @@ from typing import Any
 
 import numpy as np
 
-from src.robot.grasping.generation.body_grasps import body_grasps, body_map, merged_ranking
-from src.robot.grasping.generation.support_footprint import (
-    SupportFootprintCandidate,
-    SupportFootprintJaw,
-    generate_support_footprint_grasps,
-)
+from src.robot.grasping.generation.body_grasps import body_grasps, body_map
+from src.robot.grasping.generation.hand import SupportFootprintCandidate, SupportFootprintJaw
 
 
 @lru_cache(maxsize=None)
@@ -113,7 +109,7 @@ class TheBodyOfAPart(unittest.TestCase):
         owner's Robotiq came down onto the parts, 2026-10-14); the same place fully open after it, where the guard holds
         the part's smeared edge beside the narrow fingers (2026-10-13). A toggle opens fully, and so does a hand that
         opens as needed where the narrow room leaves no stroke past the span."""
-        from src.robot.grasping.generation.support_footprint import NARROW_ROOM_MM
+        from src.robot.grasping.generation.hand import NARROW_ROOM_MM
 
         jaw = _jaw()
         self.assertEqual(NARROW_ROOM_MM, 7.0)
@@ -165,7 +161,6 @@ class TheBodyOfAPart(unittest.TestCase):
     def test_a_ring_is_held_by_one_wall_with_a_finger_in_its_bore(self) -> None:
         jaw = _jaw()
         wide = _surface(_ring(70.0, 44.0), 40.0, n=16000)
-        self.assertFalse(generate_support_footprint_grasps(wide, support_height_mm=0.0, jaw=jaw))
         found = body_grasps(wide, support_height_mm=0.0, jaw=jaw, max_candidates=6)
         self.assertTrue(found)
         for candidate in found:
@@ -223,7 +218,6 @@ class TheBodyOfAPart(unittest.TestCase):
     def test_a_star_wider_than_the_stroke_as_a_hull_is_held(self) -> None:
         jaw = _jaw()
         star = _surface(_star, 40.0, n=16000)
-        self.assertFalse(generate_support_footprint_grasps(star, support_height_mm=0.0, jaw=jaw))
         found = body_grasps(star, support_height_mm=0.0, jaw=jaw, max_candidates=6)
         self.assertTrue(found)
         for candidate in found:
@@ -260,7 +254,7 @@ class TheBodyOfAPart(unittest.TestCase):
 class SeenByAnyLook(unittest.TestCase):
     def test_a_point_one_look_saw_past_is_seen_whichever_look_it_was(self) -> None:
         """A bore one look sees only the near wall of, the next looks into (``scene_obstacles.SeenInAnyFrame``): a point
-        is seen where any frame's ray reached it, one build at a time and many at once alike."""
+        is seen where any frame's ray reached it."""
         from src.robot.grasping.generation.scene_obstacles import SeenInAnyFrame, corridor_seen_in
 
         k = np.array([[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]])
@@ -275,15 +269,12 @@ class SeenByAnyLook(unittest.TestCase):
         self.assertEqual([False, True, False], other(points).tolist())
         both = SeenInAnyFrame((one, other))
         self.assertEqual([True, True, False], both(points).tolist())
-        builds = np.stack([points[:2], points[1:]])
-        asked = np.ones(builds.shape[:2], dtype=bool)
-        self.assertEqual([0, 1], both.unseen_many(builds, asked).tolist())
 
 
 class ThePartTheGuardHoldsOut(unittest.TestCase):
     def test_a_sliver_of_a_rim_the_mask_ran_onto_is_no_part_to_plan_on(self) -> None:
         """The owner's crate (2026-10-13, 10:00): a sliver of the rim 60 mm off the part, in its mask, raised SFE's prism
-        to the rim and its grasps closed on air. Both stages plan on the largest cluster, the part the guard holds out
+        to the rim and its grasps closed on air. The body plans on the largest cluster, the part the guard holds out
         (``perceived.target_body_points``)."""
         from src.robot.grasping.generation._support_footprint_stage import support_footprint_breakdowns
 
@@ -299,34 +290,6 @@ class ThePartTheGuardHoldsOut(unittest.TestCase):
         alone = positions(cube)
         self.assertTrue(alone)
         self.assertEqual(alone, positions(np.vstack([cube, rim])))
-
-
-class BothStagesRankedTogether(unittest.TestCase):
-    @staticmethod
-    def _candidate(score: float, robust: bool, x: float, yaw_deg: float = 0.0,
-                   open_width_mm: "float | None" = None) -> SupportFootprintCandidate:
-        axis = np.array([math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg)), 0.0])
-        return SupportFootprintCandidate(score=score, position_mm=np.array([x, 0.0, 20.0]),
-                                         approach=np.array([0.0, 0.0, -1.0]), closing_axis=axis, grip_width_mm=30.0,
-                                         contact_angle_rad=0.0, clearance_mm=5.0, robust=robust,
-                                         open_width_mm=open_width_mm)
-
-    def test_robust_first_then_by_score_and_a_near_one_left_out_unless_it_opens_otherwise(self) -> None:
-        sfe = [self._candidate(0.9, False, 0.0), self._candidate(0.7, True, 10.0)]
-        body = [self._candidate(0.85, True, 20.0), self._candidate(0.8, True, 11.0)]
-        self.assertEqual([c.score for c in merged_ranking(sfe, body, most=12)], [0.85, 0.7, 0.9])
-        narrow = [self._candidate(0.85, True, 20.0), self._candidate(0.8, True, 11.0, open_width_mm=34.0)]
-        self.assertEqual([c.score for c in merged_ranking(sfe, narrow, most=12)], [0.85, 0.8, 0.7, 0.9])
-        across = [self._candidate(0.8, True, 11.0, yaw_deg=90.0)]
-        self.assertEqual([c.score for c in merged_ranking(sfe, across, most=12)], [0.8, 0.7, 0.9])
-
-    def test_every_grasp_of_sfe_stays_and_the_body_adds_most_at_most(self) -> None:
-        sfe = [self._candidate(0.5 - k / 100.0, True, 10.0 * k) for k in range(12)]
-        body = [self._candidate(0.9 - k / 100.0, True, 500.0 + 10.0 * k) for k in range(20)]
-        ranked = merged_ranking(sfe, body, most=12)
-        self.assertEqual(len(ranked), 24)
-        self.assertTrue(all(any(c is s for c in ranked) for s in sfe))
-        self.assertEqual([c.score for c in ranked[:12]], [c.score for c in body[:12]])
 
 
 if __name__ == "__main__":

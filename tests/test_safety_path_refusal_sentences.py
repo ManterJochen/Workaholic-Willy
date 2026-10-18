@@ -16,7 +16,7 @@ from src.robot.safety import preflight as safety_preflight
 
 class ThePathRefusalsHaveOneHomeTests(unittest.TestCase):
     def test_the_sentences_say_what_is_missing(self) -> None:
-        self.assertIn("safety.self_collision.enforce is false", safety_preflight.no_path_guard_refusal())
+        self.assertIn("no self_collision guard is in this safety pipeline", safety_preflight.no_path_guard_refusal())
         refusal = safety_preflight.exact_mesh_path_refusal()
         self.assertIn("exact mesh engine", refusal)
         self.assertIn("Coal", refusal)

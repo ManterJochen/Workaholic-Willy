@@ -41,7 +41,6 @@ const CHECK_WORDS = {
   payload: 'pf.check.payload',
   'camera -> base': 'pf.check.cameraBase',
   'camera world': 'pf.check.cameraWorld',
-  'carried part': 'pf.check.carriedPart',
   'controller state': 'pf.check.controllerState',
   'cuRobo environment': 'pf.check.curobo',
   'end-effector wiring': 'pf.check.endEffectorWiring',

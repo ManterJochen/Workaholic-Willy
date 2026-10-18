@@ -12,7 +12,7 @@ print(robot.safety())    # what this arm refuses, asked of the arm that was buil
 
 # Poses in millimetres in the robot's base frame, joints in radians; choose both inside your
 # cell's workspace. robot.tool_down points the tool straight down, its fingers closing the way your
-# cell's hand naturally stands (robot.natural_closing_axis), along base x where it names none.
+# cell's hand naturally stands (robot.motion.natural_closing_axis), along base x where it names none.
 above = robot.tool_down(450.0, 100.0, 300.0)
 lower = robot.tool_down(450.0, 100.0, 200.0)
 

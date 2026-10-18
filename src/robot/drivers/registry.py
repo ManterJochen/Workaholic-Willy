@@ -8,8 +8,8 @@ for two reasons:
 
 * It keeps :mod:`src.robot.core` and the registry itself free of vendor-SDK imports,
   which the architecture requires and CI enforces. A vendor SDK import, such as
-  ``rtde_control``, ``franky`` or ``rclpy``, happens inside the factory body the first
-  time a caller asks for that vendor.
+  ``rtde_control``, happens inside the factory body the first time a caller asks for
+  that vendor.
 * It lets a driver fail to load gracefully on a host without its SDK: the
   :func:`create_arm` call raises a clear :class:`RobotConnectionError` and every other
   vendor stays usable.
@@ -17,9 +17,9 @@ for two reasons:
 Public surface
 --------------
 
-* :func:`register_arm_driver` registers a driver, decorator-style. :mod:`.ur` and
-  :mod:`.dummy` use it here, and a KUKA or Franka driver does the same in its own
-  ``__init__``.
+* :func:`register_arm_driver` registers a driver, decorator-style. The package's
+  ``__init__`` registers :mod:`.ur`, :mod:`.sim` and :mod:`.dummy` with it, and a new
+  vendor's driver registers the same way.
 * :func:`create_arm` turns a vendor into a :class:`RobotArm`.
 * :func:`available_vendors` lists the registered vendor strings.
 * :func:`is_vendor_registered` probes one vendor.
@@ -152,10 +152,10 @@ def create_arm(vendor: RobotVendor | str, **kwargs) -> RobotArm:
         If the vendor is recognised and no factory is registered, meaning the driver
         package is missing or its SDK failed to import.
     JointLimitTableMissing
-        If the built arm enforces the joint-limit guard and no per-axis table resolves for
+        If the built arm runs the joint-limit guard and no per-axis table resolves for
         the model it reports. Measured on the shipped ``web`` profile: such a cell used
         to build and then refuse every motion as ``controller_rejected``, naming the
-        controller for a missing config key. See
+        controller for a missing table. See
         :func:`src.robot.safety.joint_limits.assert_joint_limit_table_available`.
     """
     key = _coerce(vendor)

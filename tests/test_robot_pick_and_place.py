@@ -22,7 +22,6 @@ import numpy as np
 
 from src.geometry import Frame, Pose
 from src.robot.core import MotionResult
-from src.robot.core.arm_capabilities import PayloadModel
 from src.robot.core.camera_world import (
     DECLINE_ON_A_LIVE_WORLD_MESSAGE,
     NO_CAMERA_WORLD_MESSAGE,
@@ -64,26 +63,8 @@ class _RecordingArm(HoldsAWorld, DummyRobotArm):
         self.log = log
         self.refuse_linear = refuse_linear
         self.raise_on = raise_on
-        self.detaches = 0
         self.set_live_planner_world(world)
         self.held_at_motion: list[bool] = []
-
-    # The WHOLE payload capability, because an arm carries one or does not: a double that answers only
-    # `detach_payload` is a shape no driver has, and the verbs ask with `isinstance(arm, CarriesPayload)`.
-    def attach_payload(self, grip_width_mm: float) -> bool:
-        self.log.entries.append(("attach", round(float(grip_width_mm), 3)))
-        return True
-
-    def detach_payload(self) -> bool:
-        self.detaches += 1
-        self.log.entries.append(("detach",))
-        return True
-
-    def payload_declined_reason(self) -> "str | None":
-        return None
-
-    def payload_model(self) -> PayloadModel:
-        return PayloadModel.PLANNER_AND_FILTER
 
     def move(self, pose: Pose, **kwargs: Any) -> MotionResult:
         index = sum(1 for entry in self.log.entries if entry[0] == "move")
@@ -138,14 +119,11 @@ class PickAndPlaceInOrderTests(unittest.TestCase):
 
         self.assertIs(handling.HandlingOutcome.EXECUTED, report.outcome, report.render())
         self.assertEqual([
-            ("detach",),
             ("set_width", 85.0),
             ("move", (400.0, 0.0, 180.0), False),
             ("move", (400.0, 0.0, 100.0), True),
+            # No part in the jaws is modelled (2026-10-17): the close hands the arm nothing.
             ("set_width", 39.0),
-            # The planner learns what it carries before the motion that carries it: this arm models a payload,
-            # so the grasp attaches the measured width and the release below forgets it again.
-            ("attach", 39.0),
             ("move", (400.0, 0.0, 180.0), True),
         ], _kinds(log))
         assert report.hand is not None
@@ -163,7 +141,6 @@ class PickAndPlaceInOrderTests(unittest.TestCase):
             ("move", (400.0, 0.0, 150.0), False),
             ("move", (400.0, 0.0, 100.0), True),
             ("set_width", 85.0),
-            ("detach",),
             ("move", (400.0, 0.0, 150.0), True),
         ], _kinds(log))
 
@@ -466,7 +443,6 @@ class LinesTheArmCannotKeepTests(unittest.TestCase):
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
         arm = line_arm()
-        arm._curobo.detach_payload = lambda: True  # type: ignore[union-attr]
         arm.wait_until_steady = lambda timeout_s=5.0, poll_interval_s=0.02: True  # type: ignore[method-assign]
         approach = MagicMock(return_value=MotionResult.executed(MotionCommand.MOVE_TO, message="planned"))
         arm._drive_curobo = approach  # type: ignore[method-assign]
@@ -553,15 +529,16 @@ class LinesTheArmCannotKeepTests(unittest.TestCase):
 
 class TheSteadyGateTests(unittest.TestCase):
     def test_a_dwell_timeout_moves_nothing_further(self) -> None:
-        from src.robot.core import MotionStatus
+        from src.robot.core import MotionCommand, MotionResult, MotionStatus
         from src.robot.safety.preflight import SafetyPreflight
         from tests._arm_kit import line_arm
 
         handling = _handling()
         arm = line_arm()
-        arm._curobo.detach_payload = lambda: True  # type: ignore[union-attr]
-        arm.wait_until_steady = lambda timeout_s=5.0, poll_interval_s=0.02: False  # type: ignore[method-assign]
-        arm._drive_curobo = MagicMock()  # type: ignore[method-assign]
+        # A cuRobo arm waits for steady at its send; the drive stood in here answers as a gate that timed out answers.
+        arm._drive_curobo = MagicMock(return_value=MotionResult.failed(  # type: ignore[method-assign]
+            MotionStatus.TIMEOUT, MotionCommand.MOVE_TO,
+            message="the arm did not come to rest within 5.00 s before the motion was sent; nothing was sent"))
         hand = _Hand(hold=HoldEvidence.HELD)
         robot = Robot.from_parts(arm=arm, gripper=hand, lock_key=None)
 
@@ -570,7 +547,7 @@ class TheSteadyGateTests(unittest.TestCase):
 
         self.assertIs(handling.HandlingOutcome.MOTION_REFUSED, report.outcome, report.render())
         self.assertEqual((MotionStatus.TIMEOUT,), report.statuses)
-        arm._drive_curobo.assert_not_called()
+        arm._drive_curobo.assert_called_once()
         self.assertEqual([("set_width_mm", 85.0)], hand.commands)
 
 

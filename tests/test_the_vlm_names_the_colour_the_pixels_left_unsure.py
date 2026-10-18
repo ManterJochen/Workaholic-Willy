@@ -4,9 +4,9 @@ Where the camera source's colour check cannot tell from the pixels (a lightness 
 the rules, a part of fewer than 50 pixels), it asks the backend's ``name_colour`` for one colour word: never a yes or a
 no, which an instruct model gives too easily. ``Qwen3VLGrounder.name_colour`` crops the box grown by 15 %, scales it
 to a long side of 224 px (about 50 image tokens) and asks greedily for at most three tokens, under the one generate
-lock. Every backend a cell composes forwards the question: ``TwoStageBackend`` to its detector, counting a question
-that raises as a failure of the model (so a task reads ``detector_failed``, never "nothing left");
-``GuardedVlmBackend`` while it is not degraded; ``RoutedPerceptionBackend`` to its VLM route.
+lock. The backend a cell composes, ``TwoStageBackend`` (the one since the guarded and the routed backends left with
+GroundingDINO, 2026-10-17), forwards the question to its detector, counting a question that raises as a failure of the
+model (so a task reads ``detector_failed``, never "nothing left"); RT-DETR names no colour.
 
 No weights: the model, its processor and torch are doubles.
 """
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import contextlib
 import unittest
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -134,7 +133,7 @@ class _Naming:
 
 
 class _Phrases:
-    """A phrase grounder: it names no colour."""
+    """A detector that names no colour, as RT-DETR does not."""
 
     def detect_all(self, bgr: Any, prompt: str) -> list[Any]:
         return []
@@ -154,47 +153,6 @@ class EveryBackendForwardsTheQuestionTests(unittest.TestCase):
         self.assertEqual("", backend.name_colour(_IMAGE, _BOX))
         self.assertEqual(1, failures_of(backend))
         self.assertIn("RuntimeError naming a colour", backend.last_failure)
-
-    def test_the_guarded_backend_asks_the_vlm_until_it_has_degraded(self) -> None:
-        from src.models.vlm import GuardedVlmBackend
-
-        naming = _Naming("white")
-        guarded = GuardedVlmBackend(vlm=TwoStageBackend(naming, segmenter=None), model_id="qwen")
-        self.assertEqual("white", guarded.name_colour(_IMAGE, _BOX))
-
-        raising = TwoStageBackend(_Naming(raises=True), segmenter=None)
-        counting = GuardedVlmBackend(vlm=raising, model_id="qwen")
-        self.assertEqual("", counting.name_colour(_IMAGE, _BOX))
-        self.assertEqual(1, failures_of(counting))
-        self.assertIn("naming a colour", counting.last_failure)
-
-        class _Unloadable:
-            def perceive(self, image_bgr: Any, prompt: str) -> tuple[Any, ...]:
-                raise OSError("no weights on disk")
-
-            def name_colour(self, image_bgr: Any, box: Any) -> str:  # pragma: no cover - never asked once degraded
-                raise AssertionError("a degraded backend asked the VLM")
-
-        degraded = GuardedVlmBackend(vlm=_Unloadable(), model_id="qwen", degrade=True,
-                                     fallback_factory=lambda: TwoStageBackend(_Phrases(), segmenter=None))
-        with self.assertLogs("src.models.vlm.availability", level="WARNING"):
-            degraded.perceive(_IMAGE, "grey cube")
-        self.assertTrue(degraded.degraded)
-        self.assertEqual("", degraded.name_colour(_IMAGE, _BOX))
-
-    def test_the_routed_backend_asks_its_vlm_route(self) -> None:
-        from src.models.routed_backend import RoutedPerceptionBackend
-        from src.models.routing import Route
-
-        naming = _Naming("green")
-        routed = RoutedPerceptionBackend(
-            simple_factory=lambda: TwoStageBackend(_Phrases(), segmenter=None),
-            vlm_factory=lambda: TwoStageBackend(naming, segmenter=None),
-            router=SimpleNamespace(route=lambda prompt: None),  # type: ignore[arg-type]
-        )
-        self.assertEqual("green", routed.name_colour(_IMAGE, _BOX))
-        self.assertEqual((Route.VLM,), routed.built_routes())
-        self.assertEqual(1, naming.asked)
 
 
 if __name__ == "__main__":  # pragma: no cover

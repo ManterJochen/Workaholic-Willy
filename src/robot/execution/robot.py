@@ -17,7 +17,7 @@ The verbs that move the arm (``move``, ``move_joints``, ``home``, ``pick``, ``pl
 arm's own checked verbs and read, before any command, whether its motions go through cuRobo and the
 exact mesh guard with the camera world (:mod:`src.robot.execution.motion`). Each returns a frozen
 report and raises only for a programmer's error. ``tool_down`` builds the pose they take through the
-cell: ``Pose.tool_down``, closing the way the cell's hand naturally stands (``robot.natural_closing_axis``)
+cell: ``Pose.tool_down``, closing the way the cell's hand naturally stands (``robot.motion.natural_closing_axis``)
 where the program names no axis.
 
 Importing this module loads no grasping stack, no perception, no model and no camera package.
@@ -446,7 +446,7 @@ class Robot:
         naturally stand. Commands nothing.
 
         ```python
-        above = robot.tool_down(450.0, 100.0, 300.0)              # along robot.natural_closing_axis
+        above = robot.tool_down(450.0, 100.0, 300.0)              # along robot.motion.natural_closing_axis
         part = robot.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)  # a quarter turn further about the vertical
         ```
 
@@ -458,7 +458,7 @@ class Robot:
                 on a cell whose hand stands along ``-y``, ``90.0`` closes along base x (default: 0.0).
             closing_axis (Maybe[ClosingAxisLike]): Which way the jaws close: a name ``Pose.tool_down`` takes (``"x"``,
                 ``"-y"``, ...), a quaternion ``(x, y, z, w)`` or a BASE ``Pose`` whose tool +X laid onto the base XY
-                plane is the direction. Unset is the cell's ``robot.natural_closing_axis``, and ``"x"`` where it names
+                plane is the direction. Unset is the cell's ``robot.motion.natural_closing_axis``, and ``"x"`` where it names
                 none (default: UNSET).
 
         Returns:
@@ -499,8 +499,8 @@ class Robot:
                 ``EXECUTED``, ``MOTION_REFUSED``, ``CAMERA_WORLD_UNAVAILABLE`` or ``REFUSED``. Prints as itself.
 
         The move is refused before any command for a closed link, a pose not in BASE, a camera world the arm would
-        refuse, and an arm whose motions do not go through cuRobo and the exact mesh guard (a UR on the ik planner, a
-        KUKA); a desk arm runs and says UNPLANNED. A refusal is an outcome, not an exception.
+        refuse, and an arm whose motions do not go through cuRobo and the exact mesh guard (a UR on the ik planner);
+        a desk arm runs and says UNPLANNED. A refusal is an outcome, not an exception.
         """
         return _motion.move(self.arm, pose, decline=_motion.decline_of(decline), linear=linear, vel=vel, acc=acc)
 
@@ -534,23 +534,23 @@ class Robot:
         return _motion.home(self.arm, decline=_motion.decline_of(decline))
 
     def grasp(self, width_mm: float) -> "_handling.HandReport":
-        """Close the hand to a width, read what it measured, and hand a held part to the arm's model.
+        """Close the hand to a width and read what it measured.
 
         Args:
             width_mm (float): How far the jaws close, in millimetres. No force is commanded.
 
         Returns:
-            HandReport: What was commanded and measured (``HoldEvidence``), and what it did to the carried part model;
-                ``outcome`` is ``GRASPED``, ``NOTHING_HELD``, ... Prints as itself.
+            HandReport: What was commanded and measured (``HoldEvidence``); ``outcome`` is ``GRASPED``,
+                ``NOTHING_HELD``, ... Prints as itself.
 
-        Commands nothing on a robot with no hand, a hand that holds nothing, or a link that is not open. A hold the hand
-        measured, or that nothing could measure, is modelled as a carried part where the arm models one; a measured
-        empty close is not. A hand that raises is stopped once where it can be.
+        Commands nothing on a robot with no hand, a hand that holds nothing, or a link that is not open. No part in the
+        jaws is modelled: a closed hand is judged as an empty one, by the exact guard at full stroke. A hand that raises
+        is stopped once where it can be.
         """
         return _handling.grasp(self, width_mm)
 
     def release(self) -> "_handling.HandReport":
-        """Open the hand to its width and forget the carried part, unless the hand still measures one.
+        """Open the hand to its width and say whether it still measures a part.
 
         Returns:
             HandReport: What was commanded and measured; ``RELEASE_NOT_CONFIRMED`` where the hand still holds.

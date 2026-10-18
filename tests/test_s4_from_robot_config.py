@@ -24,7 +24,7 @@ from src.robot.grippers.null import NullGripper
 from src.robot.grippers.vacuum import VacuumGripper
 from tests.test_grasping_config_wiring import _calc_and_perception
 
-_GRASPING = {"default_mode": "auto", "max_attempts": 5}
+_GRASPING = {"default_mode": "auto"}
 
 #: A UR arm satisfies SupportsDigitalIO (the vacuum branch needs it) but from_robot_config fails early
 #: without the ur_rtde SDK. Patch that readiness gate off: URRobotArm still CONSTRUCTS (ur_rtde is
@@ -96,11 +96,16 @@ class RecordProvenanceTests(unittest.TestCase):
             )
         self.assertEqual(svc._record_provenance, {"robot_vendor": "ur", "robot_model": "ur3e"})
 
-    def test_no_record_path_leaves_provenance_unset(self) -> None:
+    def test_a_tree_that_names_no_file_appends_to_the_log_folder_with_the_provenance(self) -> None:
+        """Every pick records itself since 2026-10-17 (the owner's cleanup): where the tree names no file, into
+        ``grasp_records.jsonl`` in the log folder (``tests/conftest.py`` points it at the suite's own)."""
+        from src.robot.execution.autonomous_grasp.service import default_record_log
+
         calc, perc = _calc_and_perception()
         svc = AutonomousGraspService.from_robot_config(_cfg("dummy", {"vendor": "none"}),
                                                        calculator=calc, perception=perc)  # type: ignore[arg-type]
-        self.assertIsNone(svc._record_provenance)
+        self.assertEqual(default_record_log(), svc._record_log_path)
+        self.assertEqual({"robot_vendor": "dummy", "robot_model": "unknown"}, svc._record_provenance)
 
     def test_provenance_reaches_the_logged_record(self) -> None:
         # End to end on a dummy arm (a real pick completes): the stamped identity must land in the

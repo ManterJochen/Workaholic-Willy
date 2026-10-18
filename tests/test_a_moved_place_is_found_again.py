@@ -116,18 +116,15 @@ def _grasp() -> Pose:
 
 
 class ForgetOneRegionTests(unittest.TestCase):
-    def test_forgetting_one_region_keeps_every_other_region_and_every_zone(self) -> None:
+    def test_forgetting_one_region_keeps_every_other_region(self) -> None:
         zones = ExclusionZones()
-        zones.start_pick()
         a = zones.keep_out_region(ExclusionRegion.rectangle((400.0, -300.0), (320.0, 220.0), reason="the yellow bin"))
         b = zones.keep_out_region(ExclusionRegion.rectangle((-300.0, -500.0), (320.0, 220.0), reason="the blue bin"))
         circle = zones.keep_out_region(ExclusionRegion.circle((300.0, -400.0), 150.0, reason="the drop"))
-        zones.exclude(label="red cube", centre_mm=(0.0, -700.0, 20.0))
 
         self.assertTrue(zones.forget_region(a))
 
         self.assertEqual((b, circle), zones.regions())
-        self.assertTrue(zones.excludes(label="red cube", centre_mm=(0.0, -700.0, 20.0)), "a zone was forgotten")
         self.assertFalse(zones.forget_region(a), "a region forgotten once is forgotten")
         self.assertEqual((b, circle), zones.regions())
 
@@ -165,8 +162,8 @@ class ACheckOfOnePlaceTests(unittest.TestCase):
         at_the_drop = (float(PLACE_TCP.position_mm[0]), float(PLACE_TCP.position_mm[1]), 20.0)
         for where in (in_blue, at_the_drop, (BIN_CENTRE[0] + 40.0, BIN_CENTRE[1], 30.0)):
             with self.subTest(where=where):
-                self.assertTrue(sort.zones.kept_out_by_a_region(label="red cube", centre_mm=where))
-        self.assertFalse(sort.zones.kept_out_by_a_region(label="red cube", centre_mm=(255.0, -200.0, 30.0)),
+                self.assertTrue(sort.zones.excludes(label="red cube", centre_mm=where))
+        self.assertFalse(sort.zones.excludes(label="red cube", centre_mm=(255.0, -200.0, 30.0)),
                          "the yellow bin's old edge is still kept out")
 
     def test_forgetting_every_region_at_a_check_would_let_a_pick_take_parts_back_out_of_the_other_bin(self) -> None:
@@ -177,8 +174,7 @@ class ACheckOfOnePlaceTests(unittest.TestCase):
         sort.zones.forget_regions()
         sort.zones.keep_out_region(sort.yellow.keep_out_region())
 
-        self.assertFalse(sort.zones.kept_out_by_a_region(label="red cube",
-                                                         centre_mm=(BLUE_CENTRE[0], BLUE_CENTRE[1], 30.0)))
+        self.assertFalse(sort.zones.excludes(label="red cube", centre_mm=(BLUE_CENTRE[0], BLUE_CENTRE[1], 30.0)))
 
 
 class AMovedBinTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 """Vendor-neutral core abstractions for the Workaholic-Willy robot subsystem.
 
-This package is the abstract surface every supported robot driver satisfies (UR,
-KUKA, Franka, ROS 2, MoveIt, cuRobo, simulators), and the only part of the ``robot``
+This package is the abstract surface every supported robot driver satisfies (the UR,
+the Isaac sim arm and the desk dummy), and the only part of the ``robot``
 package that pipelines, planners and the application layer depend on directly.
 
 Public exports:

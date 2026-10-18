@@ -16,8 +16,8 @@
  * **In the reader's words.** Every key this console knows is named in the reader's language with one line on how to
  * get its value (`cf.key.*`); the server's own English sentence, the full instruction, stays a detail: open in the tech
  * view, under "Details (Server)" in the demo view. A key the console has no words for keeps the server's, open. A
- * controller address is offered only for the vendor this cell is (a UR cell is not offered the KUKA address, and the
- * desk's dummy arm neither): the library offers each only for its vendor, and the server lists them all.
+ * controller address is offered only for the vendor this cell is (the desk's dummy arm is not offered the UR
+ * address): the library offers each only for its vendor, and the server lists them all.
  *
  * The key's documentation, its measure and the files are the server's own words: data, shown as written.
  */
@@ -43,7 +43,6 @@ const KEY_WORDS = {
   'camera.cameras.primary_rig_id': 'primary',
   'camera.cameras.rigs[*].enabled': 'enabled',
   'robot.ur.ip': 'urIp',
-  'robot.kuka.controller_ip': 'kukaIp',
 } as const
 
 type KeyWords = (typeof KEY_WORDS)[keyof typeof KEY_WORDS]
@@ -53,7 +52,7 @@ function wordsOf(key: string): KeyWords | null {
 }
 
 /** The robot vendors whose keys are their own (`robot.<vendor>.*`); every other key is every cell's. */
-const VENDOR_KEYS = ['ur', 'kuka'] as const
+const VENDOR_KEYS = ['ur'] as const
 
 /** Whether `field` is offered on a cell of `vendor`: a vendor's own key only on that vendor's cell. */
 function offered(field: WritableOut, vendor: string | null): boolean {

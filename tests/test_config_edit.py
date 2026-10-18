@@ -136,7 +136,7 @@ class ConfigEditTests(unittest.TestCase):
 
     def test_a_safety_limit_is_refused_even_though_the_schema_would_accept_it(self) -> None:
         """Not "cannot", but "will not": the value is legal and the refusal is the design."""
-        result = set_key("robot.workspace_limits.z_min", -500.0, root=self.tmp)
+        result = set_key("robot.motion.workspace.z_min", -500.0, root=self.tmp)
         self.assertFalse(result.applied)
         self.assertIs(result.refused, WriteRefused.NOT_WRITABLE)
         self.assertIn("comment", result.message)
@@ -178,7 +178,7 @@ class ConfigEditTests(unittest.TestCase):
         here it would skip both. The refusal says so, rather than calling a real key unknown."""
         target = self.tmp / "robot" / "robot.yaml"
         before = target.read_bytes()
-        for key in ("robot.named_poses.drop_left.joints_deg", "robot.default_place_pose"):
+        for key in ("robot.motion.named_poses.drop_left.joints_deg", "robot.motion.default_place_pose"):
             with self.subTest(key=key):
                 result = set_key(key, [0.0] * 6, root=self.tmp)
                 self.assertFalse(result.applied)
@@ -194,7 +194,10 @@ class ConfigEditTests(unittest.TestCase):
         parameter = inspect.signature(set_keys).parameters["allowed"]
         self.assertIs(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIs(parameter.default, writable)
-        self.assertFalse([entry.path for entry in WRITABLE if "named_poses" in entry.path or "place" in entry.path])
+        # The pose door's keys (POSE_KEYS) alone are its own; a key of the place block is no pose
+        # (robot.motion.place.part_hang_mm, 2026-10-17).
+        self.assertFalse([entry.path for entry in WRITABLE
+                          if "named_poses" in entry.path or "default_place_pose" in entry.path])
 
     # -- the transaction ---------------------------------------------------------------------------
 

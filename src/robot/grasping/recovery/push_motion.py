@@ -29,8 +29,7 @@ with a ``refused_*`` outcome and zero motion, so the recovery loop falls through
   or a width that says closed is a refusal like the others. A push that closes its hand (``close_to_mm``) asks a
   Robotiq (the owner, 2026-10-15) only that it measure its width, be connected and read one, and a toggle (the owner,
   2026-10-16) that its count stand and say open, as above;
-* the arm is at rest, where the cell asks for that before every motion (``safety.dwell``), as for every grasp and
-  look motion.
+* the arm is at rest, as before every grasp and look motion (``motion.steady_timeout_of``).
 
 **The motion**, all of it inside :func:`~src.robot.core.keep_out.keeping_out` with the part's points plus its
 swept travel (:func:`~src.robot.grasping.recovery.push_planner.swept_target_points_mm`, as far as the push leg
@@ -246,7 +245,7 @@ class PushOutcomeCode(StrEnum):
     #: its width, the caller ends the pick there as a gripper fault (the owner, 2026-09-30): nobody vouches for that hand
     #: any more. Only a gripper that neither counts nor measures falls through on it.
     REFUSED_JAWS_UNKNOWN = "refused_jaws_unknown"
-    #: The arm did not come to rest before P0 where the cell asks for that (``safety.dwell``).
+    #: The arm did not come to rest before P0.
     REFUSED_ARM_NOT_STEADY = "refused_arm_not_steady"
     #: The arm's live camera world did not take the part and its push path to keep out.
     REFUSED_KEEP_OUT_NOT_TAKEN = "refused_keep_out_not_taken"
@@ -369,7 +368,7 @@ def push_tool_quaternion(
 
     The tool frame is the grasp frame: X closes, Z approaches (``plan.approach``, straight down onto the support), Y
     completes it. X lies along ``plan.direction`` either way, since either finger may lead. Where the cell names how
-    its hand and camera naturally stand (``natural``, ``robot.natural_closing_axis``), the way round whose tool +X lies
+    its hand and camera naturally stand (``natural``, ``robot.motion.natural_closing_axis``), the way round whose tool +X lies
     nearer that direction at the part is taken, as for every camera grasp (``closing_axis.turned_nearer``). Otherwise,
     and where the push runs straight across it, the sign nearer ``current_tool_x`` (the tool's X in BASE where the arm
     stands) is taken, so the wrist turns at most a quarter turn.
@@ -430,7 +429,7 @@ def execute_push(
     ``gripper`` is the cell's gripper, only read unless ``close_to_mm`` closes it. ``offer`` is the pick's segmentation offer of the part (its
     masks for their camera, its BASE points and the frame's shutter time, as the pick holds it for a grasp); the push
     holds the same offer with the part's points swept along the push. ``natural_closing_axis`` is how the cell's hand
-    and camera naturally stand (``robot.natural_closing_axis``): the push closes the way round nearer it
+    and camera naturally stand (``robot.motion.natural_closing_axis``): the push closes the way round nearer it
     (:func:`push_tool_quaternion`); ``None`` keeps the way round nearer where the tool stands. ``should_cancel`` is the
     pick's stop check: asked between the legs, as the controller and the toggle's count are, a stop asked for ends the
     push where the arm stands, nothing more commanded, and a person decides (Track P's item 5); a check that raises
@@ -891,8 +890,8 @@ def _not_at_rest(arm: Any, timeout_s: Optional[float]) -> str:
         if arm.wait_until_steady(timeout_s):
             return ""
     except Exception as exc:  # noqa: BLE001 (a wait that fails is an arm nobody can say is at rest)
-        return f"The arm could not be waited on to come to rest ({type(exc).__name__}: {exc}, safety.dwell)"
-    return f"The arm did not come to rest within {timeout_s:g} s (safety.dwell)"
+        return f"The arm could not be waited on to come to rest ({type(exc).__name__}: {exc})"
+    return f"The arm did not come to rest within {timeout_s:g} s"
 
 
 def _jaws_refusal(gripper: Any, *, closes: bool = False) -> Optional[tuple[PushOutcomeCode, str]]:

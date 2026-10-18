@@ -21,7 +21,7 @@ cell the same campaign starts from `Cell.from_tree(load_tree())`
 This page traces the default pick stage by stage, says what each stage may refuse and where the telemetry
 record comes from, and lists which advanced layers exist, which are off, and what turns each one on. The
 default pick is open-loop. A **wrist camera looks around** before it grips, with no switch to set
-(section 5.1), and **recovery** can skip a failed part or push a boxed-in one (section 6.4). The most
+(section 5.1), and **recovery** can look again or push a boxed-in part (section 6.4). The most
 expensive mistake here is believing a feature is active because a YAML key exists for it, so read section
 7 before you report a number.
 
@@ -52,7 +52,8 @@ matter.
 `from_robot_config(robot_cfg, calculator=..., perception=...)` is the config-driven path. It reads
 `robot.grasping`, builds the arm and gripper through the vendor registry, resolves the grasp mode and the
 attempt budget, builds a sub-policy for each enabled block, computes an `EffectiveGraspingConfig`, applies
-the orchestrator overlays, and turns on record logging when the config names a path. It accepts `arm=` and
+the orchestrator overlays, and turns on record logging, to the path the config names or else to
+`grasp_records.jsonl` in the log folder (section 8). It accepts `arm=` and
 `gripper=` for what config cannot express: a live device handle, such as a simulator gripper that shares
 its arm's session.
 
@@ -64,7 +65,6 @@ config at all: `effective_config` stays `None` and no overlay runs.
 | `build_real_cell` and `build_rehearsal_cell` in `src/robot/execution/autonomous_grasp/cells.py` | `from_robot_config` | a whole cell in one call: physical, or a desk rehearsal |
 | `Cell`, `python -m src.robot.execution.real_cell` and the operator console | `from_robot_config`, through those two builders | the program, the terminal and the browser drive one construction |
 | `run_multiview_pick.py` with `--boot config`, its default | `from_robot_config` | the simulator booting the way a real cell boots |
-| `datagen/rl/occupancy.py` | `from_robot_config` | features from the real stack, not from a copy of it |
 | `run_m1_pick`, `run_m2_pick`, `run_dense_pick`, `run_attribute_pick` and `run_eih_pick` | `from_components` | the simulator gripper needs a session the vendor registry cannot reach |
 
 Check the list against the code: `git grep -n "from_robot_config(" src datagen scripts api`, and the same
@@ -83,9 +83,8 @@ ordered steps, `preflight()`, `build()`, `safety()` and `connected()`, and `buil
 you. The contract is in the [execution README](../../src/robot/execution/README.md) and the
 [autonomous_grasp README](../../src/robot/execution/autonomous_grasp/README.md).
 
-With `effective_config` at `None` and no overlays applied, these stay off whatever the YAML says:
-uncertainty fusion, the drift and out-of-distribution watchdog, latency budget enforcement, the service
-recovery loop, and every orchestrator setting the overlays would have made. That is what "the caller
+With `effective_config` at `None` and no overlays applied, these stay off whatever the YAML says: the
+service recovery loop, and every orchestrator setting the overlays would have made. That is what "the caller
 supplies everything" means, and it means a measurement taken on `from_components` describes the runner's
 own wiring, not a configured cell.
 
@@ -101,7 +100,7 @@ in the [autonomous_grasp README](../../src/robot/execution/autonomous_grasp/READ
 | 0 | mode check | `service.py`, `_pick_inner` | `MODE_NOT_AVAILABLE`: a per-call `mode=` needs another sampler |
 | 1 | perceive | `pick_loop.py`, `_execute_pick` | `NO_PERCEPTION` for a frame with no segmentations. Each retry acquires a fresh frame. A wrist pick handed looks perceives at each look instead, fused (5.1) |
 | 2 | resolve the frame | `_best_result_over_segmentations` | one `frame_resolver` call per iteration: all masks in a frame share one TCP pose |
-| 3 | generate and rank | `calculator.compute_result` per segmentation, then `_closing_along` | a typed failure reason (below); each mask is computed with the other masks as clutter, and the first good part is taken, the best score where none is good (`first_good_part`, below). A program's `closing_axis` then keeps only the grasps along it, none left being `no_valid_grasp`; else the cell's natural orientation turns each the nearer way round (5.2) |
+| 3 | generate and rank | `calculator.compute_result` per segmentation, then `_closing_along` | a typed failure reason (below); each mask is computed with the other masks as clutter, and the first good part is taken, the best score where none is good (the first good part, below). A program's `closing_axis` then keeps only the grasps along it, none left being `no_valid_grasp`; else the cell's natural orientation turns each the nearer way round (5.2) |
 | 4 | route the failure | `_execute_pick`, `_RESCAN_REASONS` | a reason in `_RESCAN_REASONS` becomes `rescan`, a fresh frame without motion; any other `exhausted`. A wrist pick handed looks never rescans where it stands: its next view was its next look (5.1), so it ends `exhausted` |
 | 5 | execute | `src/robot/grasping/motion/execution_policy.py` | `CAMERA_FRAME_REJECTED` for a grasp not in BASE while `require_base_frame_grasp` is on, before any waypoint |
 | 6 | move | the same, `_drive_to` | the arm's route and its `SafetyPreflight` (below); a refusal comes back as `MOTION_FAILED` |
@@ -111,8 +110,8 @@ in the [autonomous_grasp README](../../src/robot/execution/autonomous_grasp/READ
 The typed failure reasons of stage 3 are `empty_mask`, `no_valid_depth`, `no_candidates_generated`,
 `all_collided`, `all_table_conflict`, `all_out_of_workspace`, `ik_failed` and `topology_risk_rejected`.
 
-**What the calculator sees** (`grasping.scene_obstacles`, on for a cell). It holds every object the camera
-saw beside the part as an obstacle, named by a prompt or not: everything within 250 mm of the part's mask
+**What the calculator sees** (always on since 2026-10-17, when the key `grasping.scene_obstacles` left at the
+cell's value). It holds every object the camera saw beside the part as an obstacle, named by a prompt or not: everything within 250 mm of the part's mask
 grown about 5 mm, depth-step pixels trimmed, less what the part stands on (the supports,
 [04](04-robot-and-safety.md) 5.5) and the declared bodies' bands. A part whose every grasp meets one of them
 is `all_collided`, the one failure a blocker or a push answers (6.4); one standing lower over its support
@@ -124,20 +123,22 @@ by cause and by what it met (`seen_fingers`, `seen_corridor`, `declared_fingers`
 recorded looks of a folding rule in a pile (2026-10-02) the calculator had offered three grasps each, every
 one with an open finger in a neighbour; with the rule on it offers none and says `all_collided`.
 
-**The part's rim, for its footprint** (`grasping.geometry.footprint_rim_mm`, 2.0 as shipped since the owner's
-evening of 2026-10-09). The D415 smears a part's far edge into a ramp of depths, the outer ~3 px of the
+**The part's rim, for its footprint** (2.0 mm on every cell since the owner's evening of 2026-10-09,
+`footprint_rim.FOOTPRINT_RIM_MM`; the key `grasping.geometry.footprint_rim_mm` left with the `geometry` block on
+2026-10-16). The D415 smears a part's far edge into a ramp of depths, the outer ~3 px of the
 colour mask lie on it, the depth-step rule keeps it, and the support-footprint search's hull follows it: on 23
 grey cubes the owner's cell recorded on 2026-10-07 the centre a grasp closes on lay 2.53 mm off at the median,
-2.5 mm of it away from the camera. Set, every mask loses a rim of that many millimetres at the part
+2.5 mm of it away from the camera. Every mask loses a rim of that many millimetres at the part
 (`ceil(rim * fx / z)` px at its median depth, never more than 30 % of the mask) for the cloud the search builds
 its footprint from, a look's own and the looks fused alike. The jaw faces, the association of looks, the kept
 scene, the colour check, the planner world's hold-out and the neighbours keep the whole mask. With the rim,
 every mask pixel the search does not read, the rim, the depth steps and the holes the D415 leaves on dark or
 shiny surfaces, is placed in the part's visual hull (`generation/footprint_hull.py`): where its ray meets the
 part's top, or just over its support, wherever that point's vertical projects into the mask, so the footprint
-never grows past what the mask shows and `geometry.inflate_mm` stays 0.0. Through the calculator on those
-cubes the centre lay 0.58 mm off at the median and 1.79 at the 90th percentile (the rim with 1.25 of inflate:
-0.77 and 2.26), and with 35 % of the parts' depth knocked out 0.59 and 1.87. `robot.log` says every compute
+never grows past what the mask shows and no face is pushed out. Through the calculator on those
+cubes the centre lay 0.58 mm off at the median and 1.79 at the 90th percentile (the rim with 1.25 mm pushed back
+onto every face, the measurement before the hull: 0.77 and 2.26), and with 35 % of the parts' depth knocked out 0.59
+and 1.87. `robot.log` says every compute
 `footprint rim: a 3 px rim (2 mm at ... mm): ...; N point(s) off SFE's input` and `footprint hull: N of M mask
 pixel(s) ... placed`, and every look of a wrist pick says what its rim took.
 
@@ -160,8 +161,8 @@ grasps the guard then refused. Both boxes now start at the same millimetre: the 
 world's are built apart, the world's cut around the part as the live world cuts them. On the 30 looks the cell
 recorded that day, the grasps the guard would refuse for a neighbour fell from 42 of 243 to 11 of 255.
 
-**Side grasps** (`grasping.side_approaches`, on; the owner, 2026-10-01: equal by geometry). The
-support-footprint search offers every tilt the hand fits at, scored by the room each keeps from what the
+**Side grasps** (always on, the owner's of 2026-10-01: equal by geometry; the key `grasping.side_approaches`
+left on 2026-10-17). The support-footprint search offers every tilt the hand fits at, scored by the room each keeps from what the
 camera saw, and vertical wins a tie, every score within 0.001 of the best of its run counting as one: a wall
 12 mm beside a 40 mm cylinder puts a grasp tilted 30 degrees away from it first, with the vertical one still
 listed, and a face's normal read off a noisy footprint no longer hands a 15 degree tilt the rank. A grasp 15 degrees or more off vertical is offered
@@ -169,42 +170,30 @@ only through space a depth ray saw. The policy lifts every grasp straight up (BA
 `Robot.pick` lifts a grasp more than 10 degrees off vertical straight up too, by the standoff and at least
 60 mm; an empty hand backs out along its approach.
 
-**Rings from inside** (`grasping.inner_grasps`, on; the owner, 2026-10-14: "Nur wo außen nichts geht"). On a
-Robotiq hand the search also looks for a part's bores and offers a grasp from inside each, after every outer grasp: the
+**Rings from inside** (always on, the owner's of 2026-10-14: "Nur wo außen nichts geht"; the key
+`grasping.inner_grasps` left on 2026-10-17). On a Robotiq hand the search also looks for a part's bores and offers a grasp from inside each, after every outer grasp: the
 jaws come down narrow into a bore the camera saw free, open at the close's force and speed until the wall stops them
 (the hand's `gOBJ` says it held), and the part is carried at its own width. The guard holds the fingers at the wall
 from the judgement ahead to the lift, and after the open where the hand reads them. At the place the jaws close to let
 the part go, where the hand says it gripped so: a release that opened onto something opens again. A ring wants a bore
 of about 45 mm or more for the Hand-E's 10.8 mm fingers; narrower ones are left to the outer grasps.
 
-**The first good part, and the fine search that waits** (`grasping.first_good_part`, `good_part_score` and
-`fine_pass_waits`, each on as shipped; the owner's "speed first", 2026-10-08). A look's parts were computed one
-after another in the camera's order and the best grasp taken. Now they are computed in the order they stand
-apart, the parts the hand closes across first and the less crowded first, and the first whose result is full,
-carries no rescan reason and scores `good_part_score` (0.6) or more is taken; the rest are not computed. None
-good, the best is taken, as before. SFE's fine search (the approach every 7.5 degrees, each face's closing axis
-rolled inside the friction cone), most of what a boxed-in part costs, waits while another part may have a full
-result: a part whose coarse grid found fewer than three grasps gets it only where no part has a full result
-with a grasp. A frame with no grasp is computed whole and fails as it always did, a later look of a wrist pick
-computes only the part it keeps, and the clutter selector (7.2) computes every part. On a ray-cast look through
-the owner's calculator one look took 0.98 s instead of 7.87 s and took the same part; it is not yet measured on
-the cell.
+**The first good part** (always on, the owner's "speed first" of 2026-10-08; the keys `grasping.first_good_part`
+and `good_part_score` left on 2026-10-17 at the cell's values). A look's parts were computed one after another in
+the camera's order and the best grasp taken. Now they are computed in the order they stand apart, the parts the
+hand closes across first and the less crowded first, and the first whose result has a grasp, carries no rescan
+reason and scores 0.6 (`loop/pick_loop.GOOD_PART_SCORE`) or more is taken; the rest are not computed. None good,
+the best is taken, as before. A frame with no grasp is computed whole and fails as it always did, a later look of
+a wrist pick computes only the part it keeps. On a
+ray-cast look through the owner's calculator one look took 0.98 s instead of 7.87 s and took the same part, with
+the support-footprint search's fine pass of the day waiting as well (`fine_pass_waits`, which left with that
+search); it is not yet measured on the cell.
 
-**A part's search on worker processes, and a line's builds at once.** One boxed-in cube took 24 of a look's 30 s
-on the owner's cell (2026-10-08): every grasp the support-footprint search tried was built one after another in
-one process. Two switches make it cheaper, each with the same answer to the bit, candidates, refusal counts and
-telemetry alike. `grasping.workers` (0 as shipped; `auto`, every physical core but one, or a number, at most 30)
-runs a part's search units on worker processes the cell starts once when it is built (`build_real_cell`), at the
-console's own priority, one BLAS thread each; a part they cannot answer for is searched in the cell's own process
-from the start, said in one log line. `grasping.batched_builds` (off as shipped) makes each closing line's builds
-in one numpy pass per check, in the cell's process and in every worker: a build whose deciding number lies within
-1e-6 of its threshold is made alone, and a PC whose numpy would round a stacked product otherwise makes every
-build alone and says so. On the desk the recorded boxed-in Zollstock took 0.22 s instead of 2.2 s batched, and
-the morning look of 2026-10-08 0.94 s instead of 1.52 s on four workers. Run `scripts/checks/batched_builds.py`
-on a cell's own PC before the key goes on there; it moves nothing and prints `PASS` or `FAIL`. A few cheaper
-builds that change nothing are always on: a closing line wider than the hand closes is refused whole, the open
-hand is measured only against neighbours it could come near, and where SFE runs with its fallback off the dense
-samples it replaces are not computed. The details are in the
+**One process.** One boxed-in cube took 24 of a look's 30 s on the owner's cell (2026-10-08), every grasp the
+support-footprint search tried built one after another. Since 2026-10-14 the stage offers the part's own body
+alone, which searches each part vectorized in the cell's process. The two switches that sped up the old search,
+its worker processes (`grasping.workers`) and its batched builds (`grasping.batched_builds`), reached nothing from
+then on and left with it on 2026-10-16; a tree that still writes one is refused at load. The details are in the
 [generation README](../../src/robot/grasping/generation/README.md).
 
 **The next grasp of the same look.** Where a try was refused by a guard or the planner before anything was
@@ -244,9 +233,9 @@ say keeps the interpolated approach. Inside `move()`, the driver's `SafetyPrefli
 `[safety:<guard>/<reason>]` message, and the service maps the policy's `MOTION_FAILED` to
 `EXECUTION_FAILED`.
 
-Between stages 3 and 5 sit the optional layers: the shadow success probability, the ranking blend, the
-uncertainty rerank and the learned-ranker shadow. At defaults each is a no-op that records a skip reason
-and returns. Section 7 says what turns them on.
+Between stages 3 and 5 sits one optional layer, the learned-ranker shadow, off by default and changing no
+grasp when on. The shadow success probability, its ranking blend and the uncertainty rerank left on 2026-10-16
+with their blocks. Section 7 says what turns the shadow on.
 
 Three things about this chain are easy to get wrong.
 
@@ -421,10 +410,9 @@ enumeration, not to this one.
 person. The gripper raised while it was commanded, or a hand that toggles with no sensor would not start
 the pick, because it believed its jaws closed and nobody at a terminal said otherwise, or a person
 aborted, or a push found nobody can say where that hand's jaws stand, or found a gripper that measures its
-width not connected or unreadable, or a toggle's count was found so before `next_target` drove the looks
-again (6.4). At this level it reads `EXECUTION_FAILED`, and `report.gripper_fault` says why, so the loop
-above breaks on it rather than counting it as stuck. A `PickRun` campaign stops on it rather than
-perceiving again.
+width not connected or unreadable (6.4). At this level it reads `EXECUTION_FAILED`, and `report.gripper_fault`
+says why, so the loop above breaks on it rather than counting it as stuck. A `PickRun` campaign stops on it
+rather than perceiving again.
 
 After a push that stopped where the arm stands, the service itself refuses every later `pick()`
 (`UNSAFE_RECOVERY_REFUSED`, nothing asked or moved) until a person decides: `service.start_campaign()`,
@@ -439,7 +427,8 @@ A wrist camera sees what the arm points it at. So a wrist pick **looks**: the ar
 turn, the camera perceives there, and every look is **fused** with the ones before it. What the looks are
 for is a **safe grasp point**, never a whole scan of the part. Multi-view with arm motion is a wrist
 camera's alone: a fixed camera never moves to see more, and fixed cameras fuse with each other where they
-stand (`fusion.geometry`, section 7).
+stand, wherever the camera section declares two or more with their calibration
+([multiview/](../../src/robot/grasping/multiview/README.md)).
 
 ```mermaid
 flowchart LR
@@ -454,7 +443,7 @@ flowchart LR
 
 **Where it looks from.** Looks are joints, `JointPositions.deg(...)` as the pendant shows them, or
 `"home"`, visited in order: the program's (`PickRun.from_cell(cell, ..., look=[...])` or
-`service.pick(look=...)`), else the cell's `robot.look_joint_positions_deg`
+`service.pick(look=...)`), else the cell's `robot.motion.look_deg`
 ([01](01-configuration.md)), else home. `PickRun` and the console always hand a wrist pick its looks. A
 bare `service.pick()` with no `look=` perceives from where the arm stands, and rescans there, as it always
 did. The arm reaches each look with its own judged verb: `move_to_joints`, the straight joint line first
@@ -476,14 +465,14 @@ a disagreement acts.
 
 **The first look, when needed, or every look** (the owner, 2026-10-08 night). On the owner's cell a valid grasp at
 the first look ended the looking every time, so a stacked pair or a shiny part was gripped on what one look showed.
-With `robot.grasping.weak_look_trigger` (off as shipped) a look whose view of its part is weak is no look to stop
-at either: depth measured on less than 85 % of its own mask of the part, a part standing more than 1.5 times its
-footprint's short side over its support with no side of it seen, or a cloud with two height plateaus at least
-15 mm apart, judged again on the views fused so far at every look. It only adds looks, and the generated view
-after them; the grasp the looks end on is gripped as before. A task's `every_look` visits every look however safe
+A look whose view of its part is weak is no look to stop at either (always, since 2026-10-17, when the key
+`robot.grasping.weak_look_trigger` left at the cell's value): depth measured on less than 85 % of its own mask
+of the part, a part standing more than 1.5 times its footprint's short side over its support with no side of it
+seen, or a cloud with two height plateaus at least 15 mm apart, judged again on the views fused so far at every
+look. It only adds looks, and the generated view after them; the grasp the looks end on is gripped as before. A task's `every_look` visits every look however safe
 an earlier look's grasp, and goes on with the last look's judgement, fused over all of them. A task thus takes its
 looks one of three ways, the console's one choice: the first look alone (multi-view off, "Nur erster Blick"), when
-needed (the early stop, with the trigger where the cell has it on, "Bei Bedarf"), or every look ("Alle Posen");
+needed (the early stop, with the trigger, "Bei Bedarf"), or every look ("Alle Posen");
 every look with multi-view off is refused.
 
 **`both_faces`.** Off by default, and the fast choice. `PickRun.from_cell(..., both_faces=True)`,
@@ -495,7 +484,7 @@ face, `the contact face at jaw 2 of the chosen grasp was not seen from any view`
 look around, so it grips only a grasp its cameras showed both faces of, and ends the same way otherwise.
 The grasp gripped is the one whose faces were judged: the reranks and the approach check's fall-back to
 another candidate stand down. With `both_faces`, the way round comes from the cell's natural orientation
-(`robot.natural_closing_axis`) and one axis to close along from the program's `closing_axis` (5.2): both
+(`robot.motion.natural_closing_axis`) and one axis to close along from the program's `closing_axis` (5.2): both
 act before the faces are judged, so the faces judged are the faces gripped. The simulator's twist,
 `GraspMotion(align_closing_to_base_x=True)`, turns every grasp after the judging, onto faces nobody judged,
 so asking for it with `both_faces` raises `ValueError` before anything moves. A suction cup has no jaw faces
@@ -525,10 +514,9 @@ where a campaign starts, one line each. What to do, line by line:
 - `in the planner's cushion band` naming no nearby pose: **straight lines only**. If planned moves have to
   reach it or leave it, re-teach it by hand where both clear it and screen it again; the screen names no pose
   to copy.
-- `beside the boxes the camera saw`: **straight lines and moveL with a hand known empty and open**; only the
-  camera's boxes refuse it on the planner's world, and the exact guard decides them. Nothing to do for a look.
-  A planned move into it or out of it is refused, and so is any move while the hand carries a part or cannot
-  say it stands open ([04](04-robot-and-safety.md), section 6).
+- `beside the boxes the camera saw`: **straight lines and moveL**; only the camera's boxes refuse it on the
+  planner's world, and the exact guard decides them. Nothing to do for a look. A planned move into it or out of it
+  is refused ([04](04-robot-and-safety.md), section 6).
 - `ERROR`: **nothing drives there**. Re-teach it at the nearby pose where the line names one, otherwise by
   hand elsewhere, and screen it again.
 
@@ -547,10 +535,11 @@ line says why.
 back there on the straight joint line, held to the same cap. Refused, the approach starts from where the
 arm stands, planned and judged as every approach is, and a WARNING says so.
 
-**Under the decision gate.** With `grasping.decision` on, a wrist pick looks around first
-(`BinPickingOrchestrator.look_around()`, a wrist camera's alone: on a fixed camera it raises `ValueError`
-with nothing moved), the gate decides on the grasp the looks judged, and on `GRASP_NOW` the pick goes on
-with that judgement (`go_on_with`) without looking again. A refusal ends the pick with nothing gripped.
+**The decision gate** left on 2026-10-16 with its block, `grasping.decision`: switched on, it changed none
+of the 479 picks of the owner's cell's replay bank. The two steps it ran stay for a program of your own:
+`BinPickingOrchestrator.look_around()` looks around first, a wrist camera's alone (on a fixed camera it raises
+`ValueError` with nothing moved), and `go_on_with` hands what the looks judged to the next run, which grips
+without looking again.
 
 **Everything the looks saw feeds the pick.** Every frame the wrist camera takes **from the first look the
 arm stands at** stays in the arm's planner world until the pick ends, however it ends, twelve at most, so
@@ -641,7 +630,7 @@ approach, the jaws swapped. Two things choose the way round, and both choose **b
 grasp** (stage 3), so the target choice, the looks' judgement and jaw faces, the reranks, the approach
 check and the push read the grasp that is gripped, and `both_faces` works with either.
 
-**The cell's natural orientation.** `robot.natural_closing_axis` names how the hand and its camera
+**The cell's natural orientation.** `robot.motion.natural_closing_axis` names how the hand and its camera
 naturally stand ([01](01-configuration.md)): a name `Pose.tool_down` takes (`x`, `-x`, `y`, `-y`,
 `radial`, `-radial`, `tangential`, `-tangential`) or a taught pose's quaternion `[x, y, z, w]`, of which
 only the heading of its tool +X on the base XY plane counts. **Every camera grasp** then takes the wrist
@@ -684,22 +673,21 @@ kept, each the way round it closes.
 The camera world is a **height map** of what the cameras saw
 ([`height_map.py`](../../src/robot/safety/planning/height_map.py)): each object laid on a grid in its own
 turn, every cell keeping its highest seen point, cells of like height merged into boxes. Every box is
-**turned about base Z the way the object stands** and runs **from the bench to its top plus 8 mm**
-(`perceived.margin_mm`):
+**turned about base Z the way the object stands** and runs **from the bench to its top plus 6 mm**
+(`perceived.CAMERA_BOX_MARGIN_MM`, every cell's since 2026-10-17):
 
 - an **open bin** is its walls with its **inside free**, so the hand reaches into it;
 - a **low part beside a tall one** keeps its own height;
 - a **turned object** is a turned box, and needs no squaring to base X/Y.
 
-cuRobo and the exact guard hold the same boxes; the guard keeps 3 mm from them, as from the arm itself and a
-declared fixture ([04](04-robot-and-safety.md), 5.5). **Where only these boxes refuse the planner's world,
-the exact guard decides them**, so a bin the camera saw stands about 30 mm from the shoulder housing (the
-guard decides from about 26) where the planner's own spheres alone wanted 50 to 60
-([04](04-robot-and-safety.md), section 6). That holds with a hand known empty and open: while the hand
-carries a part or cannot say it stands open, and for a planned move into or out of a pose beside the bin, the
-planner keeps its 50 to 60, and a grasp there judges its lift carrying before it closes. Where the robot's own
-body hides part of an object beside what the cameras saw, the hidden stretch stands as high as what was seen
-beside it; what no camera saw at all stays free.
+cuRobo and the exact guard hold the same boxes; the guard keeps `perceived_min_distance_mm` (2 mm) from them, and
+`min_distance_mm` (3) from the arm itself and a declared fixture ([04](04-robot-and-safety.md), 5.5). **Where only these
+boxes refuse the planner's world, the exact guard decides them**, so a bin the camera saw stands about 30 mm from the
+shoulder housing (the guard decides from about 26) where the planner's own spheres alone wanted 50 to 60
+([04](04-robot-and-safety.md), section 6), whatever the hand holds. For a planned move into or out of a pose beside the
+bin the planner keeps its 50 to 60, and a grasp there judges its lift before it closes. Where the robot's own body hides
+part of an object beside what the cameras saw, the hidden stretch stands as high as what was seen beside it; what no
+camera saw at all stays free.
 
 **Never through the robot itself.** The hand hides most where it stands: down at a part it hides the floor
 round its own fingers from the wrist camera. A hidden stretch, and the stretch the robot hides between two
@@ -712,30 +700,32 @@ self filter took for the hand. On the grasp bench (2026-10-06) a tray's wall fil
 the fingers, and a part's row ran on into the cell the fingers stood in; every way out was refused.
 
 **The fingers and what they may come to.** A box of a neighbour part the detector named holds the fingers to
-its measured surface, the box less its margin (`perceived.fingers_touch_parts`, the owner's "Finger dürfen
-streifen"), and lets them 3 mm past it (`perceived.finger_contact_mm`, the owner's "3 mm" of 2026-10-06): the
+its measured surface, the box less its margin (the owner's "Finger dürfen streifen", every cell's since
+2026-10-17), and lets them 3 mm past it (`perceived.FINGER_CONTACT_MM`, the owner's "3 mm" of 2026-10-06): the
 descending finger may shove the neighbour aside that far, and the open Hand-E needs 15 mm beside a part rather
 than 18. The calculator plans them a millimetre short of that, and the whole hand a millimetre further from any
 other box than the guard keeps, as the guard's boxes, built from more frames and merged to fit the slots, stand
 a little apart from its own: on a tray the line down to four grasps in a row was refused 0.2 to 0.7 mm short.
-A finger comes to 1 mm of what a support reads, the mat or the bench (`perceived.finger_floor_mm`, the owner's "bis
-auf 1 mm, solange er sie nicht berührt" of 2026-10-06; `grasping.support.min_clearance_mm` 1 to match): the guard
+A finger comes to 1 mm of what a support reads, the mat or the bench (`perceived.FINGER_FLOOR_MM`, the owner's "bis
+auf 1 mm, solange er sie nicht berührt" of 2026-10-06; the calculator's `support_resolver.TABLE_CLEARANCE_MM` 1 to
+match): the guard
 lowers a support solid's top for the fingers by the band, the allowance and its own distance less that millimetre,
 and keeps its distance from what is left, so a part 13.5 mm tall is the Hand-E's least. A part thinner than the band
 the reading swallowed is the support's, and a finger comes as near it. A support's solid holds the fingers at the guard's distance from the reading and
-its excess, not from the solid's top a band and the allowance higher (`perceived.fingers_to_the_support_reading`,
-the owner's "wir müssen tiefer gehen", both of 2026-10-05). Every other link keeps the guard's distance from the
+its excess, not from the solid's top a band and the allowance higher (the owner's "wir müssen tiefer gehen", both
+of 2026-10-05, every cell's since 2026-10-17). Every other link keeps the guard's distance from the
 whole box, and a box nobody named stays whole for every link.
 
-**64 boxes, merged to fit.** `safety.planning_world.perceived.max_boxes` defaults to **64**, and the planner
-reserves **1 + declared + 64** box slots when it starts: **restart the planner after changing it**, and after
-updating to this version (65 slots on a cell that declares only its bench). Past the budget the boxes of one
+**128 boxes, merged to fit.** The camera world has room for **128** boxes on every cell since 2026-10-17
+(`perceived.CAMERA_MAX_BOXES`, the owner's cell's; the key `perceived.max_boxes` shipped 64), and the planner reserves
+**1 + declared + 128** box slots when it starts: **restart the planner after updating to this version** (129 slots on
+a cell that declares only its bench). Past the budget the boxes of one
 object merge into the box that holds them, the least added volume first, down to one box per object, and the
 refresh line says `N box(es) merged into the boxes holding them to fit the slots`. The volume counts the more
 the nearer the merged box comes to the motion's goal (twice at 100 mm, five times at 50), so the boxes far
 from the hand merge first and those beside the fingers stay as seen; a straight line's world is built about
 its lower end, where the hand passes the parts, the goal of a line down and the start of a lift. What still does not fit
-refuses the motion, naming `safety.planning_world.perceived.max_boxes`: an obstacle the planner never
+refuses the motion, naming `perceived.CAMERA_MAX_BOXES`: an obstacle the planner never
 received is one it routes straight through. The world's render adds `N cell(s) the robot hid from the cameras
 stand as high as what was seen beside them` and a line for every box that may be the robot seen off its
 model.
@@ -779,44 +769,48 @@ print(report)   # task FINISHED, 1 part placed, the arm back home
 ```
 
 - **Where it goes.** `PlaceAt(pose=...)` is a taught pose. Where the cell declares how far its parts hang
-  (`safety.planning_world.payload.length_mm`), it says where the part's **bottom** is let go: you teach the
-  fingertips there, and the tool goes there raised by how far the part reaches past them. Where the cell
-  declares none, the tool goes to the taught pose itself and the part hangs from it (the owner, 2026-10-14).
+  (`robot.motion.place.part_hang_mm`; the owner's cell sets 1 mm), it says where the part's **bottom** is let go:
+  you teach the fingertips there, and the tool goes there raised by how far the part reaches past them. Where the
+  cell declares none (`null`, as shipped), the tool goes to the taught pose itself and the part hangs from it (the
+  owner, 2026-10-14).
   The hang, at a pose and over a bin alike, is measured part by part from what the part stood on, the lowest
   surface the pick's looks read under its cloud or the cloud's lowest point where that is lower; where the looks
   read no surface under the part, the declared support stands, and with no grasp pose the declared length. From
   the declared support alone a part off a 55 mm mat was let go 85 to 92 mm over the rim on the owner's cell. With
-  `robot.place.side_by_side` the parts of a flat place lie side by side, not piled: each at a spot of its own, its
-  reach and `spacing_margin_mm` (20) from the others, a spot the camera reads free first, else the next spot of
-  `robot.place.grid` (3 by 3 about the taught pose, along its tool's heading, the nearest first) the task has not
-  filled; no spot left puts the part back and asks (`part_does_not_fit`).
+  `robot.motion.place.side_by_side` the parts of a flat place lie side by side, not piled: each at a spot of its
+  own, its reach and 20 mm from the others, a spot the camera reads free first, else the next spot of
+  `robot.motion.place.grid` (3 by 3 about the taught pose, along its tool's heading, the nearest first) the task
+  has not filled; no spot left puts the part back and asks (`part_does_not_fit`).
 - **Into a bin.** `PlaceAt(camera="blue bin")` is a bin the camera finds: before the first pick the task visits
   its looks and keeps the bin (its rim the 95th-percentile height, its footprint and opening from the walls'
   tops), grounding the bin alone, since the parts are the picks' to count. The console hands a task the bin its
   last task kept for the same phrase, while the same cell, connection and config stand: that bin is looked at
   first, from its look, and kept with one look at its rim where it stood still, every look surveyed otherwise. The
-  task then drops each part at rim + hang + air (`air_mm=` 0 to 50, else `robot.place.rim_air_mm`, 20: "genau auf
-  Höhe der Kante" is 0; the hang none where the cell declares no `payload.length_mm`); a grasp within 5 degrees of vertical
-  is turned about the vertical along `robot.natural_closing_axis`. With `robot.place.release_in_a_box:
-  below_the_rim` (the owner: 1 to 5 cm under the rim) the part is set down `below_the_rim_mm` (30) under the rim
-  instead, never lower than 10 mm over what the check before the drop reads inside the box, its floor or the parts
-  already there; the standoff stays where it was and only the line in goes deeper. Wherever that cannot be, the
-  part is let go over the rim as before: an inside the check could not read, a box that reads full to within 10 mm
-  of its rim, a part or an open hand that would not stand `opening_margin_mm` (10) inside the opening, a grasp more
-  than 5 degrees off vertical, or a line in the guard refuses before anything is sent. The bin is checked again
-  before every drop, first by its rim, in one frame and with no detector: where the rim reads in depth and colour
-  as it did, it stands where it stood; wherever that is unsure, the detector looks, as it always did. Moved more
-  than min(100 mm, half its diagonal), another footprint or another rim, it is lost, and looked for again
-  (`robot.place.relocate`, on; the owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage
-  nochmal neu errechnen"): the task drives its looks once more with the part in the jaws
-  (`place_target.relocate`), keeps a bin of the size the survey found and the colour it followed, standing in no
-  other place, in the old one's stead, carries the part to the look it was found from, checks it there and plans the
+  task then drops each part at rim + hang + air (`air_mm=` 0 to 50, else 20, the owner's cell's: "genau auf
+  Höhe der Kante" is 0; the hang none where the cell declares no `part_hang_mm`); a grasp within 5 degrees of
+  vertical is turned about the vertical along `robot.motion.natural_closing_axis`. With
+  `robot.motion.place.release_in_a_box: below_the_rim` (the owner: 1 to 5 cm under the rim) the part is set down
+  30 mm under the rim instead, never lower than 10 mm over what the check before the drop reads inside the box, its
+  floor or the parts already there; the standoff stays where it was and only the line in goes deeper. Wherever that
+  cannot be, the part is let go over the rim as before: an inside the check could not read, a box that reads full to
+  within 10 mm of its rim, a part or an open hand that would not stand 10 mm inside the opening, a grasp more
+  than 5 degrees off vertical, or a line in the guard refuses before anything is sent. The place's numbers are the
+  owner's cell's, fixed in `src/robot/execution/place_target.py` since 2026-10-17 (their keys, `rim_air_mm`,
+  `below_the_rim_mm`, `opening_margin_mm`, `spacing_margin_mm` and `rim_floor_margin_mm`, left that day). The bin is
+  checked again before every drop, first by its rim, in one frame and with no detector: where the rim reads in depth
+  and colour as it did, it stands where it stood; wherever that is unsure, the detector looks, as it always did.
+  Moved more than min(100 mm, half its diagonal), another footprint or another rim, it is lost, and always looked
+  for again (the owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu
+  errechnen"; the key `robot.place.relocate` left on 2026-10-17): the task drives its looks once more with the part
+  in the jaws (`place_target.relocate`), keeps a bin of the size the survey found and the colour it followed,
+  standing in no other place, in the old one's stead, carries the part to the look it was found from, checks it
+  there and plans the
   drop anew over it (`task.target_relocated`). Once per part: found nowhere, or lost again, the part goes back where
   it was gripped (`service.put_back`), the arm returns, and the task asks. A part goes from the pick to the bin's look
-  to be checked there, or, with `robot.place.carry: over_the_rim` where one of the pick's looks was the bin's,
+  to be checked there, or, with `robot.motion.place.carry: over_the_rim` where one of the pick's looks was the bin's,
   straight up and over the rim on judged lines, the bin checked on that look's frame, the pick's frames held in
-  the arm's world again, and the part's bottom the rim air plus `rim_floor_margin_mm` (15) over the rim and over
-  everything the looks saw on the way; anything that cannot be so carries it via the look.
+  the arm's world again, and the part's bottom the rim air plus 15 mm over the rim and over everything the looks
+  saw on the way; anything that cannot be so carries it via the look.
 - **What it picks.** `object` is the phrase the detector grounds, asked for every such part in a box of its
   own on a cell that grounds a phrase (`task.EACH_SEPARATE`: "each separate green part"), each mapped back
   onto the object named. An empty one, with `pick_anything`, grounds every part (`task.EVERY_PART_PHRASE`,
@@ -854,29 +848,29 @@ print(report)   # task FINISHED, 1 part placed, the arm back home
   perception grounds a phrase (`TaskRefused` `bad_request` elsewhere). The console starts one from a sorting
   sentence (`POST /v1/task` with `more_rules`), keeps each bin's picture under its own place and remembers each bin
   by its phrase (`known_targets`, from the report's `kept_targets`).
-- **A part of another colour is no target** (`robot.grasping.colour_check`, `on`, the owner's choice). Asked for
-  "each separate grey cube", the detector boxed the green and the orange parts too on 2026-10-08, by the prompt's
-  words, and the cell picked them. The real camera source now judges every part mapped onto an object label whose
+- **A part of another colour is no target** (on every cell, the owner's choice; the key
+  `robot.grasping.colour_check` left on 2026-10-17). Asked for "each separate grey cube", the detector boxed the
+  green and the orange parts too on 2026-10-08, by the prompt's words, and the cell picked them. The real camera source now judges every part mapped onto an object label whose
   words name one colour on its own pixels, in CIELAB (about 2 ms a part), and asks the VLM for one colour word
   where the pixels cannot tell; a part of another colour, or one the VLM names no colour of, stays a neighbour
-  and is never a target. `log` judges and logs and changes nothing, `off` judges nothing. A label of another
-  colour is never mapped onto the object either: "red cube" no longer counts as a "grey cube". A pixel the
-  camera clipped in some channels and not all is left out of the counts (`robot.grasping.colour_check_clipped`,
-  `exclude`, the owner's choice of 2026-10-09): where the mat around an orange part is dark, auto exposure clips
-  its red channel and its hue reads yellow, and on the cell's 31 recorded looks orange went from 53 to 89 of 89
-  judged right with every other part as before. `keep` counts them, as before.
-- **Following its parts** (`robot.grasping.follow_parts.enabled`, off as shipped; the owner, 2026-10-09). Every
-  pick of a task grounded its first look again, Qwen boxing every part on the mat in 13 s at the median, to find
-  the parts where the last pick left them. With it on, the first pick grounds, and the next pick's first look
-  finds the parts the last one kept again with SAM2 on their boxes and no detector, where nothing changed in depth
-  (the task's bin and drop left out) and every part stands where it stood, within `max_shift_mm` (10) since the
-  last pick and `max_creep_mm` (20) since it was grounded, its mask in its footprint, at its top and of its
-  colour: all or nothing per frame, and any doubt grounds the frame as before
+  and is never a target. The library's `Locator.locate` judges no colour. A label of another colour is never
+  mapped onto the object either: "red cube" no longer counts as a "grey cube". A pixel the
+  camera clipped in some channels and not all is left out of the counts (the owner's choice of 2026-10-09; every
+  cell's since 2026-10-17, when `robot.grasping.colour_check_clipped` left with `keep`, which counted them):
+  where the mat around an orange part is dark, auto exposure clips its red channel and its hue reads yellow, and
+  on the cell's 31 recorded looks orange went from 53 to 89 of 89 judged right with every other part as before.
+- **Following its parts** (every task on a cell built from a tree, the owner's of 2026-10-09; the block
+  `robot.grasping.follow_parts` left on 2026-10-17 at the cell's values). Every pick of a task grounded its first
+  look again, Qwen boxing every part on the mat in 13 s at the median, to find the parts where the last pick left
+  them. Now the first pick grounds, and the next pick's first look finds the parts the last one kept again with SAM2 on their boxes and no detector, where nothing changed in depth
+  (the task's bin and drop left out) and every part stands where it stood, within 10 mm since the last pick and
+  20 mm since it was grounded (`FOLLOW_SHIFT_MM`, `FOLLOW_CREEP_MM`), its mask in its footprint, at its top and of
+  its colour: all or nothing per frame, and any doubt grounds the frame as before
   ([`kept_scene.py`](../../src/robot/perception/kept_scene.py)). The later looks of each pick then find the first
   look's parts by their boxes projected at their own pose, and rank the part they keep first. A Restart, the pick
   after a push, a blocker cleared, a recovery, a try that sent motion and failed, or a gripped part that was not
-  kept grounds again, and so does every end check of an "until empty" task, and a pick `refresh_every_picks`
-  after the last grounding (0: only on a trigger). The guard judges every motion against fresh depth either way.
+  kept grounds again, and so does every end check of an "until empty" task; no count of picks does. The guard
+  judges every motion against fresh depth either way.
 - **How long.** `scope="once"` ends when the part is placed and the arm is back; `"until_empty"` after two
   empty looks in a row, every look an empty pick perceived from counting as one: one empty pass over a wrist
   camera's four looks ends it, where it took two passes, eight look moves and 90 to 115 s on the owner's cell
@@ -886,10 +880,10 @@ print(report)   # task FINISHED, 1 part placed, the arm back home
   counts no failure. A part only the other looks could see stays behind then: the owner's home view shows the whole
   mat. Three failed picks in a row end it where the arm stands, 100 parts end it `part_limit`. Its own drop area
   stays out of its picks for the whole task: the bin's footprint, and 150 mm about a pose drop for "until empty",
-  and a circle about every spot a part was laid at side by side. With `robot.grasping.hide_own_places` (off as
-  shipped) those regions are painted out of the copy of each frame the detector reads, in the colour of what the
-  parts stand on, so it boxes none of the parts already placed there, each of which cost a box of 2 to 4 s on the
-  owner's cell; the segmenter, the depth, the colour check and the planner's world read the real frame.
+  and a circle about every spot a part was laid at side by side. Those regions are painted out of the copy of
+  each frame the detector reads (always, since 2026-10-17, when the key `robot.grasping.hide_own_places` left at
+  the cell's value), in the colour of what the parts stand on, so it boxes none of the parts already placed
+  there, each of which cost a box of 2 to 4 s on the owner's cell; the segmenter, the depth, the colour check and the planner's world read the real frame.
 - **The order.** The service's needs-a-person latch first (`recovery_needs_person`, nothing moved, the latch
   kept), then every taught pose it will use screened before any motion (`pose_refused`), then the picks.
   Benign ends return to `return_to`; a problem leaves the arm where it stands and commands nothing more, an
@@ -899,7 +893,7 @@ print(report)   # task FINISHED, 1 part placed, the arm back home
   read between the motions: `stop_after_part` lets the part in hand be placed first, `halted` and
   `abandoned` stop before the next motion.
 - **What it refuses** before anything moves raises `TaskRefused` with the console's code: `unknown_pose`,
-  `route_refused`, `carried_part_not_modelled`, `object_required`, `closing_axis_refused`, `bad_request`,
+  `route_refused`, `object_required`, `closing_axis_refused`, `bad_request`,
   `push_distance_refused`, `camera_target_unavailable`. Every end after the start is the `TaskReport`.
 
 The console wraps it with its gates, the hands-off countdown and the stop record, so after a problem stop
@@ -916,9 +910,10 @@ click 25 s, and the bin's survey 19 s. Everything below came of that, under the 
 "solange wir keine Qualität verlieren". Each switch either leaves every verdict and every answer as it was, held to
 the bit by tests, or changes only what the owner chose, and none is tuned to one PC: a path is chosen by what the
 machine can do, said in the log, with the old path as its fallback. Most ship off, the behaviour before them; on
-as shipped are the owner's choices of 2026-10-08 (the first good part, the fine search that waits, the colour
-check, the known sentences) and two that change no answer (the stop at the answer's end, the decode graphs). The
-exact guard judges every sample of every path before anything is sent, whatever the switches say.
+as shipped were the owner's choices of 2026-10-08 (the first good part, the fine search that waits, the colour
+check, the known sentences) and two that change no answer (the stop at the answer's end, the decode graphs); of
+these only the known sentences are still a key, the rest fixed at what the owner's cell ran or gone with the search
+they sped up. The exact guard judges every sample of every path before anything is sent, whatever the switches say.
 On the grasp bench at the desk (2026-10-09, 39 scenes), every switch the bench can run, on against off, gripped 29
 scenes either way (one scene swapped, by the bench's camera noise) and took 413 s instead of 896 s where both
 gripped, 3.7 s a pick at the median instead of 7.2.
@@ -926,14 +921,15 @@ gripped, 3.7 s a pick at the median instead of 7.2.
 **Reading and seeing.** The cell's everyday sentences are read without the model (`runtime.commands.known_sentences`),
 well under a millisecond where the cell's 8B took 9.8 s, and Enter starts the task where the reading needs no card
 ([`api/README.md`](../../api/README.md), Commands). Every token Qwen writes is one pass of the model, about 140 ms
-on the cell's 8B, and a pass waits on the CPU rather than the card. `stop_at_answer_end` ends an answer where its
-JSON closes, the same boxes and cards a pass sooner. The answer lookups (`prompt_lookup_tokens` for a grounding,
-`text_prompt_lookup_tokens` for a command, 10 being the measured value) propose the next tokens from the answer so
-far and check them in one pass: about half the passes of a grounding, a coordinate's last digit sometimes one off,
-and 57 % of a command's with today's instruction, 3 of 67 readings coming out otherwise. `decode_graphs` runs each
-pass as CUDA graphs with the attention as before: every answer byte-identical, 19.7 ms a pass instead of 46.3 on
-the desk's 4B; `auto` takes them on a card of compute capability 8.0 or newer where the first pass of each shape
-matched the plain pass bit for bit, and says so in the log. The cell's 8B is not measured yet
+on the cell's 8B, and a pass waits on the CPU rather than the card. An answer ends where its JSON closes, the same
+boxes and cards a pass sooner. The answer lookups (ten tokens, for a grounding and for a command, the measured
+value) propose the next tokens from the answer so far and check them in one pass: about half the passes of a
+grounding, a coordinate's last digit sometimes one off, and 57 % of a command's with today's instruction, 3 of 67
+readings coming out otherwise. The decode graphs run each pass as CUDA graphs with the attention as before: every
+answer byte-identical, 19.7 ms a pass instead of 46.3 on the desk's 4B; `auto` takes them on a card of compute
+capability 8.0 or newer where the first pass of each shape matched the plain pass bit for bit, and says so in the
+log. All three are fixed at the owner's cell's values since 2026-10-17, no longer keys
+([`src/models/vlm/qwen.py`](../../src/models/vlm/qwen.py)). The cell's 8B is not measured yet
 ([vlm README](../../src/models/vlm/README.md)). Following a task's parts (5.4) spares the grounding of every pick
 but the first and the triggers, and a look the arm already stands at is not driven to (5.1).
 
@@ -941,89 +937,89 @@ but the first and the triggers, and a look the arm already stands at is not driv
 are in section 2.
 
 **Judging once, and while the arm waits.** A grasp judged ahead judges its line, its lift and its route once each,
-and the move to its standoff runs the route as it was judged (the judge chain, 6.4). The rest are switches:
+and the move to its standoff runs the route as it was judged (the judge chain, 6.4). The whole path, the solving, the
+steady gate, the held world, the next leg and the lean model are every cell's since 2026-10-17, as the owner's cell
+ran them (their keys left that day):
 
-- **The whole path at once** (`safety.self_collision.whole_path_judge`). Each guard first finds, over the whole
+- **The whole path at once** (the owner's `whole_path_judge`). Each guard first finds, over the whole
   path at once, the first sample it might refuse; a sample before it passes only on a proof that every distance the
   guard would measure there keeps its limit (the spheres it culls by, a part's convex hull, or a distance measured
   at an earlier sample less how far the pair can have moved since). From that sample on every sample is judged one
   at a time as before, so the verdict, the sample it names and its message are the same. A route of 905 samples
   among 128 boxes took 12 ms on the desk instead of 0.96 s ([safety README](../../src/robot/safety/README.md)).
-- **Solved here, not asked** (each against URSim CB3). `safety.ik_quality.line_ik: local` solves a line's samples
-  on the controller's own kinematics, its calibrated DH rows read once per connection from its primary interface
-  with nothing sent, and its active TCP, and asks the controller at the first and the last sample whether it
-  answers the same within 1e-6 rad; anything else, and the line is solved by the controller as before, 33 ms a
-  sample. `singularity_fk: dh` differentiates the same chain for the singularity check before every move: 1.4 ms
-  instead of 0.4 s, the controller's verdict on all 177 line ends compared. `safety.dwell.steady_signal:
-  joint_speeds` reads steady from the joint speeds, every joint under 0.01 rad/s on three fresh samples in a row:
-  16 to 24 ms after a move where `isSteady` took 562 ms, never steady while the arm moved, and `isSteady` wherever
-  the speeds cannot be read ([UR driver README](../../src/robot/drivers/ur/README.md)).
-- **The gate at the send** (`safety.dwell.gate_at: send`). A motion is judged while the arm settles from the one
-  before, and the steady gate waits right before it is sent; an arm that came to rest more than 0.5 mm from where
-  it was judged from is judged again. A timeout sends nothing, and neither does a halt.
-- **The world held** (`safety.planning_world.hold`). `standoff`: the line down at a grasp's standoff, and the line in
-  at a place's, are judged in the world held from before the arm left for the standoff, with no new frame there,
-  where a bin's frame often held no depth at all. `carry`: the world held at the part, for the carry judged while
-  the jaws close. `drop`: the world the line in was judged in, held through the release for the line out and the
-  return. Every judgement still runs on every sample, in the held world.
-- **The next leg judged while the arm waits** (`robot.motion.judge_next_leg`). `in_settles`: while the jaws' one
-  change is waited out, the next leg is judged, the carry to the bin's look while they close, the line out and the
-  return while they open. `in_settles_and_motion` also judges a declared joint move on a second thread while the
-  line before it runs, only on an arm whose halt brakes the line in flight (`robot.ur.brake_on_halt`), and as
-  `in_settles` elsewhere, said in the log. A leg judged ahead runs only where the arm stands within 0.5 mm of where
-  it was judged from and nothing it was judged on changed; nothing is sent before the stroke is over, and a toggle
-  changes DO0 once per command, as ever. On URSim CB3 a halt during the line braked it while the thread still
-  judged, and the move after it was judged again from where the arm stood.
+- **Solved here, not asked** (each against URSim CB3). A cuRobo UR solves a line's samples on the controller's own
+  kinematics (the owner's `line_ik: local`), its calibrated DH rows read once per connection from its primary
+  interface with nothing sent, and its active TCP, and asks the controller at the first and the last sample whether
+  it answers the same within 1e-6 rad; anything else, and the line is solved by the controller, 33 ms a sample. The
+  same chain is differentiated for the singularity check before every move (`singularity_fk: dh`): 1.4 ms instead of
+  0.4 s, the controller's verdict on all 177 line ends compared. The steady gate reads steady from the joint speeds
+  (every arm since 2026-10-17; `safety.dwell.steady_signal: joint_speeds` until then), every joint under 0.01 rad/s
+  on three fresh samples in a row: 16 to 24 ms after a move where `isSteady` took 562 ms, never steady while the arm
+  moved, and `isSteady` wherever the speeds cannot be read ([UR driver README](../../src/robot/drivers/ur/README.md)).
+- **The gate at the send** (every cuRobo arm since 2026-10-17; `safety.dwell.gate_at: send` until then). A motion
+  is judged while the arm settles from the one before, and the steady gate waits right before it is sent, 5 s at
+  most (`STEADY_TIMEOUT_S`); an arm that came to rest more than 0.5 mm from where it was judged from is judged
+  again. A timeout sends nothing, and neither does a halt. Elsewhere the arm waits at the start of each verb.
+- **The world held** (the owner's `planning_world.hold`). At the standoff: the line down at a grasp's standoff, and
+  the line in at a place's, are judged in the world held from before the arm left for the standoff, with no new frame
+  there, where a bin's frame often held no depth at all. At the part: the world held there, for the carry judged
+  while the jaws close. At the drop: the world the line in was judged in, held through the release for the line out
+  and the return. Every judgement still runs on every sample, in the held world.
+- **The next leg judged while the arm waits** (every cuRobo arm since 2026-10-17, as the owner's cell ran it;
+  `robot.motion.judge_next_leg: in_settles_and_motion` until then). While the jaws' one change is waited out, the
+  next leg is judged, the carry to the bin's look while they close, the line out and the return while they open.
+  A declared joint move not judged in a stroke is judged on a second thread while the line before it runs, on an
+  arm whose halt brakes the line in flight (every UR), and in the strokes alone elsewhere. A leg judged ahead
+  runs only where the arm stands within 0.5 mm of where it was judged from and nothing it was judged on changed;
+  nothing is sent before the stroke is over, and a toggle changes DO0 once per command, as ever. On URSim CB3 a
+  halt during the line braked it while the thread still judged, and the move after it was judged again from where
+  the arm stood.
 - **cuRobo plans on a lean model.** The planner planned on the robot every plan is judged with, 845 spheres and
-  172,414 sphere pairs on the owner's cell. `safety.planned_motion.planning_spheres: lean` builds its planner, its IK
-  and its graph planner from a planning-only model made the way NVIDIA's own UR configurations are, a few spheres
-  along each link (41 spheres and 112 pairs on the owner's cell), while every check, the evidence and the exact
-  guard stay on today's model and judge every sample of a plan as before. `finetune_passes: 0` runs one optimiser
-  pass where cuRobo runs four: a plan is found exactly where four find one, and only its timing, which the arm does
-  not run, would differ. `safety.planning_world.register_in_place` writes a world of boxes into cuRobo's storage in
-  one call, slot for slot the same. On the desk's GPU (2026-10-09) the lean model with one pass found a plan for
-  the same 101 of 191 moves as today's model with four, the arm's judgement refused none of them, and a plan took
-  30 ms at the median instead of 1054; with the boxes registered in place two planners judged 1,000 configurations
-  alike, row for row, and a world of 129 boxes was set in 3.3 ms instead of 54.7
-  ([planning README](../../src/robot/safety/planning/README.md)).
+  172,414 sphere pairs on the owner's cell. Its planner, its IK and its graph planner are built from a planning-only
+  model made the way NVIDIA's own UR configurations are (the owner's `planning_spheres: lean`), a few spheres along
+  each link (41 spheres and 112 pairs on the owner's cell), while every check, the evidence and the exact guard stay
+  on the full model and judge every sample of a plan as before. One optimiser pass runs where cuRobo runs four (the
+  owner's `finetune_passes: 0`): a plan is found exactly where four find one, and only its timing, which the arm does
+  not run, would differ. On the desk's GPU (2026-10-09) the lean model with one pass found a plan for the same 101 of
+  191 moves as the full model with four, the arm's judgement refused none of them, and a plan took 30 ms at the median
+  instead of 1054 ([planning README](../../src/robot/safety/planning/README.md)). Every world goes to cuRobo through
+  its `update_world`: the one-call write of a world of boxes (`register_in_place`) ran only on a planner that holds
+  no distance field, and every cell's camera world sends one, so the write left with its key on 2026-10-17.
 
 **Placing and writing.** Below the rim, side by side and straight over the rim are in 5.4, and a record written
 while the next pick runs is in section 8.
 
 **Every switch, and what the owner's cell runs.** As delivered for the week of 2026-10-12, the owner's cell runs
-each new switch at its default, the two answer lookups at 10 and `decode_graphs: off`, so that its test plan can
-switch them on one at a time and keep each only where it costs no part, no new refusal and no slower stage. The
-third column is what the cell then runs, the fourth what was checked before.
+each new switch at its default, so that its test plan can switch them on one at a time and keep each only where it
+costs no part, no new refusal and no slower stage. The third column is what the cell then runs, the fourth what was
+checked before. The VLM's answer settings were switches too, and left the config on 2026-10-17 at what the cell ran:
+the stop at the answer's end on (98 calls on the cell's frames, byte-identical), both answer lookups at 10 (the
+desk's 4B; not byte-identical, said above) and the decode graphs `auto` (the desk's 4B, 90 calls byte-identical).
+So did the grasping switches, each at what the cell ran: the first good part at 0.6 (tests on stand-in
+calculators and a ray-cast bench), the colour check with clipped pixels left out (nine home views of the cell and
+its 31 recorded looks through `judge_colour`, offline; no red part among them), the weak-look trigger (tests on
+the loop's doubles; on at the cell after a bench run, the owner, 2026-10-08), the task's own places hidden from
+the detector (tests on ray-cast wrist views) and following the parts at 10 and 20 mm (the cell's recorded frames
+of 2026-10-07; at the cell). And so did the motion switches: the steady gate at the send, read off the joint
+speeds (URSim CB3; the bench), and the next leg judged in the strokes and during the line, every UR braking the
+move in flight when a person halts (URSim CB3, 17 of 17 checks; the bench; the brake's runbook,
+[console_at_the_cell.md](../runbooks/console_at_the_cell.md)).
 
 | Key | Default | The owner's cell | Checked before the cell |
 | --- | --- | --- | --- |
 | `runtime.commands.known_sentences` (app config) | `true` | `true` | the 4B's measured answers (`tests/test_vlm_command.py`) |
-| `models.pipeline.zero_shot.vlm.stop_at_answer_end` | `true` | `true` | 98 calls on the cell's frames, byte-identical |
-| `models.pipeline.zero_shot.vlm.prompt_lookup_tokens`, `text_prompt_lookup_tokens` | `0`, `0` | `10`, `10` | the desk's 4B; not byte-identical, said above |
-| `models.pipeline.zero_shot.vlm.decode_graphs` | `auto` | `auto` | the desk's 4B, 90 calls byte-identical; the 8B at the cell |
-| `robot.grasping.first_good_part`, `good_part_score`, `fine_pass_waits` | `true`, `0.6`, `true` | the defaults | tests on stand-in calculators and a ray-cast bench |
-| `robot.grasping.colour_check` | `on` | `on` | nine home views of the cell, offline |
-| `robot.grasping.colour_check_clipped` | `exclude` | `exclude`, the owner's choice (2026-10-09) | the cell's 31 recorded looks through `judge_colour`, offline; no red part among them |
-| `robot.grasping.geometry.footprint_rim_mm` with `inflate_mm` | `2.0` with `0.0`, the visual hull beside the rim | the defaults (the owner, 2026-10-09 evening) | 23 of the cell's recorded cubes through the calculator, offline, with and without knocked-out depth; ray-cast tests |
-| `robot.grasping.weak_look_trigger` | `false` | `true`, after a bench run (the owner, 2026-10-08) | tests on the loop's doubles |
-| `robot.grasping.hide_own_places` | `false` | `false` as delivered; not yet chosen | tests on ray-cast wrist views |
-| `robot.grasping.workers` | `0` | `auto` | the same answer to the bit on a pool of workers, at the desk and in WSL |
-| `robot.grasping.batched_builds` | `false` | `true` | about 176,000 builds bit for bit; `scripts/checks/batched_builds.py` on the cell's PC first |
-| `robot.grasping.follow_parts.enabled` (`refresh_every_picks`, `max_shift_mm`, `max_creep_mm`) | `false` (`0`, `10`, `20`) | `true` (the rest the defaults) | the cell's recorded frames of 2026-10-07; at the cell |
-| `robot.safety.self_collision.whole_path_judge` | `false` | `true` | the same verdicts on the cell's worlds; the bench |
-| `robot.safety.ik_quality.line_ik` | `controller` | `local` | URSim CB3, nominal and calibrated |
-| `robot.safety.ik_quality.singularity_fk` | `controller` | `dh` | URSim CB3, 177 line ends |
-| `robot.safety.dwell.steady_signal` | `is_steady` | `joint_speeds` | URSim CB3; the bench |
-| `robot.safety.dwell.gate_at` | `verb` | `send` | URSim CB3; the bench |
-| `robot.safety.planning_world.hold.standoff` | `false` | `true` | the desk; the bench |
-| `robot.motion.judge_next_leg`, `hold.carry`, `hold.drop` | `off`, `false`, `false` | `in_settles`, `true`, `true` | URSim CB3, 17 of 17 checks; the bench |
-| `robot.motion.judge_next_leg: in_settles_and_motion` with `robot.ur.brake_on_halt` | `off`, `false` | only once the brake passed its runbook ([console_at_the_cell.md](../runbooks/console_at_the_cell.md)) | URSim CB3 |
-| `robot.safety.planned_motion.planning_spheres`, `finetune_passes` | `""`, `3` | `lean`, `0` | the desk's GPU A/B, 191 moves |
-| `robot.safety.planning_world.register_in_place` | `false` | `true` | two planners on the desk's GPU, 1,000 configurations |
-| `robot.place.carry` (`rim_floor_margin_mm`) | `via_the_look` (`15`) | `over_the_rim`, the owner's choice | desk doubles; at the cell |
-| `robot.place.release_in_a_box`, `below_the_rim_mm`, `rim_air_mm` | `over_the_rim`, `30`, `20` | `below_the_rim`, `30`, the owner's 0 to 50 | desk doubles; at the cell |
-| `robot.place.side_by_side` (`spacing_margin_mm`, `grid`) | `false` (`20`, 3 by 3) | `true` | desk doubles; at the cell |
-| `robot.place.relocate` | `true` | `true`, the owner's choice (2026-10-09) | desk doubles and a ray-cast bench; at the cell |
+| `robot.motion.place.carry` | `via_the_look` | `over_the_rim`, the owner's choice | desk doubles; at the cell |
+| `robot.motion.place.release_in_a_box` | `over_the_rim` | `below_the_rim` | desk doubles; at the cell |
+| `robot.motion.place.side_by_side` (`grid`) | `false` (3 by 3) | `true` | desk doubles; at the cell |
+
+The safety switches this table listed until 2026-10-17 are no keys since: every cell runs what the owner's cell ran,
+`whole_path_judge` on (the same verdicts on the cell's worlds; the bench), `line_ik: local` and `singularity_fk: dh`
+(URSim CB3, nominal and calibrated, 177 line ends), the world held at the standoff, the part and the drop (the desk,
+URSim CB3, the bench) and the lean model with one pass (the desk's GPU A/B, 191 moves); `register_in_place` left
+unused, as above. So did the place's numbers, at the owner's cell's (desk doubles; at the cell): 30 mm under the rim,
+10 mm inside a box's opening, 20 mm of rim air where the task gives none (its own 0 to 50 stays), 20 mm between
+parts side by side and 15 mm over the rim on a carry; and a lost bin is always looked for again, the owner's choice
+of 2026-10-09 (desk doubles and a ray-cast bench; at the cell), `relocate` no key since.
 
 **Where the seconds went.** [`scripts/cell/pick_timeline.py`](../../scripts/cell/README.md) reads a cell's logs
 folder and splits every task into its survey, its picks and its places, and each into stages (the command, the
@@ -1031,7 +1027,7 @@ look, the grounding, the grasp search, the judging, every motion, the jaws, the 
 with each stage's best, median and worst; given two folders it sets A against B, stage by stage, with the parts
 gripped and placed and the tries refused beside it. It needs nothing but Python and moves nothing.
 
-## 6. Grasp modes and presets
+## 6. Grasp modes
 
 ### 6.1 The three modes
 
@@ -1040,28 +1036,28 @@ Each has a fixed behaviour profile in `src/robot/execution/autonomous_grasp/conf
 | Mode | Sampling | Recovery actions allowed |
 | --- | --- | --- |
 | `easy` | single object | **none**, a guarantee rather than a default |
-| `auto` | auto | `rescan`, `next_target` |
-| `dense_clutter` | dense | `rescan`, `next_target`, `nudge_target` |
+| `auto` | auto | `rescan` |
+| `dense_clutter` | dense | `rescan`, `nudge_target` |
 
-`robot.yaml` ships `default_mode: "auto"`. `resolve_grasp_mode` accepts aliases (`single`,
+`robot.yaml` ships `default_mode: "dense_clutter"`, the owner's cell's and the schema's default since
+2026-10-17. `resolve_grasp_mode` accepts aliases (`single`,
 `single_object`, `dense`, and `None` for `auto`) and raises `ValueError` on anything else, so a typo never
 runs the wrong sampler.
 
 `closed_loop` and `dense_autonomous` were removed on 2026-09-29 with the two-scan pre-grasp refinement
 they ran (the standoff move, the second frame and the bounded correction), which no shipped config
-switched on and no physical arm ran. A tree, a preset or a call that still names one, or its alias
+switched on and no physical arm ran. A tree or a call that still names one, or its alias
 `closedloop` or `autonomous`, is refused with the mode to name instead: `auto` for `closed_loop`,
 `dense_clutter` for `dense_autonomous`.
 
-The table is an **outer gate**: an action runs only where the mode lists it **and**
-`recovery.allowed_actions` names it, and `allowed_actions` cannot widen the mode. `next_target`, a rescan
-that skips the part that failed, joined `auto` and `dense_clutter` the same day; it moves nothing itself.
-`nudge_target`, **the push**, moved from `dense_autonomous` to `dense_clutter` and stays there alone, so
-`auto` recovery never touches a part; it runs only on a wrist camera's pick, and its fixture box is
-**optional**. `container_agitate` is in no mode, and a config that names it without a declared
-container is refused at load. `next_viewpoint` left both profiles the same day, merged into `rescan`,
-which is what it did once nothing moved the camera for it; a `recovery.allowed_actions` that still names
-it is refused, `removed on purpose: use rescan`. What each action does is 6.4.
+The table is an **outer gate**: an action runs only where the mode lists it, and no run's ticks can widen
+the mode. `nudge_target`, **the push**, moved from `dense_autonomous` to `dense_clutter` and stays there
+alone, so `auto` recovery never touches a part; it runs only on a wrist camera's pick, and needs no fixture
+box. `next_viewpoint` left both profiles the same day, merged into `rescan`, which is what it did once
+nothing moved the camera for it. `next_target`, a rescan that skipped the part that failed, and
+`container_agitate`, a shake of a declared container that no mode listed, left on 2026-10-16 with the
+`recovery` block (the owner's cleanup). A run that still names one is refused with the name to use instead.
+What each action does is 6.4.
 
 ### 6.2 The per-call override is restricted on purpose
 
@@ -1070,78 +1066,34 @@ bound to a sampling mode at construction, so a mode with another sampler is refu
 `MODE_NOT_AVAILABLE`. The three modes each have their own sampler, so a service stays in the mode it
 was built in: you cannot move between modes at call time.
 
-### 6.3 The two presets
+### 6.3 The grasp presets
 
-Two partial `grasping:` overlays ship in [`config/grasping_presets/`](../../config/grasping_presets/),
-each short enough to read in full. `easy.yaml` sets `default_mode: easy` and turns recovery and uncertainty
-off, and `dense_clutter.yaml` sets the dense mode with both on; its recovery allows `rescan` alone, so
-`next_target` and the push stay off until your own `recovery.allowed_actions` names them. A third,
-`verification_heavy.yaml`, set `default_mode: closed_loop` and was deleted on 2026-09-29 with that mode.
-**The config loader does not load them.** They are library objects:
+The two partial `grasping:` overlays that shipped in `config/grasping_presets/` left on 2026-10-16 (the
+owner's cleanup): each set a mode beside switches that left the same day. Write what a cell needs into its
+own tree, where `python -m src.config` validates it as it validates every key.
 
-```python
-from willy import Cell, load_tree
-from src.config.schema.robot import RobotConfig
-from src.robot.grasping.replay import apply_preset
-from src.robot.grasping.replay.presets import validate_preset
+### 6.4 Recovery: rescan and the push
 
-validate_preset("dense_clutter")               # merge, re-validate, raise on a bad key
-tree = load_tree()
-merged = apply_preset(tree.robot.model_dump(mode="python"), "dense_clutter")
-robot = RobotConfig.model_validate(merged)     # always do this: apply_preset does not validate
-cell = Cell.from_robot_config(robot, app_config=tree.app_config, data_dir=tree.root)
-```
-
-That is what "grasping presets bypass schema validation" means: `apply_preset` merges outside the schema,
-so a misspelled key survives, and `validate_preset` is the wrapper that catches it. The mechanism,
-including the fact that the preset directory resolves from the repository rather than from your `--data`
-tree, belongs to [01](01-configuration.md).
-
-One trap in the preset table: `recovery.apply_modes` ships as `auto` and `dense_clutter`, so a
-`recovery.enabled: true` in a mode outside that list stays inert. `validate_preset` refuses a preset of
-your own that still names a removed mode, with the mode to name instead, and one that still names
-`next_viewpoint` or writes a removed block (`verification`, `dense_recovery`), with the sentence that says
-what to do.
-
-### 6.4 Recovery: rescan, the next target, and the push
-
-`robot.grasping.recovery` is what a pick does after an attempt failed. It ships `enabled: false`, runs
-only in its `apply_modes` (`auto` and `dense_clutter`), and plans only the actions both the mode (6.1) and
-`recovery.allowed_actions` name. `easy` never recovers.
+Every cell built from config runs the recovery the owner's cell ran, fixed since 2026-10-16 (the owner's
+cleanup): on in `auto` and `dense_clutter`, a rescan once a pick, at most two actions, the push and the
+clearing of a blocker inside the pick attempt. There is no block to write, and a tree that still writes
+`robot.grasping.recovery` is refused at load with the sentence that says to delete it. `easy` never recovers.
 
 | Action | What it does | Modes |
 | --- | --- | --- |
 | `rescan` | perceives again and ranks afresh; moves nothing | `auto`, `dense_clutter` |
-| `next_target` | a rescan that **skips the part that failed**, for another part of the same label | `auto`, `dense_clutter` |
-| `nudge_target` | **the push**: slides a boxed-in part aside with the open jaws, inside a wrist camera's pick attempt | `dense_clutter` |
-| `container_agitate` | shakes a declared container; refused at load where none is declared | none |
+| `nudge_target` | **the push**: slides a boxed-in part aside with the jaws, inside a wrist camera's pick attempt | `dense_clutter` |
 
-**A refusal before anything moved falls through** to the next action for the same failure. It stays in
-the trail, spends no budget and never re-runs the pick. A motion that failed once the arm moved ends the
-loop. A loop that ran an action and had none left reads `recovery_exhausted`; a pick that found nothing
-keeps `no_target`.
+The loop plans the rescan alone; the push runs inside the attempt. A loop that rescanned and had nothing
+left reads `recovery_exhausted`; a pick that found nothing keeps `no_target`.
 
 **Rescan on a wrist cell.** A pick handed looks has had its rescans: its looks and its one generated view.
-Recovery takes `rescan` out of that pick's actions and says so at INFO, so a rescan never repeats the
-looks; only `next_target` runs them again, for another part of the label. A look-less wrist pick and a
-fixed camera rescan where they stand.
-
-**The next target.** The part that failed gets an **exclusion zone**: its BASE XY centre, a radius of 30
-mm or half its footprint diagonal, whichever is larger, for this pick and the next two. The next attempt
-skips every part of that label whose centre lies in a zone, and never takes another object. On a wrist
-cell it runs the look sequence again for the new part, with the early stop and at most one generated view.
-It also follows a `motion_plan_refused`: the new part's motions are judged in full. Where only excluded
-parts of the label are left, the pick stops and says so.
-
-**Before the looks run again.** Before `next_target` drives a wrist pick's looks again, a toggle's count
-is read (`why_toggle_count_unknown`, nothing asked or sent). One **nobody can vouch for** ends the pick as a
-**gripper fault** before any look is driven again: nothing moves, `report.gripper_fault` says why,
-`telemetry['re_pick_refused']` says the re-pick never ran, and `PickRun` and the console run stop on it. A
-re-pick that drives no look, a fixed camera's or a look-less wrist pick's rescan, reads nothing more: its own
-check before the arm moves asks where the jaws stand, as at every pick start ([06](06-grippers.md)).
+Recovery takes `rescan` out of that pick's actions and says so at INFO, so no recovery drives the looks
+again. A look-less wrist pick and a fixed camera rescan where they stand, and the rescan's own check before
+the arm moves asks where a toggle's jaws stand, as at every pick start ([06](06-grippers.md)).
 
 **Every grasp is judged before the arm leaves for it.** Where the policy can (the owner's cuRobo UR), the
-move to a grasp's standoff, its line in and its lift as if the jaws held the part are judged from the look
+move to a grasp's standoff, its line in and its lift as it will run once the jaws close are judged from the look
 first. On URSim (2026-10-03) a lift that turned wrist 1 out of the cable window was refused only once the
 hand stood at the part; judged ahead it moves nothing, and the next grasp of the same look follows. A
 part every grasp of which was refused that way is treated as one every grasp of which collided. Each of the
@@ -1157,24 +1109,24 @@ three is judged once, in this order (the judge chain, 2026-10-08):
    further apart than its bound. A knot step that leaves the workspace, has no solution, changes branch or takes
    the flange more than 0.1 mm off the line is solved at every sample, as before, with the verdict it always had.
    A line the arm is about to run is solved every 3 mm, as ever.
-2. **The lift next**, as if the jaws held the part, in the world the line in was judged in: both are built about
+2. **The lift next**, as it will run once the jaws close, in the world the line in was judged in: both are built about
    the grasp, with the region between the jaws left out there.
 3. **The route to the standoff last.** Where it ends on the very configuration the line was judged from, each of
    the three was judged once, with two refreshes of the world, and the move to the standoff runs that route as it
    was judged, with no new refresh, where nothing it was judged on changed: the same planner and world, at most
-   0.5 s since, the arm within 0.5 mm of where it was judged from, the hand, the carried part and the camera's
-   boxes as they were, no halt. Anything else, and the move judges its route as it runs. Where the route ends
+   0.5 s since, the arm within 0.5 mm of where it was judged from, the hand and the camera's boxes as they were, no
+   halt. Anything else, and the move judges its route as it runs. Where the route ends
    anywhere else (a cuRobo plan, another goal), the line and the lift are judged again from where it ends, as
    before.
 
-At the part the same holds for the lift: in the world held there, on a cell that models no carried part, the lift
-judged as if carrying before the jaws close is the lift that runs, not judged again where nothing changed since.
-With `safety.planning_world.hold.standoff` (5.5) the route too is judged in the line's world, and the move to the
-standoff and the line down hold it, with no frame taken at the standoff. The chain was estimated from the cell's
+At the part the same holds for the lift: in the world held there, the lift judged before the jaws close is the lift
+that runs, not judged again where nothing changed since. The world is held at the standoff too (5.5), so the route is
+judged in the line's world, and the move to the standoff and the line down hold it, with no frame taken at the
+standoff. The chain was estimated from the cell's
 logs at 8 to 9 s a try; the cell has not run it yet.
 
-**Push, or clear a blocker: the owner's switch** (`recovery.critical_parts`, 2026-10-03; a console run
-sets it for itself under *Kritische Teile*). Off, the default: a boxed-in part is **pushed first**, and
+**Push, or clear a blocker: the owner's switch** of 2026-10-03, `runtime.task.critical_parts` in
+`app/runtime.yaml` since 2026-10-16 (a console run sets it for itself under *Kritische Teile*). Off, the default: a boxed-in part is **pushed first**, and
 the push may rearrange the scene; a blocker is cleared where no push plans. On: **nothing is pushed**, and
 a blocker is cleared instead. Both answer a part that failed `all_collided` and one whose every grasp was
 refused ahead.
@@ -1190,10 +1142,7 @@ no blocker before), narrower than the hand opens, whose removal
 the calculator, asked again with its pixels left out, says frees a grasp of the part or spares one of its
 refusals. Where no one removal frees a grasp, the calculator is asked once with every candidate left out,
 and where that frees one, the nearest goes first. Its grasps are tried best first, each judged from the
-look before the arm leaves for it, at most `recovery.blocker_grasp_tries` (3). On an arm that models a
-carried part it reaches no further past the fingertips than the
-planner models one (`safety.planning_world.payload.length_mm`; `blocker.TOO_LONG_TO_CARRY` otherwise),
-because between the close and the release only the planner holds it. It is gripped by the policy like any
+look before the arm leaves for it, at most three. It is gripped by the policy like any
 part, with the part back in the camera world and the blocker held out of it, set down by the place verb on
 a free spot the camera saw (150 mm from the part, nothing seen within the hand's reach plus 20 mm, inside
 the workspace, let go 3 mm over where it stood relative to its support) or at
@@ -1205,17 +1154,17 @@ blocker once set down is never taken again. A removal that spared nothing by the
 where that one frees a grasp of the part outright: two posts either side of a part each free nothing alone,
 and the count is a new look's (the grasp bench, 2026-10-06). A refusal before anything moved lets the attempt go on,
 and so does a grasp refused once the arm stood over the blocker while the hand is known empty and open
-(`why_not_known_open`: its line in, or its lift judged as if carrying): the arm goes back to its look on a
+(`why_not_known_open`: its line in, or its lift judged before the jaws close): the arm goes back to its look on a
 judged move first, the blocker still held out of the world as on the way down (the open jaws stand round
 it), and that blocker is not tried again. Any other stop once something moved ends the pick where the arm
 stands, the blocker maybe in the hand, and needs a person as a stopped push does. Each clearing is an
 attempt with `action: clear_blocker` (`blocker: set_aside` or the stop's code) and in
 `orchestrator.blockers`. A task that takes every part into one place takes a blocker as the part its pick
-takes (`recovery.blocker_into_the_place`, on, the owner's "direkt weggepackt" of 2026-10-06; the console's
-**Blocker direkt wegpacken**): gripped, lifted and reported picked (`blocker: taken_as_the_pick`), set down by
+takes (every cell's, the owner's "direkt weggepackt" of 2026-10-06; the console's **Blocker direkt
+wegpacken** lets a run say otherwise): gripped, lifted and reported picked (`blocker: taken_as_the_pick`), set down by
 the task where its parts go, and the part it blocked is picked next. No free spot is asked for, and only a part
-the detector named is taken so: a wall of the tray the part stood in passed every other test. Off, or in a
-task that names an object, it is set aside as above ("nur umgelegt"). Nothing in a region the task keeps out,
+the detector named is taken so: a wall of the tray the part stood in passed every other test. Unticked for a
+run, or in a task that names an object, it is set aside as above ("nur umgelegt"). Nothing in a region the task keeps out,
 its bin among them, is ever a blocker. Depth alone cannot part objects that touch: on the owner's pile every cluster was
 55 to 80 mm across, too wide for the hand, so nothing there was taken. And the hand needs room round a
 blocker: a neighbour within about 31 mm leaves the Hand-E's part no grasp, and one within about 20 mm
@@ -1227,16 +1176,15 @@ was not).
 the looks judged the grasp, where the part, its neighbours, the keep-out and every frame of the pick are
 at hand, and only where the parts are not critical. **A fixed-camera cell never pushes.**
 
-- **When.** The grasp failed `all_collided`, every grasp was refused ahead, or its approach was blocked
-  where `approach_validation` is on, and a neighbour stands within 25 mm of the part in the fused clouds
-  of the looks. Never for
+- **When.** The grasp failed `all_collided`, or every grasp was refused ahead, and a neighbour stands
+  within 25 mm of the part in the fused clouds of the looks. Never for
   `no_valid_grasp` or `no_candidates_generated`: nothing there says a neighbour is in the way. A part a
   program's `closing_axis` refused carries `no_valid_grasp` alone, so it is never pushed, while a
   boxed-in neighbour of it still is.
-- **Only where allowed.** `recovery.enabled`, the mode in `apply_modes`, `nudge_target` in
-  `allowed_actions`, the parts not critical, a budget left, and an attempt left to pick the part from
-  afterwards (`max_attempts: 1` never pushes). **No fixture needed**: a declared `recovery.fixture` only
-  narrows the push box.
+- **Only where allowed.** `dense_clutter`, a run that did not untick the push, the parts not critical, a
+  budget left, and an attempt left to pick the part from afterwards (a service built with `max_attempts=1`
+  never pushes; a cell makes five). **No
+  fixture needed**: the automatic push box bounds it.
 - **What pushes.** The **closed fingers**, about 22 mm across where the open Hand-E stands 72: the hand
   closes in the air over the part before the line down, a Robotiq to its closed width (the owner,
   2026-10-15) and a toggle by one change of DO0 (2026-10-16), and opens again at the look after the push,
@@ -1248,8 +1196,8 @@ at hand, and only where the parts are not critical. **A fixed-camera cell never 
   pendant mid-pick, or unreadable), **ends the pick as a gripper fault**, as the toggle's own refusal ends
   one, and so does a width-measuring gripper found **not connected** there, or whose width read fails (a
   Robotiq whose socket stopped answering): nothing more moves, `report.gripper_fault` says why, and
-  `PickRun` and the console run stop on it ([06](06-grippers.md)). A push refused before that read falls
-  through, and the count is read again before `next_target` drives the looks again.
+  `PickRun` and the console run stop on it ([06](06-grippers.md)). A push refused before that read lets
+  the attempt go on.
 - **Where to.** The planner takes the direction that gains the most clearance from the neighbours, every
   object the looks and the calculator saw beside the part among them, a push that touches nothing but the
   part first. **The push may rearrange the scene** (the owner, 2026-10-03: "Er darf die Szene ruhig dolle
@@ -1272,11 +1220,10 @@ at hand, and only where the parts are not critical. **A fixed-camera cell never 
   on the support and one that reaches up to the palm are not pushed. Where no look saw the part's foot,
   the table seen round it says whether it rests there: no edge of what was seen within 15 mm of it, a
   quarter of that ring the table itself, and no table seen under it.
-- **How far.** 30 mm (`recovery.fixture.push_distance_mm`) unless asked: `push_mm` on `PickRun` or the
-  API request asks for up to `recovery.fixture.max_nudge_mm`, 50 mm by default and at most. Longer, or
-  under 10 mm, is refused with a sentence, never shortened; the console answers
+- **How far.** 30 mm unless asked: `push_mm` on `PickRun` or the API request asks for up to 50 mm.
+  Longer, or under 10 mm, is refused with a sentence, never shortened; the console answers
   `422 push_distance_refused`. Where nobody asked and 30 mm frees no direction, the planner tries 40,
-  then 50 mm, up to `max_nudge_mm`; a distance a person asked for is never lengthened. Of 160 measured
+  then 50 mm; a distance a person asked for is never lengthened. Of 160 measured
   scenes (2026-10-03), the rearranging push planned 39, most often a round part beside one neighbour;
   the push of 2026-10-02 planned none of them.
 - **How.** First the whole push is judged from where the arm stands: the move to P0 and every line, each
@@ -1319,26 +1266,27 @@ the fused looks of a wrist pick, or a declared container, see past the part.
 
 ## 7. What is built, what is off, and what turns it on
 
-These blocks under `robot.grasping` carry their own `enabled` switch, and every one ships `false`:
-`decision`, `feasibility`, `ordering`, `recovery`, `uncertainty`, `success_model`, `performance`,
-`fusion`, `approach_validation`, `deep_ranker` and `follow_parts` (5.4). `verification` and `dense_recovery` were removed on
-2026-09-29, and a tree that still writes either is refused at load. Check it
-with `python -m src.config where enabled --tier all --limit 500`: every `robot.grasping.*` row reads
-`bool, default False`, with one exception. `fusion.cameras.*.enabled` defaults `True`, but that is the
-per-entry flag on the multi-camera map, and the map is empty by default.
+One block under `robot.grasping` carries its own `enabled` switch, and ships `false`: `deep_ranker`.
+`follow_parts` (5.4) left on 2026-10-17: every task on a cell built from a tree follows its parts. The
+`recovery` and `fusion` blocks left on 2026-10-16: every cell recovers as the
+owner's cell did (6.4), and a cell fuses its fixed cameras by itself wherever its camera section declares two
+or more calibrated RGB-D rigs. `verification` and `dense_recovery` were removed on 2026-09-29. The `decision`, `feasibility`, `occlusion`, `ordering`, `uncertainty`, `success_model`,
+`watchdog`, `performance` and `approach_validation` blocks, with `robot.rl`, were removed on 2026-10-16 with
+their code: switched on one at a time, none changed a pick of the owner's cell's replay bank (479 picks). A
+tree that still writes one of them is refused at load. Check it with
+`python -m src.config where enabled --tier all --limit 500`: every `robot.grasping.*` row reads
+`bool, default False`.
 
 The shipped [`config/robot/robot.yaml`](../../config/robot/robot.yaml) leaves every one of these switches
-at its schema default. Its `grasping:` block sets the always-on tunings plus `default_mode`,
-`max_attempts` and `record_log_path`.
+at its schema default. Its `grasping:` block sets the deep generator's and the ranker's blocks, the bin under
+`support.container`, `default_mode` and `record_log_path`.
 
-So: **the decision gate, recovery, multi-camera fusion, the uncertainty rerank, the ranking blend, the
-learned ranker, the learned success model, latency budget enforcement and the reinforcement-learning
-shadow are all built, all exercised, and all off.** The separate post-grasp verification stage is gone:
-the service called it only from the two-scan refinement, and both were removed on 2026-09-29. The hold
-a pick reports comes from the execution policy's own check after its close, in every mode.
-The simulator runners switch several on per command-line flag in runner code rather than in config,
-which is why a simulation result can involve a decision engine while `grasping.decision.enabled` is still
-false. The same statement from the code's side is in
+So: **the learned ranker's shadow is built, exercised, and off; recovery runs on every cell, and fusion on
+every cell of two calibrated cameras.** The
+separate post-grasp verification stage is gone: the service called it only from the two-scan refinement,
+and both were removed on 2026-09-29. The hold a pick reports comes from the execution policy's own check
+after its close, in every mode. The simulator runners switch several on per command-line flag in runner code
+rather than in config. The same statement from the code's side is in
 [`src/robot/grasping/README.md`](../../src/robot/grasping/README.md); if the two ever disagree, that one
 wins.
 
@@ -1346,35 +1294,24 @@ wins.
 through them whatever the config says, and `PickRun` and the console always hand a wrist pick its looks
 (5.1).
 
-**The speed switches are not blocks either.** `first_good_part`, `good_part_score`, `fine_pass_waits`,
-`colour_check`, `colour_check_clipped`, `workers` and `batched_builds` sit directly under `robot.grasping`,
-beside the motion, planner, place and model keys of 2026-10-08 and 2026-10-09; 5.5 lists every one with its
-default and what the owner's cell runs.
+**The speed switches are not blocks either.** `first_good_part`, `good_part_score`, `colour_check` and
+`colour_check_clipped` sat directly under `robot.grasping` until 2026-10-17, when they left at the owner's cell's
+values with the other grasping switches; 5.5 lists every switch that is still a key, with its default and what
+the owner's cell runs.
 
 ### 7.1 Where to look for a specific block
 
 [grasping-config-reference.md](../grasping-config-reference.md) is the account of the `robot.grasping`
-blocks: which mode each fires in, the traps, and what has been measured. Read its mode gate and its traps
-before enabling or measuring anything. Two of its facts invalidate a result without a sound. Of the
-mode-gated blocks, `easy` reaches only `success_model`, and several blocks collapse every key to its off
-value outside their `apply_modes`. And several ship their operative weight at `0.0`, so `enabled: true`
-alone computes a signal and multiplies it by nothing. For keys and defaults, use
-[`config/all_keys/`](../../config/all_keys/), generated from the schema and valid on its own.
+blocks: which mode each fires in, the traps, and what has been measured. Read its mode gate before enabling
+or measuring anything: several blocks collapse every key to its off value outside their `apply_modes`. For
+keys and defaults, use [`config/all_keys/`](../../config/all_keys/), generated from the schema and valid on
+its own.
 
-### 7.2 `ordering.enabled` is wired, and still reorders nothing
-
-`apply_orchestrator_overlays` in [`builders.py`](../../src/robot/execution/autonomous_grasp/builders.py)
-sets `runtime.orchestrator.target_ordering` from the block, gated on `apply_modes`, and the orchestrator's
-selector reads it. But `enabled: true` alone changes no order: `ordering.unlock_weight` ships at `0.0` and
-no YAML raises it, so the graph is built and the score it feeds is multiplied by zero. Two things are
-missing: a non-zero weight, and a scene where picking order matters enough to measure.
-
-### 7.3 What config cannot reach, and how to check what landed
+### 7.2 What config cannot reach, and how to check what landed
 
 Some inputs live on the `GraspCalculator`, a caller-supplied argument to both constructors. Config reaches
-three of them by carrying them on the orchestrator and passing them per call: `gripper_geometry` becomes
-`gripper_model`, `occlusion` becomes `corridor_config`, and `feasibility` becomes `feasibility_config` plus
-its weight.
+one of them by carrying it on the orchestrator and passing it per call: the named hand's registry file
+becomes `gripper_model` (`gripper_model.jaw_envelope`).
 
 Config cannot supply the **IK service**. No key names one, and without it unreachable candidates are never
 dropped and the `rejected_ik` counter stays at zero. The implementations are vendor-neutral and ship in
@@ -1382,33 +1319,25 @@ dropped and the `rejected_ik` counter stays at zero. The implementations are ven
 any `RobotArm`, `CachedIKService` quantises and caches it, and `URAnalyticIKService` is an offline analytic
 solver. Passing one to the calculator is a line in your own boot script.
 
-The schema refuses to load a switch it knows is unwired, and that list lives in the code:
-
-```powershell
-python -c "from src.config.schema.robot.grasping_schema import RobotGraspingConfig as G; print(G.UNWIRED_SWITCHES)"
-```
-
 Then check what was built rather than trusting the YAML, because several loaders return `None` on purpose.
-The service fields worth checking are `effective_config`, `decision_engine` and
-`shadow_router`; on `service.runtime.orchestrator` they are `fusion_geometry_config`,
-`approach_path_policy`, `target_ordering`, `frame_resolver`, `gripper_model` and
-`corridor_config`. Each is `None` when it did not land.
+The service field worth checking is `effective_config`; on `service.runtime.orchestrator` they are
+`camera_frame_resolvers`, `frame_resolver` and `gripper_model`. Each is `None` when it did not land.
 
 ## 8. Record logging
 
-Off by default, which is why the soak, KPI and reinforcement-learning layers consume simulated and
-synthetic data rather than production data. There are four ways to ask for it: `recording=` on
-`PickRun.from_cell` (`Recording.to_file(path)`); `robot.grasping.record_log_path` in YAML, which only
-`from_robot_config` reads; `record_log_path=` on `from_components`; or `service.enable_record_logging(path)`
-at run time. The shipped `robot.yaml` sets it to `null`, and the simulator runners take
-`--record-log <path>`.
+A cell built from config keeps its records whether or not its tree names a file (since 2026-10-17):
+`robot.grasping.record_log_path` in YAML, which only `from_robot_config` reads, names the file, and `null`, as
+the shipped `robot.yaml` sets it, is `grasp_records.jsonl` in the log folder (`WILLY_LOG_DIR`, else `logs/`).
+Three more ways name a file: `recording=` on `PickRun.from_cell` (`Recording.to_file(path)`), for one campaign;
+`record_log_path=` on `from_components`, which records nothing without it; or
+`service.enable_record_logging(path)` at run time. The simulator runners take `--record-log <path>`.
 
 **What lands.** One `json.dumps(..., sort_keys=True)` line per `pick()`, appended, with the parent
 directory created and the whole write wrapped so a logging failure cannot break a pick. The record is a
 `GraspAttemptRecord`: four mandatory fields (`timestamp`, `attempt_id`, `mode`, `final_outcome`), a
 summary per stage that is `None` when the stage did not run, and a free-form `extra` bag. The frozen
 contract is in the [telemetry README](../../src/robot/grasping/telemetry/README.md); changing it means
-updating the KPI, taxonomy and reinforcement-learning consumers together.
+updating the KPI and taxonomy consumers together.
 
 **On a real cell nothing waits for the record** (2026-10-08). `build_real_cell` has one background thread per
 process write each pick's record, its timestamp taken when the pick ended, so a pick returns before its record is
@@ -1440,16 +1369,13 @@ python -m src.robot.grasping.replay --records-gate logs\attempts.jsonl   # the r
 python -m src.robot.grasping.replay --sim-soak-report logs\attempts.jsonl --sim-min-attempts 50
 ```
 
-`--records-gate` compares your log against the committed baseline thresholds, which include a minimum
-attempt count in the thousands. A bring-up that logged tens of attempts is therefore red on the attempt
-floor alone: honest, and useless as a signal. Point `--thresholds` at your own bring-up file, or use
-`--sim-min-attempts` with the simulation gate, and say which you did when you quote the result. Do not fix
-a red gate by dropping the metric.
+`--records-gate` holds your log to the gate's six keys, among them at least 2000 attempts. A bring-up that
+logged tens of attempts is therefore red on the attempt floor alone: honest, and useless as a signal. Use
+`--sim-min-attempts` with the simulation gate, and say so when you quote the result. Do not fix a red gate
+by dropping the metric.
 
-`--soak-report` is a **synthetic contract self-check, not a quality measure**, and its own `--help` says
-so. The outcome distribution is authored, so a pass proves that the telemetry, KPI, taxonomy, budget and
-watchdog pipeline is consistent. It says nothing about whether the robot picks things up, and it stays
-green through a broken cell. For a quality signal use `--records-gate`. Details are in the
+The synthetic soak, `--soak-report`, left on 2026-10-16 (the owner's cleanup): its outcome distribution was
+authored, so it stayed green through a broken cell. Details are in the
 [replay README](../../src/robot/grasping/replay/README.md).
 
 ## 9. Troubleshooting
@@ -1465,8 +1391,8 @@ shows it. Then read `report.outcome`, `dict(report.telemetry)`, and the attempt 
 | `mode_not_available`, reason `per_call_mode_requires_different_sampling_mode` | `pick(mode=...)` asked for another sampler | rebuild with that mode (6.2) |
 | `no_target` | the frame carried no segmentations | perception, not grasping: check the prompt, and that the camera is not returning black ([02](02-models.md)) |
 | `missing_camera_frame` | a valid candidate existed in the camera frame, and the policy refused it | declare the primary rig's `camera.cameras.rigs[<id>].extrinsics` ([03](03-calibration.md)) |
-| `decision_fail_closed`, `uncertainty_fail_closed` | the decision gate refused a grasp it did not trust: `low_confidence` for a grasp less confident than the threshold (a record logged before 2026-09-29 carries `reobserve_planner_unavailable` for it), `uncertainty_fail_closed` or `channel_disagreement` for the fused uncertainty. A refusal never sends the camera to look again: a wrist pick's looks ran before the gate decided | improve what the camera sees, or lower the thresholds knowingly |
-| `drift_blocked_auto`, `ood_blocked_auto` | the watchdog locked autonomous operation | read the drift and out-of-distribution telemetry; do not bypass it |
+| `decision_fail_closed`, `uncertainty_fail_closed` | in a record logged before 2026-10-16 only: the decision gate refused a grasp it did not trust (`low_confidence`, or `reobserve_planner_unavailable` before 2026-09-29), or the fused uncertainty did (`uncertainty_fail_closed`, `channel_disagreement`); both left on 2026-10-16 with their blocks | nothing: a pick today never ends so |
+| `drift_blocked_auto`, `ood_blocked_auto` | in a record logged before 2026-10-16 only: the watchdog locked autonomous operation; it left that day with its block | nothing: a pick today never ends so |
 | `execution_failed`, attempt action `look_refused` | a wrist pick reached none of its looks: a guard or the planner refused every one, and the ERROR line names each refusal | fix the looks, or what refuses them; a look motion that may have moved says so in its own ERROR line (5.1) |
 | `no_valid_grasp`, attempt action `faces_unseen` | `both_faces` asked for both jaw contact faces and no view showed both; the failure line names the face | add a look that faces that side, or leave `both_faces` off where the part is not safety-critical |
 | `no_valid_grasp`, the failure line names `closing_axis` | the program's `closing_axis` left the part no grasp within 30 degrees of it (`PickAttempt.withheld`) | name an axis the part's grasps close along, or none; the natural orientation turns grasps and never refuses one (5.2) |
@@ -1482,9 +1408,10 @@ cuRobo cell:
   `Refused before planning: this cell plans with cuRobo, no live camera world is wired`.
 - A calibrated rig that gives no world: the cell does not build, and the checklist's `camera world` row
   says so first.
-- A declined motion reads `DECLINED`, and where a live world is wired (`safety.planning_world.enabled`) a
-  declined planned motion is refused before planning.
-- A wired world is built from every enabled RGB-D rig that declares its calibration, the primary first.
+- A declined motion reads `DECLINED`, and where a live world is wired (every cell that declares its bench,
+  `safety.planning_world.support_plane`) a declined planned motion is refused before planning.
+- A wired world is built from every enabled rig that declares its calibration, the primary first: an
+  RGB-D camera with its own depth, a stereo pair with the depth its stereo calibration gives.
   One of them that cannot answer stops every planned motion.
 
 A wired world leaves out the space between the open jaws at each motion's goal: the hand's registry jaw on
@@ -1495,30 +1422,26 @@ target out of the world for the whole attempt. A `PLANNED` stamp says what was l
 the weakest stamp as `extra.camera_world` and `extra.camera_world_reason`.
 
 **The arm refused.** A safety rejection surfaces as `execution_failed` with a motion message prefixed
-`[safety:<guard>/<reason>]`. Guard order and verdicts are in [04](04-robot-and-safety.md). Two things
-belong here: `enforce: false` on a guard removes it at construction, so its surface is gone rather than
-quiet; and on a cell that runs `ik`, blind IK proposes self-colliding branches that the guard then rejects,
+`[safety:<guard>/<reason>]`. Guard order and verdicts are in [04](04-robot-and-safety.md). One thing
+belongs here: on a cell that runs `ik`, blind IK proposes self-colliding branches that the guard then rejects,
 which looks exactly like bad grasping. Run the motion-stack probe before you blame the grasps. A refusal on a
 box the cameras saw names it, its corners, turn and size, and the joints the arm stood at; `it may be the
 robot itself` there means the calibration puts the arm off its model: recalibrate
 ([04](04-robot-and-safety.md), 5.5). A pose beside the base that the planner refuses for its world runs where
-only the camera's boxes refuse it and the exact guard accepts them. It stays refused where the bench or a
-declared bin refuses it, while the hand carries a part or cannot say it stands open (`the hand is not known
-to be empty and open (...)`: a count that says closed or that nobody can vouch for, a width short of open, no
-hand handed to the arm), and for a planned move into it or out of it: the refusal names the planner's world
-and why it stands. Give the bin room, about 30 mm from the shoulder housing, more while carrying
-([real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), Diagnose 10). **A grasp that backed out**
-reads `execution_failed` with `the retreat, judged at the part as if the jaws held the part ... would be
-refused: ...` (the policy's own outcome is `carried_retreat_refused`): at the part, with the jaws still open,
-its lift carrying would be refused, so they stayed open and the arm went back up the line it came down; the
-pick goes on to its next part. Give the bin the 50 mm a carried part needs, or declare it. The check, the lift
+only the camera's boxes refuse it and the exact guard accepts them, whatever the hand holds. It stays refused where
+the bench or a declared bin refuses it, and for a planned move into it or out of it: the refusal names the planner's
+world and why it stands. Give the bin room, about 30 mm from the shoulder housing, 50 to 60 where planned moves reach
+the pose ([real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), Diagnose 10). **A grasp that backed out**
+reads `execution_failed` with `the retreat, judged at the part before the jaws close, would be refused: ...` (the
+policy's own outcome is `carried_retreat_refused`): at the part, with the jaws still open, its lift would be refused,
+so they stayed open and the arm went back up the line it came down; the pick goes on to its next part. The sentence
+names what refused the lift; give the bin room there, or declare it. The check, the lift
 and the line back up are judged against the world the line down was judged in, with no new frame, each leaving
 the region between the jaws out at the part (the owner, 2026-10-06; [04](04-robot-and-safety.md)): a refresh at
-the part had refused every way back up. **An arm held after a
-close** (a plain close, or a grasp whose lift, judged again as it starts, refused what the check before the close
-let through: a part measured wider, a lift in steps) reads `... at sample 0 of ...: the
-planner's world; it stands: a part is carried` or `... the hand is not known to be empty and open (...)`:
-nothing moves; release the part (`Robot.release`), and the arm leaves empty-handed.
+the part had refused every way back up. **A lift refused after the close** (judged again as it starts, it can refuse
+what the check before the close let through, a lift in steps among others) leaves the arm at the part with the part
+in its jaws and the pick ended with the refusal's sentence; the next motion is judged from there as every motion is,
+the closed hand as an empty one, and `Robot.release` opens the jaws.
 
 **A push stopped.** `unsafe_recovery_refused` after a push means the arm stopped where the push left it,
 often beside the part at table height, and nothing else moved; `Nobody can say where the jaws stand` in
@@ -1530,17 +1453,18 @@ own (6.4).
 **The hand needs a person mid-pick.** `execution_failed` with `gripper_fault`. A last attempt `push` /
 `refused_jaws_unknown`: the push found nobody can vouch for the hand, a toggle's count (most often DO0
 switched at the pendant while the pick looked) or a width-measuring gripper not connected or unreadable.
-`telemetry['stage']` `before_the_re_pick`, with `re_pick_refused`: `next_target` found the count so before
-it drove the looks again, and that re-pick never ran. Nothing moved after either. Look at the jaws, then
+Nothing moved after it. Look at the jaws, then
 connect again: a toggle's connect asks where they stand, and a width gripper is reconnected.
 
 **No candidates.** Read `attempt.reasons` and the calculator's telemetry line, which carries
-`candidates_silhouette`, `candidates_geometry`, the `rejected_*` counters, `final` and `best_score`. On a
-fresh bring-up check `no_candidates_generated` first: the generator returned nothing at all, which a jaw
-too narrow can cause, and so can a mask with no usable geometry, no antipodal pair or no valid depth. If
-poses were generated and every one fell outside the jaw range, check `robot.gripper.min_width_mm` and
-`max_width_mm` against the part and check the pixel-to-millimetre scale. `ik_failed` is reachable only with
-an IK service wired (7.3). Per-stage detail is in the
+`geometry_stage`, `support_footprint_ready`, the stage's `body_refused` counts, the `rejected_*` counters,
+`final` and `best_score`, and `no_grasp_said` where a sentence says why. On a fresh bring-up check
+`no_candidates_generated` first: the calculator offered nothing at all, which a call with no CAMERA->BASE
+transform or no BASE support plane causes (`support_footprint_ready` is `False`), and so does a mask with no
+valid depth or too few points over the support. If the stage refused every grasp, `body_refused` says for
+what: `aperture` where the part is wider than the hand opens or thinner than it closes, so check
+`robot.gripper.min_width_mm` and `max_width_mm` against the part. `ik_failed` is reachable only with
+an IK service wired (7.2). Per-stage detail is in the
 [generation README](../../src/robot/grasping/generation/README.md).
 
 **It grabbed air.** `object_not_detected` is the honest path and what you want to see. `executed` with the
@@ -1550,9 +1474,8 @@ the cell names no end-effector (`gripper.vendor: none`), which connects ([06](06
 The simulator runners do it behind `--debug-frames DIR`, and only the vision cells produce an image.
 
 **A feature was turned on and nothing changed.** In order of likelihood: you are on `from_components` and
-`effective_config` is `None`; the mode you ran cannot reach the block; you set `enabled: true` and left the
-operative weight at zero; a constructor argument from a runner beat your config block; or you enabled a
-consumer whose producer you did not wire. Read section 7, then
+`effective_config` is `None`; the mode you ran cannot reach the block; a constructor argument from a runner
+beat your config block; or you enabled a consumer whose producer you did not wire. Read section 7, then
 [grasping-config-reference.md](../grasping-config-reference.md).
 
 ## 10. Next steps for real hardware
@@ -1566,15 +1489,15 @@ hardware. The console's task of 5.4 and the wrist looks of 5.1 ran on that cell 
 parts into a bin the camera found (two of its logs are in `tests/data/cell_logs/`); the switches of 5.5 have not
 run there yet. The generated view of 5.1 and the push of 6.4 have not run on a physical arm yet, and the deep grasp
 network was never trained. `--rehearse` drives
-the whole path on a dummy arm, and KUKA, Franka and ROS 2 are empty registry slots that raise on
-`create_arm`. In order:
+the whole path on a dummy arm, and an arm is `ur`, `sim` or `dummy`: KUKA, Franka and ROS 2 were empty
+registry slots until 2026-10-17, and a tree that names one is refused at load. In order:
 
 1. **Run the desk checklist and clear the blocking items.** `real_cell --check` reports each with its fix,
    and every one would otherwise surface at the bench as a different-looking failure. Details:
    [04](04-robot-and-safety.md); procedure: [real_cell_first_pick.md](../runbooks/real_cell_first_pick.md).
 2. **Get a `PerceptionSource` for your camera.** A RealSense is covered by `build_real_components`.
    Anything else is yours to write, and it has to exist before anything else runs.
-3. **Wire an IK service into the calculator.** Config cannot (7.3). It judges each grasp before the natural
+3. **Wire an IK service into the calculator.** Config cannot (7.2). It judges each grasp before the natural
    orientation or a `closing_axis` turns it half a turn; the arm's own guards judge the grasp executed.
 4. **Anchor the motion stack.** Run `python -m src.robot.safety.planning --doctor` and
    `python -m src.robot.execution.real_cell --start-planner`, whose `look` lines screen your looks (5.1).
@@ -1584,15 +1507,14 @@ the whole path on a dummy arm, and KUKA, Franka and ROS 2 are empty registry slo
    and every other planner stopped: `scripts/curobo/probe_band_admission.py` and `probe_turned_boxes.py`.
    They build their own owner-like cell, a UR10 with a Hand-E and no wrist housing, so they test the PC's
    kernel and driver, not your cell's geometry. Restart the planner after every update: it reserves its box
-   slots when it starts, 65 on a cell that declares only its bench.
-5. **Turn on record logging from the first motion**, then gate with `--records-gate`, not
-   `--soak-report`. Real records are the only thing that turns the soak, KPI and reinforcement-learning
-   layers from a self-check into a measurement.
+   slots when it starts, 129 on a cell that declares only its bench.
+5. **Keep the record log from the first motion** (every cell writes one, section 8), then gate it with
+   `--records-gate`. Real records are the only thing the KPI layer measures.
 6. **Start in `easy`.** Its recovery allow-list is empty by construction, so it never produces recovery
    motion.
 7. **Say where a wrist camera looks from.** A wrist camera sees what the arm points it at, so every pick
    of a wrist campaign first looks: `PickRun.from_cell(cell, ..., look=[JointPositions.deg(...), ...])`,
-   joints in degrees read off the pendant, or once for the cell in `robot.look_joint_positions_deg`
+   joints in degrees read off the pendant, or once for the cell in `robot.motion.look_deg`
    ([01](01-configuration.md)); with neither, home. The looks are fused, each with the ones before, until
    the grasp is safe (5.1), so **order them with the part's open side first**. The desk check's `looks`
    row flags a look that reads as radians. Every look is screened where it is taught, where the planner
@@ -1606,15 +1528,16 @@ the whole path on a dummy arm, and KUKA, Franka and ROS 2 are empty registry slo
    back where the tool closed on it, so one part serves a whole campaign
    ([`examples/real_robot/12`](../../examples/real_robot/12_pick_with_the_camera.py),
    [real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), step 8).
-8. **Say how the hand naturally stands.** Name it once for the cell, `robot.natural_closing_axis: "-y"`
+8. **Say how the hand naturally stands.** Name it once for the cell, `robot.motion.natural_closing_axis: "-y"`
    in your profile, as the owner's cell does: every camera grasp and every push then closes that way round,
    none left out, and `robot.tool_down` builds your fixed poses along it (5.2). Where a part must close
    along one axis, the program opts in: `Cell.from_tree(tree, motion=GraspMotion(closing_axis="-y"))`, 30
    degrees either way round, `both_faces` included, and a pick with no grasp along it ends
    `no_valid_grasp` naming the axis.
-9. **Arm the push last.** Name `nudge_target` in `recovery.allowed_actions` only once `rescan` and
-   `next_target` behave on your parts, set the workspace's `z_min` for your table first (6.4), and watch
-   the first pushes with the pendant speed reduced and a hand on the vendor's stop. A push that stops ends
+9. **Arm the push last.** A cell in `dense_clutter` pushes; `auto` never does, and neither do critical
+   parts. Switch to it only once the rescan behaves on your parts, set the workspace's `z_min` for your
+   table first (6.4), and watch the first pushes with the pendant speed reduced and a hand on the vendor's
+   stop. A push that stops ends
    the campaign, and a person clears the cell before the next run starts.
 10. **Re-measure after every change, and never carry a planner margin to a robot nobody measured it on.** A
     thinner-linked arm reads as permanently self-colliding at a 10 mm margin and finds no plan at all. The UR

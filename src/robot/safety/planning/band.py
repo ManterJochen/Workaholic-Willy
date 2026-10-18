@@ -12,9 +12,9 @@ cleared by the planner (research, 2026-09-30).
 The owner, 2026-09-30: for the self pairs the exact guard judges, the exact guard decides. A configuration the exact
 guard has accepted is not vetoed by the planner's self term for a pair of the planner's links that maps onto parts the
 guard checks against one another (:meth:`ExactPairs.decides`). Everything else stays the planner's, unchanged: a pair
-the guard does not check, the carried part (``attached_object``, which only the planner holds), the planner's world and
-its joint bounds (:func:`admission_refusal`). The composed config, its hash and the 4 mm margin are untouched: cuRobo
-still plans with them, which is what keeps its own paths away from the guard's 10 mm.
+the guard does not check, the planner's world and its joint bounds (:func:`admission_refusal`). The composed config, its
+hash and the 4 mm margin are untouched: cuRobo still plans with them, which is what keeps its own paths away from the
+guard's 10 mm.
 
 What is lifted, exactly: the ``planner_margin_mm`` padding and the spheres' own reach past the meshes, on pairs the
 guard judges, and nothing more. The shoulder_link is not one of the guard's parts here (:data:`_ARM_PARTS`): the
@@ -38,15 +38,14 @@ The same cushion lies between the planner's spheres and its world. Beside the UR
 line, where the exact guard alone takes about 26 (guard fixes, 2026-09-30). The owner's Option 1, its own commit: where
 the planner's world refuses a sample, the driver asks it once more with every box the camera saw set aside
 (``check_js`` with ``ignore_perceived``), and where only those boxes refused it the exact guard decides them, as it holds
-the very same boxes, turned, at ``perceived_min_distance_mm`` (:func:`world_admission_refusal`). Never while a part is
-carried, never unless the hand reads empty and open (a toggle's count open, a width measured fully open; the owner,
-2026-10-01), and never the bench, a declared fixture or mesh: those stay the planner's. The camera's distance field and
-its fine grid about the goal are the camera's, and go aside with its boxes (2026-10-15).
-cuRobo still plans in its whole world, so a planned move into or out of such a pose is refused, and so is any move while
-the hand carries a part or cannot say it stands open. A grasp there judges its lift as if the jaws held the part before
-they close, and backs out where that lift would be refused (the owner, 2026-10-01), so it does not close there; an arm
-that holds a part there all the same is held until a person releases it. The screen asks what a move asks, for a hand
-known empty and open, and says such a pose is beside the boxes the camera saw (:attr:`PoseVerdict.SEEN_BOXES`), no ERROR.
+the very same boxes, turned, at ``perceived_min_distance_mm`` (:func:`world_admission_refusal`). Never the bench, a
+declared fixture or mesh: those stay the planner's. The camera's distance field and its fine grid about the goal are the
+camera's, and go aside with its boxes (2026-10-15). No cell models a part in the jaws (the owner, 2026-10-05, every cell
+since 2026-10-17): a closed hand is judged as an empty one, by the exact guard at full stroke, so the boxes go aside
+whatever the hand holds. cuRobo still plans in its whole world, so a planned move into or out of such a pose is refused.
+A grasp there judges its lift before the jaws close, and backs out where that lift would be refused (the owner,
+2026-10-01). The screen asks what a move asks, and says such a pose is beside the boxes the camera saw
+(:attr:`PoseVerdict.SEEN_BOXES`), no ERROR.
 """
 
 from __future__ import annotations
@@ -60,7 +59,6 @@ from typing import TYPE_CHECKING, Any
 
 from src.contracts import chosen
 
-from ._curobo_attach import ATTACHED_LINK_NAME
 from ._curobo_body_links import HAND_LINK, WRIST_BODY_PREFIX
 from ._hand_bundle import HAND_PARTS
 
@@ -120,8 +118,8 @@ def guard_parts(link: str) -> tuple[str, ...]:
 
     The arm links from the upper arm to wrist_3 are the parts of the same name; the hand link is the hand's three parts
     (``HAND_PARTS``); a wrist camera's link is its own part, named alike (``body_link.WristBody.guard_parts``). The
-    shoulder_link, which is the planner's model of the base too, the carried part (``attached_object``), the coupling
-    link and any name this does not know are none of the guard's, so their pairs stay the planner's.
+    shoulder_link, which is the planner's model of the base too, the coupling link and any name this does not know are
+    none of the guard's, so their pairs stay the planner's.
     """
     if link in _ARM_PARTS:
         return _ARM_PARTS[link]
@@ -147,8 +145,8 @@ class ExactPairs:
     where the guard knows no base for this arm. No guard part holds the base: only the planner's shoulder_link stands
     for it (see the module's note), so a part near it is the planner's to judge.
 
-    ``lows`` and ``near_base_from`` are the same two questions asked of a whole path at once, where the guard judges
-    paths whole (``safety.self_collision.whole_path_judge``), else ``None``: ``lows(configs)`` is ``lowest`` of every
+    ``lows`` and ``near_base_from`` are the same two questions asked of a whole path at once, where the guard's backend
+    answers them, else ``None`` (the guard judges every path whole first): ``lows(configs)`` is ``lowest`` of every
     configuration, ``near_base_from(configs, within_mm)`` the index of the first where a part may come within
     ``within_mm`` of the base, never later than ``base`` says one does (``None`` either where one cannot be placed). A
     caller asks them through :meth:`first_low` and :meth:`first_near_base`, which hand ``lowest`` and ``base`` only the
@@ -235,9 +233,9 @@ def admission_refusal(
     """Why the planner's refusal of a configuration stands, or ``None`` where the exact guard decides every pair of it.
 
     The self term is left to the exact guard only where every pair of links the planner found there is a pair the guard
-    judges and carries no padding beyond ``margin_mm``, the cell's ``planner_margin_mm``: the joint bounds and the
-    carried part are the planner's alone and refuse as they always did, and so does a self collision the planner could
-    not name, and a pair padded for something else. The padding of a pair is read off the report: its depth with the
+    judges and carries no padding beyond ``margin_mm``, the cell's ``planner_margin_mm``: the joint bounds are the
+    planner's alone and refuse as they always did, and so does a self collision the planner could not name, and a pair
+    padded for something else. The padding of a pair is read off the report: its depth with the
     padding less its depth without. The world refuses here as well, unless ``world_set_aside``: the caller then decides
     the world term itself, by the planner's second judgement with the camera's boxes set aside
     (:func:`world_admission_refusal`), and ``None`` says only that the bounds and the robot itself are the guard's to
@@ -255,8 +253,6 @@ def admission_refusal(
     if not sample.pairs:
         return "the planner found a self collision and named no pair of links for it"
     for pair in sample.pairs:
-        if ATTACHED_LINK_NAME in (pair.link_a, pair.link_b):
-            return f"{pair.link_a} and {pair.link_b} overlap, and the carried part is judged by the planner alone"
         if not exact.decides(pair.link_a, pair.link_b):
             return f"{pair.link_a} and {pair.link_b} overlap, a pair the exact guard does not judge"
         padding = float(pair.depth_mm) - float(pair.unpadded_depth_mm)
@@ -274,9 +270,10 @@ def world_admission_refusal(first: "RefusedSample", second: "RefusedSample | Non
     asked of the same configuration with the camera's boxes set aside, or ``None`` where that report passes it on every
     term. The joint bounds and the robot itself do not depend on the world, so the two reports have to find them alike:
     two that do not are no report on this configuration. What still refuses with the camera's boxes, its field and the
-    field's fine grid set aside is the bench, a declared fixture or mesh, and those stay the planner's. ``None`` says only
+    field's fine grid set aside is the bench or a box or mesh declared to the planner, and those stay the planner's.
+    ``None`` says only
     that the camera's boxes were all the planner's world found here: the caller has to have had the exact guard judge
-    this very configuration with those boxes, at ``perceived_min_distance_mm``, and no part carried.
+    this very configuration with those boxes, at ``perceived_min_distance_mm``.
     """
     if first.world_ok:
         return "the planner did not refuse it on its world, so there is nothing of its world to set aside"
@@ -285,8 +282,8 @@ def world_admission_refusal(first: "RefusedSample", second: "RefusedSample | Non
         return ("the planner's two judgements of it, with the boxes the camera saw and without them, disagree on its "
                 "joint bounds or on the robot itself, so neither is read and the planner's world stands")
     if second is not None and not second.world_ok:
-        return ("the planner's world refuses it with the boxes the camera saw set aside too: the bench, a declared "
-                "fixture or mesh, which stay the planner's")
+        return ("the planner's world refuses it with the boxes the camera saw set aside too: the bench, or a box or "
+                "mesh declared to the planner, which stay the planner's")
     return None
 
 
@@ -370,14 +367,13 @@ class PoseVerdict(StrEnum):
     BAND = "band"
     #: The planner's world refuses it on the boxes the camera saw alone, asked again with them set aside, and the exact
     #: guard accepts it with them at ``perceived_min_distance_mm`` (the owner's Option 1); the robot itself, where the
-    #: planner refuses it too, only on pairs the guard decides. Straight lines and moveL run into it and out of it with a
-    #: hand known empty and open; a planned move into it or out of it is refused, and so is any move while the hand
-    #: carries a part or cannot say it stands open.
+    #: planner refuses it too, only on pairs the guard decides. Straight lines and moveL run into it and out of it; a
+    #: planned move into it or out of it is refused.
     SEEN_BOXES = "seen_boxes"
     #: The exact guard refuses it: nothing is ever sent there.
     GUARD_REFUSED = "guard_refused"
-    #: The planner refuses it for something only the planner judges (its world beyond the camera's boxes, its bounds,
-    #: the carried part, a pair the guard does not check): nothing is sent there while it does.
+    #: The planner refuses it for something only the planner judges (its world beyond the camera's boxes, its bounds, a
+    #: pair the guard does not check): nothing is sent there while it does.
     PLANNER_REFUSED = "planner_refused"
     #: It could not be asked, and the reason says why.
     UNSCREENED = "unscreened"
@@ -400,8 +396,8 @@ class PoseScreen:
     ``nearby`` is the nearest configuration both clear with every joint at most :data:`BAND_LEG_MAX_DEG` from it,
     radians, where one was looked for and found. For a band pose it is where a planned move's leg goes on its own, so
     nothing is re-taught; with none, only straight lines run there, and a pose planned moves have to reach or leave is
-    re-taught by hand where both clear it. For a pose beside the boxes the camera saw it is a pose planned moves and a
-    carried part reach, where one has to. For a refused pose, an ``ERROR`` line, it is where to re-teach it; with none,
+    re-taught by hand where both clear it. For a pose beside the boxes the camera saw it is a pose planned moves reach,
+    where one has to. For a refused pose, an ``ERROR`` line, it is where to re-teach it; with none,
     it is re-taught by hand elsewhere. A re-taught pose is screened again.
     """
 

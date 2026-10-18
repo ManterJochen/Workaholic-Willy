@@ -5,6 +5,12 @@ remap tables run to megabytes and are not stored; :class:`CalibrationResult`
 recomputes them on load. Each file carries :data:`STEREO_CALIB_SCHEMA`, the
 same versioning the extrinsics serializer applies, and a load refuses any
 other value.
+
+The file says nothing of where the pair stands in the cell. It once carried an
+optional ``T_cam_to_base`` beside the parameters, a second source of the pose
+that no reader in the pick path took: since 2026-10-17 a stereo rig is placed
+by its own calibration, ``camera.cameras.rigs[<id>].extrinsics``, as an RGB-D
+rig is. A file written before still loads, and that key in it is not read.
 """
 
 from __future__ import annotations
@@ -12,13 +18,11 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
 
 import numpy as np
 
 from src.calibration.exceptions import StereoCalibrationError
 from src.calibration.stereo.config import CalibrationResult
-from src.geometry.validation import validate_homogeneous_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +34,9 @@ __all__ = ["STEREO_CALIB_SCHEMA", "StereoCalibrationStore"]
 
 
 class StereoCalibrationStore:
-    """Reads and writes the calibration parameters, and an optional T_cam_to_base, as JSON."""
+    """Reads and writes a stereo pair's calibration parameters as JSON."""
 
-    def save(
-        self,
-        filepath: str,
-        result: CalibrationResult,
-        T_cam_to_base: Optional[np.ndarray] = None,
-    ) -> None:
+    def save(self, filepath: str, result: CalibrationResult) -> None:
         target = Path(filepath)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, object] = {
@@ -46,12 +45,9 @@ class StereoCalibrationStore:
         }
         for key in _PARAM_KEYS:
             payload[key] = np.asarray(getattr(result, key), dtype=np.float64).tolist()
-        if T_cam_to_base is not None:
-            T_valid = validate_homogeneous_matrix(T_cam_to_base, name="T_cam_to_base")
-            payload["T_cam_to_base"] = T_valid.tolist()
         target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    def load(self, filepath: str) -> Tuple[CalibrationResult, Optional[np.ndarray]]:
+    def load(self, filepath: str) -> CalibrationResult:
         try:
             payload = json.loads(Path(filepath).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -65,17 +61,9 @@ class StereoCalibrationStore:
             width, height = (int(v) for v in payload["frame_size"])
         except (KeyError, TypeError, ValueError) as exc:
             raise StereoCalibrationError(f"stereo calibration file has missing/invalid fields: {exc}") from exc
-
-        result = CalibrationResult(
+        # A file written before 2026-10-17 may carry `T_cam_to_base` too: not read, the rig's own extrinsics place it.
+        return CalibrationResult(
             camL=p["camL"], distL=p["distL"], rectL=p["rectL"], projL=p["projL"],
             camR=p["camR"], distR=p["distR"], rectR=p["rectR"], projR=p["projR"],
             Q=p["Q"], frame_size=(width, height),
         )
-
-        raw_t = payload.get("T_cam_to_base")
-        t_cam_to_base = (
-            validate_homogeneous_matrix(np.asarray(raw_t, dtype=np.float64), name="T_cam_to_base")
-            if raw_t is not None
-            else None
-        )
-        return result, t_cam_to_base

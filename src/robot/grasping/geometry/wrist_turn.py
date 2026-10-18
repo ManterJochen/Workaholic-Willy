@@ -2,7 +2,7 @@
 
 A parallel jaw closes on the same two faces turned half a turn about its approach, so every grasp has two wrist turns
 (``closing_axis``). A camera on the wrist stands on one side of the hand, and which of the two turns carries it into a
-bin's wall is a question of the scene, not of the hand. The cell's natural orientation (``robot.natural_closing_axis``)
+bin's wall is a question of the scene, not of the hand. The cell's natural orientation (``robot.motion.natural_closing_axis``)
 chose one turn for every grasp, the exact guard met the camera's housing only once the arm was asked, and a grasp whose
 camera met a wall was refused although its twin cleared it: the grasp bench (2026-10-05) lost its deep-bin scenes so,
 the camera 121 mm behind the jaws and 98 mm off their axis on the owner's cell.

@@ -44,8 +44,10 @@ class SchemaIndexTests(unittest.TestCase):
         self.assertEqual(guard.default, 3.0, "the guard's own margin still has one")
 
     def test_it_does_not_hang_on_the_real_schema(self) -> None:
-        """Depth-capped and ref-cycle-guarded: a self-referencing model must not spin the CLI."""
-        self.assertGreater(len(schema_index()), 400)
+        """Depth-capped and ref-cycle-guarded: a self-referencing model must not spin the CLI. The index is the whole
+        schema, some hundreds of keys: under 300 since the owner's cleanup of 2026-10-17/18 cut the model blocks to the
+        keys a cell chooses and took the safety keys every cell runs alike, over 400 before."""
+        self.assertGreater(len(schema_index()), 200)
 
 
 class FieldDocTests(unittest.TestCase):
@@ -132,7 +134,7 @@ class ExplainTests(unittest.TestCase):
         self.assertIn("did you mean: robot.sim.robot_model?", text)
 
     def test_a_base_only_value_reports_the_base_file(self) -> None:
-        text = explain_key("robot.workspace_limits.z_min", DATA, (), value=0.0)
+        text = explain_key("robot.motion.workspace.z_min", DATA, (), value=0.0)
         self.assertIn("robot.yaml", text)
         self.assertNotIn("[layer:", text)
 
@@ -197,7 +199,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(main([]), 0)
 
 
-
 class DecisionsTests(unittest.TestCase):
     """Only what someone CHOSE, not the 876 lines of restated defaults.
 
@@ -218,18 +219,18 @@ class DecisionsTests(unittest.TestCase):
         self.addCleanup(set_active_profile, None)
         return decisions(load_config(None), DATA, layers, section=section)
 
-    def test_the_production_tree_has_exactly_four_robot_decisions(self) -> None:
+    def test_the_production_tree_has_exactly_three_robot_decisions(self) -> None:
         """The headline measurement, now asserted. If this number moves, someone made a decision --
         which is precisely what the view is for. It was three until the KUKA block, whose model the tree
         set away from its default, went with the EthernetKRL driver (2026-09-19), and three again since the
         controller address lost its default (2026-10-13): the base tree names the owner's cell, a decision.
-        Four since the owner turned the planner's distance field on (2026-10-15): the schema still sends a
-        tree that names none boxes alone."""
+        Four while the owner's distance field was a key the tree turned on (2026-10-15); three again since
+        every cell's camera world sends it (2026-10-17)."""
         text = self._decisions()
-        self.assertIn("4 value(s)", text)
-        self.assertIn("robot.workspace_limits.z_min", text)
+        self.assertIn("3 value(s)", text)
+        self.assertIn("robot.motion.workspace.z_min", text)
         self.assertIn("robot.ur.ip", text)
-        self.assertIn("robot.safety.planning_world.perceived.voxel_field_mm", text)
+        self.assertNotIn("robot.safety.planning_world.perceived", text)
 
     def test_every_decision_carries_its_origin(self) -> None:
         self.assertIn("robot.yaml:", self._decisions())
@@ -252,7 +253,7 @@ class DecisionsTests(unittest.TestCase):
         reports them all as changed -- turning the view back into noise."""
         from src.config._schema_index import field_default
 
-        self.assertIsNotNone(field_default("robot.grasping.recovery.apply_modes"))
+        self.assertEqual([], field_default("robot.safety.planning_world.meshes"))
 
     def test_the_section_filter_narrows_it(self) -> None:
         text = self._decisions(("sim",), section="robot.safety")
@@ -272,20 +273,30 @@ class RobustnessTests(unittest.TestCase):
     crash on the confusing config, and must never contradict itself about whether a key exists.
     """
 
-    def test_an_aliased_field_resolves_from_its_attribute_name(self) -> None:
-        """The stereomatcher block keeps OpenCV's camelCase in YAML behind snake_case attributes -- the
-        only aliased fields in the tree. Asked by attribute name, `explain` used to print the VALUE and
-        say NOT A KNOWN KEY in the same breath."""
-        text = explain_key("camera.stereomatcher.num_disparities", DATA, (), value=320)
-        self.assertNotIn("NOT A KNOWN KEY", text)
-        self.assertIn("type", text)
+    def test_every_key_is_asked_as_the_file_writes_it(self) -> None:
+        """No field of the tree has a YAML spelling of its own. The stereomatcher block, which kept OpenCV's
+        camelCase in YAML behind snake_case attributes, was the only one, and the lookup that let `explain` find
+        such a key by either spelling left with it (2026-10-17); a field given an alias again would be a key
+        `explain` reports NOT A KNOWN KEY while printing its value, so none may be."""
+        from pydantic import BaseModel
 
-    def test_the_alias_map_only_covers_genuinely_aliased_fields(self) -> None:
-        from src.config._schema_index import alias_for
+        from src.config.schema.app import AppConfig
 
-        self.assertEqual(alias_for("camera.stereomatcher.num_disparities"),
-                         "camera.stereomatcher.numDisparities")
-        self.assertIsNone(alias_for("robot.sim.robot_model"))
+        seen: set[type] = set()
+        aliased: list[str] = []
+
+        def walk(model: type[BaseModel], prefix: str) -> None:
+            if model in seen:
+                return
+            seen.add(model)
+            for name, field in model.model_fields.items():
+                if field.alias is not None and field.alias != name:
+                    aliased.append(f"{prefix}{name} ({field.alias})")
+                for inner in _models_in(field.annotation):
+                    walk(inner, f"{prefix}{name}.")
+
+        walk(AppConfig, "")
+        self.assertEqual([], aliased)
 
     def test_output_survives_a_cp1252_console(self) -> None:
         """The config's own comments use box-drawing characters; a stock Windows console is cp1252, and
@@ -354,16 +365,6 @@ class ComposedProfileTests(unittest.TestCase):
         self.assertEqual(composed.arm, alone)
 
 
-class AliasedProvenanceTests(unittest.TestCase):
-    def test_an_aliased_key_finds_the_line_that_sets_it(self) -> None:
-        """Measured: all 7 camelCase stereomatcher keys reported "no YAML sets this" while the file
-        plainly set them -- the provenance index is keyed by the YAML spelling, not the attribute."""
-        text = explain_key("camera.stereomatcher.num_disparities", DATA, (), value=320)
-        self.assertIn("stereomatcher.yaml:", text)
-        self.assertNotIn("no YAML sets this", text)
-        self.assertIn("multiple of 16", text)  # ...and its comment comes with it
-
-
 class EveryFieldIsExplainedTests(unittest.TestCase):
     """A documentation gate: no config field may be undocumented.
 
@@ -415,15 +416,6 @@ class EveryFieldIsExplainedTests(unittest.TestCase):
         self.assertIn("Lula config", field_doc("robot.sim.robot_model"))
         # trailing comment on the field's own line, reached THROUGH a list-item segment
         self.assertIn("identity handle", field_doc("robot.sim.scene_setup.objects[].name"))
-        # an aliased path resolves back to the attribute that declares it
-        self.assertIn("runner-up", field_doc("camera.stereomatcher.uniquenessRatio"))
-
-    def test_a_forward_ref_annotation_does_not_stop_the_walk(self) -> None:
-        """`recovery.fixture` is annotated as the string "X | None"; an unresolved ForwardRef used to
-        make the entire block read as undocumented for a typing reason."""
-        from src.config._schema_index import model_doc
-
-        self.assertIn("Operator-bounded envelope", model_doc("robot.grasping.recovery.fixture.center_mm"))
 
 
 class TierTests(unittest.TestCase):
@@ -446,9 +438,8 @@ class TierTests(unittest.TestCase):
         a hard load failure for a silent value in the FAIL-OPEN direction."""
         from src.config._tiers import tier_for
 
-        self.assertEqual(tier_for("camera.stereomatcher.numDisparities", required=True), "site")
-        self.assertEqual(
-            tier_for("camera.stereomatcher.numDisparities", required=True, gated_off=True), "site")
+        self.assertEqual(tier_for("camera.cameras.primary_rig_id", required=True), "site")
+        self.assertEqual(tier_for("camera.cameras.primary_rig_id", required=True, gated_off=True), "site")
 
     def test_a_decided_value_is_a_cell_fact(self) -> None:
         from src.config._tiers import tier_for
@@ -458,8 +449,8 @@ class TierTests(unittest.TestCase):
     def test_the_switched_off_long_tail_is_advanced(self) -> None:
         from src.config._tiers import tier_for
 
-        self.assertEqual(tier_for("robot.grasping.ordering.strategy", gated_off=True), "advanced")
-        self.assertEqual(tier_for("robot.grasping.ordering.strategy"), "tuned")
+        self.assertEqual(tier_for("robot.sim.robot_model", gated_off=True), "advanced")
+        self.assertEqual(tier_for("robot.sim.robot_model"), "tuned")
 
     def test_gate_state_follows_the_CHAIN_being_viewed_not_the_schema_default(self) -> None:
         """`robot.sim.enabled` defaults to false but the `sim` layer turns it on. Calling a sim cell's
@@ -516,15 +507,16 @@ class CliContractTests(unittest.TestCase):
 
     def test_where_tier_actually_filters(self) -> None:
         """`--tier` was parsed and never forwarded, so the flag the help text advertised did nothing."""
-        _, everything = self._run(["where", "grasping"])
-        _, safety_only = self._run(["where", "grasping", "--tier", "safety"])
+        _, everything = self._run(["where", "collision"])
+        _, safety_only = self._run(["where", "collision", "--tier", "safety"])
         self.assertIn("[safety]", safety_only)
         self.assertNotIn("[advanced]", safety_only)
         self.assertIn("[advanced]", everything)
 
     def test_where_limit_can_raise_the_per_tier_cap(self) -> None:
-        """The listing stopped at 40 keys per tier with no CLI escape, hiding 102 of 188 matches."""
-        _, capped = self._run(["where", "grasping"])
+        """The listing stopped at 40 keys per tier with no CLI escape, hiding 102 of 188 matches. Capped here at 5, so
+        the test holds however many keys the schema has."""
+        _, capped = self._run(["where", "grasping", "--limit", "5"])
         _, raised = self._run(["where", "grasping", "--limit", "500"])
         self.assertIn("more", capped)
         self.assertNotIn("... and", raised)
@@ -560,3 +552,17 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("[layer: sim]", before)
         self.assertIn("[layer: sim]", after)
         self.assertIn("no YAML sets this", neither)
+
+
+def _models_in(annotation: object) -> list[type]:
+    """The pydantic models an annotation holds: itself, or the models of an optional, a list, a dict or a union."""
+    import typing
+
+    from pydantic import BaseModel
+
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return [annotation]
+    found: list[type] = []
+    for argument in typing.get_args(annotation):
+        found.extend(_models_in(argument))
+    return found

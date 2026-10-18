@@ -40,7 +40,7 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | `LivePlannerWorld` | the driver, from the cell's cameras and declared world | `world_for(...)` | a `PlannerWorldSnapshot` with its verdict |
 | `PlannerHand` | `planner_hand(robot, data_dir=...)` | read | the hand the planner and the guard model |
 | `MountedTool` | `MountedTool.from_config(robot)`, by the vendor driver at build | `render()`, `to_dict()`; `PlannedArm.mount_tool(tool)` | the hand, the tool frame and the payload on a planned arm's flange as one value; `ToolChangeRefused` on an arm that is connected |
-| `ExactPairs` | the exact guard, `SelfCollisionGuard.exact_pairs(arm)` | `decides(link_a, link_b)`, `distance_mm(joints, link_a, link_b)`; `first_low(configs, below_mm)`, `first_near_base(configs, within_mm)` | the guard's pair rule and distances in the planner's link names; the first configuration of a path that may come under a plane or near the robot's base, asked of the whole path at once where `self_collision.whole_path_judge` is on, else every one in turn |
+| `ExactPairs` | the exact guard, `SelfCollisionGuard.exact_pairs(arm)` | `decides(link_a, link_b)`, `distance_mm(joints, link_a, link_b)`; `first_low(configs, below_mm)`, `first_near_base(configs, within_mm)` | the guard's pair rule and distances in the planner's link names; the first configuration of a path that may come under a plane or near the robot's base, asked of the whole path at once, as every path is judged whole first |
 | `PathJudgement` | `CuroboPlanClient.judge_joints(configs, clearance_mm=, name_pairs=)` | read `refused` | one `RefusedSample` per refused configuration: its three terms apart and every pair of links it found |
 | `PoseScreen` | `URRobotArm.screen_configuration(joints)` | `line(label)` | `clear`, `band`, `seen_boxes`, `guard_refused`, `planner_refused` or `unscreened`, with a pose nearby both clear where one exists |
 
@@ -54,18 +54,18 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | a move fails `TIMEOUT` | the planner found no collision-free plan | move the goal, or clear the cell |
 | `CuroboUnavailableError` from `check_joints` | no reply, a sidecar that exited, or a reply that is not a verdict for every sample | restart the sidecar from this tree |
 | `ValueError` from `check_joints` | no configuration, a value that is not finite, or a wrong joint count | send whole configurations |
-| `CameraWorldUnavailable` from a verb | a camera stays silent, blind or stale after `perceived.fresh_frame_attempts` more readings; blind is a frame with no depth (a wrist frame inside a pick that holds its earlier frames and is asked about a goal excepted: deep in a bin it is judged on those), a fixed camera's frame less than half of whose pixels hold one, or a wrist camera's asked about no goal | fix the camera, or move it further from what it sees; a pick stops |
+| `CameraWorldUnavailable` from a verb | a camera stays silent, blind or stale after 3 more readings; blind is a frame with no depth (a wrist frame inside a pick that holds its earlier frames and is asked about a goal excepted: deep in a bin it is judged on those), a fixed camera's frame less than half of whose pixels hold one, or a wrist camera's asked about no goal | fix the camera, or move it further from what it sees; a pick stops |
 | a move fails `CONTROLLER_REJECTED`, world `unseen` | cameras look at the motion's goal and none holds a depth on half the 200 mm about it | look from further away, or use a depth mode with a shorter minimum range |
 | a planner that does not start | no committed evidence file for this arm, hand, coupling, placement and margin | measure one, see [`robot/evidence/`](robot/evidence/README.md) |
-| a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `scripts/arms/gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
-| a move refused naming `safety.planning_world.perceived.max_boxes` | the camera world still does not fit its slots once every object is one box | give the planner more slots (`max_boxes`, then restart it), or clear the cell |
+| a move refused naming the camera world's 128 box slots | the camera world still does not fit its slots once every object is one box | clear the cell |
 | `CuroboUnavailableError` from `judge_joints` | a sidecar older than the report, rows out of order, a verdict and a report that disagree, or pair names nobody asked for | restart the sidecar from this tree; the refusal the report was asked about stands |
-| `CuroboUnavailableError` from `judge_joints(..., ignore_perceived=)` | a reply that does not say it set aside exactly the camera boxes named (an older sidecar), or a sidecar that refused: a name it does not hold, a camera box not named, a part it may carry | the refusal the second judgement was asked about stands; restart an older sidecar from this tree |
+| `CuroboUnavailableError` from `judge_joints(..., ignore_perceived=)` | a reply that does not say it set aside exactly the camera boxes named (an older sidecar), or a sidecar that refused: a name it does not hold, a camera box not named | the refusal the second judgement was asked about stands; restart an older sidecar from this tree |
 
 
 ## What the planner is told about the cell
 
-`robot.safety.planning_world` turns on a world rebuilt immediately before every plan, for any motion.
+A cell that declares the bench it stands on (`robot.safety.planning_world.support_plane`) has a world rebuilt
+immediately before every plan, for any motion.
 A world nobody can vouch for refuses the motion instead of being planned against. Three kinds of
 geometry reach the planner:
 
@@ -78,21 +78,21 @@ geometry reach the planner:
 The field is a signed distance in metres, negative inside an obstacle. The guards read boxes only, so a
 declared mesh is known to the planner alone. The path guard hears the same refresh and gets the same
 perceived boxes, **turned as cuRobo holds them**, and judges them at
-`self_collision.perceived_min_distance_mm` (2 mm), each already grown by `perceived.margin_mm`; the arm and
-a declared fixture keep `min_distance_mm` (10). The capsule fallback cannot turn a box and judges its
-axis-aligned enclosure, the safe side. So the guard and the planner judge the same cell, and a move planned
-on a vouched world is stamped `PLANNED` with its cameras and the capture time of its oldest image. A pick's
-goal keeps the space between the open jaws out of every view (`goal_keep_out`), so a world that registered
-the part still has a plan to it; `WorldRefresh.keep_out` records what was left out, or why nothing was.
+`self_collision.perceived_min_distance_mm` (2 mm), each already grown by the 6 mm every camera world grows its
+boxes by (`perceived.CAMERA_BOX_MARGIN_MM`); the arm and a declared fixture keep `min_distance_mm` (3). The capsule
+fallback cannot turn a box and judges its axis-aligned enclosure, the safe side. So the guard and the planner judge the
+same cell, and a move planned on a vouched world is stamped `PLANNED` with its cameras and the capture time of its
+oldest image. A pick's goal keeps the space between the open jaws out of every view (`goal_keep_out`), so a world that
+registered the part still has a plan to it; `WorldRefresh.keep_out` records what was left out, or why nothing was.
 
 ### The camera world is a height map
 
 [`height_map.py`](height_map.py) turns each object the cameras saw, each cluster or each piece a keep-out
-cut, into a few upright boxes. The object is laid on a grid in its own turn, cells at least
-`perceived.cluster_voxel_mm` (25 mm), fitted so its span splits into whole cells; every cell keeps its
-highest seen point, and cells whose tops lie within `perceived.voxel_size_mm` (10 mm) merge into rectangles.
-Each rectangle is one box turned about base Z, its points' extent plus 15 mm on every side, from its floor
-(the bench, or a keep-out's top) up to its highest point plus 15 mm. The turn is the long side of the
+cut, into a few upright boxes. The object is laid on a grid in its own turn, cells at least 25 mm
+(`perceived.CAMERA_CLUSTER_VOXEL_MM`), fitted so its span splits into whole cells; every cell keeps its
+highest seen point, and cells whose tops lie within 10 mm (`perceived.CAMERA_VOXEL_MM`) merge into rectangles.
+Each rectangle is one box turned about base Z, its points' extent plus 6 mm on every side, from its floor
+(the bench, or a keep-out's top) up to its highest point plus 6 mm. The turn is the long side of the
 smallest-area hull rectangle, snapped square to base X/Y unless the turned one is at least 5 % smaller:
 
 - an **open bin** is its walls with a **free inside**;
@@ -103,17 +103,17 @@ Every thinned point the world keeps lies inside a box, at least the margin from 
 and the same frame always gives the same world. A pixel the thinning dropped can lie nearer a face
 ([guide 04](../../../../docs/guide/04-robot-and-safety.md), 5.5).
 
-**The budget.** `perceived.max_boxes` defaults to **64**; the reservation follows, 1 + declared + 64 box
-slots, so **restart the planner after changing it**. Over budget, `coarsen()` merges two boxes of one object
+**The budget.** Every cell's camera world has **128** box slots (`perceived.CAMERA_MAX_BOXES`); the reservation
+follows, 1 + declared + 128 box slots. Over budget, `coarsen()` merges two boxes of one object
 into the box that holds both, the least added volume first, until the world fits or every object is one
 box. The volume counts the more the nearer the merged box comes to the motion's goal (twice at 100 mm, five
 times at 50), so the boxes far from the hand merge first and those it passes between stay as seen; the
 refresh says `N box(es) merged into the boxes holding them to fit the slots`
 (`PerceivedWorld.merged_to_fit`, `WorldRefresh`). What still does not fit keeps the nearest boxes, empties
-the guard's and refuses the motion naming `safety.planning_world.perceived.max_boxes`.
+the guard's and refuses the motion naming the slots.
 
 **The self filter** ([`self_envelope.py`](self_envelope.py), `SelfBody`) takes a point out as the robot only
-within `perceived.margin_mm` (15 mm) of a link's own surface, laid over the committed bundle at 4 mm
+within 15 mm (`perceived.SELF_FILTER_MIN_MM`) of a link's own surface, laid over the committed bundle at 4 mm
 (188,000 points on a UR10, built once in half a second); the link capsule alone took up to 118 mm around the
 UR10's shoulder end. What it took of an object also seen past those 15 mm is put back at the height seen
 beside it. The Hand-E is still its padded sphere map, up to 27 mm around the hand, because its fingers move.
@@ -131,11 +131,11 @@ another camera saw is not. Boxes and the world count `hidden_cells`, and a refus
 robot's own body hid from the cameras, filled to the height seen beside them)`. What the scene hides from
 itself, pixels with no depth and a lone object the robot hides from every camera stay free.
 
-**What the parts stand on is solid** (`support_surfaces.py`, `perceived.support_surfaces`, on for a cell). On
+**What the parts stand on is solid** (`support_surfaces.py`, on every cell with a bench). On
 every build the world finds the large, nearly level surfaces in its own pixels (at least 100 x 100 mm and 75 mm
 wide, at most 5 deg off level, above the declared band somewhere, none over the robot's base) and holds each as
 at most four tilted solids, from the declared bench up to the local reading plus its p90 excess plus the band,
-`support_allowance_mm` (2) over that; the declared bench is an upright solid up to its band. A thinned point
+2 mm (`perceived.SUPPORT_ALLOWANCE_MM`) over that; the declared bench is an upright solid up to its band. A thinned point
 leaves the world only where a solid holds every pixel it stands for (`DropReason.SUPPORT`), a cluster under
 `min_points` standing on a solid is kept, and the solids take their slots first, never merged. They carry the
 camera prefix (`seen_s<k>_support<i>`, `seen_s<k>_bench`) and reach the planner with their whole turn
@@ -161,7 +161,7 @@ stays below those limits, and a goal no camera looks at, is written on the motio
 `unseen`, so the stamp does not vouch for it. A camera on the wrist sees only where it points: a goal
 outside its view is planned against what is declared there.
 
-The bench is the support plane plus a band: the configured `perceived.plane_clearance_mm`, plus, for
+The bench is the support plane plus a band: 5 mm (`perceived.CAMERA_BENCH_BAND_MM`), plus, for
 a camera on the wrist, the tool motion measured across its grab (at most its rig's shutter motion
 tolerance, and about nothing on an arm standing still) grown with each point's range, at most 25 mm
 more (`PerceivedWorld.bench_band_mm`). Anything lower than the band above the bench is not an obstacle.
@@ -216,12 +216,12 @@ no live world, no wrist camera in it or a camera world that is declined, none is
 ([execution](../../execution/README.md)).
 
 `check_js` judges a whole joint path in one request: up to 1000 configurations, each against the joint
-limits, the robot itself and the world the planner holds, with an attached payload counted. A sample
+limits, the robot itself and the world the planner holds. A sample
 passes when no sphere penetrates; that is not a kept clearance. A request may name one instead
 (`clearance_m`, up to 0.1 m): the world is then judged at that clearance, the reply says the clearance it
 judged at, and the client refuses a reply that does not. The UR driver asks it of a straight joint line
-it would run instead of a plan (`safety.planned_motion.line_clearance_mm`), because nothing shaped that
-line to keep clear. A longer path is split across requests and never thinned.
+it would run instead of a plan, at every cell's 3 mm (`path_samples.LINE_CLEARANCE_MM`), because nothing shaped
+that line to keep clear. A longer path is split across requests and never thinned.
 
 Every plan starts from the same seed, so the same request in the same world gets the same plan, and the
 graph planner seeds its roadmaps from the start and the goal alone: cuRobo's shipped config links both
@@ -243,7 +243,7 @@ further, so a tilted look can be a pose the padded spheres refuse while the mesh
   `PathJudgement` of `RefusedSample` rows (`findings()`), batched at 1000 and indexed over the whole path,
   and refuses anything it cannot read whole.
 - **The admission.** `band.admission_refusal(sample, exact, margin_mm=)` says why a refusal stands: a
-  joint outside the planner's bounds, its world, the carried part, a self hit with no named pair, a pair the
+  joint outside the planner's bounds, its world, a self hit with no named pair, a pair the
   guard does not judge (the `shoulder_link`, the planner's only model of the robot's base, is never one),
   or padding past `planner_margin_mm`. `None` leaves the sample to the exact guard, which the driver asks
   about that very sample again (`URRobotArm._exact_guard_decides`). `ExactPairs` carries the guard's own
@@ -260,34 +260,30 @@ further, so a tilted look can be a pose the padded spheres refuse while the mesh
   `perceived_ignored` ([`_curobo_perceived.py`](_curobo_perceived.py)). The branch decides nothing of its own:
   `requested_aside` reads the request, `None` for a plain check, and `judged_world` opens the world it judges
   in, the whole world with no storage touched for a plain check, `SetAside` otherwise; the CPU suite runs both.
-  It refuses, as a failed call, names that are not every camera box it holds, and anything while it may hold
-  a carried part; a flag that does not come back ends the sidecar. Without the key the request and the reply
+  It refuses, as a failed call, names that are not every camera box it holds; a flag that does not come back ends
+  the sidecar. Without the key the request and the reply
   are byte for byte what they were. The UR driver asks it where its world refused samples, and admits them
   only where the second judgement clears the world and the bounds and finds the robot itself alike
-  (`band.world_admission_refusal`), no part is carried (any attach since the last detach, modelled or not), the
-  hand reads empty and open (a toggle's count open, a gripper measured fully open: the owner, 2026-10-01), the
-  glue's last confirmed refresh handed the planner exactly the boxes the exact guard holds
+  (`band.world_admission_refusal`), whatever the hand holds (no cell models a part in the jaws since 2026-10-17:
+  jaws closed on one are judged as an empty hand is), the glue's last confirmed refresh handed the planner exactly
+  the boxes the exact guard holds
   (`CuroboPlanner.perceived_in_world`), and the exact guard accepts every refused sample with them. The
   bench, the declared fixtures and meshes and a distance field are never set aside, and cuRobo still plans in
-  its whole world: a planned move into or out of such a pose is refused, and so is any move while the hand
-  carries a part or cannot say it stands open. A grasp there judges its lift as if the jaws held the part
-  before they close, and backs out with them open where that lift would be refused
-  (`URRobotArm.carried_line_refusal`). `PoseScreen` asks what a move asks, for a hand known empty and open, and
-  says `seen_boxes` for such a pose.
+  its whole world: a planned move into or out of such a pose is refused. A grasp there judges its lift before
+  the jaws close, and backs out with them open where that lift would be refused
+  (`URRobotArm.carried_line_refusal`). `PoseScreen` asks what a move asks and says `seen_boxes` for such a pose.
 
 The composed robot, its `composed_sha256` and every evidence file are unchanged.
 
 ### The robot cuRobo plans with, and how fast it takes a world
 
 The owner, 2026-10-08: "wir müssen CuRobo richtig verwenden". The sidecar planned on the robot it judges with, the
-cover fits: 845 spheres and 172,414 sphere pairs on the owner's cell, where NVIDIA's own UR10e has 20 and 83. Three
-switches, each off by default, which is today's behaviour; the owner's cell turns each on after its desk check.
-
-| Key | Off (default) | On | Checked by |
-| --- | --- | --- | --- |
-| `safety.planned_motion.planning_spheres` | `""`: the planner, its IK and its graph planner on the evidence model | `lean`: on a planning model made the way NVIDIA's UR configs are, 26 arm spheres on a UR10, 41 with the Hand-E and the D415, 112 sphere pairs | `scripts/curobo/ab_planning_spheres.py` (GPU) |
-| `safety.planned_motion.finetune_passes` | `3`: cuRobo's own `plan_cspace` | `0`: the first optimiser pass's plan; the arm runs positions, never cuRobo's timing | the same script, `--finetune 3,0` |
-| `safety.planning_world.register_in_place` | `update_world`, box by box | cuRobo's `load_batch`, one call | `scripts/curobo/probe_world_in_place.py` |
+cover fits: 845 spheres and 172,414 sphere pairs on the owner's cell, where NVIDIA's own UR10e has 20 and 83. Every
+cell plans on a lean model since 2026-10-17, and runs no time-optimal pass after a joint plan's first, as the owner's
+cell did after its desk check of 2026-10-09 (the keys `safety.planned_motion.planning_spheres` and
+`finetune_passes` left that day, and `safety.planning_world.register_in_place` with them: every world goes through
+cuRobo's `update_world`). What they plan, and how fast, is `scripts/curobo/ab_planning_spheres.py`'s to measure on a
+GPU.
 
 - **The planning model** ([`planning_model.py`](planning_model.py), [`_curobo_planning.py`](_curobo_planning.py)).
   The arm's lean map (`robot/{arm}_arm_lean_spheres.yml`) and the hand's (`robot/{hand}_gripper_lean_spheres.yml`)
@@ -304,19 +300,15 @@ switches, each off by default, which is today's behaviour; the owner's cell turn
   evidence model (`_terms` reads its spheres from the evidence model's own kinematics), so `composed_sha256`, the
   evidence files, the band admission and the exact guard are what they were, and every sample of a plan is judged as
   before. The ready line adds `planning` (the model's spheres and pairs beside the evidence model's) and
-  `planning_sha256`; `SidecarIdentity.plans_on` names it. A modelled carried part, an arm or a hand with no lean map,
-  or a model the sidecar cannot compose plans on the evidence model, and the log says why.
+  `planning_sha256`; `SidecarIdentity.plans_on` names it. An arm or a hand with no lean map, or a model the sidecar
+  cannot compose, plans on the evidence model, and the log says why.
 - **One pass** ([`_curobo_cspace.py`](_curobo_cspace.py)). cuRobo's joint plan runs, per attempt, a pass that finds the
-  trajectory and three that only shrink its time step. At `finetune_passes: 3` the sidecar calls cuRobo's own
-  `plan_cspace`; otherwise its loop with the passes asked (`WILLY_CUROBO_JOINT_FINETUNE`). The CPU suite runs cuRobo's
-  own source and the copy against one planner and holds the calls the same. One pass finds a plan exactly where four
+  trajectory and three that only shrink its time step. The sidecar runs a copy of cuRobo's own `plan_cspace` loop with
+  none of the three (`JOINT_FINETUNE_PASSES`, 0); the CPU suite runs cuRobo's own source and the copy against one
+  planner at three passes and holds the calls the same. One pass finds a plan exactly where four
   do: an attempt stops after a first pass that finds none, and a later pass only swaps a plan for a faster one
   (`TrajOptSolver._solve_impl`, held by a test on cuRobo's source). The positions may differ, and they are judged
   sample by sample like every plan's.
-- **In place** ([`_curobo_world.py`](_curobo_world.py)). A world of boxes alone, on a planner that reserved no mesh
-  slots and no grid, goes into the box storage in one call (`WILLY_CUROBO_WORLD_IN_PLACE`): the same slots bit for
-  bit (cuRobo's own storage on the CPU, six worlds of 0 to 193 boxes), 0.55 ms against 15.1 ms at 129 boxes on the
-  CPU, about 217 ms a refresh on the cell today. Too many boxes are refused before any slot is written.
 - **Timing.** `WILLY_CUROBO_TIMING=1` in the shell the sidecar starts from prints a `[timing]` line per `plan_js`,
   `check_js` and `set_world` on its stderr (`WILLY_CUROBO_STDERR`): the start and goal checks, the plan on the wall
   clock and on cuRobo's own optimiser timer, the attempts, and the reply. Nothing else changes.
@@ -362,16 +354,13 @@ that refuses everything looks the same.
 
 ```bash
 python scripts/curobo/ab_planning_spheres.py --dry-run           # CPU: the problems, both robots' spheres and pairs
-python scripts/curobo/ab_planning_spheres.py --models ,lean --finetune 3,0
-python scripts/curobo/probe_world_in_place.py --sidecars          # two sidecars, 1,000 configurations judged alike
+python scripts/curobo/ab_planning_spheres.py                     # GPU: the cell's own planner
 ```
 
-`ab_planning_spheres.py` starts the cell's own planner per variant, as `real_cell --start-planner` does, and plans
-every move between home and the looks and in the bench's hard scenes (`scripts/bench/scenes.py`), the scene's parts
-as the camera's boxes, whatever the straight line would do; each plan is judged as the arm judges one. It writes the
-plans found, the plans the judgement refused and the plan time p50 and p90 per variant, against the first.
-`probe_world_in_place.py` without `--sidecars` runs cuRobo's own storage in the cuRobo interpreter, both ways, bit
-for bit (`--device cpu` needs no GPU).
+`ab_planning_spheres.py` starts the cell's own planner, as `real_cell --start-planner` does, and plans every move
+between home and the looks and in the bench's hard scenes (`scripts/bench/scenes.py`), the scene's parts as the
+camera's boxes, whatever the straight line would do; each plan is judged as the arm judges one. It writes the plans
+found, the plans the judgement refused and the plan time p50 and p90.
 
 ## Environment variables
 
@@ -386,19 +375,15 @@ for bit (`--device cpu` needs no GPU).
 | `WILLY_CUROBO_MAX_ATTEMPTS` | `16` | sidecar | Cartesian plan attempts (the sim's), each a fresh seed batch |
 | `WILLY_CUROBO_JOINT_MAX_ATTEMPTS` | `4` | sidecar | joint plan attempts, the way round a straight line the guard refused; cuRobo has no time limit, so a failing plan runs them all |
 | `WILLY_CUROBO_GRAPH_FROM_ATTEMPT` | `1` | sidecar | the first graph-seeded attempt |
-| `WILLY_CUROBO_ATTACH_SPHERES` | unset, as `0` | sidecar | spheres for a carried payload; the client sets it from the cell's reservation |
 | `WILLY_CUROBO_SELF_COLLISION_MARGIN_MM` | unset, as `0` | sidecar | the guard's clearance, raised into the descriptor's link buffers |
-| `WILLY_CUROBO_PLANNING_MODEL` | unset, the evidence model | sidecar | the planning model, JSON; the client sets it from `planned_motion.planning_spheres` |
-| `WILLY_CUROBO_JOINT_FINETUNE` | unset, as `3` | sidecar | time-optimal passes of a joint plan; the client sets it from `planned_motion.finetune_passes` |
-| `WILLY_CUROBO_WORLD_IN_PLACE` | unset, `update_world` | sidecar | `1` registers a world of boxes in one call; the client sets it from `planning_world.register_in_place` |
+| `WILLY_CUROBO_PLANNING_MODEL` | unset, the evidence model | sidecar | the planning model, JSON; the client sets it to the lean model of the cell's arm, hand and wrist bodies wherever one composes |
 | `WILLY_CUROBO_TIMING` | unset, silent | sidecar | `1` prints a `[timing]` line per request on the sidecar's stderr |
 | `WILLY_COAL_PREFIX` | `ext_deps/coal_env` | collision engine | the environment that provides Coal |
 
-The names live in `environment.py`, except the attach and margin variables, which `_curobo_attach.py`
-and `_curobo_margin.py` name, and the last four, which `_curobo_planning.py`, `_curobo_cspace.py` and
-`_curobo_world.py` name. A cell's reservation (`reservation.py`) wins over the three slot variables, and
-the client warns when one disagrees with it; it carries the three switches too, and the client writes
-their variables whatever the shell holds, removing a leftover where the cell asks for today's way.
+The names live in `environment.py`, except the margin variable, which `_curobo_margin.py` names, and the planning
+model's and the timing's, which `_curobo_planning.py` and `_curobo_cspace.py` name. A cell's reservation
+(`reservation.py`) wins over the slot variables, and the client warns when one disagrees with it; the client writes
+the planning model whatever the shell holds, and removes a leftover where none composes.
 
 ## Status
 
@@ -409,8 +394,7 @@ their variables whatever the shell holds, removing a leftover where the cell ask
 | Exact mesh collision through Coal or python-fcl | measured against a UR10 |
 | A planned move on a physical arm | measured against a UR10 |
 | The band admission, the escape legs, 65 slots of turned camera boxes and a plan in them | measured on a GPU with the two probes (2026-09-30, the development box), not yet on the cell PC |
-| The camera's boxes set aside and every one put back, a bin 30, 40 and 47.7 mm beside the housing admitted in the band and out of it, the line out held while the hand's count says closed, a grasp's lift judged carrying, with the part in the sidecar on a cell that models it, a declared bin's room | measured on a GPU with `probe_turned_boxes.py` (2026-10-01, the development box), not yet on the cell PC |
-| Boxes registered in place, the same slots bit for bit | measured with cuRobo's own storage on the CPU (`probe_world_in_place.py --device cpu`, 2026-10-09); two sidecars on a GPU not yet run |
+| The camera's boxes set aside and every one put back, a bin 30, 40 and 47.7 mm beside the housing admitted in the band and out of it, a grasp's lift judged before the close, a declared bin's room | measured on a GPU with `probe_turned_boxes.py` (2026-10-01, the development box), not yet on the cell PC |
 | The lean planning model and one optimiser pass | composed and counted on the CPU (845 spheres and 172,414 pairs today, the lean model 41 and 112); plan success, refused plans and plan time on a GPU not yet measured (`ab_planning_spheres.py`) |
 
 `--check` reports that the sidecar's interpreter exists; it does not report that the descriptor beside
@@ -437,8 +421,8 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 | [`self_envelope.py`](self_envelope.py) | the robot's own body, filtered out of the camera view |
 | [`evidence.py`](evidence.py), [`bundle_index.py`](bundle_index.py) | the measured combination files, and the index of committed bundles |
 | `_declared_body.py` | a declared box as bundle arrays, and the proof that a sphere fill covers it |
-| `_curobo_*.py` | the sidecar's descriptor, attachment, margin, pair and protocol helpers; `_curobo_pairs.py` names the overlapping pairs and builds the refused rows; `_curobo_perceived.py` sets the camera's boxes aside for one judgement and puts them back; `_curobo_planning.py` places and composes a planning model; `_curobo_cspace.py` is cuRobo's joint plan loop with its passes a parameter; `_curobo_world.py` registers a world of boxes in one call |
-| [`planning_model.py`](planning_model.py) | the planning model a cell asks for, composed from the committed lean maps and the cell's own bodies |
+| `_curobo_*.py` | the sidecar's descriptor, body link, margin, pair and protocol helpers; `_curobo_pairs.py` names the overlapping pairs and builds the refused rows; `_curobo_perceived.py` sets the camera's boxes aside for one judgement and puts them back; `_curobo_planning.py` places and composes a planning model; `_curobo_cspace.py` is cuRobo's joint plan loop with its passes a parameter |
+| [`planning_model.py`](planning_model.py) | the planning model every cell plans on, composed from the committed lean maps and the cell's own bodies |
 | [`robot/`](robot/PROVENANCE.md) | sphere maps per arm and hand, the retract table, the hand writers, the evidence |
 
 ## Details
@@ -458,5 +442,5 @@ gap. Planner collision awareness is not a certified functional-safety stop.
   `tests/test_the_band_admission_judges_with_the_boxes_the_camera_saw.py`,
   `tests/test_the_planner_judges_again_without_the_boxes_the_camera_saw.py`,
   `tests/test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py`,
-  `tests/test_the_cameras_boxes_are_set_aside_only_for_a_hand_known_open.py`,
+  `tests/test_the_cameras_boxes_are_set_aside_whatever_the_hand_holds.py`,
   `tests/test_a_grasp_judges_its_lift_carrying_before_it_closes.py`

@@ -11,8 +11,8 @@ its phrase from them (``task.pick_phrase``):
 * else every part there ("each separate object on the black mat").
 
 The detector's label still maps onto the object (a which names the object's noun, and the label mapping matches on
-words), and the route guard judges the operator's words in the built phrase: a which only the VLM can ground is refused
-on a phrase-only cell before anything moves (``prompt_not_routable``), as a German object always was. A plan kept
+words), and the VLM grounds the phrase as the operator's words built it: the route guard that refused a which only the
+VLM can ground on a GroundingDINO cell (``prompt_not_routable``) left with GroundingDINO on 2026-10-17. A plan kept
 before the two fields existed reads with neither.
 
 Honesty bucket (2): the library's ``run_task`` on the task tests' doubles, and the real console, route and run on the
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import unittest
 from typing import Any
-from unittest.mock import patch
 
 from tests._console_task_fakes import ConsoleCase, Scripted
 from tests._task_fakes import run
@@ -83,16 +82,13 @@ class ThePhraseIsBuiltFromWhatTheSentenceSaidTests(unittest.TestCase):
 
 
 class ATaskAtTheConsoleTests(ConsoleCase):
-    """``POST /v1/task`` with ``which`` and ``source``: echoed in the plan, handed to the library, and judged by the
-    route guard as the detector will get them."""
+    """``POST /v1/task`` with ``which`` and ``source``: echoed in the plan, and handed to the library as the detector
+    will get them."""
 
     def test_the_plan_echoes_them_and_the_detector_is_asked_the_one_part(self) -> None:
-        from tests.test_api_task_restart import _stack
-
         cell = self.scripted([Scripted("part")])
-        # "upper" singles out by height, which only the VLM grounds (src/models/routing/rules.py).
-        with patch("api.routers.diagnostics._perception", return_value=_stack("vlm", True)):
-            run_ = self.task(object="gray cube", which="the upper gray cube", source="on the black mat")
+        # "upper" singles out by height, which a phrase grounder could not tell; the VLM reads it.
+        run_ = self.task(object="gray cube", which="the upper gray cube", source="on the black mat")
         body = self.finished(run_["id"])
         self.assertEqual("finished", body["stop_code"], body)
         self.assertEqual(("the upper gray cube", "on the black mat"), (body["plan"]["which"], body["plan"]["source"]))
@@ -103,39 +99,27 @@ class ATaskAtTheConsoleTests(ConsoleCase):
         self.finished(self.task(object="gray cube", source="on the black mat")["id"])
         self.assertEqual("each separate gray cube on the black mat", cell.service.prompts[0].phrase)
 
-    def test_a_which_only_the_vlm_can_ground_is_refused_on_a_phrase_only_cell(self) -> None:
-        cell = self.scripted([Scripted("part")])
-        refused = self.refused(self.client.post("/v1/task", json={
-            "object": "gray cube", "which": "the gray cube on top of the other one",
-            "place": {"kind": "pose", "pose": None}}), 422, "prompt_not_routable")
-        self.assertIn("the gray cube on top of the other one", refused["message"])
-        self.assertEqual([], cell.motions())
-        self.assertIsNone(self.cell.registry.active())
-
-    def test_a_which_said_by_its_height_or_its_side_is_refused_on_a_phrase_only_cell(self) -> None:
-        """A phrase grounder boxes every gray cube for "the upper gray cube" (2026-10-08): the router sends these to
-        the VLM, so a cell without one refuses them before anything moves."""
-        cell = self.scripted([Scripted("part")])
-        for obj, which in (("gray cube", "the upper gray cube"), ("gray cube", "the gray cube on top"),
-                           ("cup", "the cup left of the bin")):
+    def test_a_which_said_by_its_height_or_its_side_reaches_the_detector_as_said(self) -> None:
+        """A phrase grounder boxed every gray cube for "the upper gray cube" (2026-10-08), so a cell without the VLM
+        refused these; every cell grounds with the VLM since 2026-10-17, and the which is the detector's phrase."""
+        whiches = (("gray cube", "the upper gray cube"), ("gray cube", "the gray cube on top"),
+                   ("cup", "the cup left of the bin"))
+        cell = self.scripted([Scripted("part")] * len(whiches))
+        for obj, which in whiches:
             with self.subTest(which=which):
-                refused = self.refused(self.client.post("/v1/task", json={
-                    "object": obj, "which": which, "place": {"kind": "pose", "pose": None}}), 422, "prompt_not_routable")
-                self.assertIn(which, refused["message"])
-        self.assertEqual([], cell.motions())
-        self.assertIsNone(self.cell.registry.active())
+                self.assertEqual("finished", self.finished(self.task(object=obj, which=which)["id"])["stop_code"])
+        said = [which for _obj, which in whiches]
+        # Each task asks its which, then looks once more for what is left (``object``).
+        self.assertEqual(said, [prompt.phrase for prompt in cell.service.prompts if prompt.phrase in said])
 
-    def test_the_same_which_runs_where_the_vlm_grounds(self) -> None:
-        from tests.test_api_task_restart import _stack
-
+    def test_a_which_runs_and_is_the_detectors_phrase(self) -> None:
         cell = self.scripted([Scripted("part")])
-        with patch("api.routers.diagnostics._perception", return_value=_stack("vlm", True)):
-            run_ = self.task(object="gray cube", which="the gray cube on top of the other one")
+        run_ = self.task(object="gray cube", which="the gray cube on top of the other one")
         self.assertEqual("finished", self.finished(run_["id"])["stop_code"])
         self.assertEqual("the gray cube on top of the other one", cell.service.prompts[0].phrase)
 
-    def test_the_each_separate_of_every_task_is_no_quantifier_to_the_guard(self) -> None:
-        """The task's own words: judged with them, every task on a phrase-only cell would be refused."""
+    def test_a_task_of_every_part_of_a_kind_runs(self) -> None:
+        """The task's own words ("each separate") reach the detector as they always did."""
         self.scripted([Scripted("part")])
         self.assertEqual("finished", self.finished(self.task(object="red cube")["id"])["stop_code"])
 
@@ -163,8 +147,7 @@ class ATaskAtTheConsoleTests(ConsoleCase):
 
 
 class TheCardSaysTheOnePartAndWhereThePartsLieTests(_CommandCell):
-    """``POST /v1/commands/parse``: the reading's which and from reach the card, and the object's route is that of the
-    phrase its picks would ground, as the task's guard judges it."""
+    """``POST /v1/commands/parse``: the reading's which and from reach the card."""
 
     SENTENCE = "Nimm von der schwarzen Matte den grauen Würfel, der oben auf dem anderen liegt"
 
@@ -181,18 +164,15 @@ class TheCardSaysTheOnePartAndWhereThePartsLieTests(_CommandCell):
                           object_said="den grauen Würfel, der oben auf dem anderen liegt")
         self.assertEqual(("the gray cube on top of the other one", "on the black mat", "once", []),
                          (card["which"], card["source"], card["scope"], card["notes"]))
-        self.assertEqual(("the gray cube on top of the other one", "vlm"),
-                         (card["object"]["route"]["prompt"], card["object"]["route"]["route"]))
 
-    def test_where_the_parts_lie_is_routed_with_the_object(self) -> None:
+    def test_where_the_parts_lie_is_on_the_card_beside_the_object(self) -> None:
         card = self._card(object="gray cube", source="on the black mat",
                           object_said="den grauen Würfel, der oben auf dem anderen liegt")
-        self.assertEqual((None, "on the black mat"), (card["which"], card["source"]))
-        self.assertEqual("gray cube on the black mat", card["object"]["route"]["prompt"])
+        self.assertEqual((None, "on the black mat", "gray cube"), (card["which"], card["source"], card["object"]["phrase"]))
 
     def test_a_card_without_either_says_neither(self) -> None:
         card = self._card(object="gray cube", object_said="den grauen Würfel")
-        self.assertEqual((None, None, "gray cube"), (card["which"], card["source"], card["object"]["route"]["prompt"]))
+        self.assertEqual((None, None, "gray cube"), (card["which"], card["source"], card["object"]["phrase"]))
 
 
 if __name__ == "__main__":  # pragma: no cover

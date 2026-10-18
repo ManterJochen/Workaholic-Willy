@@ -107,7 +107,7 @@ class GripperVendor(StrEnum):
 
 
 #: Members that exist so a config can be written against a driver this repo does not have. They
-#: are deliberate slots, the same way ``franka`` and ``ros2`` are slots in :class:`RobotVendor`.
+#: are deliberate slots, as ``franka`` and ``ros2`` were in :class:`RobotVendor` until 2026-10-17.
 #:
 #: Measured 2026-09-09: the refusal above built its list from the enum and so advertised both of
 #: these as valid. The enum carried eight members, ``available_gripper_vendors()`` six. A typo was

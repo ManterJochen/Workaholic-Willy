@@ -1,25 +1,20 @@
 """JointLimitGuard, the per-axis joint hard-limit safety guard.
 
-The per-axis limits the guard enforces come from the first of these that answers:
-
-1. The static ``min_deg`` and ``max_deg`` lists set in
-   :class:`src.config.schema.robot.JointLimitSafetyConfig`. They come first because an
-   operator-supplied value is the closest thing to ground truth and overrides any
-   built-in default.
-2. The envelope the arm registry describes for ``arm.capabilities.model``
-   (``config/arms/<model>.yaml``). Only Universal Robots are described today, so any other
-   arm supplies static ``min_deg`` and ``max_deg`` in YAML. The vendor does not enter since
-   P0d D5: the Isaac arm reports the UR it drives and resolves that UR's envelope.
-3. Neither, which is :attr:`SafetyReason.UNAVAILABLE`. With ``enforce=True``, the
-   default, the preflight refuses the motion and the operator sees a fail-closed
-   refusal.
+The per-axis limits the guard enforces are the arm's own: the envelope the arm registry
+describes for ``arm.capabilities.model`` (``config/arms/<model>.yaml``). Only Universal
+Robots are described today. The vendor does not enter since P0d D5: the Isaac arm reports
+the UR it drives and resolves that UR's envelope. An arm nobody describes has none, which is
+:attr:`SafetyReason.UNAVAILABLE`, and is refused at build
+(:func:`assert_joint_limit_table_available`). No tree writes a table of its own since
+2026-10-17 (the owner's cleanup: ``safety.joint_limits`` stood at the arm's own, null, on the
+owner's cell).
 
 Units
 -----
 * ``JointPositions`` carries radians, and the guard converts to degrees at the
-  boundary, because both the static config and the registry envelope are in degrees, which
-  is how an operator reads a pendant display.
-* ``margin_deg`` is subtracted from the allowed range of each axis at both ends.
+  boundary, because the registry envelope is in degrees, which is how an operator reads a
+  pendant display.
+* :data:`JOINT_LIMIT_MARGIN_DEG` is subtracted from the allowed range of each axis at both ends.
 
 What each vendor exposes
 ------------------------
@@ -30,20 +25,18 @@ What each vendor exposes
   manufacturer-specified envelope, and the controller-side envelope is the more
   restrictive backstop.
 * KUKA EKI did not expose joint limits either (that driver was deleted on 2026-09-19), and
-  the shipped ``robot.yaml`` does not fill the gap: ``safety.joint_limits.min_deg`` and
-  ``max_deg`` both ship as ``null`` in ``config/robot/robot.yaml``. Measured 2026-09-10 on
-  the ``web`` profile's KUKA arm, ``resolve_joint_limits_deg`` returned ``None``, the
-  guard answered UNAVAILABLE for an all-zeros joint target, and the preflight turned that
-  into ``controller_rejected``. A KUKA cell refused every motion and named the controller
-  for a missing config key. These three lines said the opposite until then, which is why
-  nobody looked. That refusal now happens at build instead, see
-  :func:`assert_joint_limit_table_available`, called from
+  no description fills the gap. Measured 2026-09-10 on the ``web`` profile's KUKA arm,
+  ``resolve_joint_limits_deg`` returned ``None``, the guard answered UNAVAILABLE for an
+  all-zeros joint target, and the preflight turned that into ``controller_rejected``. A KUKA
+  cell refused every motion and named the controller for a missing table. That refusal now
+  happens at build instead, see :func:`assert_joint_limit_table_available`, called from
   :func:`src.robot.drivers.create_arm`.
 
 Half a turn either side of home
 -------------------------------
-``safety.joint_limits.within_half_turn_of_home`` narrows the table on every axis whose range is a
-full turn or more to ``[home - 180, home + 180]`` degrees, home being the configuration the arm
+On every real arm (``GuardNumbers.half_turn_about_home``; the owner's cell's, every cell's since
+2026-10-17) the guard narrows the table on every axis whose range is a full turn or more to
+``[home - 180, home + 180]`` degrees, home being the configuration the arm
 itself states (:func:`stated_home_rad`), and the margin comes off that. It is how a cell whose
 cables run along the arm keeps every joint within half a turn of where the cables were laid,
 without anybody typing a joint range. It costs no reach where the window lies inside the table:
@@ -87,10 +80,9 @@ from .guard import SafetyContext
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from collections.abc import Sequence
 
-    from src.config.schema.robot import JointLimitSafetyConfig
-
 __all__ = [
     "HALF_TURN_DEG",
+    "JOINT_LIMIT_MARGIN_DEG",
     "JointLimitGuard",
     "JointLimitTableMissing",
     "UR_ELBOW_AXIS",
@@ -101,14 +93,19 @@ __all__ = [
     "stated_home_rad",
 ]
 
-#: How far either side of home ``within_half_turn_of_home`` lets a joint turn, in degrees.
+#: How far either side of home the window about home lets a joint turn, in degrees.
 HALF_TURN_DEG = 180.0
+#: How far inside each end of a joint's range the guard keeps every commanded angle, degrees: the owner's cell's,
+#: every cell's since 2026-10-17 (the owner's cleanup took ``safety.joint_limits.margin_deg``). cuRobo narrows its own
+#: envelope by 0.1 rad, 5.73 degrees, at each end (``config/arms/<model>.yaml``, ``planner``), so the planner cannot
+#: offer a goal this guard refuses.
+JOINT_LIMIT_MARGIN_DEG = 5.0
 #: An axis whose range spans at least this many degrees is narrowed to the window about home.
 _FULL_TURN_DEG = 360.0
 
 
 class JointLimitTableMissing(RobotError):
-    """This cell wired an enforcing joint-limit guard that has no table to enforce.
+    """This cell's joint-limit guard has no table to enforce.
 
     It is raised at build rather than at the first move. The runtime alternative was
     measured on the shipped ``web`` profile and it is worse in the one way that matters:
@@ -152,31 +149,21 @@ def _described_ur_arms() -> list[str]:
     return [model for model in available_arms() if _described_limits_deg(model) is not None]
 
 
-#: The one UR joint ``within_half_turn_of_home`` leaves alone: the elbow, index 2. Its table says +-360, but Universal
+#: The one UR joint the window about home leaves alone: the elbow, index 2. Its table says +-360, but Universal
 #: Robots plans it within +-180 (``scripts/arms/_planner_limits.py``) and cuRobo within +-(pi - 0.1), so it never
 #: turns the full turn a window about home is for, and narrowing it would refuse the elbow bent the other way, which
 #: has no twin inside.
 UR_ELBOW_AXIS = 2
 
 
-def resolve_joint_limits_deg(
-    config: "JointLimitSafetyConfig",
-    *,
-    model: str | None,
-) -> tuple[list[float], list[float]] | None:
-    """Resolve per-axis joint limits in degrees, from config, then from the arm registry by ``model``.
+def resolve_joint_limits_deg(*, model: str | None) -> tuple[list[float], list[float]] | None:
+    """The per-axis joint limits in degrees of the arm ``model``, as the arm registry describes them.
 
-    Returns ``None`` where neither the config nor the arm registry gives a usable range. A
-    caller treats ``None`` as the guard being unavailable, never as an absence of limits.
+    Returns ``None`` where the arm registry describes no such arm. A caller treats ``None`` as
+    the guard being unavailable, never as an absence of limits. The vendor does not enter (P0d D5):
+    the Isaac arm reports the UR it drives and gets that UR's envelope, the +/-360 degrees the sim
+    profile wrote out until 2026-10-17.
     """
-    if config.min_deg is not None and config.max_deg is not None:
-        # The Pydantic validator already enforces equal length and ordering.
-        return (list(config.min_deg), list(config.max_deg))
-    # The vendor gate that stood here went in P0d D5 (the owner, in aurora, 2026-09-22), and the premise it was kept on
-    # was wrong. It was kept because the sim's joint-limit wrap had supposedly never run. It had: the static lists
-    # above answer first, and the sim profile ships +/-360 on every axis (robot.sim.yaml). The gate decided only a
-    # vendor="sim" tree with no lists, which it left refusing every motion as UNAVAILABLE. By model, that tree gets the
-    # envelope of the UR its arm reports, and the sim profile is unchanged because its lists still win.
     if model is not None:
         entry = _described_limits_deg(model.lower())
         if entry is not None:
@@ -189,7 +176,7 @@ def stated_home_rad(arm: object) -> tuple[float, ...] | None:
     """The home configuration ``arm`` states, in radians, or ``None`` where it states none.
 
     It is read off ``arm.home_joint_positions``. The UR driver answers with the joints its
-    ``move_home`` drives to: its constructor argument, else ``robot.home_joint_positions``, else
+    ``move_home`` drives to: its constructor argument, else ``robot.motion.home_deg``, else
     the home its arm's description states (``src.config.arms.described_home``). Anything that is not a non-empty sequence of
     finite numbers is no home, and a guard that needs one refuses rather than guessing.
     """
@@ -236,7 +223,7 @@ def half_turn_about_home_deg(
     margin is taken off here; the guard takes it off the result.
 
     An axis comes back empty, its lower bound above its upper, where home lies more than half a turn
-    outside the table, which is how a home written in degrees reads. The caller reports that.
+    outside the table. The caller reports that.
 
     Raises
     ------
@@ -264,18 +251,16 @@ def half_turn_about_home_deg(
 class JointLimitGuard:
     """Per-axis joint hard-limit guard.
 
-    :meth:`SafetyPreflight.from_safety_config` constructs it when
-    ``safety.joint_limits.enforce`` is ``True``. Stateless across calls: with
-    ``within_half_turn_of_home`` set, the home it centres the window on is read off the arm
-    each context carries, so the window is always the one about the home that arm drives to.
+    :meth:`SafetyPreflight.from_safety_config` constructs it on every cell. Stateless across calls: where it keeps
+    half a turn about home (``half_turn_about_home``, every real arm's), the home it centres the window on is read off
+    the arm each context carries, so the window is always the one about the home that arm drives to.
     """
 
     name = "joint_limit"
 
-    def __init__(self, config: "JointLimitSafetyConfig") -> None:
-        self._config = config
-        self._margin_deg = float(config.margin_deg)
-        self._half_turn = bool(getattr(config, "within_half_turn_of_home", False))
+    def __init__(self, *, half_turn_about_home: bool = True) -> None:
+        self._margin_deg = JOINT_LIMIT_MARGIN_DEG
+        self._half_turn = bool(half_turn_about_home)
 
     @property
     def within_half_turn_of_home(self) -> bool:
@@ -287,7 +272,7 @@ class JointLimitGuard:
     ) -> tuple[list[float], list[float]] | None:
         """The table this guard would enforce for an arm reporting ``model``, or ``None`` for none.
 
-        With ``within_half_turn_of_home`` set, it is the table narrowed to half a turn either side
+        Where the guard keeps half a turn about home, it is the table narrowed to half a turn either side
         of ``home_rad``, and ``None`` without a home, because this guard then enforces nothing but a
         refusal. :meth:`limits_for_arm` reads the home off an arm.
 
@@ -298,9 +283,8 @@ class JointLimitGuard:
         return self._resolve(model=model, home_rad=home_rad)[0]
 
     def table_for(self, *, model: str | None) -> tuple[list[float], list[float]] | None:
-        """The static table or the described envelope under any window, or ``None`` where neither resolves: what the
-        window narrows."""
-        return resolve_joint_limits_deg(self._config, model=model)
+        """The described envelope under any window, or ``None`` where none resolves: what the window narrows."""
+        return resolve_joint_limits_deg(model=model)
 
     def limits_for_arm(self, arm: object) -> tuple[list[float], list[float]] | None:
         """:meth:`limits_for` the arm's own capabilities and, where the window is on, its own home."""
@@ -315,18 +299,17 @@ class JointLimitGuard:
         """The limits and ``""``, or ``None`` and the sentence saying which piece is missing."""
         table = self.table_for(model=model)
         if table is None:
-            return None, (f"no static joint-limit table configured, and the arm registry describes no arm {model!r} "
-                          f"to take an envelope from")
+            return None, f"the arm registry describes no arm {model!r} to take a joint-limit envelope from"
         if not self._half_turn:
             return table, ""
         if home_rad is None:
             return None, (
-                "safety.joint_limits.within_half_turn_of_home is set and the arm states no home "
-                "configuration (home_joint_positions) to centre the window on"
+                "the guard keeps half a turn about home and the arm states no home "
+                "configuration (robot.motion.home_deg) to centre the window on"
             )
         if len(home_rad) != len(table[0]):
             return None, (
-                f"safety.joint_limits.within_half_turn_of_home is set and the arm's home has "
+                f"the guard keeps half a turn about home and the arm's home has "
                 f"{len(home_rad)} joints where the joint-limit table has {len(table[0])}"
             )
         return half_turn_about_home_deg(table[0], table[1], home_rad, model=model), ""
@@ -392,7 +375,7 @@ class JointLimitGuard:
             lower = lo_deg[axis_idx] + margin
             upper = hi_deg[axis_idx] - margin
             if lower >= upper:
-                # A margin this large eats the whole range, so the config is broken.
+                # The margin eats the whole range: a home that leaves an axis less than twice the margin.
                 message = (
                     f"axis {axis_idx}: margin {margin} deg inverts "
                     f"range [{lo_deg[axis_idx]}, {hi_deg[axis_idx]}]"
@@ -401,7 +384,7 @@ class JointLimitGuard:
                     message += (
                         f", which is what is left of the table within half a turn of home "
                         f"({math.degrees(home[axis_idx]):.1f} deg on this axis); "
-                        "robot.home_joint_positions is read in radians"
+                        "robot.motion.home_deg is read in degrees, as the pendant shows it"
                     )
                 return SafetyDecision.unavailable(
                     self.name,
@@ -481,7 +464,7 @@ def _half_turn_sentence(q_deg: float, home_deg: float, lower: float, upper: floa
     """What a refusal adds on a guard that keeps half a turn about home: the window, and where the same angle lies."""
     said = (
         f"; that is half a turn either side of home ({home_deg:.1f} deg on this axis), which "
-        "safety.joint_limits.within_half_turn_of_home keeps so a cable along the arm is never wound further"
+        "every real arm keeps so a cable along the arm is never wound further"
     )
     turns = [q_deg + k * _FULL_TURN_DEG for k in (-2, -1, 1, 2)]
     inside = [t for t in turns if lower <= t <= upper]
@@ -498,7 +481,7 @@ def _half_turn_sentence(q_deg: float, home_deg: float, lower: float, upper: floa
 
 
 def assert_joint_limit_table_available(arm: object) -> None:
-    """Refuse an arm whose enforcing joint-limit guard has no table, at build.
+    """Refuse an arm whose joint-limit guard has no table, at build.
 
     A cell that refuses every motion is indistinguishable from a cell with a broken
     controller. Measured 2026-09-10 on the shipped ``web`` profile:
@@ -510,25 +493,20 @@ def assert_joint_limit_table_available(arm: object) -> None:
 
     It is asked of the arm rather than of the config, so it costs a new vendor nothing:
     the driver states its own ``capabilities`` and its own pipeline, and both already
-    exist. An arm whose reported model the registry does not describe and that has no static lists in
-    YAML cannot boot.
-    UR resolves from the arm registry (``config/arms/<model>.yaml``), and ``sim`` resolves from the
-    explicit lists in ``robot.sim.yaml``.
+    exist. An arm whose reported model the registry does not describe cannot boot: the
+    UR and the Isaac arm, which reports the UR it drives, resolve from the arm registry
+    (``config/arms/<model>.yaml``).
 
     It is silent for an arm that gates nothing, where ``safety_preflight`` is ``None``, as
-    the dummy has it, and for one whose operator set ``joint_limits.enforce: false``,
-    because ``from_safety_config`` then leaves the guard out of the pipeline entirely and
-    there is no guard here to starve. Those are stated decisions, and
-    ``SafetyAttestation`` is what reports them.
+    the dummy has it: a stated decision, and ``SafetyAttestation`` is what reports it.
 
     Raises
     ------
     JointLimitTableMissing
         The arm carries a :class:`JointLimitGuard` that resolves no table for the arm's
-        own vendor and model. The message names ``min_deg`` and ``max_deg``, which is the
-        fix. It is raised too where the guard keeps half a turn about home and the arm states
-        no home, or one that leaves an axis no range, which is how a home written in degrees
-        reads; the message names ``robot.home_joint_positions``.
+        own vendor and model. The message names the arm registry, which is the fix. It is
+        raised too where the guard keeps half a turn about home and the arm states no home,
+        or one that leaves an axis no range; the message names ``robot.motion.home_deg``.
     """
     preflight = getattr(arm, "safety_preflight", None)
     if preflight is None:
@@ -543,14 +521,11 @@ def assert_joint_limit_table_available(arm: object) -> None:
             _refuse_a_window_with_no_room(guard, arm)
             continue
         raise JointLimitTableMissing(
-            f"vendor {vendor!r} (model {model!r}) enforces the joint-limit guard but no table "
-            f"resolves for it: set robot.safety.joint_limits.min_deg and "
-            f"robot.safety.joint_limits.max_deg (one entry per axis, degrees) in your robot "
-            f"config, or set robot.safety.joint_limits.enforce to false and accept an ungated "
-            f"axis envelope. Only the arms the registry describes carry a built-in table: "
-            f"{', '.join(_described_ur_arms())}. Refused here rather than at the first "
-            f"move, where the guard would have answered UNAVAILABLE and every motion would have "
-            f"come back as controller_rejected."
+            f"vendor {vendor!r} (model {model!r}) runs the joint-limit guard and no table resolves for it: "
+            f"describe the arm in config/arms/<model>.yaml, its joints' limit_deg the manufacturer's envelope. "
+            f"Only the arms the registry describes carry a table: {', '.join(_described_ur_arms())}. Refused here "
+            f"rather than at the first move, where the guard would have answered UNAVAILABLE and every motion would "
+            f"have come back as controller_rejected."
         )
 
 
@@ -565,18 +540,16 @@ def _refuse_a_window_with_no_room(guard: JointLimitGuard, arm: Any) -> None:
     limits = guard.limits_for_arm(arm)
     if home is None or limits is None:
         raise JointLimitTableMissing(
-            f"robot.safety.joint_limits.within_half_turn_of_home is set, and {type(arm).__name__} states "
+            f"the joint-limit guard keeps half a turn about home, and {type(arm).__name__} states "
             f"{'no home configuration' if home is None else f'a home of {len(home)} joints'} to centre the window "
-            "on: set robot.home_joint_positions (radians, one entry per axis) on a driver that reads it, or turn "
-            "the window off. Refused here rather than at the first move, where every motion would have come back "
-            "as controller_rejected."
+            "on: set robot.motion.home_deg (degrees, one entry per axis) on a driver that reads it. Refused "
+            "here rather than at the first move, where every motion would have come back as controller_rejected."
         )
     margin = guard.margin_deg
     for axis, (low, high) in enumerate(zip(*limits)):
         if low + margin >= high - margin:
             raise JointLimitTableMissing(
-                f"robot.safety.joint_limits.within_half_turn_of_home leaves axis {axis} no range: its home is "
+                f"half a turn about home leaves axis {axis} no range: its home is "
                 f"{math.degrees(home[axis]):.1f} deg, more than half a turn outside the joint-limit table less "
-                f"its {margin:.1f} deg margin. robot.home_joint_positions is read in radians, so a home written in "
-                "degrees reads this way."
+                f"its {margin:.1f} deg margin. robot.motion.home_deg is read in degrees, as the pendant shows it."
             )

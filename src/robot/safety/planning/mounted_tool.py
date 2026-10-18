@@ -75,8 +75,7 @@ class MountedTool:
         """Describe this to a person, as one line of ASCII, no trailing newline."""
         hand = self.hand.model if chosen(self.hand) else "no hand named"
         tf = self.tool_frame
-        payload = (f"{self.payload.mass_kg:g} kg at {tuple(round(float(v), 1) for v in self.payload.cog_mm)} mm"
-                   if self.payload.enforce else "payload not pushed")
+        payload = f"{self.payload.mass_kg:g} kg at {tuple(round(float(v), 1) for v in self.payload.cog_mm)} mm"
         return f"tool  {hand}, tool frame {tf.source} {tuple(float(v) for v in tf.offset_mm)} mm, {payload}"
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,6 +85,5 @@ class MountedTool:
             "tool_frame": {"source": self.tool_frame.source,
                            "offset_mm": [float(v) for v in self.tool_frame.offset_mm],
                            "rotation_quat_xyzw": [float(v) for v in self.tool_frame.rotation_quat_xyzw]},
-            "payload": {"enforce": bool(self.payload.enforce), "mass_kg": float(self.payload.mass_kg),
-                        "cog_mm": [float(v) for v in self.payload.cog_mm]},
+            "payload": {"mass_kg": float(self.payload.mass_kg), "cog_mm": [float(v) for v in self.payload.cog_mm]},
         }

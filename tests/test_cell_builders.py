@@ -56,7 +56,7 @@ class OneCallEqualsTheOldTwoTests(unittest.TestCase):
         equivalence being pinned here is against the explicit path ON THE SWAPPED CONFIG -- everything
         except the arm is identical, and the arm is the fix."""
         cfg = _cfg().model_copy(update={"vendor": "dummy"})
-        calculator, perception, resolver, _cams, _lenses = build_rehearsal_components(cfg)
+        calculator, perception, resolver, _cams = build_rehearsal_components(cfg)
         explicit = AutonomousGraspService.from_robot_config(
             cfg, calculator=calculator, perception=perception, frame_resolver=resolver)
         helper = build_rehearsal_cell(_cfg())
@@ -101,7 +101,7 @@ class TheRootKeepsItsContractTests(unittest.TestCase):
         """The sim runners, `datagen`'s probes and every test go through here. The helpers are a
         convenience for the config-driven case, never a replacement."""
         cfg = _cfg()
-        calculator, perception, resolver, _cams, _lenses = build_rehearsal_components(cfg)
+        calculator, perception, resolver, _cams = build_rehearsal_components(cfg)
         service = AutonomousGraspService.from_robot_config(
             cfg, calculator=calculator, perception=perception, frame_resolver=resolver)
         self.assertIsInstance(service, AutonomousGraspService)
@@ -136,7 +136,7 @@ class ARehearsalIsAlwaysARehearsalTests(unittest.TestCase):
         self.assertEqual(type(service.runtime.orchestrator.arm).__name__, "DummyRobotArm")
 
     def test_it_holds_for_every_configured_vendor(self) -> None:
-        for vendor in ("ur", "kuka", "dummy"):
+        for vendor in ("ur", "sim", "dummy"):
             with self.subTest(vendor=vendor):
                 service = build_rehearsal_cell(
                     RobotConfig.model_validate({"vendor": vendor, "grasping": {}}))
@@ -285,16 +285,19 @@ class RealCellRefusesCleanlyTests(unittest.TestCase):
         self.assertIn("enabled: false", message)
         self.assertIn("primary_rig_id", message)
 
-    def test_a_primary_that_is_not_RGBD_NAMES_the_rigs_that_are(self) -> None:
-        """⚠ THE LIST, NOT JUST THE DEMAND. "Name the RGB-D rig" asks the operator for the one fact
+    def test_a_primary_that_gives_no_depth_yet_NAMES_the_rigs_that_do(self) -> None:
+        """⚠ THE LIST, NOT JUST THE DEMAND. "Name a depth camera" asks the operator for the one fact
         they have just shown they do not have, and this function is holding the list while it says
-        it. The base profile is exactly this case: its only enabled rig is a webcam pair."""
+        it. The base profile is exactly this case: its only enabled rig is a webcam pair, which gives
+        depth once its stereo calibration is written (2026-10-17) and none before, so the refusal
+        says how to write it as well."""
         message = self._refusal(
             [self._rig("webcam_main", source="webcam_pair"),
              self._rig("realsense_d435", enabled=False)],
             "webcam_main")
 
-        self.assertIn("RGB-D", message)
+        self.assertIn("stereo calibration", message)
+        self.assertIn("19_calibrate_a_stereo_pair.py", message)
         self.assertIn("realsense_d435", message)
         self.assertIn("src.robot.perception", message)
 
@@ -303,7 +306,7 @@ class RealCellRefusesCleanlyTests(unittest.TestCase):
         camera to check. The two cases get different sentences because they have different fixes."""
         message = self._refusal([self._rig("webcam_main", source="webcam_pair")], "webcam_main")
 
-        self.assertIn("no RGB-D rig", message)
+        self.assertIn("No rig in camera.cameras.rigs gives depth yet", message)
         self.assertNotIn("src.robot.perception", message)
 
     def test_build_real_cell_propagates_that_refusal(self) -> None:

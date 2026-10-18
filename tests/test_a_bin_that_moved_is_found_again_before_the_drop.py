@@ -8,8 +8,9 @@ judged verb. A bin of the size the survey found and the colour the task followed
 place of the old one (``task.target_relocated``). The part is carried to the look it was found from, the bin is checked
 there as every bin is, and the drop is planned anew over it. Once per part: a bin lost again, or found nowhere, puts the
 part back where it was gripped and the task asks, as before. A fixed camera's bin is looked for where the camera stands,
-before the pick, and nothing moves. ``robot.place.relocate`` off keeps the old rule. In a sort, every look at one bin
-grounds every bin (``together``), so the other rule's bin is never taken for this one.
+before the pick, and nothing moves. Every cell looks again since 2026-10-17 (the owner's cleanup); ``robot.place.relocate``
+off kept the old rule until then. In a sort, every look at one bin grounds every bin (``together``), so the other rule's
+bin is never taken for this one.
 
 The camera is ``tests._task_fakes.MeasuringLocator`` (one bin) or ``ClassListLocator`` (a sort), a wrist camera over a
 bench it ray casts, or a ``ScriptedLocator`` that stands fixed.
@@ -44,7 +45,6 @@ from tests._task_fakes import (
     bin_points,
     do0_changes,
     motions,
-    placing,
     run,
     run_sort,
 )
@@ -182,21 +182,6 @@ class ATaskOfOneBinTests(unittest.TestCase):
                          [name for name in ran.names() if name.startswith("task.")][-6:-3])
         self.assertNotIn("found nowhere", ran.report.sentence)
         self.assertEqual(2, do0_changes(ran.log))
-
-    def test_a_cell_that_keeps_the_old_rule_puts_the_part_back(self) -> None:
-        from src.robot.execution.task import TaskStop
-
-        scene = BinScene()
-        arm = placing(_arm([]), relocate=False)
-        ran = _task((Pick("part", then=lambda: scene.move(150.0)),), scene=scene, arm=arm)
-
-        self.assertIs(TaskStop.TARGET_LOST, ran.report.stop, ran.report.sentence)
-        self.assertNotIn("task.target_relocated", ran.names())
-        self.assertEqual([{"look": look_label(LY), "why": "moved_too_far", "phrase": "yellow bin"}],
-                         ran.hooks.of("task.target_lost"))
-        self.assertEqual(["task.target_lost", "task.put_back", "task.return_started", "task.returned",
-                          "task.part_finished"], ran.names()[-5:])
-        self.assertEqual(["yellow bin", "yellow bin"], ran.locator.asked)
 
 
 class WhatEndsASearchTests(unittest.TestCase):

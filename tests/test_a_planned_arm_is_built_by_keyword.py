@@ -47,8 +47,8 @@ def _pieces(transport: Any) -> dict[str, Any]:
         "joint_names": ("j1", "j2", "j3", "j4", "j5", "j6"),
         "controller_yaw_deg": 0,
         "transport": transport,
-        "guard": WorkspaceGuard(cfg.workspace_limits),
-        "preflight": SafetyPreflight.from_safety_config(cfg.safety, cfg.workspace_limits, hand=planner_hand(cfg),
+        "guard": WorkspaceGuard(cfg.motion.workspace),
+        "preflight": SafetyPreflight.from_safety_config(cfg.safety, cfg.motion.workspace, hand=planner_hand(cfg),
                                                         arm_model="ur5e"),
         "home_joints": _HOME,
     }
@@ -76,7 +76,6 @@ class APlannedArmIsBuiltByKeywordTests(unittest.TestCase):
         self.assertEqual(_HOME, arm._home_joints)
         self.assertEqual(pieces["config"].motion.planner, arm._motion_planner, "the route is the tree's")
         self.assertIsNone(arm._curobo)
-        self.assertIsNone(arm._attached_payload)
         self.assertEqual([], transport.mock_calls, "building an arm sends nothing")
 
     def test_a_positional_piece_is_refused(self) -> None:
@@ -102,7 +101,7 @@ class TheNeutralHooksTests(unittest.TestCase):
         assert refused is not None
         self.assertIs(MotionStatus.WORKSPACE_REJECTED, refused.status)
         self.assertIs(MotionCommand.MOVE_HOME, refused.command)
-        self.assertIn("the home grasp centre (900.0, 0.0, 200.0) mm is outside workspace_limits", refused.message)
+        self.assertIn("the home grasp centre (900.0, 0.0, 200.0) mm is outside robot.motion.workspace", refused.message)
         transport.controller_fk.return_value = _pose(100.0, 0.0, 200.0)
         self.assertIsNone(_arm(transport)._home_refusal(JointPositions(np.asarray(_HOME))))
 

@@ -137,9 +137,9 @@ class CameraLifetimeTests(unittest.TestCase):
                 max_grip_width_mm=robot_cfg.gripper.max_width_mm,
                 min_grip_width_mm=robot_cfg.gripper.min_width_mm,
             )
-            # Five, matching `build_real_components`: the last is the per-camera calculator
-            # map, and `None` is right here because this cell has one camera.
-            return calculator, source, None, None, None
+            # Four, matching `build_real_components`: no resolver (the root builds it) and no
+            # other cameras, because this cell has one.
+            return calculator, source, None, None
 
         self._real = components.build_real_components
         components.build_real_components = _fake_build_real

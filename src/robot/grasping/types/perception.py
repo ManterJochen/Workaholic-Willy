@@ -76,7 +76,7 @@ class PerceptionFrame:
     #: is not a camera. Nothing on the grasp path reads it: it is carried to the views and no further.
     research: "ResearchCapture | None" = None
     #: The parts beside the ones the detector named, each a mask of this frame, read off its depth by the pick
-    #: (``robot.grasping.name_neighbours``, ``generation.parts_beside``, the owner, 2026-10-12). No segmentation: no
+    #: (``generation.parts_beside``, the owner, 2026-10-12). No segmentation: no
     #: label gate, no sort and no memory of the parts sees them, only the calculator's neighbours and the planner
     #: world's named parts, whose boxes the fingers may brush (2026-10-05). Empty where none was read.
     parts_beside: tuple[np.ndarray, ...] = ()
@@ -94,9 +94,10 @@ class CameraObservation:
     """The frame of one named camera, from a rig of several.
 
     ``camera_id`` is the join key, and it is a contract rather than a label: it matches
-    a camera the orchestrator holds a resolver for. On a config-built cell that is a rig
-    id ``robot.grasping.fusion.cameras`` fuses, and the CAMERA to BASE calibration
-    artifact of that camera is declared on its rig, ``camera.cameras.rigs[<id>].extrinsics``.
+    a camera the orchestrator holds a resolver for. On a config-built cell that is the
+    id of a rig the cell fuses (``camera_fusion.fused_cameras``), and the CAMERA to BASE
+    calibration artifact of that camera is declared on its rig,
+    ``camera.cameras.rigs[<id>].extrinsics``.
     A frame whose id has no resolver cannot be placed in BASE and so cannot be fused, and
     the orchestrator drops it and names the id rather than guessing at a default
     extrinsic and fusing a cloud into the wrong place.
@@ -118,10 +119,9 @@ class MultiCameraPerceptionSource(Protocol):
 
     A camera that failed to produce a frame is simply absent from the returned tuple,
     because the protocol has no error channel by design. Which cameras were expected is
-    config, in ``fusion.cameras``, so comparing expected against delivered belongs to
-    the caller that holds the config, in one place under one policy,
-    ``on_camera_unavailable``. An implementation that invented an empty frame instead
-    would defeat that check.
+    the cell's (the resolvers it built), so comparing expected against delivered belongs
+    to the caller that holds them, in one place, which warns of each camera that did not
+    deliver. An implementation that invented an empty frame instead would defeat that check.
     """
 
     def acquire_all(self) -> tuple[CameraObservation, ...]: ...
@@ -158,10 +158,8 @@ class MappedCameraRig:
         """Every camera that answered, in insertion order. A camera that raised is simply absent.
 
         The contract above says absent, and this used to raise. One camera whose pipeline had not
-        started took the whole pick with it, and `on_camera_unavailable`, whose entire purpose is to
-        choose between degrading and refusing when a camera is missing, could never observe a
-        missing camera, because the exception left before the comparison ran. Both of its branches
-        were unreachable with the only rig implementation in the tree.
+        started took the whole pick with it, and the pick loop's warning of a missing camera could
+        never observe one, because the exception left before the comparison ran.
 
         The one raise that passes through is ``PerceptionFrameMoved``: a wrist camera that took no
         still frame is a fault of the cell, not a camera that failed.

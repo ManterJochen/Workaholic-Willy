@@ -62,7 +62,7 @@ class _Calculator:
         self.camera_matrix = camera_matrix
 
 
-def _loop_with(support_config, camera_matrix):
+def _loop_with(declared_support, camera_matrix):
     """A `BinPickingOrchestrator` shell carrying just what the cloud builder reads.
 
     Constructed via `__new__` on purpose: the real constructor wants an arm, a gripper, a
@@ -71,7 +71,7 @@ def _loop_with(support_config, camera_matrix):
     from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
 
     loop = BinPickingOrchestrator.__new__(BinPickingOrchestrator)
-    loop.support_config = support_config
+    loop.declared_support = declared_support
     loop.calculator = _Calculator(camera_matrix)
     return loop
 
@@ -140,7 +140,7 @@ class TheConsequenceOfAFlatCloudIsThePlaneOnTopOfTheObjectTests(unittest.TestCas
             np.zeros(50), np.zeros(50), np.full(50, 50.0),  # every point at z = 50 mm
         ])
         resolved = resolve_support_plane(
-            declared_height_mm=0.0, target_clouds_base_mm=[flat], refine_from_target=True,
+            declared_height_mm=0.0, target_clouds_base_mm=[flat],
         )
         self.assertEqual(resolved.plane.offset_mm, 50.0)
         self.assertEqual(resolved.source, "observed")
@@ -150,7 +150,7 @@ class TheConsequenceOfAFlatCloudIsThePlaneOnTopOfTheObjectTests(unittest.TestCas
             np.zeros(50), np.zeros(50), np.linspace(0.0, 50.0, 50),
         ])
         resolved = resolve_support_plane(
-            declared_height_mm=0.0, target_clouds_base_mm=[reaching], refine_from_target=True,
+            declared_height_mm=0.0, target_clouds_base_mm=[reaching],
         )
         self.assertAlmostEqual(resolved.plane.offset_mm, 0.0)
 
@@ -158,7 +158,7 @@ class TheConsequenceOfAFlatCloudIsThePlaneOnTopOfTheObjectTests(unittest.TestCas
 class TheExtentIsMeasuredInTheFrameTheNormalLivesInTests(unittest.TestCase):
     """⛔ THE GUARD READ THE CAMERA'S DEPTH SPAN AND CALLED IT HEIGHT.
 
-    `support_config.normal` is a BASE vector and the target cloud arrives in CAMERA, so the guard
+    The support's normal is a BASE vector and the target cloud arrives in CAMERA, so the guard
     projected camera coordinates onto a base-frame axis. Every test above is a pure z-flip, where the
     camera's depth axis and the base's height axis are the same line up to a sign, so none of them
     could see it. It was harmless only because the perception producer flattened the depth under each

@@ -1,10 +1,11 @@
 """Centralized parsing of the ``WILLY_*`` runner environment knobs.
 
-:class:`RunnerEnv` parses the 15 runner knobs once at boot into a typed, frozen struct, so a call
+:class:`RunnerEnv` parses the 12 runner knobs once at boot into a typed, frozen struct, so a call
 site reads ``env.field`` rather than ``os.environ.get(...)``. That puts every knob and its default
 in one place, and it is where the context-dependent default is computed: ``ycb_cam_z`` depends on
 ``vision``. The two ``WILLY_C1_*`` knobs, which tuned the eye-in-hand two-scan refine, left with it
-on 2026-09-29.
+on 2026-09-29; ``WILLY_RL3_*``, the failure injection of the RL data collection, and ``WILLY_TRACE_G12``,
+the approach validator's trace, on 2026-10-16 with what they served.
 
 Scope is the runner layer only. The two perception debug-trace flags (``WILLY_TRACE_DEPTH`` and
 ``WILLY_TRACE_VISION``) are read where they are used, in :mod:`src.willy_sim.perception`, so that
@@ -38,21 +39,16 @@ class RunnerEnv:
     ycb_scene: str            # WILLY_YCB_SCENE (stripped and lowered; "" selects the demo scene)
     ycb_solo: bool            # WILLY_YCB_SOLO (truthiness)
     ycb_target_y: float | None  # WILLY_YCB_TARGET_Y (override target spawn Y; None keeps it)
-    # Failure-injection substrate (read in _apply_rl3_substrate)
-    rl3_substrate: str        # WILLY_RL3_SUBSTRATE (stripped/lowered)
-    rl3_big_mm: float         # WILLY_RL3_BIG_MM (oversized-target size; used only when substrate set)
     # YCB grasp/scene tuning (read in build_service)
     ycb_cam_z: float          # WILLY_YCB_CAM_Z (context default: 1200 if vision else 1800)
     ycb_penetration: float    # WILLY_YCB_PENETRATION (top-grasp penetration mm)
-    ycb_detector: str         # WILLY_YCB_DETECTOR (HF model id for the vision path)
     ycb_close: float | None   # WILLY_YCB_CLOSE (fixed close-width override; None stays adaptive)
     ycb_squeeze: float        # WILLY_YCB_SQUEEZE (adaptive close squeeze margin)
-    ik_debug: bool            # WILLY_IK_DEBUG (per-candidate IK cond/min_sv/joint_margin log)
+    ik_debug: bool            # WILLY_IK_DEBUG (per-candidate IK cond/min_sv log)
     # opt-in debug traces
     trace_moves: bool         # WILLY_TRACE_MOVES (per-move target/closing/status)
     trace_cands: bool         # WILLY_TRACE_CANDS (all ranked candidates pre-execution)
     trace_calc: bool          # WILLY_TRACE_CALC (per-pick calculator telemetry + geometry)
-    trace_g12: bool           # WILLY_TRACE_G12 (approach-sweep obstacle cloud and per-candidate verdict)
 
     @classmethod
     def from_env(cls, *, vision: bool) -> RunnerEnv:
@@ -78,16 +74,12 @@ class RunnerEnv:
             ycb_scene=get("WILLY_YCB_SCENE", "").strip().lower(),
             ycb_solo=bool(get("WILLY_YCB_SOLO")),
             ycb_target_y=float(_ty) if _ty is not None else None,
-            rl3_substrate=get("WILLY_RL3_SUBSTRATE", "").strip().lower(),
-            rl3_big_mm=float(get("WILLY_RL3_BIG_MM", "120.0")),
             ycb_cam_z=float(get("WILLY_YCB_CAM_Z", "1200.0" if vision else "1800.0")),
             ycb_penetration=float(get("WILLY_YCB_PENETRATION", "12.0")),
-            ycb_detector=get("WILLY_YCB_DETECTOR", "IDEA-Research/grounding-dino-base"),
             ycb_close=float(_close) if _close is not None else None,
             ycb_squeeze=float(get("WILLY_YCB_SQUEEZE", "11.0")),
             ik_debug=bool(get("WILLY_IK_DEBUG")),
             trace_moves=bool(get("WILLY_TRACE_MOVES")),
             trace_cands=bool(get("WILLY_TRACE_CANDS")),
             trace_calc=bool(get("WILLY_TRACE_CALC")),
-            trace_g12=bool(get("WILLY_TRACE_G12")),
         )

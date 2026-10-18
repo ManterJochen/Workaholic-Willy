@@ -226,10 +226,10 @@ def hand_geometry_model(
     ``robot.sim.robot_model``; ``tests/test_the_arm_says_what_it_is.py`` holds them to it). A
     preflight names its arm always since P0e (``arm_model`` is required, ``None`` for an arm the
     registry does not describe), and its guard refuses an arm that reports another UR, so the hand
-    this decided is the hand the guard judges (``SelfCollisionGuard.refusal_for``). A stood-down
-    guard, the capsule proxy, and a cell with no resolvable arm read none.
+    this decided is the hand the guard judges (``SelfCollisionGuard.refusal_for``). The capsule
+    proxy and a cell with no resolvable arm read none.
     """
-    if not self_collision.enforce or self_collision.backend != "fcl":
+    if self_collision.backend != "fcl":
         return None
     return described_ur_model(str(arm_model)) if chosen(arm_model) else None
 
@@ -342,7 +342,7 @@ def hand_past_the_tcp_mm(robot_cfg: RobotConfig) -> float:
     owner's cell the TCP is declared 157 mm out and the guard's grasp centre stands at 23 + 136.2 = 159.2 mm: its
     fingertips 2.2 mm further than the calculator planned them, and grasp after grasp in a pile was refused 2.3 to 2.96 mm
     from a neighbour against the guard's 3 (the grasp bench, 2026-10-06). The calculator plans the hand where the guard
-    holds it by this much (``builders.build_gripper_geometry``), never shorter than it was: a hand shorter than its TCP
+    holds it by this much (``gripper_model.jaw_envelope``), never shorter than it was: a hand shorter than its TCP
     is planned as before. A difference past the tolerance is a cell to measure, not one to plan around; the preflight's
     ``grasp centre`` row says so, and nothing is moved here. No hand, an undeclared frame or a placement nobody can make:
     0.0.

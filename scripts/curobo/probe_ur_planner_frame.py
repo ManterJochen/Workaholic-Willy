@@ -1,20 +1,23 @@
 """The real UR's planner sees the cell where the controller has it, measured through the UR driver's own glue.
 
-The planner is rooted at UR's URDF ``base_link``, the DH base turned half a turn about Z
-(``probe_payload_attach.py`` ``frame`` measures 0.0001 mm with the turn, 1019 mm without). A UR cell
+The planner is rooted at UR's URDF ``base_link``, the DH base turned half a turn about Z (measured
+2026-09-18 by the carried part's probe, deleted with the carried part on 2026-10-17: 0.0001 mm with the
+turn, 1019 mm without). A UR cell
 declares its geometry and commands its goals in the frame the controller reports in, the DH base.
 This builds a :class:`URRobotArm` the way a cell does, with a stand-in RTDE connection that reports
 one joint vector and moves nothing, and asks the planner the arm builds (``_curobo_planner``):
 
-* (f1) a box declared in the cell's config, in the controller's frame, 20 mm into the fingers makes
-  the arm's own configuration invalid;
-* (f2) on a second arm with no declared box, the same box turned half a turn about the base axis and
-  handed to the planner's ``set_world`` leaves it valid;
+* (f1) a box handed to the planner's ``set_world`` in the controller's frame, 20 mm into the fingers,
+  makes the arm's own configuration invalid (a box the cell's config declared did until 2026-10-17, when
+  a cell's fixtures stayed the guard's);
+* (f2) on a second arm, the same box turned half a turn about the base axis and handed to the planner's
+  ``set_world`` leaves it valid;
 * (f3) on that arm, a joint plan to the configuration nearest the arm of the flange raised 100 mm, solved in
   the controller's frame as the driver solves it, ends on it: the DH flange of the plan's last configuration is
   within 1 mm and 0.1 degrees of the goal. The UR driver never asks cuRobo for a Cartesian plan, so the goal a
   plan is handed is joints, the same numbers in both bases, and this claim holds the joint remap both ways;
-* (f4) on that arm, a live scene field written in the controller's frame, the grid the cell reserves
+* (f4) on that arm, a live scene field written in the controller's frame, the grid every cell reserves
+  (at ``perceived.CAMERA_FIELD_VOXEL_MM``, 10 mm since 2026-10-17; this probe chose 20 by a key before)
   centred 150 mm along the controller's +X from the fingertips and inside an obstacle only in a
   200 mm cube around them, makes the configuration invalid through the glue, and the same field
   handed to the planner unturned, which is the wire without the turn, leaves it valid. A planner
@@ -70,7 +73,6 @@ _MARGIN_MM = 4.0
 _DOWN_Q = (0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0)
 _INTO_FINGERS_MM = 20.0
 _RAISE_MM = 100.0
-_FIELD_VOXEL_MM = 20.0
 _FIELD_OFFSET_MM = 150.0
 _FIELD_CUBE_HALF_MM = 100.0
 
@@ -92,18 +94,13 @@ class _StandingConnection:
         raise AssertionError("this probe never moves anything")
 
 
-def _cell(fixtures: "list[dict[str, Any]]", *, field: bool) -> RobotConfig:
-    world: dict[str, Any] = {"enabled": True, "payload": {"enabled": False},
-                             "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}}
-    if field:
-        world["perceived"] = {"voxel_field_mm": _FIELD_VOXEL_MM}
+def _cell() -> RobotConfig:
+    world: dict[str, Any] = {"support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}}
     return RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"model": _ARM}, "motion": {"planner": "curobo"},
         "safety": {
-            "payload": {"enforce": False},
-            "self_collision": {"backend": "fcl", "planner_margin_mm": _MARGIN_MM,
-                               "fixtures": fixtures},
+            "self_collision": {"backend": "fcl", "planner_margin_mm": _MARGIN_MM},
             "planning_world": world,
         },
         "gripper": {"model": "robotiq_2f85", "coupling_plates": [], "tool_frame": {
@@ -111,8 +108,8 @@ def _cell(fixtures: "list[dict[str, Any]]", *, field: bool) -> RobotConfig:
     })
 
 
-def _arm(fixtures: "list[dict[str, Any]]", *, field: bool = False) -> URRobotArm:
-    arm = URRobotArm(_cell(fixtures, field=field))
+def _arm() -> URRobotArm:
+    arm = URRobotArm(_cell())
     arm._conn = _StandingConnection(_DOWN_Q)  # type: ignore[assignment]
     return arm
 
@@ -129,9 +126,10 @@ def _angle_deg(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _field(reservation: PlannerReservation) -> "tuple[np.ndarray, list[float], float]":
-    """A field on the reserved grid, inside an obstacle only in a cube at local ``(-offset, 0, 0)``."""
+    """A field on the reserved grid, inside an obstacle only in a cube at local ``(-offset, 0, 0)``. The field's own
+    grid is the reservation's first; the fine grid about a goal follows it after a ``;``."""
     assert reservation.voxel_grid, "the cell reserves no live scene grid"
-    x, y, z, voxel = (float(v) * 1000.0 for v in reservation.voxel_grid.split(","))
+    x, y, z, voxel = (float(v) * 1000.0 for v in reservation.voxel_grid.split(";")[0].split(","))
     axes = [(np.arange(int(round(side / voxel))) + 0.5) * voxel - side / 2.0 for side in (x, y, z)]
     lx, ly, lz = np.meshgrid(*axes, indexing="ij")
     inside = ((np.abs(lx + _FIELD_OFFSET_MM) < _FIELD_CUBE_HALF_MM)
@@ -148,7 +146,7 @@ def main(argv: "list[str] | None" = None) -> int:
     args = parser.parse_args(argv)
 
     # Where the fingertips stand in the controller's frame, from the hand model the guard places.
-    probe = _arm([])
+    probe = _arm()
     hand = probe._preflight.planner_hand(probe)
     if not chosen(hand) or not chosen(hand.placement):
         print("the cell places no hand on the flange, so there are no fingertips to measure from", file=sys.stderr)
@@ -163,19 +161,19 @@ def main(argv: "list[str] | None" = None) -> int:
     report: dict[str, Any] = {"tip_in_controller_base_mm": [round(float(v), 2) for v in tip],
                               "approach_in_controller_base": [round(float(v), 4) for v in approach]}
     top = float(tip[2]) + _INTO_FINGERS_MM
-    into = {"name": "into_the_fingers", "center_mm": (float(tip[0]), float(tip[1]), top - 25.0),
-            "half_extents_mm": (50.0, 50.0, 25.0)}
+    into = planner_cuboid("into_the_fingers", (float(tip[0]), float(tip[1]), top - 25.0), (100.0, 100.0, 50.0))
     claims: dict[str, Any] = {}
     try:
-        # (f1): the declared world, through the cell's own config and the planner's registration.
-        planner = _arm([into])._curobo_planner()
+        # (f1): a box in the controller's frame, through the glue's registration, the declared bench underneath.
+        planner = _arm()._curobo_planner()
         try:
-            verdict = planner.check_joint_path([list(_DOWN_Q)])
+            planner.set_world([into])
+            verdict = planner.check_joint_path([list(_DOWN_Q)], refresh=False)
             claims["f1_a_declared_box_in_the_fingers"] = {"valid": bool(verdict.valid), "reason": str(verdict.reason)}
         finally:
             planner.close()
 
-        arm = _arm([], field=True)
+        arm = _arm()
         planner = arm._curobo_planner()
         try:
             # (f3) first, on a world with nothing near the hand.

@@ -8,13 +8,11 @@
 #
 # The support plane is the scene's table (`robot.sim.scene_setup.table`: 800 x 800 x 400 mm centred
 # at x 450, top at z 0), placed at the table top, so the planner keeps the arm above the surface the
-# cube stands on. `perceived` keeps its defaults, and no carried part length is declared, so the
-# planner reserves no attach slots: every committed ur5e evidence file was measured without them, and
-# a planner start with slots would find no file.
+# cube stands on. Declaring it turns the planning world on. The camera world is built as every cell's
+# is (src/robot/safety/planning/perceived.py, the CAMERA_* constants).
 robot:
   safety:
     planning_world:
-      enabled: true
       support_plane:
         height_mm: 0.0
         extent_mm: [800.0, 800.0]

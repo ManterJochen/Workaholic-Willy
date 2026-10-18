@@ -1,17 +1,19 @@
-"""A path judged whole is judged as every sample of it is (``safety.self_collision.whole_path_judge``).
+"""A path judged whole is judged as every sample of it is (``SafetyPreflight._first_suspect``, every cell's).
 
 On the owner's cell (2026-10-08) the exact guard took 2.3 to 2.6 s for one route of 905 samples, 2.9 s for the way home
 and 0.2 to 0.6 s for a line, judging one sample at a time; three quarters of it measured the arm against itself on pairs
 that never came within 18 mm of the guard's 3. The owner, 2026-10-09: speed only "solange wir keine Qualität verlieren".
 
-With the switch on, every guard of a joint move first looks at the whole path at once and names the first sample it might
-refuse, never later than the first it does: the joint limits on every sample at once, the payload once, the exact meshes
-with every part placed at every sample in one pass, a sample passed only on a proof that every distance the guard would
-measure there keeps its limit (a bounding sphere, a part's convex hull, a distance measured earlier less how far the pair
-can have moved since). From that sample on the gate judges every sample as it does with the switch off.
+Every guard of a joint move first looks at the whole path at once and names the first sample it might refuse, never
+later than the first it does: the joint limits on every sample at once, the payload once, the exact meshes with every
+part placed at every sample in one pass, a sample passed only on a proof that every distance the guard would measure
+there keeps its limit (a bounding sphere, a part's convex hull, a distance measured earlier less how far the pair can
+have moved since). From that sample on the gate judges every sample one at a time. It was the owner's switch
+(``safety.self_collision.whole_path_judge``, on at the cell) and is every cell's since 2026-10-17.
 
-What this file pins, switch on against switch off, the same answer (``None``, or the status, the whole message and the
-joints a refusal names):
+What this file pins, the whole path against every sample one at a time (``tests._owner_guard.every_sample``, the gate as
+every cell ran it before), the same answer (``None``, or the status, the whole message and the joints a refusal
+names):
 
 * the owner's guard (``tests/_owner_guard.py``) on the three cell frames of 2026-10-07, cases A and D: the route from the
   look to 100 mm over the target, the line down to the recorded grasp, 204 lines down to grasps moved up to 12 mm and
@@ -23,7 +25,7 @@ joints a refusal names):
 * the guard order: a joint limit refused before, at and after the first collision names the guard and the sample the loop
   names; a payload refused at the first sample; a guard that offers no whole-path pass, and the self-collision guard
   without an arm (the capsule proxy), leave every sample to the loop;
-* the key: it loads, it is off by default, and off, every guard sees every sample; on, the gate reads it;
+* the old key is refused; judged one at a time, every guard sees every sample, and whole, the gate reads it;
 * mesh first (``URRobotArm._mesh_first_refusal``): the same sentence over the declared support plane and beside the
   robot's base, the same ``None`` where neither is near.
 
@@ -40,7 +42,7 @@ from unittest import mock
 
 import numpy as np
 
-from src.config.schema.robot import JointLimitSafetyConfig, PayloadSafetyConfig, RobotConfig, SelfCollisionSafetyConfig
+from src.config.schema.robot import PayloadSafetyConfig, RobotConfig
 from src.robot.core import MotionCommand
 from src.robot.safety import SafetyPreflight
 from src.robot.safety._capsule import AxisAlignedBox
@@ -63,7 +65,7 @@ _SLAB_HALF_MM = (300.0, 300.0, 5.0)
 
 @lru_cache(maxsize=1)
 def _pair() -> "tuple[Any, Any, Any]":
-    """The owner's guard twice, the switch off and on, and the arm both judge."""
+    """The owner's guard twice, judging every sample one at a time and the path whole first, and the arm both judge."""
     off, arm = owner.owner_cell(whole=False)
     on, _ = owner.owner_cell(whole=True)
     return off, on, arm
@@ -91,7 +93,7 @@ def _turned(about_z: float, turn: np.ndarray) -> np.ndarray:
 
 
 class TheCellsWorldsAreJudgedAsEverySampleIsTests(unittest.TestCase):
-    """The owner's guard over the cell's own worlds of 2026-10-07, each answer the same with the switch on."""
+    """The owner's guard over the cell's own worlds of 2026-10-07, each answer the same judged whole."""
 
     def setUp(self) -> None:
         owner.needs_the_engine()
@@ -270,8 +272,11 @@ class TheBorderlineIsJudgedAsEverySampleIsTests(unittest.TestCase):
         turned = np.array([-flange[0], -flange[1], flange[2]])  # where the 180 degree base puts it
         box = {"name": "box", "center_mm": [float(turned[0]), float(turned[1]), float(turned[2] - 120.0)],
                "half_extents_mm": [60.0, 60.0, 40.0]}
-        off, on = (_preflight(kinematics_base_yaw_deg=180.0, min_distance_mm=10.0, fixtures=[box],
-                              whole_path_judge=whole) for whole in (False, True))
+        from src.willy_sim.guard_numbers import ISAAC
+
+        off, on = (_preflight(base_yaw_deg=ISAAC.base_yaw_deg, min_distance_mm=10.0, perceived_min_distance_mm=4.0,
+                              fixtures=[box]) for _ in range(2))
+        owner.every_sample(off)
         rng = np.random.default_rng(180)
         refused = 0
         for _ in range(30):
@@ -286,7 +291,7 @@ class TheBorderlineIsJudgedAsEverySampleIsTests(unittest.TestCase):
     def test_the_arm_folded_into_itself_names_the_same_first_pair(self) -> None:
         from tests.test_joint_path_gate import _CLEAR, _FOLDED, _Arm, _preflight
 
-        off, on = _preflight(), _preflight(whole_path_judge=True)
+        off, on = owner.every_sample(_preflight()), _preflight()
         # The last fifth of the way from the clear configuration into the folded one, which test_joint_path_gate.py
         # refuses as forearm|lfinger 0.367 mm apart.
         near = [f + 0.2 * (c - f) for c, f in zip(_CLEAR, _FOLDED)]
@@ -313,8 +318,22 @@ class _SiteLocal:
         return SafetyDecision.accept(self.name)
 
 
-def _limits_crossed_at(path: PathSamples, sample: int) -> JointLimitSafetyConfig:
-    """Static joint limits, no margin, that the joint turning furthest along ``path`` leaves at ``sample`` (from 0)."""
+class _TableGuard(JointLimitGuard):
+    """A joint-limit guard over a table of its own, with no margin and no window about home: an arm whose description
+    held that table, judged on it alone, so the sample the table is crossed at is the sample a refusal names. No tree
+    writes a table since 2026-10-17; the guard's own reading of one is what this stands on."""
+
+    def __init__(self, table: "tuple[list[float], list[float]]") -> None:
+        super().__init__(half_turn_about_home=False)
+        self._table = table
+        self._margin_deg = 0.0
+
+    def table_for(self, *, model: "str | None") -> "tuple[list[float], list[float]]":
+        return self._table
+
+
+def _limits_crossed_at(path: PathSamples, sample: int) -> _TableGuard:
+    """Joint limits, no margin, that the joint turning furthest along ``path`` leaves at ``sample`` (from 0)."""
     degrees = np.degrees(np.asarray(path.configs, dtype=np.float64))
     axis = int(np.argmax(np.abs(degrees[-1] - degrees[0])))
     steps = np.diff(degrees[:, axis])
@@ -325,7 +344,7 @@ def _limits_crossed_at(path: PathSamples, sample: int) -> JointLimitSafetyConfig
         upper[axis] = float(crossing)
     else:
         lower[axis] = float(crossing)
-    return JointLimitSafetyConfig(min_deg=lower, max_deg=upper, margin_deg=0.0)
+    return _TableGuard((lower, upper))
 
 
 class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
@@ -335,7 +354,7 @@ class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
         owner.needs_the_engine()
 
     def _guarded(self, *guards: Any) -> "tuple[SafetyPreflight, SafetyPreflight]":
-        return SafetyPreflight(guards), SafetyPreflight(guards, whole_path_judge=True)
+        return owner.every_sample(SafetyPreflight(guards)), SafetyPreflight(guards)
 
     def test_a_joint_limit_before_at_and_after_the_first_collision_is_named_as_the_loop_names_it(self) -> None:
         off, _, arm = _pair()
@@ -345,7 +364,7 @@ class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
         collision.set_perceived_fixtures((slab,))
         for crossing, guard, sample in ((8, "joint_limit", 9), (15, "joint_limit", 16), (22, "self_collision", 16)):
             with self.subTest(crossing=crossing):
-                was_gate, now_gate = self._guarded(JointLimitGuard(_limits_crossed_at(path, crossing)), collision)
+                was_gate, now_gate = self._guarded(_limits_crossed_at(path, crossing), collision)
                 was, now = (owner.verdict(gate.gate_joint_path(path, arm=arm, command=MotionCommand.MOVE_TO))
                             for gate in (was_gate, now_gate))
                 self.assertEqual(was, now)
@@ -356,7 +375,7 @@ class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
         off, _, arm = _pair()
         collision = off._path_authority(arm)
         collision.set_perceived_fixtures(())
-        heavy = PayloadGuard(PayloadSafetyConfig.model_construct(enforce=True, mass_kg=12.0, max_mass_kg=10.0,
+        heavy = PayloadGuard(PayloadSafetyConfig.model_construct(mass_kg=12.0, max_mass_kg=10.0,
                                                                  cog_mm=(0.0, 0.0, 65.0), inertia_kgm2=(0.0, 0.0, 0.0)))
         was_gate, now_gate = self._guarded(collision, heavy)
         was, now = (owner.verdict(gate.gate_joint_path(_down_from_the_goal(), arm=arm, command=MotionCommand.MOVE_TO))
@@ -382,7 +401,7 @@ class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
 
     def test_without_an_arm_no_sample_is_judged_and_the_path_is_refused(self) -> None:
         """No arm, no robot to judge. Since P0d D5 the guard takes its model from the arm alone, so a path handed in
-        without one is refused before its first sample, with the switch off and on alike. Until then the cell's
+        without one is refused before its first sample, judged whole or one sample at a time alike. Until then the cell's
         `kinematics_model` stood in for the arm, and every sample was judged on it."""
         off, _, arm = _pair()
         collision = off._path_authority(arm)
@@ -401,13 +420,15 @@ class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
         self.assertEqual(0, asked.call_count, "no sample asked of a guard that has no arm to judge")
 
 
-class TheKeyTests(unittest.TestCase):
-    def test_the_key_loads_and_is_off_by_default(self) -> None:
-        self.assertFalse(SelfCollisionSafetyConfig().whole_path_judge)
-        self.assertFalse(RobotConfig.model_validate({"vendor": "ur"}).safety.self_collision.whole_path_judge)
-        self.assertTrue(SelfCollisionSafetyConfig.model_validate({"whole_path_judge": True}).whole_path_judge)
+class TheGateTests(unittest.TestCase):
+    def test_the_old_key_is_refused(self) -> None:
+        from pydantic import ValidationError
 
-    def test_off_every_guard_sees_every_sample_and_on_the_gate_reads_it(self) -> None:
+        for value in (True, False):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                RobotConfig.model_validate({"vendor": "ur", "safety": {"self_collision": {"whole_path_judge": value}}})
+
+    def test_one_at_a_time_every_guard_sees_every_sample_and_whole_the_gate_reads_it(self) -> None:
         owner.needs_the_engine()
         off, on, arm = _pair()
         path = _down_from_the_goal()
@@ -423,45 +444,50 @@ class TheKeyTests(unittest.TestCase):
                 for patch in patches:
                     patch.stop()
             for guard, counted in zip(guards, asked):
-                # On, the payload guard's whole-path pass is its own verdict at the first sample, asked once.
+                # Whole, the payload guard's whole-path pass is its own verdict at the first sample, asked once.
                 expected = len(path.configs) if every else (1 if guard.name == "payload" else 0)
                 self.assertEqual(expected, counted.call_count, guard.name)
 
 
 class MeshFirstSaysTheSameTests(unittest.TestCase):
-    """``URRobotArm._mesh_first_refusal`` with the switch on: the plane and the base asked of the whole line at once,
-    and the same sentence, from the configuration the switch off names."""
+    """``URRobotArm._mesh_first_refusal``, on every cell: the plane and the base asked of the whole line at once,
+    and the same sentence, from the configuration asking each in turn names."""
 
     def setUp(self) -> None:
         owner.needs_the_engine()
 
     def _arm(self, *, whole: bool, plane_mm: "float | None") -> Any:
-        """The owner's arm, mesh first on, the support plane declared at ``plane_mm`` (``None``: a metre down, out of
-        every reach)."""
+        """The owner's arm, the support plane declared at ``plane_mm`` (``None``: a metre down, out of every reach),
+        asking each configuration in turn where not ``whole``."""
         from src.robot.drivers.ur.arm import URRobotArm
 
-        robot = owner.owner_robot(whole=whole)
+        robot = owner.owner_robot()
         robot["safety"]["planning_world"]["support_plane"] = {
             "height_mm": -1000.0 if plane_mm is None else plane_mm, "extent_mm": [900.0, 700.0], "thickness_mm": 50.0,
             "center_mm": [-10.0, -585.0]}
-        robot["safety"]["planned_motion"] = {"mesh_first": True}
-        return URRobotArm(RobotConfig.model_validate(robot))
+        arm = URRobotArm(RobotConfig.model_validate(robot))
+        if not whole:
+            owner.every_sample(arm._preflight)
+        return arm
 
     def _base_arm(self, *, whole: bool) -> Any:
         """The UR10 and the Hand-E of the base review (``HowNearTheBaseTests`` in
-        ``test_a_joint_path_is_judged_whole_and_sent_without_a_pause.py``): 10 mm from the base, no planning world."""
+        ``test_a_joint_path_is_judged_whole_and_sent_without_a_pause.py``): 10 mm from the base, no planning world;
+        asking each configuration in turn where not ``whole``."""
         from src.robot.drivers.ur.arm import URRobotArm
         from tests._plan_end import OPEN_WORKSPACE
 
-        return URRobotArm(RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"}, "workspace_limits": OPEN_WORKSPACE,
+        arm = URRobotArm(RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo", "workspace": OPEN_WORKSPACE},
             "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                         "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                        "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-            "safety": {"payload": {"enforce": False}, "planned_motion": {"mesh_first": True},
-                       "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
-                                          "planner_margin_mm": 4.0, "whole_path_judge": whole}},
+            "safety": {"self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
+                                          "planner_margin_mm": 4.0}},
         }))
+        if not whole:
+            owner.every_sample(arm._preflight)
+        return arm
 
     def _sentences(self, configs: "list[list[float]]", *, plane_mm: "float | None" = None,
                    base: bool = False) -> "tuple[Any, Any]":

@@ -15,7 +15,6 @@ const en: Record<keyof typeof de, string> = {
   'pf.check.payload': 'The controller’s payload',
   'pf.check.cameraBase': 'Camera → base (calibration)',
   'pf.check.cameraWorld': 'The cameras’ live world for the planner',
-  'pf.check.carriedPart': 'The carried part in the planner',
   'pf.check.controllerState': 'Controller state',
   'pf.check.curobo': 'cuRobo environment',
   'pf.check.endEffectorWiring': 'Hand wiring',
@@ -140,7 +139,7 @@ const en: Record<keyof typeof de, string> = {
   'cl.tel.notAsked':
     'Controller mode and safety state were not read on this tick. They cost a dashboard socket round trip, so they are opt-in: a blank here means “not asked”, never “fine”.',
   'cl.tel.caveat':
-    'A missing measurement above means this driver offers no such capability (sim, dummy and KUKA advertise no force/torque Protocol at all). It is not an error and not a zero.',
+    'A missing measurement above means this driver offers no such capability (the sim and the dummy advertise no force/torque Protocol at all). It is not an error and not a zero.',
 
   // ── what is on the other end (provenance) ──────────────────────────────────────────────────────────────────
   'pv.label.sim-driver': 'simulated arm',
@@ -205,8 +204,6 @@ const en: Record<keyof typeof de, string> = {
   'cf.key.enabled.hint': 'Whether this camera belongs to the cell; applies from the next build.',
   'cf.key.urIp.label': 'UR controller address',
   'cf.key.urIp.hint': 'Read it off the pendant under Settings › Network. Changed only while nothing is connected.',
-  'cf.key.kukaIp.label': 'KUKA controller address',
-  'cf.key.kukaIp.hint': 'The controller’s address on the network. Changed only while nothing is connected.',
 
   // ── the preferences ────────────────────────────────────────────────────────────────────────────────────────
   'st.page.lede': 'How this console speaks and looks, and the cell’s config: explained, and written where it may be.',
@@ -235,7 +232,9 @@ const en: Record<keyof typeof de, string> = {
   'st.talk.applies': 'Applies the next time the cockpit opens.',
   'st.task.title': 'Task',
   'st.task.lede':
-    'How a typed or spoken task starts, for this browser. What to pick and where to put it come from the sentence; these settings apply where it says nothing. They set the mode.',
+    'How a typed or spoken task starts, for the whole cell: every browser sees the same settings, and each choice is written at once into the cell’s own layer. What to pick and where to put it come from the sentence; these settings apply where it says nothing. They set the mode.',
+  'st.task.what': 'the cell’s settings',
+  'st.task.target': 'Saved for the cell in {file}',
   'st.task.start': 'Start',
   'st.task.start.enter': 'Enter starts at once',
   'st.task.start.card': 'The card first',
@@ -251,12 +250,18 @@ const en: Record<keyof typeof de, string> = {
   'st.task.place.camera': 'The camera looks for…',
   'st.task.place.phrase': 'What the camera looks for',
   'st.task.place.placeholder': 'English, e.g. yellow bin',
-  'st.task.place.hint': 'Where a sentence names no place, Willy puts the part here.',
+  'st.task.place.hint': 'Where a sentence names no place, Willy puts the part here. What the camera looks for applies once the field is left.',
   'st.task.anything': 'No part said',
   'st.task.anything.ask': 'The card asks',
   'st.task.anything.all': 'Anything',
   'st.task.anything.hint':
     '“Anything” ticks “anything the camera sees, bin walls included” on the card. Such a task never starts on Enter: Start on the card does.',
+  'st.task.critical': 'Critical parts',
+  'st.task.critical.no': 'No',
+  'st.task.critical.yes': 'Yes',
+  'st.task.critical.hint':
+    'Yes: nothing is pushed; a blocker is gripped and set aside. No: a push may rearrange the scene; where none plans, a blocker is cleared. A card may change it for its task. The cell reads it when it is built.',
+  'st.task.critical.built': 'The built cell still runs with “{state}”: the new choice applies from its next build.',
 
   // ── the history ────────────────────────────────────────────────────────────────────────────────────────────
   'hs.lede':

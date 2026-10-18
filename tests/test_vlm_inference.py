@@ -83,7 +83,8 @@ class QwenGroundingInferenceTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         from src.models.vlm import Qwen3VLGrounder
 
-        cls.grounder = Qwen3VLGrounder(model_id=MODEL_ID, local=True, preload=True)
+        cls.grounder = Qwen3VLGrounder(model_id=MODEL_ID)
+        cls.grounder.ensure_loaded()
         cls.image = _scene()
 
     def test_grounds_the_red_square(self) -> None:

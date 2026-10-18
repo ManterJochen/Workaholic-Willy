@@ -1,7 +1,7 @@
 """Vendor-neutral error hierarchy for the Workaholic-Willy robot subsystem.
 
-Every driver translates its vendor-specific failures (``ur_rtde`` exceptions, ROS 2
-service errors, ``franky`` faults) into one of these types before re-raising, so
+Every driver translates its vendor-specific failures (``ur_rtde`` exceptions, the Isaac
+sim's own) into one of these types before re-raising, so
 application and pipeline code catches only the abstract types defined here.
 
 Hierarchy::

@@ -166,11 +166,6 @@ class TheDeskNamesTheArmTheGuardJudgesTests(unittest.TestCase):
         self.assertIs(CheckStatus.WARN, row.status)
         self.assertIn("no safety preflight", row.detail)
 
-    def test_a_stood_down_guard_is_not_said_to_judge_anything(self) -> None:
-        row = self._row(RobotConfig.model_validate({"vendor": "ur", "safety": {"self_collision": {"enforce": False}}}))
-        self.assertIs(CheckStatus.WARN, row.status)
-        self.assertIn("stood down", row.detail)
-
 
 _THE_SECOND_NAME = "robot.safety.self_collision.kinematics_model"
 
@@ -258,7 +253,7 @@ class NoRemovedKeyIsStillAFieldTests(unittest.TestCase):
 
     def test_a_star_entry_is_caught_under_the_index_s_star_and_under_a_named_key(self) -> None:
         index = dict(schema_index())
-        field = index["robot.grasping.fusion.cameras.*.enabled"]
+        field = index["robot.safety.self_collision.backend"]  # any field, planted where the removed star entry was
         for path in ("robot.grasping.fusion.cameras.*.mounting_mode", "robot.grasping.fusion.cameras.left.mounting_mode"):
             with self.subTest(path=path):
                 found = _removed_keys_still_in({**index, path: field})

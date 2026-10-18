@@ -105,7 +105,8 @@ class TwoColoursTests(unittest.TestCase):
                                     f"{_VRAM_NEEDED_BYTES / 1e9:.1f} GB: another copy or process holds the card")
         from src.models.vlm import Qwen3VLGrounder
 
-        cls.grounder = Qwen3VLGrounder(model_id=MODEL_ID, model_path=MODEL_PATH, local=True, preload=True)
+        cls.grounder = Qwen3VLGrounder(model_id=MODEL_PATH or MODEL_ID)  # a folder of weights is its own id
+        cls.grounder.ensure_loaded()
         cls.image = _scene()
 
     @classmethod

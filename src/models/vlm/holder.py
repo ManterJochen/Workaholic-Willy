@@ -2,11 +2,11 @@
 
     from src.models.vlm import shared_vlm
 
-    vlm = models.pipeline.zero_shot.vlm
-    grounder = shared_vlm().grounder_for(vlm)      # the build's door: built once per process, never loaded here
+    vlm, root = models.pipeline.zero_shot.vlm, models.weights_root
+    grounder = shared_vlm().grounder_for(vlm, weights_root=root)  # the build's door: built once, never loaded here
     shared_vlm().status_for(vlm)                   # idle | loading | ready | failed, and why; builds nothing
-    shared_vlm().load_for(vlm)                     # the explicit load, "Laden": loads, or says why it did not
-    ask = shared_vlm().asker_for(vlm, may_load=True)
+    shared_vlm().load_for(vlm, weights_root=root)  # the explicit load, "Laden": loads, or says why it did not
+    ask = shared_vlm().asker_for(vlm, may_load=True, weights_root=root)
     ask(system, user)                              # the model's text answer to one question
     shared_vlm().release_unless_requested(vlm)     # the console builds a cell that does not detect with it
 
@@ -15,8 +15,8 @@ so a second copy is not an option. The perception build takes its grounder from 
 (:func:`src.models.factory.build_perception`) and the command reader asks the same object: a cell whose
 detector is the VLM reads commands with the copy it detects with.
 
-**One copy per process**, kept per weights (``model_id``, ``model_path``, ``local``). A block that differs only in
-``preload`` or ``on_unavailable`` names the same weights and gets the same grounder.
+**One copy per process**, kept per ``model_id``, the one key a VLM block has. The weights are read from the
+folder the build names (``models.weights_root``) when the copy loads.
 
 **Only a build switches the weights.** :meth:`VlmHolder.grounder_for` is the build's door: for other weights it
 builds a new grounder and unloads the one it replaces, so the card never holds both. A command
@@ -25,11 +25,9 @@ while the holder holds one, or a cell built with a replaced one has loaded it ag
 built or loaded, and the reason says to rebuild the cell (:meth:`VlmHolder.conflict_for`). A models YAML edited
 from 4B to 8B without a rebuild costs a refusal, never a second copy.
 
-**Released when no cell needs it.** A cell whose detector is not the VLM holds the copy only after a person
-loaded it (owner decision Q8 A), so the console's build of such a cell calls
-:meth:`VlmHolder.release_unless_requested`, which unloads a copy that a VLM cell, a command or a look loaded. A
-routed cell's build lets a copy of other weights go itself (:meth:`VlmHolder.release_other_than`), because its VLM
-route takes its grounder only at the first prompt that needs it.
+**Released when no cell needs it.** A cell whose detector is not the VLM (a closed-set cell, the rehearsal) holds
+the copy only after a person loaded it (owner decision Q8 A), so the console's build of such a cell calls
+:meth:`VlmHolder.release_unless_requested`, which unloads a copy that a VLM cell, a command or a look loaded.
 
 Nothing loads here unless a caller asks: building a grounder never loads it, :meth:`VlmHolder.status_for`,
 :meth:`VlmHolder.loaded_for` and :meth:`VlmHolder.conflict_for` never build one, and the shared holder starts
@@ -42,7 +40,7 @@ from __future__ import annotations
 import threading
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypeAlias
 
 from src.contracts import UNSET, Maybe, resolve
@@ -73,32 +71,30 @@ _LOG = create_logger(__name__, log_file=VLM_HOLDER_LOG_FILE, log_dir=MODELS_LOG_
 #: Where the held copy stands: built but not loaded, loading, loaded, or the last load failed.
 VlmState: TypeAlias = Literal["idle", "loading", "ready", "failed"]
 
-#: The shapes a missing or unloadable model takes, as ``GuardedVlmBackend`` reads them: no dependency, no
-#: weights on disk, no VRAM. Anything else raised by a load is a bug and surfaces as itself.
+#: The shapes a missing or unloadable model takes: no dependency, no weights on disk, no VRAM. Anything else
+#: raised by a load is a bug and surfaces as itself.
 _UNAVAILABLE: Final = (ImportError, OSError, RuntimeError)
 
 
 @dataclass(frozen=True, slots=True)
 class VlmWeights:
-    """Which weights a VLM block names: what one held copy stands for."""
+    """Which weights a VLM block names: what one held copy stands for, its ``model_id`` alone.
+
+    ``weights_root`` is the folder a build reads them from and takes no part in which copy it is: the same id under
+    another root is the same copy, which keeps the folder it loaded from.
+    """
 
     model_id: str
-    model_path: str | None = None
-    local: bool = False
+    weights_root: str | None = field(default=None, compare=False)
 
     @classmethod
-    def of(cls, vlm: Any) -> "VlmWeights":
-        """The weights of a ``models.pipeline.zero_shot.vlm`` block, or of anything with its three fields."""
-        model_path = getattr(vlm, "model_path", None)
-        return cls(
-            model_id=str(vlm.model_id),
-            model_path=str(model_path) if model_path else None,
-            local=bool(getattr(vlm, "local", False)),
-        )
+    def of(cls, vlm: Any, *, weights_root: str | None = None) -> "VlmWeights":
+        """The weights of a ``models.pipeline.zero_shot.vlm`` block, or of anything with its ``model_id``."""
+        return cls(model_id=str(vlm.model_id), weights_root=weights_root)
 
     def describe(self) -> str:
-        where = self.model_path or ("the local Hugging Face cache" if self.local else "the Hugging Face hub")
-        return f"{self.model_id} from {where}"
+        """The weights as a person reads them: the checkpoint's id."""
+        return self.model_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,21 +135,7 @@ GrounderBuilder: TypeAlias = Callable[[VlmWeights], Qwen3VLGrounder]
 
 
 def _qwen(weights: VlmWeights) -> Qwen3VLGrounder:
-    return Qwen3VLGrounder(model_id=weights.model_id, model_path=weights.model_path, local=weights.local)
-
-
-def _answer_as(grounder: Any, vlm: Any) -> None:
-    """Hand ``vlm``'s answer settings (the answer lookups, the stop at the answer's end, the decode graphs) to
-    ``grounder``, as a build does (``src/models/factory.py``): a command or Laden on a cell that does not detect with
-    the VLM, or a routed cell before its first VLM prompt, would otherwise answer with the defaults. A block without
-    them (a test's double) and a grounder without ``configure`` keep what they have. Loads nothing."""
-    configure = getattr(grounder, "configure", None)
-    if configure is None:
-        return
-    configure(prompt_lookup_tokens=getattr(vlm, "prompt_lookup_tokens", None),
-              text_prompt_lookup_tokens=getattr(vlm, "text_prompt_lookup_tokens", None),
-              stop_at_answer_end=getattr(vlm, "stop_at_answer_end", None),
-              decode_graphs=getattr(vlm, "decode_graphs", None))
+    return Qwen3VLGrounder(model_id=weights.model_id, weights_root=weights.weights_root)
 
 
 def _status_of(grounder: Qwen3VLGrounder) -> VlmStatus:
@@ -250,15 +232,15 @@ class VlmHolder:
 
     # --- the build's door ---------------------------------------------------------------------------------------
 
-    def grounder_for(self, vlm: Any) -> Qwen3VLGrounder:
-        """The build's door: the grounder for ``vlm``'s weights. Never loads it.
+    def grounder_for(self, vlm: Any, *, weights_root: str | None = None) -> Qwen3VLGrounder:
+        """The build's door: the grounder for ``vlm``'s weights, read from ``weights_root``. Never loads it.
 
         The held one for the same weights. For other weights a new one, and the one it replaces is unloaded: a
         build is how a cell switches checkpoints, and the console releases the old cell before it builds. A
         program that keeps a cell built with the replaced grounder still has it; its next look loads it again,
         and from then on a command or Laden for the new weights is refused rather than loading beside it.
         """
-        weights = VlmWeights.of(vlm)
+        weights = VlmWeights.of(vlm, weights_root=weights_root)
         with self._lock:
             held, held_weights = self._grounder, self._weights
             if held is not None and held_weights == weights:
@@ -267,21 +249,6 @@ class VlmHolder:
         if held is not None:
             self._retire(held, held_weights, why=f"a build names {weights.describe()}")
         return grounder
-
-    def release_other_than(self, vlm: Any) -> bool:
-        """Unload a held copy of other weights than ``vlm``'s. Builds and loads nothing; ``True`` when one went.
-
-        For the build of a routed cell, whose VLM route takes its grounder only at the first prompt that needs
-        it: the cell is configured with ``vlm``'s weights, so a copy of others is nobody's any more.
-        """
-        weights = VlmWeights.of(vlm)
-        with self._lock:
-            held, held_weights = self._grounder, self._weights
-            if held is None or held_weights == weights:
-                return False
-            self._drop_held()
-        self._retire(held, held_weights, why=f"a routed build names {weights.describe()}")
-        return True
 
     def release_unless_requested(self, vlm: Any | None) -> bool:
         """Unload the held copy unless a person loaded it (Laden) and ``vlm`` still names its weights.
@@ -339,8 +306,9 @@ class VlmHolder:
 
     # --- the doors of a command and of Laden ----------------------------------------------------------------------
 
-    def load_for(self, vlm: Any) -> VlmStatus:
-        """The explicit load ("Laden"): load ``vlm``'s weights unless loaded, and say how that went.
+    def load_for(self, vlm: Any, *, weights_root: str | None = None) -> VlmStatus:
+        """The explicit load ("Laden"): load ``vlm``'s weights, read from ``weights_root``, unless loaded, and say how
+        that went.
 
         A failed load is tried again here, and only here or by a pick: a command never retries one. A load that
         fails for want of a dependency, the weights or VRAM comes back as a ``failed`` status with its cause;
@@ -348,14 +316,13 @@ class VlmHolder:
         and answers ``idle`` with the reason (:meth:`conflict_for`). A copy loaded here is one a person asked for,
         and the console's build of a cell that does not detect with it keeps it (:meth:`release_unless_requested`).
         """
-        weights = VlmWeights.of(vlm)
+        weights = VlmWeights.of(vlm, weights_root=weights_root)
         with self._lock:
             conflict = self._in_the_way(weights)
             if conflict:
                 _LOG.warning("Laden for VLM %s refused: %s", weights.describe(), conflict)
                 return VlmStatus(state="idle", model_id=weights.model_id, cause=conflict)
             grounder = self._grounder if self._grounder is not None else self._hold(weights)
-        _answer_as(grounder, vlm)
         try:
             if grounder.ensure_loaded():
                 _LOG.info("VLM %s loaded on request in %.1f s", grounder.model_id, grounder.load_s or 0.0)
@@ -366,15 +333,17 @@ class VlmHolder:
                 self._requested = True
         return _status_of(grounder)
 
-    def asker_for(self, vlm: Any, *, may_load: bool, max_new_tokens: int = 96) -> TextAsker:
-        """A text asker over ``vlm``'s copy. ``may_load`` is the availability rule's answer (Q8 A).
+    def asker_for(self, vlm: Any, *, may_load: bool, max_new_tokens: int = 96,
+                  weights_root: str | None = None) -> TextAsker:
+        """A text asker over ``vlm``'s copy. ``may_load`` is the availability rule's answer (Q8 A); a copy built
+        here reads its weights from ``weights_root``.
 
         Builds a grounder only for a command that may load, on an empty holder; never beside a copy of other
         weights. Raises :class:`VlmCopyConflictError` (a :class:`VlmNotLoadedError`) when a copy of other weights is
         in the way (:meth:`conflict_for`), and :class:`VlmNotLoadedError` when nothing is held and the command may
         not load. Either way nothing was built, loaded or taken away.
         """
-        weights = VlmWeights.of(vlm)
+        weights = VlmWeights.of(vlm, weights_root=weights_root)
         with self._lock:
             conflict = self._in_the_way(weights)
             if conflict:
@@ -384,7 +353,6 @@ class VlmHolder:
                 if not may_load:
                     raise VlmNotLoadedError(weights.model_id)
                 grounder = self._hold(weights)
-        _answer_as(grounder, vlm)
         return TextAsker(grounder, may_load=may_load, max_new_tokens=max_new_tokens)
 
     def forget(self) -> None:

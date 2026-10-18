@@ -188,7 +188,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     # 4) drive the real routine (auto-selects EyeInHandCalibrator from the EYE_IN_HAND mode).
     routine = CalibrationRoutine(
         arm=arm, marker_source=marker_source,
-        workspace_limits=cell.robot.workspace_limits, eth_settings=he,
+        workspace_limits=cell.robot.motion.workspace, eth_settings=he,
         marker_id=scene.marker.aruco_marker_id,
         settle_time_s=cell.robot.calibration.settle_time_s,
         calibration_mode=MountingMode.EYE_IN_HAND,

@@ -5,10 +5,10 @@ reader, a full-scorer and an ingest adapter for a corpus produced by a SEPARATE 
 `GraspAttemptRecord` synthesiser. Measured before deleting:
 
 * **Nothing in production called any of it.** Only two test files imported the package.
-* **The record synthesiser was the loser of a duplicate pair.** `datagen/rl/collect.py` builds
-  `GraspAttemptRecord`s directly on the live path and stamps MORE provenance than the deleted one
+* **The record synthesiser was the loser of a duplicate pair.** `datagen/rl/collect.py` built
+  `GraspAttemptRecord`s directly on the live path and stamped MORE provenance than the deleted one
   did — `reward_model`, a full bucket-① `reward_interpretation`, and `dataset_origin`, which the RL
-  trainers already read.
+  trainers read. It left on 2026-10-16 with the RL tier (the owner's cleanup).
 * **The readers read a format this repo does not produce.** Re-pointing them at our data would have
   built a SECOND reader beside `datagen/corpus/sources.py`, which already knows our three formats.
 * **`datagen check-dataset` defaulted `--source` to the foreign format** — our own tool reaching for
@@ -126,12 +126,6 @@ class TheDeletedPackageIsGoneTests(unittest.TestCase):
     def test_it_is_not_importable_and_not_re_exported(self) -> None:
         with self.assertRaises(ModuleNotFoundError):
             __import__("src.robot.grasping.training_data")
-
-    def test_the_LIVE_record_synthesiser_is_the_one_that_survived(self) -> None:
-        """It stamps more provenance than the deleted one did, and the trainers read it."""
-        text = (_ROOT / "datagen/rl/collect.py").read_text(encoding="utf-8")
-        for stamp in ("reward_model", "reward_interpretation", "dataset_origin"):
-            self.assertIn(stamp, text, stamp)
 
 
 if __name__ == "__main__":

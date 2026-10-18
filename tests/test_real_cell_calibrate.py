@@ -1,10 +1,10 @@
 """Calibrating ONE camera of a real cell against the robot — the runner that unlocks multi-view.
 
-⚠ WHY IT EXISTS. `grasping.fusion.geometry` is the biggest measured lever in the grasp stack — top-1
-43.50 % single-view → 55.93 % fused (n=354) — and its own schema states the precondition: "Requires
-``cameras`` to be populated (**each camera individually calibrated**)". Every consuming piece was
-finished: the `fusion.cameras` map, `build_config_frame_resolvers`, the pick loop reading it, the
-schema-versioned artifact keyed by `rig_id`, and `CalibrationRoutine` proven in sim for both mountings.
+⚠ WHY IT EXISTS. Fusing the fixed cameras is the biggest measured lever in the grasp stack — top-1
+43.50 % single-view → 55.93 % fused (n=354) — and its precondition is **each camera individually
+calibrated**: a cell fuses every enabled RGB-D rig that declares its calibration. Every consuming piece
+was finished: `build_config_frame_resolvers`, the pick loop reading its map, the schema-versioned
+artifact keyed by `rig_id`, and `CalibrationRoutine` proven in sim for both mountings.
 
 Nothing could PRODUCE one of those artifacts on real hardware. Both calibration runners are sim-only,
 and `real_cell/preflight` can only CHECK for an artifact and refuse without one. So a cell could be
@@ -74,13 +74,14 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("overhead", message)
         self.assertIn("wrist", message)
 
-    def test_a_NON_RGBD_rig_is_refused_before_it_can_fail_about_aruco(self) -> None:
-        """A stereo pair calibrates through the routine's own stereo path. Letting it through here
-        would fail much later with an error about markers rather than about the rig."""
+    def test_a_stereo_pair_without_its_stereo_calibration_is_refused_before_it_can_fail_about_aruco(self) -> None:
+        """A stereo pair is swept as an RGB-D rig is once its stereo calibration is written (2026-10-17): its board
+        is posed on the left image rectified. Before that it has no such image, and letting it through here would
+        fail much later with an error about markers rather than about the rig."""
         cfg = _CameraCfg([_Rig("stereo_dev0", "webcam_pair")])
         rig, refusal = hand_eye._select_rig(cfg, "stereo_dev0")
         self.assertIsNone(rig)
-        self.assertIn("not an RGB-D device", str(refusal))
+        self.assertIn("gives depth through its stereo calibration", str(refusal))
 
     def test_a_real_rgbd_rig_is_accepted(self) -> None:
         rig = _real_rgbd("overhead")

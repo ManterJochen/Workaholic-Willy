@@ -1,10 +1,11 @@
-"""Real-vision perception sources for the Isaac cell: overhead RGB, GroundingDINO, then SAM2.
+"""Real-vision perception sources for the Isaac cell: overhead RGB, the cell's detector, then SAM2.
 
 Two sources. The single-object source detects the prompted object, segments it and emits one
 ``PerceptionFrame``. The multi-object dense-clutter twin detects and segments every object, so the
-orchestrator sees the neighbour clutter. Both take an injected camera, detector and segmenter, and
-neither ``isaacsim`` nor torch is imported at module top, so this module imports on a machine
-without Isaac.
+orchestrator sees the neighbour clutter. Both take an injected camera and a perception backend (the
+stack the tree's ``models.pipeline`` builds, the VLM then SAM2 as on a cell) or a detector and a
+segmenter, and neither ``isaacsim`` nor torch is imported at module top, so this module imports on a
+machine without Isaac.
 """
 from __future__ import annotations
 
@@ -27,29 +28,14 @@ from src.robot.perception.mask_completion import (
 from src.utility.log_cfg import create_logger
 from src.willy_sim.constants import PERCEPTION_VISION_LOG_FILE, WILLY_SIM_LOG_DIR
 
-
-def _last_route(backend: Any) -> tuple[str, str] | None:
-    """``(route, reason)`` for the most recent grounding, or ``None`` when nothing routed it.
-
-    Duck-typed on purpose. Only a routed backend has a decision to report; a plain two-stage
-    backend, a ground-truth source or no backend at all returns ``None``, and the pick loop then
-    stamps no route on its progress event. Nothing fabricates a route here: a stamped "simple"
-    would read as a router's choice when no router ran.
-    """
-    decision = getattr(backend, "last_decision", None)
-    if decision is None:
-        return None
-    return str(decision.route), str(decision.reason)
-
 __all__ = ["MultiObjectVisionPerceptionSource", "IsaacVisionPerceptionSource"]
 
 
 class MultiObjectVisionPerceptionSource:
     """Dense-clutter real vision, the perception-in-the-loop twin of the ground-truth source.
 
-    Overhead RGB goes to GroundingDINO ``detect_all`` under a multi-phrase prompt, so it grounds
-    every object and not just the target; that is the clutter the dense sampler, the corridor-risk
-    rerank and the approach-validation feature need. Each box then goes to SAM2
+    Overhead RGB goes to the detector under a class list of every object label, each grounded on its own,
+    so it grounds every object and not just the target; that is the clutter the dense sampler needs. Each box then goes to SAM2
     ``segment_detection``, and the result is N labelled :class:`SegmentationResult` in one
     :class:`PerceptionFrame`. Neither ``isaacsim`` nor torch is imported at module top: the camera,
     detector and segmenter are injected, and the runner builds them after the scene.
@@ -57,7 +43,7 @@ class MultiObjectVisionPerceptionSource:
     Two behaviours the dense pick needs:
 
     * Canonical labels. The orchestrator's label-target match is exact,
-      ``seg.label == target_label``, but GroundingDINO returns free-form phrases. Given the
+      ``seg.label == target_label``, and a detector may return a free-form phrase. Given the
       canonical object labels, the spawn names, this maps each detection's label to the nearest
       canonical one, so ``set_target_label("sugar box")`` selects the right segmentation.
     * Top-referenced depth. As in :class:`MultiObjectGroundTruthPerceptionSource`, the grasp depth
@@ -69,8 +55,7 @@ class MultiObjectVisionPerceptionSource:
     The same cell constraints as :class:`IsaacVisionPerceptionSource`: read RGB from
     ``frame["rgb"][..., :3]``, pump ``world.step(render=True)`` and ``app.update()`` on every
     acquire, set a small near clip so the close workspace is not clipped to black, and park the arm
-    out of the overhead view before acquiring, which the runner does. The detector must run fp32
-    here: fp16 misses small overhead objects.
+    out of the overhead view before acquiring, which the runner does.
     """
 
     def __init__(
@@ -87,10 +72,8 @@ class MultiObjectVisionPerceptionSource:
         mask_completion: MaskCompletion = DEFAULT_MASK_COMPLETION,
         camera_name: Maybe[str] = UNSET,
     ) -> None:
-        # Either a ready-made perception backend, or the detector and segmenter a runner passes.
-        # The pair is composed into the same backend here rather than chained inside acquire().
-        # A runner keeps handing in models it built because the dense path grounds with a larger
-        # GroundingDINO than the config default, kept separate from the single-object runners.
+        # Either a ready-made perception backend (the runners build the cell's own), or the detector and
+        # segmenter a caller passes, composed into the same backend here rather than chained inside acquire().
         if backend is None:
             if detector is None or segmenter is None:
                 raise ValueError(
@@ -106,9 +89,8 @@ class MultiObjectVisionPerceptionSource:
         self.camera_name: Maybe[str] = camera_name
         self._backend = backend
         self._prompt = prompt
-        # Canonical object labels, the spawn names. They build the multi-phrase detect prompt so
-        # GroundingDINO grounds every object, and normalise each detection's label for the exact
-        # target match.
+        # Canonical object labels, the spawn names. They build the class-list detect prompt so the
+        # detector grounds every object, and normalise each detection's label for the exact target match.
         self._object_labels = list(object_labels) if object_labels else None
         self._session = session
         self._warmup = max(1, warmup_steps)
@@ -132,32 +114,34 @@ class MultiObjectVisionPerceptionSource:
         except Exception as exc:  # noqa: BLE001 (near-clip best-effort (the close workspace renders RGB))
             # Swallowed on purpose, but not free: with Isaac's 1.0 m default near clip a camera ~1 m
             # over its own workspace clips the colour pass to black, and the symptom surfaces three
-            # frames away as "GroundingDINO detects nothing".
+            # frames away as "the detector finds nothing".
             self._log.warning("set_clipping_range(0.05, 1e6) failed (%r); RGB may be clipped", exc)
 
     def _detect_prompt(self) -> str:
-        """A multi-phrase GroundingDINO prompt ('a. b. c.') so detect_all grounds every object."""
+        """A class list of the object labels ('a | b | c'), so the detector grounds every object, each on its own."""
         if self._object_labels:
-            return ". ".join(self._object_labels) + "."
+            from src.models.vlm.qwen import class_list_prompt  # noqa: PLC0415 (imports no torch)
+
+            return class_list_prompt(self._object_labels)
         return self._prompt
 
-    def _canonical_label(self, gdino_label: str) -> str:
-        """Map a free-form GroundingDINO phrase to the nearest canonical object label.
+    def _canonical_label(self, label: str) -> str:
+        """Map a detection's label to the nearest canonical object label.
 
-        The orchestrator's target match is exact, so a phrase has to be normalised first.
-        Case-insensitive substring wins first, because GroundingDINO usually echoes the prompt
-        phrase, then the largest word overlap. A phrase matching nothing falls back to the raw
+        The orchestrator's target match is exact, so a label has to be normalised first. The VLM labels each box of
+        a class list with the description it was asked for, so the first rule matches; a free-form phrase falls to
+        the case-insensitive substring, then the largest word overlap. A label matching nothing falls back to the raw
         label: that segmentation is then not the target, and it still feeds the neighbour clutter.
         """
         if not self._object_labels:
-            return gdino_label
-        gl = gdino_label.lower().strip()
+            return label
+        gl = label.lower().strip()
         for c in self._object_labels:
             cl = c.lower()
             if cl and (cl in gl or gl in cl):
                 return c
         gw = set(gl.split())
-        best, best_n = gdino_label, 0
+        best, best_n = label, 0
         for c in self._object_labels:
             n = len(gw & set(c.lower().split()))
             if n > best_n:
@@ -180,11 +164,6 @@ class MultiObjectVisionPerceptionSource:
         the default.
         """
         return complete_mask(mask, det, policy=self._mask_completion)
-
-    @property
-    def last_route(self) -> tuple[str, str] | None:
-        """Which route grounded the last frame, for the pick loop to stamp onto its progress event."""
-        return _last_route(self._backend)
 
     def acquire(self) -> PerceptionFrame:
         started = time.perf_counter()
@@ -223,7 +202,7 @@ class MultiObjectVisionPerceptionSource:
             # object and keeps the others.
             #
             # One segmentation per detection, carrying the canonical label and the top-referenced
-            # depth. GroundingDINO is noisy at a high camera, emitting merged, duplicate and
+            # depth. A detector can be noisy at a high camera, emitting merged, duplicate and
             # low-score boxes, so several segmentations can share the target label. They are not
             # deduplicated: the orchestrator evaluates every target-labelled segmentation and
             # executes the best-scoring grasp, which is more reliable than picking by detection
@@ -248,7 +227,7 @@ class MultiObjectVisionPerceptionSource:
                     _gb = [int(c) for c in getattr(det, "box", [0, 0, 0, 0])]
                     print(f"[vision] det label={getattr(det, 'label', '?')!r}->{seg.label!r} "
                           f"score={getattr(det, 'score', 0.0):.2f} mask_px={int(mask.sum())} "
-                          f"mask_ext={_ext} gdino_box={_gb}", flush=True)
+                          f"mask_ext={_ext} det_box={_gb}", flush=True)
 
         if rgb is None:
             # No colour pass means the detector never ran, and the frame goes downstream with zero
@@ -282,8 +261,8 @@ class MultiObjectVisionPerceptionSource:
 class IsaacVisionPerceptionSource:
     """Real-vision perception for a single object, the perception-in-the-loop path.
 
-    Renders RGB and depth from an overhead Isaac ``Camera``, detects the prompted object with
-    GroundingDINO, segments it with SAM2, and emits a grasping :class:`PerceptionFrame`. It stands
+    Renders RGB and depth from an overhead Isaac ``Camera``, detects the prompted object with the
+    cell's detector, segments it with SAM2, and emits a grasping :class:`PerceptionFrame`. It stands
     in for the ground-truth source wherever a runner wants the vision models in the loop.
 
     Neither ``isaacsim`` nor torch is imported at module level. The ``camera``, ``detector`` and
@@ -360,11 +339,6 @@ class IsaacVisionPerceptionSource:
             # and nothing downstream can tell that from an empty scene.
             self._log.warning("set_clipping_range(0.05, 1e6) failed (%r); RGB may be clipped", exc)
 
-    @property
-    def last_route(self) -> tuple[str, str] | None:
-        """Which route grounded the last frame, for the pick loop to stamp onto its progress event."""
-        return _last_route(self._backend)
-
     def acquire(self) -> PerceptionFrame:
         started = time.perf_counter()
         app = getattr(self._session, "app", None) if self._session is not None else None
@@ -401,7 +375,7 @@ class IsaacVisionPerceptionSource:
                     # diverge as soon as the scene holds several similar objects, where taking the
                     # first would grasp the wrong one.
                     #
-                    # This holds for the VLM route too: every VLM detection carries the same
+                    # This holds for the VLM too: every VLM detection carries the same
                     # nominal score, so max() is stable and keeps the model's own ordering.
                     best = max(perceived, key=lambda o: o.detection.score, default=None)
                     segmentations = (best.segmentation,) if best is not None else ()

@@ -13,16 +13,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Optional
 
 from src.robot.core.errors import ArmFault
 from src.robot.execution.runtime_pick import PickSessionReport
-from src.robot.grasping.decision import DecisionReport
 from src.robot.grasping.loop.pick_loop import PickOutcome
 from src.robot.grasping.motion.execution_policy import weakest_camera_world
-from src.robot.grasping.rl.router import ShadowRouterTelemetry
-from src.robot.grasping.scoring.success_probability import (
-    RankingBlendTelemetry,
-    ShadowSuccessTelemetry,
-    UncertaintyRerankTelemetry,
-)
-from src.robot.grasping.uncertainty import UncertaintySnapshot
 
 from .config import EffectiveGraspingConfig, GraspBehaviorProfile, GraspMode
 
@@ -44,11 +36,6 @@ class AutonomousGraspOutcome(StrEnum):
         UNSAFE_RECOVERY_REFUSED: A recovery that stopped where the arm stands waits for a person; nothing started.
         MISSING_CAMERA_FRAME: A grasp would have been commanded in camera frame: no frame resolver was wired.
         MODE_NOT_AVAILABLE: The call asked for a mode whose sampler the service was not built with.
-        DECISION_FAIL_CLOSED: The decision layer refused to dispatch: the grasp is less confident than its threshold.
-        DECISION_RECOVER_PENDING: No candidates; the decision layer asks for physical recovery.
-        UNCERTAINTY_FAIL_CLOSED: The fused uncertainty channels refused to dispatch.
-        DRIFT_BLOCKED_AUTO: The drift watchdog blocks AUTO on real hardware.
-        OOD_BLOCKED_AUTO: The out-of-distribution watchdog blocks AUTO on real hardware.
         CANCELLED: A person stopped the run between attempts, or the controller cannot move; not counted against the
             pick rate.
     """
@@ -69,31 +56,9 @@ class AutonomousGraspOutcome(StrEnum):
     # ``closed_loop`` and ``dense_autonomous`` modes on a cell that wired no refiner or verifier;
     # those modes left with the two-scan refinement.
     MODE_NOT_AVAILABLE = "mode_not_available"
-    # AUTO fail-closed decision layer terminal outcomes.
-    # ``DECISION_FAIL_CLOSED`` is emitted when the pre-execution
-    # :class:`DecisionEngine` refuses to dispatch on real hardware
-    # because the grasp is less confident than its threshold allows
-    # (``low_confidence``; a record logged before 2026-09-29 carries
-    # ``reobserve_planner_unavailable`` for the same verdict).
-    # ``DECISION_RECOVER_PENDING`` is the typed
-    # "recovery requested" signal for the no-candidates branch: the
-    # decision layer does not execute the recovery state machine, so
-    # the report carries the typed :class:`DecisionReport` and tells
-    # the operator that physical recovery is required.
-    DECISION_FAIL_CLOSED = "decision_fail_closed"
-    DECISION_RECOVER_PENDING = "decision_recover_pending"
-    # Uncertainty fusion driven fail-closed. Distinct from
-    # :attr:`DECISION_FAIL_CLOSED` so operators can attribute fail-
-    # closures to the fused-channel pathway specifically. Carries
-    # :class:`DecisionReasonCode.UNCERTAINTY_FAIL_CLOSED` on the
-    # decision report.
-    UNCERTAINTY_FAIL_CLOSED = "uncertainty_fail_closed"
-    # Drift + OOD watchdog blocks AUTO on real hardware at the HIGH and
-    # SEVERE drift severities (hardware lock). Distinct outcomes so replay
-    # can separate drift-driven from OOD-driven fail-closures and from
-    # generic decision fail-closures.
-    DRIFT_BLOCKED_AUTO = "drift_blocked_auto"
-    OOD_BLOCKED_AUTO = "ood_blocked_auto"
+    # The decision layer's, the fused uncertainty's and the drift watchdog's refusals (``decision_fail_closed``,
+    # ``decision_recover_pending``, ``uncertainty_fail_closed``, ``drift_blocked_auto``, ``ood_blocked_auto``) left
+    # with those layers on 2026-10-16: off at every cell, and switched on they changed no pick of the replay bank.
     # An operator asked the run to stop between attempts. A first-class outcome rather than a
     # flavour of EXECUTION_FAILED: a stop is a decision, not a failed grasp, so it must not count
     # against the measured pick rate. Replay and the KPI roll-up separate "the cell could not"
@@ -154,14 +119,6 @@ class AutonomousGraspReport:
             dispatch (default: None).
         telemetry (Mapping[str, Any]): Everything measured along the way, by key (default: {}).
         effective_config (EffectiveGraspingConfig | None): The config snapshot the pick ran under (default: None).
-        decision (DecisionReport | None): The decision layer's report, where it ran (default: None).
-        uncertainty (UncertaintySnapshot): The uncertainty channels' snapshot (default: empty).
-        shadow_success_telemetry (ShadowSuccessTelemetry | None): The learned success model in shadow, where it ran
-            (default: None).
-        ranking_blend_telemetry (RankingBlendTelemetry | None): The ranking blend, where it ran (default: None).
-        uncertainty_rerank_telemetry (UncertaintyRerankTelemetry | None): The uncertainty rerank, where it ran
-            (default: None).
-        shadow_router_telemetry (ShadowRouterTelemetry | None): The shadow router, where it ran (default: None).
         recovery_actions (tuple[Mapping[str, Any], ...]): Each recovery step that ran, in order (default: ()).
         fault (Exception | None): A fault of the cell that ended the pick, raised nowhere (default: None).
         looks (tuple[str, ...]): The looks the pick perceived from, in order; empty for a pick handed no look
@@ -182,50 +139,14 @@ class AutonomousGraspReport:
     pick_report: Optional[PickSessionReport] = None
     telemetry: Mapping[str, Any] = field(default_factory=dict)
     effective_config: Optional[EffectiveGraspingConfig] = None
-    # Typed :class:`DecisionReport` from the pre-execution decision
-    # layer. :data:`None` when no engine was wired or the active mode
-    # is out of scope (e.g. :attr:`GraspMode.EASY`).
-    decision: Optional[DecisionReport] = None
-    # Typed uncertainty fusion snapshot; populated on every report.
-    # When the layer is off the default factory ships a
-    # ``UncertaintySnapshot.disabled(...)`` carrier (fused=0.0,
-    # fused_available=False, fail_closed=False).
-    uncertainty: UncertaintySnapshot = field(
-        default_factory=lambda: UncertaintySnapshot.disabled(
-            fail_closed_threshold=0.4,
-        )
-    )
-    # Shadow-mode success-probability telemetry for the executed grasp
-    # (or the attempted-and-failed grasp). ``None`` whenever the service
-    # was built without an artifact or the underlying pick never scored
-    # a candidate. Always present (and non-``None``) when the artifact is
-    # loaded and at least one candidate reached execution.
-    shadow_success_telemetry: Optional[ShadowSuccessTelemetry] = None
-    # Bounded probability-blend reranker audit telemetry forwarded
-    # verbatim from :class:`PickReport`. ``None`` whenever the service
-    # was built without ``ranking_blend_enabled=True`` in
-    # ``success_model`` (the silent byte-identical path). When
-    # non-``None``, ``applied`` indicates whether the blend actually
-    # fired and ``skip_reason`` names the gate.
-    ranking_blend_telemetry: Optional[RankingBlendTelemetry] = None
-    # Per-candidate uncertainty re-rank telemetry (mirrors ranking_blend_telemetry). ``None``
-    # for legacy/disabled deployments and on every report no pick loop produced.
-    uncertainty_rerank_telemetry: Optional[UncertaintyRerankTelemetry] = None
-    # Typed candidate-selection shadow-router telemetry. ``None``
-    # whenever the service was built without a :class:`ShadowRouter`,
-    # which is the default; operator opt-in via ``robot.rl.mode ==
-    # "rl_shadow"``. Always ``None`` for the ``geometry_only`` /
-    # ``hybrid_ml`` modes. Carrier-only by construction: the
-    # orchestrator never reads it.
-    shadow_router_telemetry: Optional[ShadowRouterTelemetry] = None
     # `refinement`, the two-scan refiner's verdict, left on 2026-09-29 with the refinement. The
     # record's `refinement` block stays in `GraspAttemptRecord`, so a record logged before then still
     # reads, and no writer fills it any more.
     # Per-step recovery trail
     # (``{action, outcome, step_result, executed, failure_reason, plan_reason}`` per step). Empty ``()`` on
     # the default path; populated by ``_attach_recovery_trail`` only when the opt-in recovery loop ran. The
-    # serializer copies it into ``GraspAttemptRecord.recovery_actions`` (an existing top-level field) so
-    # offline ``train_recovery`` can walk the per-step (action, reward) sequence. Carrier-only for the pick path.
+    # serializer copies it into ``GraspAttemptRecord.recovery_actions`` (an existing top-level field). Carrier-only for
+    # the pick path.
     recovery_actions: tuple[Mapping[str, Any], ...] = ()
     # A fault of the cell that ended this pick before its own path could report it: a controller
     # link that dropped, an e-stop, a camera that could not vouch for the cell, a wrist frame taken
@@ -319,11 +240,9 @@ class AutonomousGraspReport:
         The pick loop names it ``GRIPPER_FAULT`` (``PolicyOutcome.GRIPPER_FAULT``): the gripper raised while it was
         commanded, or a hand that toggles with no sensor would not start the pick, because it believed its jaws closed
         and nobody at a terminal said otherwise, or a push found nobody can vouch for the hand (where that hand's jaws
-        stand, or a gripper that measures its width not connected or unreadable), or the service found that hand's
-        count so before ``next_target`` or a rescan drove the looks again (``telemetry['stage']``
-        ``before_the_re_pick``). Read from
+        stand, or a gripper that measures its width not connected or unreadable). Read from
         ``pick_report``, whose last attempt carries the policy's or the push's sentence, and for a hand that would not
-        start the pick or its re-pick, which leaves no pick report, from
+        start the pick, which leaves no pick report, from
         ``telemetry['low_level_outcome']`` and ``telemetry['gripper_fault']``. Like
         :attr:`controller_stopped` it is not a :attr:`fault`, and a campaign stops on it all the same: the next pick
         would perceive again for a hand that still cannot start (owner's decision, 2026-09-24).
@@ -429,7 +348,7 @@ class AutonomousGraspReport:
         if push_code := self._last_push_code():
             parts.append(_ascii(f"push={push_code}"))
         # A push that stopped where the arm stands, in its own words; a pick refused because an earlier pick's recovery
-        # stopped where the arm stands, in that pick's words; a pick that saw only parts next_target skips.
+        # stopped where the arm stands, in that pick's words; a pick that saw only parts its task keeps out.
         stopped_push = self.telemetry.get("push_stopped")
         if isinstance(stopped_push, str) and stopped_push:
             parts.append(_ascii(f"push stopped: {stopped_push}"))
@@ -452,14 +371,16 @@ class AutonomousGraspReport:
         parts.extend(_ascii(f"skipped look {skipped}") for skipped in self._looks_skipped())
         # The cause only where the pick asked for both faces and ended for want of them: off the switch a face not
         # seen ends no pick, and a 45-degree wrist look nearly always misses one (the faces line of `render` says it).
+        # A pick whose rescan found no grasp either ends `recovery_exhausted`, and its last pick's cause is the cause.
+        no_grasp = self.outcome in (AutonomousGraspOutcome.NO_VALID_GRASP, AutonomousGraspOutcome.RECOVERY_EXHAUSTED)
         unseen: tuple[int, ...] = ()
-        if self.both_faces and self.outcome is AutonomousGraspOutcome.NO_VALID_GRASP:
+        if self.both_faces and no_grasp:
             unseen = self._faces_not_seen()
             parts.extend(f"the contact face at jaw {jaw} of the chosen grasp was not seen" for jaw in unseen)
         # Otherwise the pick loop's own sentence says it: a fixed camera judges no looks, so its report carries no faces,
         # and a pick none of whose grasps closes along the closing axis its program named says which axis and how far.
         withheld = getattr(attempts[-1], "withheld", "") if attempts else ""
-        if self.outcome is AutonomousGraspOutcome.NO_VALID_GRASP and not unseen and isinstance(withheld, str) and withheld:
+        if no_grasp and not unseen and isinstance(withheld, str) and withheld:
             parts.append(_ascii(withheld))
         return "  ".join(parts)
 
@@ -521,16 +442,11 @@ class AutonomousGraspReport:
     #: layer did not run, or for fusion :attr:`fused_views`, the cameras whose views were fused into
     #: the cloud the pick's object was planned on, empty when that cloud came from one camera.
     _LAYERS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("decision", "decision"),
         ("fusion", "fused_views"),
-        ("success-model", "shadow_success_telemetry"),
-        ("blend", "ranking_blend_telemetry"),
-        ("rl-shadow", "shadow_router_telemetry"),
     )
 
     def layers_that_ran(self) -> tuple[str, ...]:
-        """The optional layers that actually produced something on this attempt: fusion, the decision layer, the success
-        model, the rerank, recovery.
+        """The optional layers that actually produced something on this attempt: fusion and recovery.
 
         Returns:
             tuple[str, ...]: Their names; empty for the default open-loop pick.
@@ -542,8 +458,6 @@ class AutonomousGraspReport:
             if proof is None or (isinstance(proof, tuple) and not proof):
                 continue
             ran.append(name)
-        if self.uncertainty.fused_available:
-            ran.append("uncertainty")
         if self.recovery_actions:
             ran.append("recovery")
         return tuple(ran)
@@ -659,8 +573,6 @@ class AutonomousGraspReport:
             "selected_score": float(getattr(pick, "selected_score", 0.0) or 0.0),
             "camera_worlds": [stamp.to_dict() for stamp in stamps],
             "camera_world": weakest.to_dict() if weakest is not None else None,
-            "uncertainty": self.uncertainty.to_dict(),
-            "decision": self.decision.to_dict() if self.decision is not None else None,
             "recovery_actions": [dict(action) for action in self.recovery_actions],
             "telemetry": dict(self.telemetry),
             "looks": list(self.looks),

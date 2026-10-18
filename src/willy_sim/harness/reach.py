@@ -1,6 +1,6 @@
 """Reachability audit for a sim cell: does the configured scene fit the configured robot?
 
-Every willy_sim scene position (object, marker, bins, the retreat ``safe_pose``, the workspace box)
+Every willy_sim scene position (object, marker, bins, the workspace box)
 was authored for a UR5e, whose reach is 850 mm. Setting ``sim.robot_model`` to a UR3e shrinks the
 working sphere to 500 mm, which puts most of those positions out of reach without saying so. The
 symptom is an opaque "IK_FAILED" or "no-plan" roughly 60 s into an Isaac boot, or a run that looks
@@ -107,7 +107,6 @@ def audit_reach(robot: "RobotConfig", *, margin_mm: float = 0.0,
     out: list[ReachFinding] = [
         _finding("scene_setup.object", scene.object.position_mm, model, limit, shoulder),
         _finding("scene_setup.marker", scene.marker.position_mm, model, limit, shoulder),
-        _finding("safe_pose", (robot.safe_pose.x, robot.safe_pose.y, robot.safe_pose.z), model, limit, shoulder),
     ]
     # The eye-in-hand calibration does not drive the arm to the marker. It drives it to the declared stations
     # round it, which stand up to a radius further out, so it is the stations that have to be reachable. The
@@ -119,10 +118,10 @@ def audit_reach(robot: "RobotConfig", *, margin_mm: float = 0.0,
 
     # The workspace box is a hard gate: the WorkspaceGuard rejects any target outside it, so its far
     # corners describe what the operator believes is usable. Only the worst corner is checked.
-    wl = robot.workspace_limits
+    wl = robot.motion.workspace
     corners = [(x, y, z) for x in (wl.x_min, wl.x_max) for y in (wl.y_min, wl.y_max) for z in (wl.z_min, wl.z_max)]
     worst = max(corners, key=lambda c: _finding("", c, model, limit, shoulder).radius_mm)
-    out.append(_finding("workspace_limits (worst corner)", worst, model, limit, shoulder))
+    out.append(_finding("motion.workspace (worst corner)", worst, model, limit, shoulder))
     return out
 
 

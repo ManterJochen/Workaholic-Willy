@@ -8,7 +8,7 @@
 * **Halt and Disconnect.** A task asked to halt, or whose cell is being taken down, before it began moves nothing; nor
   does a task on an arm whose halt latch is set (L9, read where the arm has it).
 * **What it was handed.** An arm whose place and return cannot run (no planner judges its motions: a UR on ik, a
-  KUKA), a carried part the planner cannot model (``payload_declined_reason``), a pose name it does not know, an empty
+  KUKA), a pose name it does not know, an empty
   object on a cell that grounds a phrase without the operator's ``pick_anything`` (Q7 A+), a closing axis that names
   none, both jaw faces asked of a cell that turns every grasp off the faces judged, a push distance the cell refuses,
   and a camera place on a cell with no camera to locate with are refused with :class:`TaskRefused`, carrying the
@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 from typing import Any
 
 from src.contracts import UNSET
@@ -119,27 +118,15 @@ class RefusedBeforeAnythingMovesTests(unittest.TestCase):
         self.assertIsInstance(raised.exception, ValueError)
         return raised.exception
 
-    def test_a_carried_part_the_planner_cannot_model_is_refused(self) -> None:
-        log: list[Any] = []
-        arm = TaskArm(log, declined="safety.planning_world.payload.length_mm is undeclared")
-        refused = self._refused("carried_part_not_modelled", arm=arm)
-
-        self.assertIn("length_mm", str(refused))
-        self.assertEqual([], motions(log))
-
-    def test_a_cell_that_chose_no_carried_part_runs_its_task(self) -> None:
-        """The owner, 2026-10-07: "er lässt mich nicht fahren, wenn ich payload nicht aktiviert habe". A cell whose
-        ``payload.enabled`` is false judges a closed hand as an empty one (2026-10-05), and its task carries so: the pick's
-        attach models nothing there (``PayloadModel.NONE``), and the task places the part. Red before the owner's fix of
-        2026-10-08: every pick on the cell stopped ``part_still_held`` after its grip."""
-        from src.robot.core.arm_capabilities import PayloadModel
+    def test_a_task_carries_its_part_as_an_empty_hand_and_places_it(self) -> None:
+        """The owner, 2026-10-07: "er lässt mich nicht fahren, wenn ich payload nicht aktiviert habe". A closed hand is
+        judged as an empty one (2026-10-05), on every cell since 2026-10-17: no carried part is modelled, so none is
+        refused, and the task places the part. Red before the owner's fix of 2026-10-08: every pick on the cell stopped
+        ``part_still_held`` after its grip."""
         from src.robot.execution.task import TaskStop
 
         log: list[Any] = []
-        arm = TaskArm(log, declined="safety.planning_world.payload.enabled is false, so neither the planner nor the "
-                                    "self filter models a part in the gripper", attaches=PayloadModel.NONE)
-        arm.config = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(enabled=False))))  # type: ignore[attr-defined]
-        ran = run(["part"], arm=arm)
+        ran = run(["part"], arm=TaskArm(log))
         self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
         self.assertEqual((1, 1), (ran.report.picks, ran.report.parts_placed))
 

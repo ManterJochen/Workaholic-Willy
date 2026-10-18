@@ -1,7 +1,7 @@
 """Serializer from ``AutonomousGraspReport`` to ``GraspAttemptRecord``, plus an optional JSONL log.
 
 Maps a typed report into a JSONL-safe record so a deployment can opt into logging real pick attempts,
-which the soak, ``--records-gate`` and RL layers then consume. Without this bridge the
+which the soak and ``--records-gate`` then consume. Without this bridge the
 ``safety_rejection_rate`` and ``false_positive_grasp_rate`` KPIs have no production source and read
 ``0.0``.
 
@@ -9,13 +9,8 @@ Default-off: the serializer is pure; nothing logs unless the operator wires a pa
 so a cell that wires none is byte-identical.
 
 KPI sourcing:
-* ``extra["safety_rejected"]`` is set from the fail-closed outcome family (``decision_fail_closed`` /
-  ``uncertainty_fail_closed`` / ``drift_blocked_auto`` / ``ood_blocked_auto`` / ``missing_camera_frame`` /
-  ``unsafe_recovery_refused``), the live "auto/safety refused to
-  dispatch" signal that fires on a real run. The per-step ``TrajectoryStepReport.safety_rejected``
-  predicate is dead in production: its sole caller omits ``safety_check`` entirely, so both validators
-  fall back to the no-op ``AcceptAllTrajectorySafetyCheck`` default, and the validator is dense-only
-  and inert, so it is deliberately not the source here.
+* ``extra["safety_rejected"]`` is set from the fail-closed outcome family (``missing_camera_frame`` /
+  ``unsafe_recovery_refused``), the live "auto/safety refused to dispatch" signal that fires on a real run.
 * ``extra["verification_failed_after_success"]`` (the ``false_positive_grasp_rate`` source) is left unset
   on purpose. The KPI counts it only on a row whose ``final_outcome == "succeeded"``, meaning an attempt
   that reported success and was later found false by an independent re-verification. The pick path has no
@@ -57,14 +52,11 @@ from .report import AutonomousGraspOutcome
 # layer from reading 0.0 because nothing was written.
 logger = create_robot_logger("GraspRecordLogging", GRASP_RECORD_LOG_FILE)
 
-#: Outcomes that mean a fail-closed safety/decision/integrity gate refused to dispatch the grasp. These are
-#: the live ``safety_rejection_rate`` signal (an operator reads them as "auto refused to move").
+#: Outcomes that mean a fail-closed safety or integrity gate refused to dispatch the grasp. These are the live
+#: ``safety_rejection_rate`` signal (an operator reads them as "auto refused to move"). The decision, uncertainty and
+#: drift/OOD refusals left on 2026-10-16 with their layers.
 SAFETY_REJECTED_OUTCOMES: frozenset[AutonomousGraspOutcome] = frozenset(
     {
-        AutonomousGraspOutcome.DECISION_FAIL_CLOSED,
-        AutonomousGraspOutcome.UNCERTAINTY_FAIL_CLOSED,
-        AutonomousGraspOutcome.DRIFT_BLOCKED_AUTO,
-        AutonomousGraspOutcome.OOD_BLOCKED_AUTO,
         AutonomousGraspOutcome.MISSING_CAMERA_FRAME,
         AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED,
     }
@@ -96,9 +88,8 @@ def _stamp_taxonomy_evidence(record_extra: dict[str, Any], report: Any) -> None:
     light up under the dense path. Slip and empty-air had their detector in the post-grasp verifiers,
     which left on 2026-09-29, so no live record is stamped with them.
 
-    ``calibration_drift_evidence`` is intentionally not derived: the drift/OOD watchdog is inert by
-    default and its ``drift_blocked_auto``/``ood_blocked_auto`` outcomes sit outside the taxonomy gating
-    set, so a stamped flag could never classify. Deferred until the watchdog is wired."""
+    ``calibration_drift_evidence`` is not derived: nothing on the pick path measures drift since the drift/OOD
+    watchdog left on 2026-10-16."""
 
     if _outcome_value(report.outcome) == "succeeded":
         return  # a recovered-success record carries no failure-evidence flag
@@ -228,8 +219,8 @@ def to_attempt_record(
 
     ``extra`` is an optional caller-supplied bag merged on top of the telemetry-derived fields. It is how
     a sim runner stamps ground-truth labels the pipeline cannot self-report (``sim_lift_mm`` /
-    ``sim_lifted`` measured from the object's world pose), so the records carry a reward signal for the RL
-    layer instead of only the pipeline's own ``final_outcome`` self-assessment. Default ``None`` merges
+    ``sim_lifted`` measured from the object's world pose), so the records carry the physical truth instead of
+    only the pipeline's own ``final_outcome`` self-assessment. Default ``None`` merges
     nothing and leaves behaviour byte-identical. The ``camera_world`` keys are stamped after it, so a
     caller cannot overwrite them.
     """
@@ -252,18 +243,11 @@ def to_attempt_record(
     record_extra.update(_camera_world_extras(report))
     # Derive the offline failure-taxonomy ``extra.*_evidence`` flags from the report's typed verdicts.
     _stamp_taxonomy_evidence(record_extra, report)
-    # Retain the executed grasp's success-model feature vector (23-d) when the shadow success predictor
-    # scored it, so a logged record carries the (features, outcome) pair the offline success-model trainer
-    # learns from (calibration.success_model_calibration.build_dataset_from_records). Absent means not
-    # stamped and byte-identical; a caller-supplied override wins.
-    shadow_features = getattr(getattr(report, "shadow_success_telemetry", None), "features", None)
-    if shadow_features is not None and "success_model_features" not in record_extra:
-        record_extra["success_model_features"] = [float(v) for v in shadow_features]
     mode = getattr(report, "mode", "")
     mode_str = mode.value if hasattr(mode, "value") else str(mode)
-    # Carry the per-step recovery trail into the record's top-level ``recovery_actions`` field (the offline
-    # train_recovery source). Empty () on the non-recovery path, so that path is byte-identical. Not in
-    # ``extra``, since it is an existing top-level field, so the frozen extra/catalog policy is untouched.
+    # Carry the per-step recovery trail into the record's top-level ``recovery_actions`` field. Empty () on the
+    # non-recovery path, so that path is byte-identical. Not in ``extra``, since it is an existing top-level field, so
+    # the frozen extra/catalog policy is untouched.
     recovery_actions = tuple(getattr(report, "recovery_actions", ()) or ())
     # Populate the execution block the GraspAttemptRecord contract requires for
     # succeeded/execution_failed/verification_failed outcomes (the soak telemetry audit checks it), from
@@ -273,13 +257,6 @@ def to_attempt_record(
     # sim_lift_mm measured from the object's world pose, the physical truth, not a hardware verifier),
     # and is None otherwise.
     execution = execution_metadata_from(report)
-    # The field that cost the RL layer its action column. `BaselineSARExtractor` projects an action
-    # from `selected_grasp`, then `refined_grasp`, then `initial_grasp`, and no writer in this
-    # repository set any of the three, so every record a real pick produced fell through all three to
-    # the literal token "noop". Measured 2026-09-10: two attempts on two different grasps extracted
-    # to the same action, which is an action space of size one, a dataset that cannot express a
-    # preference between two grasps, which is the only thing it is for.
-    #
     # The executed grasp, not the ranked-best. The question a record must answer is which grasp this
     # outcome graded, and only the one the arm actually went to has that standing. It is the same
     # object `execution_metadata_from` summarises one line up, so the two blocks cannot disagree.

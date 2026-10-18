@@ -60,15 +60,15 @@ passed after the subcommand.
 | clear a whole bin rather than one object | [05](05-pick-loop.md), the bin-picking orchestrator |
 | turn on record logging for the soak, KPI and learning tools | [05](05-pick-loop.md), record logging |
 | work out why nothing was picked | [05](05-pick-loop.md), troubleshooting |
-| tell a wrist camera where to look from | [05](05-pick-loop.md), a wrist camera looks around, and [01](01-configuration.md) for `robot.look_joint_positions_deg` |
+| tell a wrist camera where to look from | [05](05-pick-loop.md), a wrist camera looks around, and [01](01-configuration.md) for `robot.motion.look_deg` |
 | grip only once both jaw contact faces were seen | [05](05-pick-loop.md), `both_faces` |
-| let a dense pick skip a failed part, or push a boxed-in one | [05](05-pick-loop.md), recovery, and [grasping-config-reference.md](../grasping-config-reference.md) |
+| let a dense pick look again, or push a boxed-in part | [05](05-pick-loop.md), recovery, and [grasping-config-reference.md](../grasping-config-reference.md) |
 | pick, place and return in one call, once or until empty | [05](05-pick-loop.md), the console's task |
 | make a pick faster without losing what it picks, and see which switch the owner's cell runs | [05](05-pick-loop.md), where a pick's seconds go |
 | find out where a cell's seconds went, stage by stage | [scripts/cell/](../../scripts/cell/README.md) |
 | give the cell a task from a browser, by text or by voice | [api/README.md](../../api/README.md) and [frontend/README.md](../../frontend/README.md) |
 | halt the arm from the console, and know what that is not | [04](04-robot-and-safety.md), halt now, the emergency stop, and the way back |
-| teach a place pose by hand and let a task use it | [01](01-configuration.md), `robot.named_poses` and `robot.default_place_pose` |
+| teach a place pose by hand and let a task use it | [01](01-configuration.md), `robot.motion.named_poses` and `robot.motion.default_place_pose` |
 | answer a toggle hand's jaws question in the browser | [06](06-grippers.md), the jaws question in the browser |
 | bring the console to a physical cell | [docs/runbooks/console_at_the_cell.md](../runbooks/console_at_the_cell.md) |
 
@@ -77,15 +77,16 @@ passed after the subcommand.
 Two facts the guides repeat, because believing otherwise costs a day.
 
 **The default pick is open-loop.** Perceive, generate and score candidates on a deterministic
-geometric rank, run the safety preflight and IK, move and close, log. The decision gate, recovery,
-fixed-camera fusion, feasibility and occlusion scoring, clutter ordering, the learned success model and
-the reinforcement-learning layer are all built and all default to off. One thing needs no switch: **a
-wrist camera looks around** whenever a pick hands it looks, fuses them and stops as soon as the grasp is
-safe ([05](05-pick-loop.md)). Check any claim of that shape against the tree rather than against a
-document:
+geometric rank, run the safety preflight and IK, move and close, log. Recovery runs on every cell, and
+fixed-camera fusion on every cell of two calibrated RGB-D rigs, with no switch since 2026-10-16; the learned
+ranker's shadow is built and defaults to off; the decision gate, feasibility and occlusion scoring, clutter
+ordering, the learned success model and the reinforcement-learning layer left on 2026-10-16 with their code.
+Nor does **a wrist camera's looking around** need a switch: it looks whenever a pick hands it looks, fuses
+them and stops as soon as the grasp is safe ([05](05-pick-loop.md)). Check any claim of that shape against
+the tree rather than against a document:
 
 ```bash
-python -c "from willy import load_tree; g = load_tree().robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'recovery', 'success_model')})"
+python -c "from willy import load_tree; g = load_tree().robot.grasping; print({n: getattr(g, n).enabled for n in ('deep_ranker',)})"
 ```
 
 **There are two composition paths, and the simulator mostly does not use the real one.**
@@ -146,7 +147,9 @@ Two consequences worth carrying between guides:
 - **A failing run says little about why.** Each runner prints one line per pick, `succeeded`,
   `lift_mm` and `passed`, and then a gate line. `run_m2_pick` adds a reason beside its rate: each run
   that did not pick, with the report's failure summary and the motion's message. Attributing a
-  failure beyond that needs record logging, which is `grasping.record_log_path` and off by default.
+  failure beyond that needs the attempt records: a runner writes them with `--record-log <path>`, and a
+  cell built from config always does, to `grasping.record_log_path` or else `grasp_records.jsonl` in the log
+  folder.
 
 ## Related documents
 

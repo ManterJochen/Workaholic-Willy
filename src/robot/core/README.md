@@ -132,9 +132,8 @@ arm and does not follow into a thread started inside it.
 
 Every error here subclasses `RobotError`, and so do `RobotKinematicsError` and `RobotMotionRejected`
 (with `RobotSingularityRisk` under it); `IsaacNotAvailableError` also subclasses `RuntimeError`. Asked for a
-reserved name (`franka`, `ros2`, `franka_hand`, `schunk`), the refusals list those separately: a
-reserved hand comes up as a `NullGripper` that a real cell refuses at the connect, and a reserved arm
-fails at `create_arm`.
+reserved hand (`franka_hand`, `schunk`), the gripper refusal lists those separately: a reserved hand comes
+up as a `NullGripper` that a real cell refuses at the connect.
 
 ## Status
 
@@ -161,6 +160,7 @@ and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
 | `joint_positions.py`, `capabilities.py` | `JointPositions`, `RobotCapabilities` |
 | `transport.py` | what a planned arm needs from the controller below it (P0e E7): `ArmTransport` and the opt-in `ControllerKinematics`, `ControllerMotion`, `TakesPayload`, `ReportsControllerModel`, `HoldsAHaltLatch`, the halt latch on the link, `ControllerIO`, the I/O registers by bank (P0g slice 6: a write answers whether the controller took it, a read raises where it cannot answer; named apart from `SupportsDigitalIO`, so a transport never passes for an I/O arm), and since slice 7 `ReadsForceTorque`, `ReportsControllerStatus` (with a quick read that skips the controller's text), `ReleasesProtectiveStop` and `ReadsControllerProvenance`, since P0i `WatchesController` (`connect_watch`, `is_watching`: what reads the state and releases a stop without a control program, the UR's receive interface and dashboard), and since port S4 `ControllerFreedrive` (a watchdog armed and kicked, hand guiding begun and ended, a fresh control program, the cheap reads a 30 Hz loop may make, the joint speeds and the payload; offered only by a controller that holds the arm when the kicks stop); poses are base-frame `Pose` in the controller's own frame |
 | `motion_limits.py` | `clamp_to_motion_limits`, the one speed and acceleration clamp every commanded motion is held to |
+| `cell_gate.py` | a cell of several arms before every send of one arm: the gate its transport carries (`CellGate`, `CellOccupied`, `gate_sends`, `holding`) |
 | `vendor.py`, `gripper_vendor.py` | `RobotVendor`, `GripperVendor` |
 | `errors.py` | the `RobotError` hierarchy |
 

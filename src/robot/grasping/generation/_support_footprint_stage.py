@@ -19,25 +19,19 @@ buckets would be an invention. The real margins ride along in ``components["supp
 instead, as contact angle, support clearance and grip width, where a reader can see them for what
 they are; ``metadata`` carries only the stage name and the ``score_is_undecomposed`` flag.
 
-Why SFE refused what it refused rides along too: ``support_footprint_refused`` holds one count per
-cause (``support_footprint.REFUSAL_CAUSES``), so a pick that got no grasp says whether the camera's
-neighbours, a declared body, the part's own fragments or the support stopped it.
-
-And where a caller held SFE's fine search back (``fine_pass``) and the coarse grid found few grasps, and the part's
-own body (below) did not make up for them, ``support_footprint_fine`` says ``"deferred"``: the result is the coarse
-grid's, and the pick loop asks again in full before it takes such a part (``FINE_SEARCH_KEY``). A search that ran in
-full stamps nothing.
+Why the body refused what it refused rides along too: ``body_refused`` holds one count per cause, so a
+pick that got no grasp says whether the camera's neighbours, a declared body, the part's own fragments
+or the support stopped it.
 
 The grasps are the part's own body's (``body_grasps``, lever A of 2026-10-13): what the cameras measured of it, a
 ring's wall, a star's lobe, a lying cylinder at its equator, which SFE's convex prism cannot offer. SFE's prism is no
 longer asked (the owner, 2026-10-14: the body alone). On the owner's three days from each pick's first pose the prism
 added no pick to the body's 178 of 202, the first grasp tried was admitted in 169 picks with it and 175 without, and a
-pick ranked in 6.8 s with it and 5.0 s without. Its search and the arguments only it read (``inflate_mm``,
-``palm_aware``, ``fine_pass``, ``runner``, ``batched``) go with the cleanup after the cell has picked with the body
-alone; until then they are taken and not read. ``body_grasps`` and ``body_refused`` in the telemetry say how many the
-body offered and why it offered no more.
+pick ranked in 6.8 s with it and 5.0 s without. What only the prism's search read left with it on 2026-10-16 (the
+owner's cleanup): its worker processes, its batched builds, its fine search that waited and its palm switch.
+``body_grasps`` in the telemetry says how many the body offered.
 
-Where the cell asks for them (``inner_grasps``, ``robot.grasping.inner_grasps``, on as shipped for a Robotiq hand), the
+Where the calculator asks for them (``inner_grasps``, every cell with a Robotiq hand), the
 grasps from inside the part's bores follow (``inner_grasps``): every one after every grasp of the body's outer search,
 so a grasp from inside is taken where no outer grasp is. Each says it grips from inside
 (``components["support_footprint"]["inner"]``, ``types.grasp_point.grips_from_inside``) and carries what its execution
@@ -61,22 +55,16 @@ from src.robot.grasping.types.grasp_point import INNER_GRASP_KEY
 from .body_grasps import body_grasps
 from .inner_grasps import Bore, InnerGrasp
 from .inner_grasps import inner_grasps as find_inner_grasps
-from .support_footprint import (
-    DEFAULT_FLOOR_MARGIN_MM,
-    FINE_SEARCH_DEFERRED,
+from .hand import (
     SIDE_APPROACH_SCORE_WEIGHTS,
     CorridorSeen,
     HandFloor,
-    SfeRunner,
     SupportFootprintCandidate,
     SupportFootprintJaw,
 )
+from .support_prism import DEFAULT_FLOOR_MARGIN_MM
 
-__all__ = ["FINE_SEARCH_DEFERRED", "FINE_SEARCH_KEY", "support_footprint_breakdowns"]
-
-#: The telemetry key under which a result says SFE left its fine search for later: ``FINE_SEARCH_DEFERRED``, and only
-#: then.
-FINE_SEARCH_KEY = "support_footprint_fine"
+__all__ = ["support_footprint_breakdowns"]
 
 
 def _to_camera_pose(candidate: SupportFootprintCandidate,
@@ -113,17 +101,12 @@ def support_footprint_breakdowns(
     obstacle_points_base_mm: np.ndarray | None,
     rigid_obstacle_points_base_mm: np.ndarray | None = None,
     max_candidates: int,
-    inflate_mm: float = 0.0,
-    palm_aware: bool = False,
     score_weights: tuple[float, float, float, float, float] | None = None,
     floor_margin_mm: float | None = None,
     side_approaches: bool = False,
     corridor_seen: CorridorSeen | None = None,
     seen_envelope: Any = None,
     hand_floor: HandFloor | None = None,
-    fine_pass: bool = True,
-    runner: SfeRunner | None = None,
-    batched: bool = False,
     opens_as_needed: bool = False,
     inner_grasps: bool = False,
     measured_base_mm: np.ndarray | None = None,
@@ -138,26 +121,15 @@ def support_footprint_breakdowns(
     ``floor_margin_mm`` of None is the stage's own floor, ``DEFAULT_FLOOR_MARGIN_MM``, read from where it
     is declared.
 
-    ``side_approaches`` and ``corridor_seen`` are SFE's own (``generate_support_footprint_grasps``). The
-    library default stays off, so a direct caller is unchanged; a cell turns them on from
-    ``robot.grasping.side_approaches`` with ``corridor_seen`` built from the frame.
+    ``side_approaches`` ranks the body's grasps by :data:`~src.robot.grasping.generation.hand.SIDE_APPROACH_SCORE_WEIGHTS`
+    (the room a lean keeps weighs more, upright nothing); ``corridor_seen`` says what the frame saw, and only a lean
+    whose way in a ray of it reached is offered (``body_grasps``). Every cell turns the first on and builds the
+    second from the frame.
 
     ``seen_envelope`` (``scene_obstacles.SeenEnvelope``) holds the boxes the camera world builds of the neighbours: a
     build whose open hand comes nearer to one than the guard keeps is refused under ``seen_fingers``.
 
-    ``hand_floor`` (``support_footprint.HandFloor``) holds the support solids the guard holds under the hand.
-
-    ``fine_pass`` off holds SFE's fine search back where the coarse grid finds few grasps; the telemetry then says
-    ``support_footprint_fine: "deferred"`` (:data:`FINE_SEARCH_KEY`). On, the default, is the search as before, and the
-    telemetry carries no such key.
-
-    ``runner`` runs SFE's units in other processes (``src.robot.grasping.workers.SfeWorkers``): the same candidates,
-    counts and telemetry as without it, and a runner that cannot answer has the part searched here. ``None``, the
-    default, runs every unit in this process.
-
-    ``batched`` makes each of SFE's closing lines build its grasps at once (``generate_support_footprint_grasps``), in
-    this process and a runner's alike: the same candidates, counts and telemetry, to the bit. Off, the default, builds
-    them one at a time, as before.
+    ``hand_floor`` (``hand.HandFloor``) holds the support solids the guard holds under the hand.
 
     ``opens_as_needed`` plans the body's grasps for a hand that opens only as wide as each span needs
     (``body_grasps``, lever G); off, a hand that opens fully.
@@ -190,8 +162,7 @@ def support_footprint_breakdowns(
         obstacle_points_base_mm=obstacle_points_base_mm, rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm,
         seen_envelope=seen_envelope, hand_floor=hand_floor, corridor_seen=corridor_seen,
         floor_margin_mm=floor, opens_as_needed=opens_as_needed, max_candidates=max_candidates, refusals=body_refused,
-        score_weights=weights, measured_base_mm=measured_base_mm, outline_base_mm=outline_base_mm,
-        inflate_mm=inflate_mm)
+        score_weights=weights, measured_base_mm=measured_base_mm, outline_base_mm=outline_base_mm)
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:
         pose = _to_camera_pose(candidate, camera_to_base)

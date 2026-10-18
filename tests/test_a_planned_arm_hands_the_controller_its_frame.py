@@ -42,7 +42,7 @@ _Q = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
 
 
 def _tree(source: str, planner: str = "ik", **blocks: Any) -> Any:
-    return kit_tree(planner, safety={"payload": {"enforce": False}}, gripper={"tool_frame": {
+    return kit_tree(planner, safety={}, gripper={"tool_frame": {
         "source": source, "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT}}, **blocks)
 
 
@@ -139,7 +139,7 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
     def _curobo_arm(source: str) -> tuple[Any, MagicMock]:
         # A goal is where the stand-in's plan ends (Step 8f), and that is outside the shipped box; the box is not
         # what this class is about.
-        arm: Any = planned_arm(_tree(source, "curobo", workspace_limits=OPEN_WORKSPACE), transport=_controller(source))
+        arm: Any = planned_arm(_tree(source, "curobo", motion={"workspace": OPEN_WORKSPACE}), transport=_controller(source))
         planner = MagicMock()
         planner.plan_joint.side_effect = lambda goal, **_: [list(_Q), list(goal)]
         arm._curobo = planner
@@ -229,7 +229,7 @@ class EveryControllerCommandIsTheFlangeInWillyModeTests(unittest.TestCase):
         np.testing.assert_allclose(sent.position_mm, tcp.position_mm, atol=1e-9)
 
     def test_the_box_a_controller_applies_is_handed_the_grasp_centre(self) -> None:
-        """`workspace_limits` bound the commanded TCP: every Cartesian surface hands the controller's own box the
+        """`robot.motion.workspace` bounds the commanded TCP: every Cartesian surface hands the controller's own box the
         grasp centre beside the flange target. How the UR's motion controller boxes what it is handed stays in
         tests/test_ur_tool_frame.py."""
         tcp = _tcp()

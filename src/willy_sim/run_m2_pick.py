@@ -1,12 +1,13 @@
 """M2 real-vision pick runner: perception in the loop (config-driven).
 
 Boots the combined UR5e+2F-85 scene from the sim config tree, wires the Isaac arm, gripper and
-``IsaacVisionPerceptionSource`` (overhead RGB, then GroundingDINO, then SAM2) into
+``IsaacVisionPerceptionSource`` (overhead RGB, then the cell's detector, the VLM, then SAM2) into
 ``AutonomousGraspService.from_components``, parks the arm out of the overhead camera's view, and
-drives ``pick()`` from a text prompt. Detector and segmenter model ids come from ``cfg.models.*``;
-the park pose and gate thresholds from ``cfg.robot.sim``.
+drives ``pick()`` from a text prompt. The perception stack is the one ``cfg.models.pipeline`` builds;
+the park pose and gate thresholds come from ``cfg.robot.sim``.
 
-On-box only (needs Isaac + the GroundingDINO/SAM2 weights). Run with Isaac's bundled python:
+On-box only (needs Isaac + the VLM and SAM2 weights under ``models.weights_root``). Run with Isaac's
+bundled python:
 
     <isaac-sim>\\python.bat -m src.willy_sim.run_m2_pick --runs 10 --prompt "a red cube"
 """
@@ -33,7 +34,7 @@ from src.willy_sim.harness.instrumentation import (
     write_pick_artifacts,
     write_run_result,
 )
-from src.willy_sim.harness.modes import mode_service_kwargs, resolve_demo_mode
+from src.willy_sim.harness.modes import resolve_demo_mode
 from src.robot.core.camera_world import CameraWorldDecline, live_planner_world_of
 from src.willy_sim.harness.camera_world import SimCameraWorld
 from src.contracts import UNSET, Maybe
@@ -55,12 +56,10 @@ def build_service(
     continuous_guard: bool = False,      # per-waypoint collision-avoidance guard (needs WILLY_COAL_PREFIX)
     continuous_guard_margin_mm: float = 8.0,
     cell_kwargs: Mapping[str, Any] | None = None,  # which cell to boot (--robot-model / --profile)
-    radial_closing: bool = False,  # spend a symmetric object's free yaw on the reachable axis
-    detector_model_id: str | None = None,  # override the grounding model, for A/B measurement only
 ):
     """Boot the scene + wire the full real-vision pick service from config."""
-    # Vision runners load cached GroundingDINO/SAM2; default to HF offline so transformers does not ping
-    # the hub at boot. Isaac's Kit closes the httpx client, so a ping fails with "client has been closed"
+    # Vision runners load the VLM and SAM2 from models.weights_root; default to HF offline so transformers
+    # does not ping the hub at boot. Isaac's Kit closes the httpx client, so a ping fails with "client has been closed"
     # and the boot crashes. Export HF_HUB_OFFLINE=0 before the run to force online.
     import os
 
@@ -88,28 +87,19 @@ def build_service(
     from src.robot.grasping.calculator_factory import build_calculator
 
     # Building the perception backend from the factory replaces "construct a detector, construct a
-    # segmenter", and makes the whole models.pipeline block reachable from this gate: the VLM route
-    # and the prompt router are a config edit away rather than unreachable.
+    # segmenter", so this gate grounds with the cell's own stack: the VLM on a zero-shot tree, RT-DETR's
+    # classes on a closed-set one.
     #
     # This is not a pure refactor. A backend runs `detect_all` and this source takes the first
     # detection, which can differ from the single best match `detect` returns, so a change here is
     # accepted on the M2 gate itself, never on inspection.
     perception = IsaacVisionPerceptionSource(
-        camera=handles.camera, backend=build_perception(_models_for(cfg, detector_model_id)),
+        camera=handles.camera, backend=build_perception(cfg.models),
         prompt=prompt,
         session=arm.session, warmup_steps=max(25, sim.scene_setup.render_warmup_steps),
         # The overhead camera's name in the live world, so the pick loop offers its masks under it.
         camera_name="overhead",
     )
-    # The cell declares whether this arm needs a radial close (robot.ur3e.yaml declares it for the
-    # UR3e); --radial-closing still forces it on for a cell that has not declared it.
-    _radial = bool(radial_closing or getattr(cell.robot.grasping, "isotropic_radial_closing", False))
-    # Analytic-only lever, and the banner says so. The learned generator decodes its own closing
-    # axis, so a bare `True` under `calculator: deep` would describe the other path.
-    print(f"[grasp] isotropic_radial_closing={_radial} "
-          f"(cell={getattr(cell.robot.grasping, 'isotropic_radial_closing', False)}, "
-          f"flag={bool(radial_closing)}, analytic generator only)",
-          flush=True)
     calculator = build_calculator(
         cell.robot,
         data_dir=data_dir,
@@ -118,7 +108,6 @@ def build_service(
         camera_matrix=np.asarray(handles.camera.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,
-        isotropic_radial_closing=_radial,
     )
     resolver = StaticCameraToBaseResolver(transform=handles.camera_to_base)
     policy = GraspExecutionPolicy(
@@ -131,25 +120,8 @@ def build_service(
     service = AutonomousGraspService.from_components(
         arm=arm, calculator=calculator, perception=perception, gripper=gripper,
         mode=grasp_mode, frame_resolver=resolver, policy=policy, max_attempts=2,
-        **mode_service_kwargs(grasp_mode),
     )
     return service, arm, gripper, handles, cfg, cell
-
-
-def _models_for(cfg: Any, detector_model_id: str | None) -> Any:
-    """The models config, optionally with the grounding model swapped, for A/B measurement.
-
-    ``None`` returns the config untouched, so the gate's path is byte-identical. A value swaps only
-    ``objectdetector.model_id``, the same one-field override ``run_dense_pick`` uses for its larger
-    detector.
-
-    It stays a flag rather than a config default: which detector is better on the gated scene is a
-    question this runner measures, not a settled answer.
-    """
-    if not detector_model_id:
-        return cfg.models
-    swapped = cfg.models.objectdetector.model_copy(update={"model_id": detector_model_id})
-    return cfg.models.model_copy(update={"objectdetector": swapped})
 
 
 def _declared_planner(arm: object) -> str | None:
@@ -242,12 +214,10 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
              record_log: str | None = None, debug_frames: str | None = None,
              cell_kwargs: Mapping[str, Any] | None = None,
              standoff_mm: float | None = None,
-             radial_closing: bool = False,
-             detector_model_id: str | None = None,
              decline_camera_world: str | None = None) -> GateResult:
     """Run ``runs`` real-vision picks (re-place object, park arm, perceive, grasp) and score lift.
 
-    ``mode`` is "easy" or "auto" (a real ``DecisionEngine``). "closed_loop", the two-scan refine,
+    ``mode`` is "easy" or "auto" (the automatic sampler). "closed_loop", the two-scan refine,
     was removed on 2026-09-29.
 
     Both instrumentation hooks are opt-in and default-off: ``record_log`` appends one
@@ -264,8 +234,6 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
         prompt=prompt, headless=headless, data_dir=data_dir, mode=mode, cell_kwargs=cell_kwargs,
         # None keeps build_service's 150 mm default, so the call is byte-identical.
         standoff_mm=150.0 if standoff_mm is None else float(standoff_mm),
-        radial_closing=radial_closing,
-        detector_model_id=detector_model_id,
         camera_world=camera_world,
     )
     if debug_frames:  # render the grasp-point overlay per pick (M2 has real overhead rgb + SAM2 mask)
@@ -401,7 +369,7 @@ def main() -> None:
     ap.add_argument("--no-headless", action="store_true", help="alias for --gui")
     ap.add_argument("--data-dir", type=str, default=None)
     ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto"],
-                    help="P1: grasp mode (easy=trust path; auto=real DecisionEngine)")
+                    help="P1: grasp mode (easy=trust path; auto=the automatic sampler)")
     ap.add_argument("--record-log", type=str, default=None,
                     help="P0: append one GraspAttemptRecord JSONL line per pick to this path "
                          "(the soak/KPI/RL data source; default off -> byte-identical)")
@@ -416,9 +384,6 @@ def main() -> None:
                          "closing is reachable throughout. Lowering the standoff alone does NOT fix that; "
                          "the pick still has to lift, so a base-+Y grasp fails at the retreat instead. "
                          "The real fix is not choosing a base-+Y closing in the first place.")
-    ap.add_argument("--detector", type=str, default=None,
-                    help="override the grounding model id (e.g. IDEA-Research/grounding-dino-base). "
-                         "For A/B measurement against the gated baseline; unset uses the config.")
     ap.add_argument("--decline-camera-world", type=str, default=None, metavar="REASON",
                     help="boot without the live camera world, declining it for this reason (a control run); "
                          "by default the cell plans against the overhead camera's world")
@@ -429,7 +394,6 @@ def main() -> None:
                       data_dir=args.data_dir, mode=mode,
                       record_log=args.record_log, debug_frames=args.debug_frames,
                       cell_kwargs=cell_profile_kwargs(args), standoff_mm=args.standoff_mm,
-                      radial_closing=args.radial_closing, detector_model_id=args.detector,
                       decline_camera_world=args.decline_camera_world)
     write_run_result(args.result_json, result.to_dict(), scene="m2", mode=mode, prompt=args.prompt)
 

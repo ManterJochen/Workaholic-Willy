@@ -98,7 +98,8 @@ def _tree(primary: str = "wrist") -> SimpleNamespace:
     whose mounting is not declared yet (not calibrated, no body), and the robot section with the workspace box."""
     rigs = [_rig("wrist", "eye_in_hand", body=True), _rig("overhead", "eye_to_hand"), _rig("side")]
     return SimpleNamespace(app_config=SimpleNamespace(camera=SimpleNamespace(
-        cameras=SimpleNamespace(primary_rig_id=primary, rigs=rigs))), robot=SimpleNamespace(workspace_limits=BOX))
+        cameras=SimpleNamespace(primary_rig_id=primary, rigs=rigs))),
+        robot=SimpleNamespace(motion=SimpleNamespace(workspace=BOX)))
 
 
 #: The tree every run is taught against unless a test says otherwise.
@@ -1181,7 +1182,7 @@ class TheBoxComesFromTheRobotSectionTests(_Case):
 
     def test_an_arm_that_carries_a_config_is_not_asked_for_its_box(self) -> None:
         self.arm(_stand(LOOK_1_DEG))
-        self.guided.config = SimpleNamespace(workspace_limits=BOX)  # type: ignore[attr-defined]
+        self.guided.config = SimpleNamespace(motion=SimpleNamespace(workspace=BOX))  # type: ignore[attr-defined]
         tree = _tree()
         del tree.robot
         with self.assertRaisesRegex(HandGuidingRefused, "the workspace box is not known"):

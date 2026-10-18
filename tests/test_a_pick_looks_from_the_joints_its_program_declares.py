@@ -24,7 +24,6 @@ from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionSt
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome, AutonomousGraspService, GraspMode
 from src.robot.execution.pick_run import PickRun, Recording
-from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
 from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver, StaticCameraToBaseResolver
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
@@ -152,12 +151,6 @@ def cell(events: list[Any], sees: list[bool | str], *, wrist: bool, refuse_joint
     )
 
 
-def deciding(policy: DecisionPolicy | None = None) -> dict[str, Any]:
-    """The decision layer switched on: it ranks the frame and decides before the pick loop runs."""
-    policy = policy or DecisionPolicy(enabled=True)
-    return {"decision_policy": policy, "decision_engine": DecisionEngine(policy=policy)}
-
-
 def _looks(events: list[Any]) -> list[Any]:
     return [e for e in events if e == "home" or (isinstance(e, tuple) and e[0] == "joints")]
 
@@ -235,64 +228,6 @@ class TheLooksAreTriedInOrderTests(unittest.TestCase):
 
         self.assertEqual("perceive", events[0])
         self.assertEqual((), report.looks)
-
-
-class EveryPickPathSendsAnEmptyLookOnTests(unittest.TestCase):
-    """The decision layer answers an empty view in its own words, not the pick loop's.
-
-    An empty frame reaches the decision layer as ``RECOVER`` for want of candidates, and carries none of the pick
-    loop's trail. It still found nothing where it looked, and is sent on to the next look. An object seen and not
-    grasped is sent on too on a wrist camera, whose looks the decision layer now decides on fused (2026-09-28); a
-    fixed camera answers it from where it was seen, as on the pick loop's path. The two-scan refine, the other path
-    with words of its own, left on 2026-09-29, and its two cases with it.
-    """
-
-    def test_the_decision_layer_sends_an_empty_look_on_to_the_next(self) -> None:
-        events: list[Any] = []
-        report = cell(events, [False, True], wrist=True, mode=GraspMode.AUTO, **deciding()).pick(look=[LOOK_A, LOOK_B])
-
-        self.assertEqual([("joints", LOOK_A.degrees()), "perceive", ("joints", LOOK_B.degrees()), "perceive"],
-                         events[:4])
-        self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.failure_summary())
-        self.assertEqual(2, len(report.looks))
-
-    def test_the_decision_layer_sends_a_look_without_the_prompted_label_on_to_the_next(self) -> None:
-        events: list[Any] = []
-        service = cell(events, ["bolt", True], wrist=True, mode=GraspMode.AUTO, **deciding())
-        service.set_target_label("part")
-
-        report = service.pick(look=[LOOK_A, LOOK_B])
-
-        self.assertEqual([("joints", LOOK_A.degrees()), ("joints", LOOK_B.degrees())], _looks(events))
-        self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.failure_summary())
-
-    def test_what_the_decision_layer_saw_is_in_its_report(self) -> None:
-        """The frame's facts the next look is decided on: how many objects it held, and why none was grasped."""
-        events: list[Any] = []
-        report = cell(events, [True], wrist=True, mode=GraspMode.AUTO, calculator=_CalculatorThatFindsNoGrasp(),
-                      **deciding()).pick()
-
-        self.assertIs(AutonomousGraspOutcome.DECISION_RECOVER_PENDING, report.outcome)
-        self.assertEqual(1, report.telemetry["n_segmentations"])
-        self.assertEqual(("all_collided",), report.telemetry["reasons"])
-
-    def test_an_object_seen_and_not_grasped_on_the_wrist_is_looked_at_from_the_next_look(self) -> None:
-        events: list[Any] = []
-        report = cell(events, [True], wrist=True, mode=GraspMode.AUTO, calculator=_CalculatorThatFindsNoGrasp(),
-                      **deciding()).pick(look=[LOOK_A, LOOK_B])
-
-        self.assertIs(AutonomousGraspOutcome.DECISION_RECOVER_PENDING, report.outcome)
-        self.assertEqual([("joints", LOOK_A.degrees()), ("joints", LOOK_B.degrees())], _looks(events))
-        self.assertEqual(2, len(report.looks))
-
-    def test_an_object_seen_and_not_grasped_by_a_fixed_camera_ends_the_looking_where_it_was_seen(self) -> None:
-        events: list[Any] = []
-        report = cell(events, [True], wrist=False, mode=GraspMode.AUTO, calculator=_CalculatorThatFindsNoGrasp(),
-                      **deciding()).pick(look=[LOOK_A, LOOK_B])
-
-        self.assertIs(AutonomousGraspOutcome.DECISION_RECOVER_PENDING, report.outcome)
-        self.assertEqual([("joints", LOOK_A.degrees())], _looks(events))
-        self.assertEqual(1, len(report.looks))
 
 
 class AStopIsHonouredBeforeEveryLookTests(unittest.TestCase):

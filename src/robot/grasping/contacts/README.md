@@ -44,8 +44,8 @@ share it. It is NumPy and deterministic, in millimetres. Its only dependencies a
 
 A pair is admitted only at an opposition of at least 0.8 and an axis alignment of at least 0.5, and scored as
 `0.45 * opposition + 0.35 * axis_alignment + 0.20 * stability`. The weights are hand-set priors, kept
-cheap and deterministic on purpose: the learned success model downstream re-weights the same signals as
-separate features, and learning the prior itself would need a corpus of real grasp outcomes.
+cheap and deterministic on purpose: learning the prior itself would need a corpus of real grasp outcomes (the
+learned success model that re-weighted the same signals downstream left on 2026-10-16).
 
 Suction is not built on this. A suction grasp is a contact plus a pressing direction, not an outward
 normal, and it carries its own seal physics, so it lives in [`suction/`](../suction/README.md).

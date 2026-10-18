@@ -1,13 +1,14 @@
 """A part's rim is cut off the cloud its footprint is built from, and off nothing else (the owner, 2026-10-09).
 
-``robot.grasping.geometry.footprint_rim_mm`` ("Ja, für Montag"): the D415 smears a part's far edge into a ramp of
+The cell's rim, ``footprint_rim.FOOTPRINT_RIM_MM`` ("Ja, für Montag"): the D415 smears a part's far edge into a ramp of
 depths, the outer ~3 px of the colour mask lie on it, the depth-step rule lets it through, and the support-footprint
 stage's hull follows it. Offline on 23 of the cell's recorded grey cubes the centre the grasp closes on lay 2.53 mm off
 at the median, 2.5 mm of it away from the camera; with a 3 px rim (about 2 mm) and ``inflate_mm`` 1.25, 0.98 mm. The
 rim is cut, ``ceil(rim * fx / z)`` px and never more than 30 % of the mask, off a look's own SFE input in the
 calculator and off the footprint cloud the pick loop fuses beside the looks' surfaces; the jaw faces, the association,
-the planner world's hold-out and the neighbours keep the whole mask. 2.0 is the default since the owner's evening of
-2026-10-09, and with it every mask pixel SFE does not read is placed in the part's visual hull
+the planner world's hold-out and the neighbours keep the whole mask. 2.0 is every cell's since the owner's evening of
+2026-10-09 (``robot.grasping.geometry.footprint_rim_mm`` until that block left on 2026-10-16), and with it every mask
+pixel SFE does not read is placed in the part's visual hull
 (``tests/test_a_parts_unread_pixels_stand_in_its_visual_hull.py``); the tests of the rim's own rule here hold that
 hull back (:func:`_no_hull`). 0.0 is the input of before.
 
@@ -33,7 +34,7 @@ from src.geometry import Frame
 from src.robot.grasping.collision import SupportPlane
 from src.robot.grasping.generation import calculator as calculator_module
 from src.robot.grasping.generation.footprint_rim import FOOTPRINT_RIM_MAX_SHARE, footprint_rim, rim_px
-from src.robot.grasping.generation.support_footprint import reconstruct_support_prism
+from src.robot.grasping.generation.support_prism import reconstruct_support_prism
 
 _W, _H, _F = 1280, 720, 913.7
 _K = np.array([[_F, 0.0, 640.0], [0.0, _F, 360.0], [0.0, 0.0, 1.0]])
@@ -138,13 +139,14 @@ def _no_hull() -> Any:
                              lambda self, target_base, *arguments, **keywords: target_base)
 
 
-def _footprint(cloud: np.ndarray, inflate_mm: float) -> tuple[float, float, float]:
+def _footprint(cloud: np.ndarray, given_back_mm: float) -> tuple[float, float, float]:
     """``(centre off the cube's along the view, far face off the cube's, near face off the cube's)``, millimetres, of
-    the prism SFE builds from ``cloud``: positive away from the camera, outside the part."""
-    prism = reconstruct_support_prism(cloud, 0.0, inflate_mm=inflate_mm)
+    the prism SFE builds from ``cloud``, every face ``given_back_mm`` outward, as the rim was measured with the faces
+    given back (the visual hull gives them back at a cell, held back here): positive away from the camera, outside."""
+    prism = reconstruct_support_prism(cloud, 0.0)
     assert prism is not None
-    far = float(prism.hull[:, 1].max()) + inflate_mm - (_CENTRE[1] + _SIZE / 2)
-    near = (_CENTRE[1] - _SIZE / 2) - float(prism.hull[:, 1].min()) + inflate_mm
+    far = float(prism.hull[:, 1].max()) + given_back_mm - (_CENTRE[1] + _SIZE / 2)
+    near = (_CENTRE[1] - _SIZE / 2) - float(prism.hull[:, 1].min()) + given_back_mm
     return float(prism.centre[1] - _CENTRE[1]), far, near
 
 
@@ -237,10 +239,10 @@ class TheCalculatorCutsTheRimOffSfesInputTests(unittest.TestCase):
         follow, where the cell's recorded cubes showed the colour right and the depth off."""
         for tilt in (36.0, 45.0):
             mask, depth, camera_to_base = _ramped(tilt)
-            _c, _t, before = _compute(_calculator(support_footprint_inflate_mm=1.25), mask, depth, camera_to_base)
+            _c, _t, before = _compute(_calculator(), mask, depth, camera_to_base)
             with _no_hull():
                 _c, telemetry, after = _compute(
-                    _calculator(support_footprint_inflate_mm=1.25, support_footprint_rim_mm=2.0), mask, depth,
+                    _calculator(support_footprint_rim_mm=2.0), mask, depth,
                     camera_to_base)
             centre_before, far_before, _n = _footprint(before, 1.25)
             centre, far, near = _footprint(after, 1.25)
@@ -364,41 +366,21 @@ class AFusedCloudComesWithItsRimCutTests(unittest.TestCase):
 # --------------------------------------------------------------------------- the key
 
 
-class TheKeyTests(unittest.TestCase):
-    def test_two_millimetres_is_the_default_of_the_schema_and_of_the_repositorys_tree(self) -> None:
-        """On since the owner's evening of 2026-10-09, the visual hull giving the faces back: inflate_mm stays 0."""
-        from src.config.loader import load_robot_section
-        from src.config.schema.robot.grasping_schema import GraspingGeometryStageConfig
+class TheCellsRimTests(unittest.TestCase):
+    def test_every_cell_cuts_two_millimetres(self) -> None:
+        """On since the owner's evening of 2026-10-09, the visual hull giving the faces back."""
+        from src.robot.grasping.generation.footprint_rim import FOOTPRINT_RIM_MM
 
-        self.assertEqual(2.0, GraspingGeometryStageConfig().footprint_rim_mm)
-        self.assertEqual(2.0, load_robot_section().grasping.geometry.footprint_rim_mm)
-        self.assertEqual(0.0, load_robot_section().grasping.geometry.inflate_mm, "inflate_mm's default stays")
+        self.assertEqual(2.0, FOOTPRINT_RIM_MM)
 
-    def test_a_negative_rim_or_one_past_ten_millimetres_is_refused(self) -> None:
-        from pydantic import ValidationError
+    def test_the_factory_hands_it_to_every_calculator_where_the_site_passes_none(self) -> None:
+        from src.robot.grasping.calculator_factory import _stage_kwargs, build_calculator
 
-        from src.config.schema.robot.grasping_schema import GraspingGeometryStageConfig
-
-        self.assertEqual(2.0, GraspingGeometryStageConfig(footprint_rim_mm=2.0).footprint_rim_mm)
-        for wrong in (-0.5, 10.5):
-            with self.subTest(wrong=wrong), self.assertRaises(ValidationError):
-                GraspingGeometryStageConfig(footprint_rim_mm=wrong)
-
-    def test_the_factory_hands_it_to_the_calculator_only_where_it_is_set(self) -> None:
-        from src.config.schema.robot.grasping_schema import GraspingGeometryStageConfig
-        from src.robot.grasping.calculator_factory import _depth_kwargs, build_calculator
-
-        def tree(**geometry: Any) -> Any:
-            return SimpleNamespace(grasping=SimpleNamespace(geometry=GraspingGeometryStageConfig(**geometry)))
-
-        self.assertEqual({"support_footprint_rim_mm": 2.0}, _depth_kwargs(tree(), {}), "the default reaches it")
-        self.assertEqual({}, _depth_kwargs(tree(footprint_rim_mm=0.0), {}))
-        self.assertEqual({"support_footprint_rim_mm": 3.0}, _depth_kwargs(tree(footprint_rim_mm=3.0), {}))
-        self.assertEqual({}, _depth_kwargs(tree(footprint_rim_mm=2.0), {"support_footprint_rim_mm": 0.0}),
-                         "a construction site's own value wins")
-        cfg = _replace(_hande(), "grasping.geometry.footprint_rim_mm", 0.0)
-        self.assertEqual(0.0, build_calculator(cfg, camera_matrix=_K).support_footprint_rim_mm)
+        self.assertEqual({"support_footprint_rim_mm": 2.0}, _stage_kwargs({}))
+        self.assertEqual({}, _stage_kwargs({"support_footprint_rim_mm": 0.0}), "a construction site's own value wins")
         self.assertEqual(2.0, build_calculator(_hande(), camera_matrix=_K).support_footprint_rim_mm)
+        self.assertEqual(0.0, build_calculator(_hande(), camera_matrix=_K,
+                                               support_footprint_rim_mm=0.0).support_footprint_rim_mm)
 
     def test_a_deep_cell_says_it_ignores_the_rim_and_does_not_refuse_over_it(self) -> None:
         from src.robot.grasping.calculator_factory import _IGNORED_BY_DEEP
@@ -410,14 +392,12 @@ class TheKeyTests(unittest.TestCase):
             with self.subTest(wrong=wrong), self.assertRaises(ValueError):
                 _calculator(support_footprint_rim_mm=wrong)
 
-    def test_the_reference_tree_writes_it_down_with_its_default(self) -> None:
-        from pathlib import Path
+    def test_a_tree_that_still_writes_the_key_is_refused_with_its_reason(self) -> None:
+        from src.config.schema._removed import removed_key_sentence
 
-        text = (Path(__file__).resolve().parents[1] / "config" / "all_keys" / "robot" / "robot.yaml").read_text(
-            encoding="utf-8")
-        before, _, after = text.partition("      footprint_rim_mm: 2.0\n")
-        self.assertTrue(after, "robot.grasping.geometry.footprint_rim_mm is not in config/all_keys/robot/robot.yaml")
-        self.assertIn("# [default: 2.0]", before.splitlines()[-1])
+        said = removed_key_sentence("robot.grasping.geometry.footprint_rim_mm")
+        self.assertIsNotNone(said)
+        self.assertIn("2 mm rim", said or "")
 
 
 if __name__ == "__main__":  # pragma: no cover

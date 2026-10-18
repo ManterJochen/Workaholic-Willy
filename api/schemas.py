@@ -199,7 +199,7 @@ class HaltStateOut(BaseModel):
     #: A motion was in flight when it was pressed. It stays true after that move ended: read ``brake`` for what became
     #: of it.
     in_motion: bool = False
-    #: The move in flight was braked (``robot.ur.brake_on_halt``); false where it ran to its end first.
+    #: The move in flight was braked (every UR); false where it ran to its end first.
     braked: bool = False
     brake_s: float | None = None
     #: What became of the move in flight (:data:`HaltBrake`), as the arm's own record says it (``HaltState.brake``);
@@ -208,7 +208,7 @@ class HaltStateOut(BaseModel):
     brake: HaltBrake | None = None
 
 
-#: The arm's planner: ``not_used`` where it plans nothing (ik, the dummy, a KUKA), else cuRobo's state.
+#: The arm's planner: ``not_used`` where it plans nothing (ik, the dummy), else cuRobo's state.
 PlannerState: TypeAlias = Literal["not_used", "off", "starting", "ready"]
 
 
@@ -216,21 +216,6 @@ class PlannerOut(BaseModel):
     """cuRobo's state on this arm. Starting it moves nothing and takes about a minute."""
 
     state: PlannerState = "not_used"
-
-
-#: What models the part the gripper carries now: ``none``, ``filter_only`` or ``planner_and_filter`` as the arm says it
-#: (``CarriesPayload.payload_model``); ``not_applicable`` for an arm that models no part at all (the dummy, sim);
-#: ``unknown`` for an arm that models parts whose answer could not be read now, or is one this console does not know.
-PayloadModelName: TypeAlias = Literal["none", "filter_only", "planner_and_filter", "not_applicable", "unknown"]
-
-#: The ``payload_model`` values that model no part now: one read of the server's ``part_still_held`` rule
-#: (``api.readiness.part_held``), beside a toggle's count that says closed, a hand that measures a part, and, while a
-#: stop record stands, the record's own belief that a part is in a hand that can say nothing (until "Backen leer").
-#: The stop card's "no part held, now" gate follows that whole rule through the ready bar's ``part_still_held``
-#: blocker. ``not_applicable`` is in it: an arm that models no part carries none the planner knows of, so the gate
-#: opens on the rehearsal cell as on a UR. ``unknown`` is not: a part nobody can rule out keeps the gate shut.
-#: ``frontend/src/api/codes.ts`` lists the same set (``NO_PART_MODELLED``).
-NO_PART_MODELLED: Final[frozenset[PayloadModelName]] = frozenset({"none", "not_applicable"})
 
 
 class RecoveryOut(BaseModel):
@@ -281,8 +266,6 @@ class CellOut(BaseModel):
     #: The arm's halt latch, where "halt now" set it; null where it is not set or the arm has none.
     halted: HaltStateOut | None = None
     planner: PlannerOut = Field(default_factory=PlannerOut)
-    #: What models the carried part now; no part is modelled while it is one of ``NO_PART_MODELLED``.
-    payload_model: PayloadModelName = "not_applicable"
     recovery: RecoveryOut | None = None
     #: When the jaws were last answered open in the browser (a toggle), Unix seconds.
     jaws_confirmed_at: float | None = None
@@ -327,11 +310,6 @@ class VendorReadinessOut(BaseModel):
     registered: bool
     ready: bool
     note: str
-    #: The systems this driver runs on, by ``sys.platform`` name. Empty means no claim, not "runs
-    #: nowhere": the backend declares a platform only where it measured one that refuses the driver.
-    #: A console that hides a Linux-only vendor behind "SDK not installed" sends the operator to
-    #: install a wheel that does not exist for their machine.
-    platforms: list[str] = Field(default_factory=list)
     sdks: list[SdkOut] = Field(default_factory=list)
 
 
@@ -369,53 +347,20 @@ class PerceptionStackOut(BaseModel):
     """Which perception stack this cell is configured for, and whether it can actually run.
 
     Answers the question an operator asks before a pick: which models will this prompt touch? The VLM
-    route can be perfectly configured and still unrunnable because the weights are not on this box,
-    and nothing says so until the first complex prompt arrives. This checks presence without loading
-    anything.
+    can be perfectly configured and still unrunnable because the weights are not on this box, and
+    nothing says so until the first prompt arrives. This checks presence without loading anything.
     """
 
-    pipeline_configured: bool = Field(
-        description="False = the legacy keys decide everything (the byte-identical default)."
-    )
     kind: str = Field(description="zero_shot | closed_set")
-    backend: str = Field(description="grounded_sam | vlm | rtdetr")
-    segmenter: str
-    router_enabled: bool = Field(
-        description="True = each prompt is routed between the phrase grounder and the VLM."
-    )
+    backend: str = Field(description="vlm | rtdetr")
+    segmenter: str = Field(description="sam2, the segmenter of every stack")
     vlm_model_id: str | None = None
     vlm_weights_present: bool | None = Field(
         default=None,
-        description="Whether the VLM checkpoint is in the local cache. None when no VLM is configured.",
-    )
-    vlm_on_unavailable: str | None = Field(
-        default=None, description="refuse = reject the pick | degrade = fall back, loudly."
+        description="Whether the VLM checkpoint is in the weights folder or the Hugging Face cache. None when the "
+                    "VLM is not the detector.",
     )
     detail: str = Field(description="One sentence an operator can act on.")
-
-
-class RoutePreviewOut(BaseModel):
-    """What route a prompt would take, decided without a GPU, a model, or an image.
-
-    The router is pure text analysis, so this is free and instant. It exists because "why was that
-    pick slow?" and "why did it refuse?" are usually answered by the route, and an operator should be
-    able to find that out by typing the prompt rather than by running it.
-    """
-
-    prompt: str
-    route: str = Field(description="simple | vlm")
-    reason: str = Field(description="the rule that decided it, e.g. non_english, negation")
-    description: str = Field(description="human-readable, e.g. 'vlm (non_english)'")
-    normalized_prompt: str | None = Field(
-        default=None,
-        description="What the phrase grounder would actually receive. None on the VLM route, which "
-                    "gets the operator's words untouched.",
-    )
-    signals: dict[str, object] = Field(default_factory=dict)
-    runnable: bool = Field(
-        description="False when this route is configured but cannot run on this box right now."
-    )
-    blocked_reason: str | None = None
 
 
 class DiagnosticsOut(BaseModel):
@@ -439,8 +384,8 @@ class ErrorOut(BaseModel):
 class TelemetryOut(BaseModel):
     """One live snapshot of the cell.
 
-    Every measurement is optional because every one comes from an optional capability: sim, dummy and
-    KUKA advertise no force/torque or controller-status Protocol at all. A missing field means "this
+    Every measurement is optional because every one comes from an optional capability: the sim and the dummy
+    advertise no force/torque or controller-status Protocol at all. A missing field means "this
     driver does not offer it", which is not an error and does not appear in ``unavailable``.
     """
 
@@ -497,10 +442,8 @@ class PickIn(BaseModel):
     prompt: str = ""
     picks: int = Field(default=1, ge=1, le=100)
     #: How far a push of a failed part moves it, in mm, on a cell whose recovery pushes (``nudge_target``,
-    #: dense_clutter). Null: the cell's ``recovery.fixture.push_distance_mm`` (30 mm by default, and wherever
-    #: no fixture is declared). A request up to the cell's ``max_nudge_mm`` (50 mm without a fixture) is
-    #: taken as asked; one above it, above 50 mm or under 10 mm is refused (422 ``push_distance_refused``,
-    #: with the sentence), never shortened.
+    #: dense_clutter). Null: the owner's 30 mm. A request up to 50 mm is taken as asked; one above 50 mm or
+    #: under 10 mm is refused (422 ``push_distance_refused``, with the sentence), never shortened.
     push_mm: float | None = None
 
 
@@ -514,7 +457,7 @@ ClosingAxisName: TypeAlias = Literal["x", "-x", "y", "-y", "radial", "-radial", 
 FirstMotion: TypeAlias = Literal["look", "return"]
 #: Where a command came from.
 CommandSource: TypeAlias = Literal["typed", "spoken"]
-#: How a part is carried to a bin a wrist camera found (``robot.place.carry``): to the look the bin was found from, where
+#: How a part is carried to a bin a wrist camera found (``robot.motion.place.carry``): to the look the bin was found from, where
 #: it is checked again, or straight over its rim from where the part was gripped.
 CarryName: TypeAlias = Literal["via_the_look", "over_the_rim"]
 
@@ -533,7 +476,7 @@ class PosePlaceIn(BaseModel):
     hang, so every error goes toward more air."""
 
     kind: Literal["pose"]
-    #: A name in ``robot.named_poses``; null means ``robot.default_place_pose``.
+    #: A name in ``robot.motion.named_poses``; null means ``robot.motion.default_place_pose``.
     pose: str | None = None
 
 
@@ -571,22 +514,22 @@ class TaskOptionsIn(BaseModel):
     push_mm: float | None = None
     #: The owner's switch for this task (2026-10-03): true, the parts are critical, nothing is pushed and a blocker is
     #: cleared instead; false, a push may rearrange the scene, and a blocker is cleared where none plans. Null: the
-    #: cell's ``robot.grasping.recovery.critical_parts``.
+    #: cell's ``runtime.task.critical_parts``.
     critical_parts: bool | None = None
-    #: The run's own word on recovery (2026-10-05), overriding the cell's ``recovery.allowed_actions`` for this task:
-    #: look again, push a boxed-in part, clear a blocker. Null: the cell's.
+    #: The run's own word on recovery (2026-10-05), overriding the cell's for this task: look again, push a boxed-in
+    #: part, clear a blocker. Null: the cell's.
     rescan: bool | None = None
     push: bool | None = None
     clear: bool | None = None
     #: The owner's switch for this task (2026-10-06): true, a task that names no object takes a blocker as the part its
     #: pick takes and sets it down where the parts go, then picks the part it blocked; false, a blocker is set aside on
-    #: the support. Null: the cell's ``robot.grasping.recovery.blocker_into_the_place``.
+    #: the support. Null: the cell's, which sets it down where the parts go.
     blocker_into_the_place: bool | None = None
-    #: A camera place only: the air over the rim when the jaws open, 0-50 mm; null means the cell's
-    #: ``robot.place.rim_air_mm`` (20 as shipped).
+    #: A camera place only: the air over the rim when the jaws open, 0-50 mm; null means the owner's cell's 20 mm
+    #: (``place_target.RIM_AIR_DEFAULT_MM``).
     rim_air_mm: float | None = Field(default=None, ge=0.0, le=50.0)
     #: A camera place found by a wrist camera only: how the part is carried to it (:data:`CarryName`), the owner's
-    #: switch of 2026-10-08 night ("direkt über die Kante tragen"). Null: the cell's ``robot.place.carry``.
+    #: switch of 2026-10-08 night ("direkt über die Kante tragen"). Null: the cell's ``robot.motion.place.carry``.
     carry: CarryName | None = None
     #: The operator confirmed that an empty ``object`` means anything the camera sees, bin walls included. A real cell
     #: refuses an empty object without it (``422 object_required``); the rehearsal cell does not.
@@ -646,7 +589,7 @@ class TaskIn(BaseModel):
     #: finds is found before the first pick; a part no rule clearly claims stays where it lies and is named at the end.
     #: A factory default, so the OpenAPI document names none and the console's generated types keep it optional.
     more_rules: list[TaskRuleIn] = Field(default_factory=list, max_length=MAX_FURTHER_RULES)
-    #: ``home`` or a name in ``robot.named_poses``.
+    #: ``home`` or a name in ``robot.motion.named_poses``.
     return_to: str = "home"
     scope: TaskScope = "once"
     options: TaskOptionsIn = Field(default_factory=TaskOptionsIn)
@@ -695,7 +638,7 @@ class TaskOptionsOut(BaseModel):
     #: As asked (``TaskOptionsIn.blocker_into_the_place``); null, the cell's.
     blocker_into_the_place: bool | None = None
     rim_air_mm: float | None = None
-    #: As asked (``TaskOptionsIn.carry``); null, the cell's ``robot.place.carry``.
+    #: As asked (``TaskOptionsIn.carry``); null, the cell's ``robot.motion.place.carry``.
     carry: CarryName | None = None
     pick_anything: bool = False
     overlay: bool = True
@@ -975,7 +918,7 @@ class RestartIn(BaseModel):
 
 
 class HomeIn(BaseModel):
-    """Where the Home button drives: ``home`` or a name in ``robot.named_poses``."""
+    """Where the Home button drives: ``home`` or a name in ``robot.motion.named_poses``."""
 
     to: str = Field(default="home", min_length=1)
 
@@ -996,7 +939,7 @@ class BrakeOut(BaseModel):
     run_halted: bool
     #: The arm's halt latch is set: every next motion and output switch is refused before anything is sent.
     latched: bool
-    #: The move in flight is being braked (``robot.ur.brake_on_halt``); false where it runs to its end first.
+    #: The move in flight is being braked (every UR); false where it runs to its end first.
     braking: bool
     #: A motion was in flight.
     in_motion: bool
@@ -1044,20 +987,21 @@ class PushFactsOut(BaseModel):
     why_not: str = ""
     default_mm: float | None = None
     ceiling_mm: float | None = None
-    #: The cell's ``robot.grasping.recovery.critical_parts``: true, nothing is pushed and a blocker is cleared instead.
+    #: The cell's ``runtime.task.critical_parts`` as it was built, what a task that says nothing runs with: true, nothing
+    #: is pushed and a blocker is cleared instead. ``GET /v1/task/settings`` says the tree's now, which the next build
+    #: reads.
     critical_parts: bool = False
-    #: The cell's ``robot.grasping.recovery.blocker_into_the_place``: true, a task that names no object sets a blocker
+    #: Where the cell sets a blocker down: true, as it is since 2026-10-16, a task that names no object sets a blocker
     #: down where the parts go; false, it is set aside on the support.
     blocker_into_the_place: bool = True
-    #: Whether the cell's ``recovery.allowed_actions`` names ``rescan`` and ``nudge_target`` (with recovery on): what
-    #: the console's ticks start from; a task may override them for itself.
+    #: Whether the cell's recovery allows ``rescan`` and ``nudge_target`` in its grasp mode: what the console's ticks
+    #: start from; a task may override them for itself.
     rescan_allowed: bool = False
     push_allowed: bool = False
 
 
 class DetectorFactsOut(BaseModel):
     backend: str = ""
-    router_enabled: bool = False
     vlm_model_id: str | None = None
     precision: str | None = None
 
@@ -1067,16 +1011,8 @@ class BrakeFactsOut(BaseModel):
 
     #: The arm refuses every next motion once halted (the UR and the dummy).
     latches: bool = False
-    #: The arm also brakes a move in flight (``robot.ur.brake_on_halt: true``).
+    #: The arm also brakes a move in flight (every UR).
     brakes_in_motion: bool = False
-
-
-class PayloadFactsOut(BaseModel):
-    """Whether the planner models a carried part; a task refuses to run unless it does (a real cuRobo arm)."""
-
-    modelled: bool = False
-    declined_reason: str | None = None
-    length_mm: float | None = None
 
 
 class RouteFactsOut(BaseModel):
@@ -1094,7 +1030,7 @@ class CellFactsOut(BaseModel):
     #: The configured looks, by name.
     looks: list[str] = Field(default_factory=list)
     natural_closing_axis: str | None = None
-    #: The cell's ``robot.place.carry``: how a task carries a part to a bin a wrist camera found where it asks for
+    #: The cell's ``robot.motion.place.carry``: how a task carries a part to a bin a wrist camera found where it asks for
     #: nothing else (``TaskOptionsIn.carry``), what the console's "Direkt über die Kante tragen" starts from; null where
     #: the cell does not say.
     carry: CarryName | None = None
@@ -1103,7 +1039,6 @@ class CellFactsOut(BaseModel):
     #: Above this gap the hand-eye check says the calibration may have drifted. Nothing recalibrates.
     hand_eye_warn_mm: float = 6.0
     brake: BrakeFactsOut = Field(default_factory=BrakeFactsOut)
-    payload: PayloadFactsOut = Field(default_factory=PayloadFactsOut)
     route: RouteFactsOut
     #: The rehearsal scene, not a camera ("Probe").
     rehearsal: bool = False
@@ -1299,6 +1234,79 @@ class TeachStateOut(BaseModel):
     time_left_s: float | None = None
 
 
+# --- the cell's task settings (GET and PATCH /v1/task/settings): what a task takes where its sentence says nothing --
+
+#: How the console starts a typed or spoken task, ``runtime.task.start`` (``src.config.schema.runtime.TaskStart``, which
+#: ``tests/test_the_task_settings_are_the_cells.py`` pins against this).
+TaskStartName: TypeAlias = Literal["enter", "card"]
+#: How each pick of a task looks, ``runtime.task.looks`` (``src.config.schema.runtime.TaskLooks``, pinned the same way).
+TaskLooksName: TypeAlias = Literal["first", "when_needed", "every"]
+
+
+class DefaultPlaceSetting(BaseModel):
+    """The cell's default place pose, ``robot.motion.default_place_pose``."""
+
+    kind: Literal["default"]
+
+
+class PosePlaceSetting(BaseModel):
+    """A taught pose, by its name in ``robot.motion.named_poses``."""
+
+    kind: Literal["pose"]
+    pose: str = Field(min_length=1)
+
+
+class CameraPlaceSetting(BaseModel):
+    """A target the camera finds, such as a bin, by the English phrase it looks for: at most what a card's field takes,
+    on one line, with no ``" #"``."""
+
+    kind: Literal["camera"]
+    phrase: str = Field(min_length=1, max_length=MAX_FIELD_CHARS)
+
+
+#: Where a task's part goes when its sentence names no place (``runtime.task.place``), told apart by ``kind``.
+PlaceSetting: TypeAlias = Annotated[DefaultPlaceSetting | PosePlaceSetting | CameraPlaceSetting,
+                                    Field(discriminator="kind")]
+
+
+class TaskSettingsOut(BaseModel):
+    """The cell's task settings, ``runtime.task``: what every task the console is given takes where its sentence says
+    nothing, for every browser of the cell (the owner, 2026-10-16). None of them starts a task; a card may differ for
+    its own."""
+
+    #: ``enter``: Enter starts a clean reading at once on a ready cell; ``card``: Enter only reads, Start starts.
+    start: TaskStartName
+    #: The mode of a task Enter starts.
+    scope: TaskScope
+    #: Where the part goes when the sentence names no place.
+    place: PlaceSetting
+    #: A card whose sentence names no part comes ticked for anything the camera sees.
+    anything: bool
+    #: How each pick of a task looks: the first look only, the looks when needed, or every look.
+    looks: TaskLooksName
+    #: Whether the parts are critical, as the tree holds it now. The cell reads it when it is built, so the built cell's
+    #: own (``CellFactsOut.push.critical_parts``, what a task that says nothing runs with) changes at its next build.
+    critical_parts: bool
+    #: The file a change is written to, the runtime overlay of the chain's last layer; null where none is the cell's own.
+    target_file: str | None = None
+    #: Why no change can be written under this chain; ``""`` where one can.
+    why_not: str = ""
+    #: ``why_not`` as its code, for the browser's own words (``no_layer``: the chain has no layer of the cell's own).
+    why_not_code: RefusalCodeName | Literal[""] = ""
+
+
+class TaskSettingsIn(BaseModel):
+    """A change of the cell's task settings: those named are written into the cell's own layer, all or none, and one
+    left out or null keeps its value."""
+
+    start: TaskStartName | None = None
+    scope: TaskScope | None = None
+    place: PlaceSetting | None = None
+    anything: bool | None = None
+    looks: TaskLooksName | None = None
+    critical_parts: bool | None = None
+
+
 # --- commands (POST /v1/commands/parse): the VLM reads the sentence, a person confirms --------------------------
 
 
@@ -1311,13 +1319,12 @@ class CommandIn(BaseModel):
 
 
 class CommandPhraseOut(BaseModel):
-    """One field the reader filled: the English phrase, the operator's words, and how the detector would route it."""
+    """One field the reader filled: the English phrase and the operator's words."""
 
     phrase: str
     said: str | None = None
     #: The phrase was found in the sentence; false shows "please check".
     verified: bool = False
-    route: RoutePreviewOut | None = None
 
 
 class CommandRuleOut(BaseModel):
@@ -1396,7 +1403,7 @@ class CommandOut(BaseModel):
 
 
 #: The command reader's state (the commands light carries the same codes).
-CommandState: TypeAlias = Literal["ready", "idle", "loading", "missing", "failed", "not_configured"]
+CommandState: TypeAlias = Literal["ready", "idle", "loading", "missing", "failed"]
 
 
 class CommandStatusOut(BaseModel):

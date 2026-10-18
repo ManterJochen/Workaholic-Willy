@@ -145,7 +145,7 @@ class ThePickLoopTurnsItsGraspsTests(unittest.TestCase):
         loop.arm = SimpleNamespace(wrist_bodies=lambda: ())
         loop._wrist_housing_read = True
         loop._wrist_housing_cached = _HOUSING
-        loop.calculator_for = lambda camera_id: None
+        loop.calculator = None
         return loop
 
     def _result(self, grasp: GraspPoint, wall: Any) -> Any:

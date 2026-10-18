@@ -4,8 +4,8 @@ Three rules, each over every vendor the registry lists (``tests/_registered_arms
 violation it must find, because a rule that matches nothing passes every tree, a broken one included:
 
 - An arm that owns a controller is a planned arm. It subclasses ``PlannedArm`` and satisfies ``PlansMotions``,
-  ``CarriesPayload``, ``KeepsLines``, ``SafetyGated`` and ``DeclinesCameraWorld``, so its motions are judged, planned
-  and stamped like every other. The sim and the dummy own none (``capabilities.owns_a_controller``).
+  ``KeepsLines``, ``SafetyGated`` and ``DeclinesCameraWorld``, so its motions are judged, planned and stamped like
+  every other. The sim and the dummy own none (``capabilities.owns_a_controller``).
 - A planned arm overrides only the declared hooks (``PlannedArm._VENDOR_HOOKS``): a vendor that answered ``move``
   itself would carry a motion path the safety preflight and the camera world never see. The capability mixins it lists
   add verbs and override none.
@@ -33,10 +33,10 @@ _EXPOSES: dict[tuple[str, str], str] = {
 
 def _controller_protocols() -> tuple[type, ...]:
     from src.robot.core import DeclinesCameraWorld, PlansMotions
-    from src.robot.core.arm_capabilities import CarriesPayload, KeepsLines
+    from src.robot.core.arm_capabilities import KeepsLines
     from src.robot.safety.attestation import SafetyGated
 
-    return (PlansMotions, CarriesPayload, KeepsLines, SafetyGated, DeclinesCameraWorld)
+    return (PlansMotions, KeepsLines, SafetyGated, DeclinesCameraWorld)
 
 
 def _unplanned(arm: Any) -> list[str]:

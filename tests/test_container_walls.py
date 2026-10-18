@@ -17,16 +17,13 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import (
-    FusionGeometryConfig,
-    GraspingContainerConfig,
-    GraspingSupportConfig,
-)
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
+from src.config.schema.robot.grasping_schema import GraspingContainerConfig
 from src.geometry import Frame, Transform
 from src.robot.grasping.collision import container_wall_points_base_mm
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
 from src.robot.grasping.types.feedback import GraspResult
-from src.robot.grasping.types.perception import CameraObservation, PerceptionFrame
+from src.robot.grasping.types.perception import PerceptionFrame
 
 _LOGGER = "src.robot.grasping.loop.pick_loop"
 _LOW = (300.0, -100.0, 0.0)
@@ -135,8 +132,8 @@ class _Resolver:
         return Transform.identity(from_frame=Frame.CAMERA, to_frame=Frame.BASE)
 
 
-def _support(**container) -> GraspingSupportConfig:
-    return GraspingSupportConfig(container=GraspingContainerConfig(**container))
+def _support(**container) -> DeclaredSupport:
+    return DeclaredSupport(container=GraspingContainerConfig(**container))
 
 
 def _orchestrator(calculator, **kwargs) -> BinPickingOrchestrator:
@@ -152,7 +149,7 @@ def _orchestrator(calculator, **kwargs) -> BinPickingOrchestrator:
 class PickPathTests(unittest.TestCase):
     def test_default_config_adds_nothing(self) -> None:
         calculator = _Recording()
-        orch = _orchestrator(calculator, support_config=_support())
+        orch = _orchestrator(calculator, declared_support=_support())
 
         orch._best_result_over_segmentations(_frame())
 
@@ -162,7 +159,7 @@ class PickPathTests(unittest.TestCase):
         calculator = _Recording()
         orch = _orchestrator(
             calculator,
-            support_config=_support(
+            declared_support=_support(
                 wall_collision_enabled=True, interior_min_mm=_LOW, interior_max_mm=_HIGH
             ),
         )
@@ -178,17 +175,14 @@ class PickPathTests(unittest.TestCase):
             "walls must not ride the OBSERVED cloud -- the generator dilates that one by 12 mm",
         )
 
-    def test_walls_stack_on_top_of_the_fused_neighbour_cloud(self) -> None:
-        """The regression this test exists for: enabling one obstacle must not drop the other."""
-
-        class _Rig:
-            def acquire_all(self):  # noqa: ANN202
-                return (CameraObservation(camera_id="left", frame=_frame(boxes=((10, 22), (24, 30)))),)
-
+    def test_walls_stack_on_top_of_the_scene_cloud(self) -> None:
+        """The regression this test exists for: enabling one obstacle must not drop the other. The scene cloud is the
+        one handed in beside the frame (``external_scene_points_base_mm``); the neighbours the other looks of a wrist
+        pick saw ride the same kwarg."""
         walls_only = _Recording()
         _orchestrator(
             walls_only,
-            support_config=_support(
+            declared_support=_support(
                 wall_collision_enabled=True, interior_min_mm=_LOW, interior_max_mm=_HIGH
             ),
         )._best_result_over_segmentations(_frame(boxes=((10, 22),)))
@@ -196,24 +190,20 @@ class PickPathTests(unittest.TestCase):
         both = _Recording()
         _orchestrator(
             both,
-            support_config=_support(
+            declared_support=_support(
                 wall_collision_enabled=True, interior_min_mm=_LOW, interior_max_mm=_HIGH
             ),
-            multi_camera_perception=_Rig(),
-            camera_frame_resolvers={"left": _Resolver()},
-            fusion_geometry_config=FusionGeometryConfig(
-                enabled=True, neighbour_scene_enabled=True
-            ),
+            external_scene_points_base_mm=np.array([[24.0, 24.0, 500.0], [26.0, 24.0, 500.0]]),
         )._best_result_over_segmentations(_frame(boxes=((10, 22),)))
 
         self.assertNotIn("scene_points_mm", walls_only.kwargs[0])
         self.assertIn(
             "scene_points_mm", both.kwargs[0],
-            "turning on walls swallowed the fused neighbour cloud",
+            "turning on walls swallowed the scene cloud",
         )
         self.assertIn(
             "rigid_obstacle_points_mm", both.kwargs[0],
-            "turning on fusion swallowed the declared walls",
+            "a scene cloud swallowed the declared walls",
         )
         np.testing.assert_array_equal(
             walls_only.kwargs[0]["rigid_obstacle_points_mm"],
@@ -226,7 +216,7 @@ class PickPathTests(unittest.TestCase):
             arm=SimpleNamespace(),  # type: ignore[arg-type]
             calculator=calculator,  # type: ignore[arg-type]
             perception=SimpleNamespace(acquire=_frame),  # type: ignore[arg-type]
-            support_config=_support(
+            declared_support=_support(
                 wall_collision_enabled=True, interior_min_mm=_LOW, interior_max_mm=_HIGH
             ),
         )
@@ -242,7 +232,7 @@ class PickPathTests(unittest.TestCase):
     def test_the_walls_are_built_once(self) -> None:
         orch = _orchestrator(
             _Recording(),
-            support_config=_support(
+            declared_support=_support(
                 wall_collision_enabled=True, interior_min_mm=_LOW, interior_max_mm=_HIGH
             ),
         )

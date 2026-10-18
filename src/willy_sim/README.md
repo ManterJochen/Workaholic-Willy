@@ -65,19 +65,19 @@ their result JSON.
 | Runner | Scenario |
 |---|---|
 | `run_m1_pick` | known-pose pick with ground-truth perception, so a failure is motion or geometry |
-| `run_m2_pick` | real vision: detector and segmenter in the loop, planning against a live world from the overhead camera |
+| `run_m2_pick` | real vision: the cell's detector (the VLM) and SAM2 in the loop, planning against a live world from the overhead camera |
 | `run_eih_pick` | eye-in-hand: the camera rides the wrist and perceives again from where it moved |
 | `run_dense_pick` | dense clutter; `--vision` for real perception |
 | `run_fused_pick` | overhead coarse scan, then the wrist camera perceives from above the part and grasps |
 | `run_multiview_pick` | fixed cameras localize, then the wrist camera perceives from above the fused centroid and grasps; `--mode eth1`, `eth2`, `eth3` or `sides` |
 | `run_industrial_bin_pick` | two side cameras find the prompted part in a tray of mixed parts |
-| `run_attribute_pick` | four objects the noun alone cannot tell apart, compared per route |
+| `run_attribute_pick` | four objects the noun alone cannot tell apart, grounded by the cell's detector |
 | `run_eth_calibrate`, `run_eih_calibrate` | eye-to-hand and eye-in-hand calibration through the real `CalibrationRoutine` |
 | `run_suction_pick`, `run_industrial_suction_pick` | a suction cup on the wrist: one part, and a wide flat package the jaw cannot span |
 
 `run_m2_pick --decline-camera-world "<why>"` boots the control run without the live world. The film recorders
 are `run_eih_demo`, `run_dense_demo`, `run_dense_demo_endgame`, `run_sorting_demo`, `run_bin_clearing_demo`,
-`run_klt_combined_demo`, `run_clutter_demo`, `run_expose_pick`, `run_suction_demo` and
+`run_klt_combined_demo`, `run_clutter_demo`, `run_suction_demo` and
 `run_industrial_suction_demo`. The probes and matrices are `inspect_wrist_cam`, `run_mode_matrix`,
 `run_occlusion_probe`, `run_pile_baseline`, `run_shake_label`, `run_suction_probe` and `run_curobo_demo`.
 
@@ -96,8 +96,10 @@ are `run_eih_demo`, `run_dense_demo`, `run_dense_demo_endgame`, `run_sorting_dem
   is the path a real cell takes, and `run_eih_pick.build_service(service_from_config=True)` does from Python.
 - **The overhead camera keeps Isaac's 1.0 m near clip on purpose.** It hides the arm from the instance mask;
   read the clipping range back off the camera before believing a value was applied.
-- **The detector runs fp32 weights in the simulator.** The sim model overlays leave the dtype unset, which
-  holds recall on small objects in the overhead view.
+- **The simulator perceives with the cell's models.** The sim model overlays left on 2026-10-17: the VLM
+  grounds and SAM2 cuts, loaded as on the owner's cell (SAM2 with fp32 weights under fp16 autocast, which holds
+  recall on small objects in the overhead view), their weights read from `models.weights_root`. The vision gates
+  were measured with GroundingDINO, the sim's detector until then, and are unmeasured on the VLM.
 - **Record logging is opt-in**: `run_m1_pick --record-log <file>` appends one `GraspAttemptRecord` per pick.
 - **No generated view in Isaac.** The Isaac arm names no configuration for a pose and drives no straight
   joint line alone, so a wrist pick's looks end there without the one generated view a real UR may take,
@@ -122,6 +124,7 @@ randomizer, the IK service, the gate, the runner knobs, the modes, hand-eye cali
 | Path | Holds |
 |---|---|
 | [config.py](config.py) | `load_sim_config`, which loads the `config` tree under the `sim` profile, and its helpers |
+| [guard_numbers.py](guard_numbers.py) | `ISAAC`, the numbers the Isaac arm's guards hold it to (its half-turned base, its whole joint envelope, its IK and continuity bounds), handed to its preflight by `config.sim_safety_preflight`: no tree configures them since 2026-10-17 |
 | [harness/](harness/) | the shared seams below |
 | [perception/](perception/) | ground-truth and real-vision perception sources, and the overhead camera as a live world's camera |
 | [scene/](scene/) | Isaac scene authoring: the cell, the cameras and their frames, the markers |

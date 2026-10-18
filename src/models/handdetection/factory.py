@@ -1,16 +1,18 @@
-"""Build the detectors from config: the readers of `models.handdetect` and `models.gesturedetect`.
+"""Build the hand and gesture detectors: the owner's cell's numbers, and the bundles from the weights folder.
 
-Each function consumes its block field by field, and these are the only readers of those two
-blocks, so a key dropped here is a key nobody reads. The detector keys reach MediaPipe;
-`palm_patch_radius_px` and `min_depth_samples` reach `HandFinder`, which samples depth around the
-palm.
+The two config blocks these read (`models.handdetect` and `models.gesturedetect`) left on 2026-10-17:
+every key they held was the bundle's path or a number no cell changed. The numbers are fixed in
+`constants.py` at the owner's cell's values and reach MediaPipe (the thresholds) and `HandFinder`
+(`PALM_PATCH_RADIUS_PX`, `MIN_DEPTH_SAMPLES`, the depth sampled around the palm); the `.task` bundles
+are the weights catalogue's (`src.models.weights.fixed_file`), read under the folder a caller names,
+the tree's `models.weights_root`, or the repository's.
 
 The 3-D builder does not source its transforms from config. A CAMERA->BASE transform is a
-calibration artefact with an existing loader (`grasping.fusion` extrinsics, or an eye-in-hand
-resolver composed from the live TCP), and a second spelling of it in `models.handdetect` would be a
-second source of truth for the most safety-relevant number here. The caller passes the transforms it
-already has; over one open wrist camera, every frame is placed by the composition the `Locator`
-places its frames by (`robot.core.shutter_motion`), read here and never written again.
+calibration artefact with an existing loader (a rig's declared extrinsics, or an eye-in-hand
+resolver composed from the live TCP), and a second spelling of it here would be a second source of
+truth for the most safety-relevant number here. The caller passes the transforms it already has;
+over one open wrist camera, every frame is placed by the composition the `Locator` places its
+frames by (`robot.core.shutter_motion`), read here and never written again.
 """
 
 from __future__ import annotations
@@ -20,11 +22,11 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
-from src.config.schema.models import GestureDetectConfig, HandDetectConfig
 from src.calibration.rig_calibration import RigCalibrationError, flange_to_tcp_refusal
 from src.calibration.stereo.manager import StereoCam3D
 from src.camera.orchestration.frame_provider import FrameProvider
 from src.geometry import Pose
+from src.models.handdetection.constants import GESTURE_BUNDLE, HAND_BUNDLE
 from src.models.handdetection.gestures import ThumbGestureRecognizer
 from src.models.handdetection.hand_finder import (
     FrameTransform,
@@ -34,6 +36,7 @@ from src.models.handdetection.hand_finder import (
     OneWristCamera,
 )
 from src.models.handdetection.palm_detector import PalmDetector
+from src.models.weights import fixed_file
 
 __all__ = [
     "build_gesture_recognizer",
@@ -43,55 +46,50 @@ __all__ = [
 ]
 
 
-def build_palm_detector(config: HandDetectConfig) -> PalmDetector:
+def build_palm_detector(*, weights_root: str | None = None) -> PalmDetector:
     """Where hands are in a colour frame, in pixels, with no gesture.
 
     Args:
-        config (HandDetectConfig): ``models.handdetect``: the ``.task`` bundle and the thresholds.
+        weights_root (str | None): The folder the hand-landmark bundle is read from, the tree's
+            ``models.weights_root``; ``None`` is the repository's (default: None).
 
     Returns:
-        PalmDetector: The detector; ``observe(frame_bgr)`` answers.
+        PalmDetector: The detector, at the owner's cell's numbers; ``observe(frame_bgr)`` answers.
 
     Raises:
         ImportError: MediaPipe is not installed.
-        FileNotFoundError: The bundle ``models.handdetect.model_path`` names is not there.
+        FileNotFoundError: The bundle is not in the weights folder (``scripts/model_weights/fetch.py --mediapipe``
+            writes it).
     """
     return PalmDetector(
-        config.model_path,
-        max_hands=config.max_hands,
-        threshold=config.threshold,
-        tracking_threshold=config.tracking_threshold,
-        presence_threshold=config.presence_threshold,
-        config_key="models.handdetect.model_path",
+        str(fixed_file(HAND_BUNDLE, root=weights_root)),
+        config_key=f"the hand-landmark bundle ({HAND_BUNDLE}) under models.weights_root",
     )
 
 
-def build_gesture_recognizer(config: GestureDetectConfig) -> ThumbGestureRecognizer:
+def build_gesture_recognizer(*, weights_root: str | None = None) -> ThumbGestureRecognizer:
     """A thumbs-up or thumbs-down recogniser that also reports the palm centre.
 
     Args:
-        config (GestureDetectConfig): ``models.gesturedetect``: the ``.task`` bundle and the thresholds.
+        weights_root (str | None): The folder the gesture bundle is read from, the tree's ``models.weights_root``;
+            ``None`` is the repository's (default: None).
 
     Returns:
-        ThumbGestureRecognizer: The recogniser; ``observe(frame_bgr)`` answers with a ``HandGesture``.
+        ThumbGestureRecognizer: The recogniser, at the owner's cell's numbers; ``observe(frame_bgr)`` answers with a
+            ``HandGesture``.
 
     Raises:
         ImportError: MediaPipe is not installed.
-        FileNotFoundError: The bundle is not there.
+        FileNotFoundError: The bundle is not in the weights folder (``scripts/model_weights/fetch.py --mediapipe``
+            writes it).
     """
     return ThumbGestureRecognizer(
-        config.model_path,
-        max_hands=config.max_hands,
-        threshold=config.threshold,
-        tracking_threshold=config.tracking_threshold,
-        presence_threshold=config.presence_threshold,
-        min_gesture_confidence=config.min_gesture_confidence,
-        config_key="models.gesturedetect.model_path",
+        str(fixed_file(GESTURE_BUNDLE, root=weights_root)),
+        config_key=f"the gesture bundle ({GESTURE_BUNDLE}) under models.weights_root",
     )
 
 
 def build_hand_finder(
-    config: HandDetectConfig,
     *,
     provider: FrameProvider,
     transforms: Mapping[str, np.ndarray],
@@ -100,47 +98,50 @@ def build_hand_finder(
     camera_matrices: Optional[Mapping[str, np.ndarray]] = None,
     rig_ids: Optional[Sequence[str]] = None,
     frame_transforms: Optional[Mapping[str, FrameTransform]] = None,
+    weights_root: Optional[str] = None,
 ) -> HandFinder:
-    """`models.handdetect` + the caller's calibration -> a 3-D hand search.
+    """The caller's calibration and the owner's cell's numbers -> a 3-D hand search.
 
-    `observer` defaults to a landmark-only detector built from the same block. Pass a
-    `ThumbGestureRecognizer` from `build_gesture_recognizer` when the located hand should also carry
-    a gesture: that model returns landmarks too, so nothing is detected twice. `frame_transforms`
-    places a rig that moves frame by frame (see `HandFinder`).
+    `observer` defaults to a landmark-only detector, its bundle read under `weights_root` (the tree's
+    `models.weights_root`; `None` is the repository's). Pass a `ThumbGestureRecognizer` from
+    `build_gesture_recognizer` when the located hand should also carry a gesture: that model returns
+    landmarks too, so nothing is detected twice. `frame_transforms` places a rig that moves frame by
+    frame (see `HandFinder`).
     """
     return HandFinder(
-        observer if observer is not None else build_palm_detector(config),
+        observer if observer is not None else build_palm_detector(weights_root=weights_root),
         provider=provider,
         transforms=transforms,
         frame_transforms=frame_transforms,
         stereo=stereo,
         camera_matrices=camera_matrices,
         rig_ids=rig_ids,
-        palm_patch_radius_px=config.palm_patch_radius_px,
-        min_depth_samples=config.min_depth_samples,
     )
 
 
 def build_hand_finder_on_camera(
-    config: HandDetectConfig,
     camera: Any,
     *,
     observer: Optional[HandObserver] = None,
     tool_pose: Optional[Callable[[], Pose]] = None,
     tool_frame: Any = None,
     attempts: Optional[int] = None,
+    weights_root: Optional[str] = None,
 ) -> HandFinder:
     """Where a hand is, in millimetres in the robot's base frame, over one camera you already hold open, read through
     that camera's own calibration.
 
     Args:
-        config (HandDetectConfig): ``models.handdetect``.
         camera (Any): An open camera owner (:class:`Camera`).
-        observer (HandObserver | None): The detector to use; ``None`` builds one from ``config`` (default: None).
+        observer (HandObserver | None): The detector to use; ``None`` builds the palm detector, its bundle read under
+            ``weights_root`` (default: None).
         tool_pose (Callable[[], Pose] | None): For a camera on the wrist: the arm's ``get_tcp_pose``, read at each
             shutter; required there (default: None).
         tool_frame (Any): For a camera on the wrist: the cell's ``robot.gripper.tool_frame`` (default: None).
-        attempts (int | None): How many more frames a wrist camera takes while the tool moved (default: None).
+        attempts (int | None): How many more frames a wrist camera takes while the tool moved; ``None`` is every
+            cell's ``shutter_motion.FRESH_FRAME_ATTEMPTS`` (default: None).
+        weights_root (str | None): The folder the bundle is read from, the tree's ``models.weights_root``; ``None``
+            is the repository's (default: None).
 
     Returns:
         HandFinder: The finder; ``find_hand()`` answers in BASE millimetres.
@@ -167,13 +168,13 @@ def build_hand_finder_on_camera(
     else:
         transforms[rig_id] = np.asarray(calibration.camera_to_base().to_matrix(), dtype=np.float64)
     return build_hand_finder(
-        config,
         provider=frames,  # type: ignore[arg-type]  # RigFrames, the surface HandFinder reads
         transforms=transforms,
         frame_transforms=frame_transforms,
         observer=observer,
         camera_matrices={rig_id: np.asarray(matrix, dtype=np.float64)} if matrix is not None else None,
         rig_ids=[rig_id],
+        weights_root=weights_root,
     )
 
 
@@ -202,15 +203,14 @@ def _wrist_frames(camera: Any, calibration: Any, *, tool_pose: Optional[Callable
     # The pick frame's stamp and the Locator's composition, from where they are written. Loaded
     # here, for a wrist rig, so a fixed camera's search loads nothing of the robot.
     from src.robot.core.shutter_motion import (  # noqa: PLC0415
+        FRESH_FRAME_ATTEMPTS,
         PICK_FRAME_WARMUP_GRABS,
         ShutterStamp,
         camera_to_base_at_shutter,
     )
 
     if attempts is None:
-        from src.config.schema.robot.safety_schema import PerceivedWorldConfig  # noqa: PLC0415
-
-        attempts = int(PerceivedWorldConfig.model_fields["fresh_frame_attempts"].default)
+        attempts = FRESH_FRAME_ATTEMPTS
     stamp = ShutterStamp.of(
         tool_pose,
         motion_tolerance=(calibration.shutter_motion_tolerance_mm,

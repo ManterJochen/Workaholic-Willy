@@ -80,7 +80,9 @@ class MaskCompletionLeverTests(unittest.TestCase):
         from datagen.eval.ladder import CONFIGURATIONS, evaluate_dataset
 
         path = DATASET / out_name
-        rung = tuple(c for c in CONFIGURATIONS if c.name == "neighbours")
+        # The part's body over its support with the other masks of the view, the rung of a cell's pick since the
+        # silhouette's `neighbours` rung left with it (2026-10-16).
+        rung = tuple(c for c in CONFIGURATIONS if c.name == "sfe")
         try:
             evaluate_dataset(DATASET, limit=cls.LIMIT, jobs=jobs, out_name=out_name, configs=rung,
                              with_suction=False, progress_every=0, mask_source="gt",
@@ -104,10 +106,13 @@ class MaskCompletionLeverTests(unittest.TestCase):
         self.assertNotEqual(default, filled, "the mask-completion policy never reached the evaluator")
 
     def test_filling_moves_objects_ACROSS_the_visibility_threshold(self) -> None:
-        """The row count changes, and that is the finding -- not a flaw in the comparison.
+        """The objects evaluated change, and that is the finding -- not a flaw in the comparison.
 
         This test was written asserting the opposite, that the policy could not change WHICH rows
-        exist, and it failed at 54 != 56. The mechanism: a row carries ``visible_px = mask.sum()`` and
+        exist, and it failed at 54 != 56. Objects, not rows, since the part's body over its support is
+        the rung (2026-10-16): a row is a candidate grasp, and the body finds fewer on a mask filled to
+        its box (measured 2026-10-18: 245 rows against 159, 36 targets against 37). The mechanism: a
+        row carries ``visible_px = mask.sum()`` and
         an object under ``MIN_VISIBLE_PX`` (100) is recorded ``not_visible`` and never evaluated.
         Filling a mask to its box inflates that count -- measured on bin_000009/wrist, instance 1 goes
         from 31 px to 192 px -- so objects the evaluation used to skip become grasp targets.
@@ -119,7 +124,12 @@ class MaskCompletionLeverTests(unittest.TestCase):
         """
         default = self._run("none", "_mc_g.jsonl")
         filled = self._run("axis_aligned_box", "_mc_h.jsonl")
-        self.assertGreater(len(filled), len(default),
+
+        def _targets(rows):
+            return {(r["scene_id"], r["view"], r["instance_id"])
+                    for r in rows if r.get("outcome") != "not_visible"}
+
+        self.assertGreater(len(_targets(filled)), len(_targets(default)),
                            "filling must admit objects the visibility floor used to reject")
 
         def _skipped(rows):
@@ -307,7 +317,7 @@ class TheLimitFlagMustActuallyLimitTest(unittest.TestCase):
         """The differential: a flag that is read but inert produces the same run either way."""
         from datagen.eval.ladder import CONFIGURATIONS, evaluate_dataset
 
-        rung = tuple(c for c in CONFIGURATIONS if c.name == "neighbours")
+        rung = tuple(c for c in CONFIGURATIONS if c.name == "sfe")
         if not (DATASET / "scenes").is_dir():
             # A checkout without the proof dataset (CI, a trial copy): logs/ is ignored, and the siblings above skip
             # on the same condition. MEASURED 2026-09-17: this one raised FileNotFoundError there instead.

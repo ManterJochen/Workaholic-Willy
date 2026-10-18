@@ -44,8 +44,8 @@ left, so no hands-off countdown comes before anything: ``HandGuide.hands_off`` g
 by itself, and nothing drives here.
 
 Boundaries are said, never enforced (:class:`~src.robot.execution.hand_guiding.HandGuidingLimits`). A pose outside
-the cable window, the joint-limit guard's window (half a turn either side of home where the cell keeps
-``safety.joint_limits.within_half_turn_of_home``), or outside the workspace box is said once per crossing on the
+the cable window, the joint-limit guard's window (half a turn either side of home, as every real arm keeps it), or
+outside the workspace box is said once per crossing on the
 console, and in red in the camera's window where one is shown, and Enter does not capture there. The arm is never
 held, locked or stopped for it: an arm that locks while a person pushes it is how a hand gets caught.
 
@@ -746,7 +746,7 @@ class ProfilePoseStore:
         file = self.tree.pose_file()
         if file is None:
             raise TeachRefused("no_layer", (
-                f"no file backs robot.named_poses under the config root {self.tree.root}, so the pose could be written "
+                f"no file backs robot.motion.named_poses under the config root {self.tree.root}, so the pose could be written "
                 "nowhere. Nothing was freed."))
         return str(file)
 
@@ -781,7 +781,7 @@ def _taught_poses_of(tree: "ConfigTree") -> dict[str, Any]:
         robot = load_config(tree.root, profile=tree.profile).robot
     except ConfigError:
         return {}
-    return dict(getattr(robot, "named_poses", None) or {})
+    return dict(getattr(getattr(robot, "motion", None), "named_poses", None) or {})
 
 
 def name_refusal(name: str) -> str:
@@ -1342,12 +1342,12 @@ def _workspace_box(robot: Any, tree: Any, box: Any) -> Any:
     if box is None:
         loaded = tree if tree is not None else getattr(robot, "tree", None)
         for section in (getattr(robot, "robot_config", None), getattr(loaded, "robot", None)):
-            box = getattr(section, "workspace_limits", None)
+            box = getattr(getattr(section, "motion", None), "workspace", None)
             if box is not None:
                 break
     if box is None or not all(isinstance(getattr(box, face, None), (int, float)) for face in _FACES):
         raise HandGuidingRefused(
-            "the workspace box is not known (the robot keeps no robot section with workspace_limits, and no box= was "
+            "the workspace box is not known (the robot keeps no robot section with motion.workspace, and no box= was "
             "given), so a pose outside it could not be said: build the robot from the cell's tree, "
             "Robot.from_config(tree.robot, gripper=None). Nothing was asked and nothing was freed")
     return box

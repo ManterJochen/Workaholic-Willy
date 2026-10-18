@@ -4,8 +4,8 @@ Every judged path, joint, line or planned, is sampled so that between two neighb
 robot moves further than the bound the gate is told: the sum of each joint's turn times its radius. The radii came from
 the bare DH table, which ends at the flange, so a wrist turn that the gate counted as 10 mm moved a 132 mm tool's grasp
 centre 11.6 mm and its fingertips further (found by the Step 8f and 8g review, 2026-09-18). A radius is now the DH radius
-plus the furthest the carried geometry reaches from the flange: the hand's sphere map as the guard places it, a wrist
-camera's fill, and a carried part where the cell declares its length.
+plus the furthest the carried geometry reaches from the flange: the hand's sphere map as the guard places it and a
+wrist camera's fill (and a carried part where a cell declared its length, until no cell modelled one: 2026-10-17).
 
 The arm is a ``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``), with the
 preflight its tree builds; the radii are the UR DH table's until P1.
@@ -21,33 +21,26 @@ import numpy as np
 
 from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.safety._ur_kinematics import ur_joint_radii_mm, ur_link_transforms_mm
-from src.robot.safety.planning.self_envelope import hand_spheres, payload_capsule
+from src.robot.safety.planning.self_envelope import hand_spheres
 from tests._arm_kit import kit_tree, planned_arm
 
 
-def _arm(*, payload: "dict[str, Any] | None" = None) -> PlannedArm:
+def _arm() -> PlannedArm:
     safety: dict[str, Any] = {
-        "payload": {"enforce": False},
         "self_collision": {"planner_margin_mm": 4.0},
     }
-    if payload is not None:
-        safety["planning_world"] = {"payload": payload}
     return planned_arm(kit_tree("curobo", safety=safety, gripper={"coupling_plates": [], "tool_frame": {
         "source": "willy", "offset_mm": [0.0, 0.0, 132.0], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}}))
 
 
-def _carried_points(arm: PlannedArm, *, with_part: bool = False) -> np.ndarray:
-    """The extreme points of every sphere and capsule the flange carries, in the flange frame."""
+def _carried_points(arm: PlannedArm) -> np.ndarray:
+    """The extreme points of every sphere the flange carries, in the flange frame."""
     preflight = arm.safety_preflight
     assert preflight is not None
     hand = preflight.planner_hand(arm)
     spheres = hand_spheres(hand, "ur5e")  # type: ignore[arg-type]
     assert spheres is not None
     capsules = list(spheres)
-    if with_part:
-        cfg = arm.config.safety.planning_world.payload
-        capsules.append(payload_capsule(hand, spheres, length_mm=float(cfg.length_mm),  # type: ignore[arg-type]
-                                        lateral_margin_mm=float(cfg.lateral_margin_mm)))
     points = []
     for capsule in capsules:
         for end in (capsule.start_mm, capsule.end_mm):
@@ -97,22 +90,6 @@ class TheStepBoundHoldsForTheHandTests(unittest.TestCase):
         turn = np.array([0.0, 0.0, 0.0, 0.0, 0.05, 0.0])
         moved = _largest_move_mm(_carried_points(arm), before, before + turn)
         self.assertLessEqual(moved, 0.05 * radii[4] + 1e-6)
-
-    def test_a_declared_carried_part_is_in_the_bound_too(self) -> None:
-        arm = _arm(payload={"enabled": True, "length_mm": 120.0})
-        self._assert_bound_holds(arm, _carried_points(arm, with_part=True))
-
-    def test_the_part_is_the_one_the_preflight_was_built_with_not_one_the_arm_keeps(self) -> None:
-        """P0e E5: the part comes from the safety config the preflight was built from. Until then it was read off the
-        arm's own tree, which only the UR driver kept; asked about an arm whose tree declares no part, a preflight
-        built to carry one bounded the hand as if it carried nothing."""
-        carrying, bare = _arm(payload={"enabled": True, "length_mm": 120.0}), _arm()
-        built_with_part, built_without = carrying.safety_preflight, bare.safety_preflight
-        assert built_with_part is not None and built_without is not None
-        with_part = built_with_part.carried_reach_mm(bare, "ur5e")
-        without = built_without.carried_reach_mm(bare, "ur5e")
-        assert with_part is not None and without is not None
-        self.assertGreater(with_part, without + 100.0)
 
     def test_the_bare_arm_is_the_floor(self) -> None:
         """The control: nothing carried shrinks a radius below the arm's own."""

@@ -11,15 +11,15 @@ What this file pins:
   waypoint judged in one check, then the waypoints sent as a judged plan is sent, one list to the executor, no blend; a
   leg that is not clear refuses the whole path, nothing sent and nothing planned around it; an arm whose paths nobody
   judges refuses it; the motion verb refuses an arm without the capability, by name;
-* mesh first (``safety.planned_motion.mesh_first``): the exact guard alone where it holds what the planner holds, and the
-  planner asked beside it where it holds more: the switch off, no exact guard, a mesh in the planner's world, a distance
-  field of the camera's points, a carried part, a planner that cannot say whether it carries one, the declared
-  support plane wherever a part of the arm or the hand comes within the guard's distance of its top, and the robot's
+* mesh first (every cell's since 2026-10-17): the exact guard alone where it holds what the planner holds, and the
+  planner asked beside it where it holds more: no exact guard, a mesh in the planner's world, the
+  declared support plane wherever a part of the arm or the hand comes within the guard's distance of its top, and the
+  robot's
   own base, which no guard part holds, wherever a part past the shoulder comes within that distance of it or the guard
   knows no base for the arm (the base review of 2026-10-07);
 * mesh first beside the bin of ``test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py``, on the real exact
-  guard: the line the planner's spheres refuse runs without the planner being asked; on a cell that models a carried
-  part, a hand not known empty and open asks it, and its refusal stands (the owner, 2026-10-01);
+  guard: the line the planner's spheres refuse runs without the planner being asked, whatever the hand holds (no cell
+  models a part in the jaws since 2026-10-17);
 * how low the arm reaches (``MeshSelfCollisionBackend.lowest_mm``): the lowest point of every part past the shoulder,
   exact, the shoulder left out;
 * how near the robot's base a part comes (``MeshSelfCollisionBackend.base_near_mm``), on the real exact guard: the
@@ -69,15 +69,13 @@ class _NeverPlans(RoutePlanner):
         self.test.fail(f"cuRobo was asked to plan to {list(goal)}: a joint path is never planned around")
 
 
-def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo", world: "dict[str, Any] | None" = None,
-         mesh_first: bool = True) -> URRobotArm:
-    safety: dict[str, Any] = {"payload": {"enforce": False}, "planned_motion": {"mesh_first": mesh_first}}
+def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo", world: "dict[str, Any] | None" = None) -> URRobotArm:
+    safety: dict[str, Any] = {}
     if world is not None:
         safety["planning_world"] = world
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": motion_planner},
+        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": motion_planner, "workspace": OPEN_WORKSPACE},
         "safety": safety, "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": OPEN_WORKSPACE,
     }))
     arm._conn = MagicMock()
     arm._conn.is_connected = True
@@ -109,7 +107,7 @@ class TheJointPathTests(unittest.TestCase):
         np.testing.assert_allclose(checked[1][0], _HERE, atol=0.0)
         np.testing.assert_allclose(checked[1][-1], _HERE, atol=0.0)
         self.assertTrue(any(np.allclose(c, _BENT) for c in checked[1]), "the bent leg was not judged")
-        self.assertEqual(3.0, checked[3], "the legs were not judged at safety.planned_motion.line_clearance_mm")
+        self.assertEqual(3.0, checked[3], "the legs were not judged at path_samples.LINE_CLEARANCE_MM")
         (executed,) = planner.named("execute")
         self.assertEqual([tuple(_ONE), tuple(_BENT), tuple(_HERE)], executed[1])
         self.assertIs(MotionCommand.MOVE_JOINTS, executed[2])
@@ -171,12 +169,6 @@ class TheJointPathTests(unittest.TestCase):
         self.assertIn("DrivesJointPaths", report.message)
 
 
-class _Glue(RoutePlanner):
-    """The route planner double, saying whether it carries a part as the real glue does."""
-
-    carries_part = False
-
-
 _PLANE = {"height_mm": 0.0, "extent_mm": [900.0, 700.0], "thickness_mm": 50.0}
 
 
@@ -192,10 +184,10 @@ def _pairs(lowest: "float | None" = 400.0, *, says: bool = True,
 
 
 def _mesh_first(*, world: "dict[str, Any] | None" = None, pairs: "ExactPairs | None" = None,
-                mesh_first: bool = True, planner: "RoutePlanner | None" = None,
+                planner: "RoutePlanner | None" = None,
                 arm_setup: Any = None) -> "str | None":
-    glue = planner if planner is not None else _Glue(here=_HERE)
-    arm = _arm(glue, world=world, mesh_first=mesh_first)
+    glue = planner if planner is not None else RoutePlanner(here=_HERE)
+    arm = _arm(glue, world=world)
     arm._preflight.exact_pairs = lambda arm=None: pairs  # type: ignore[method-assign]
     if arm_setup is not None:
         arm_setup(arm)
@@ -204,29 +196,20 @@ def _mesh_first(*, world: "dict[str, Any] | None" = None, pairs: "ExactPairs | N
 
 class MeshFirstTests(unittest.TestCase):
     def test_the_exact_guard_alone_where_it_holds_what_the_planner_holds(self) -> None:
-        self.assertIsNone(_mesh_first(world={"enabled": True, "support_plane": _PLANE}, pairs=_pairs()))
+        # The world sends its distance field too, as every cell's does: the camera world's boxes as measured, which the
+        # guard holds (owner, 2026-10-15).
+        self.assertIsNone(_mesh_first(world={"support_plane": _PLANE}, pairs=_pairs()))
         self.assertIsNone(_mesh_first(pairs=_pairs(lowest=None, says=False)), "no planning world, no plane to keep")
-        # A distance field is the camera world's boxes as measured, which the guard holds (owner, 2026-10-15).
-        field = {"enabled": True, "support_plane": _PLANE, "perceived": {"voxel_field_mm": 20.0}}
-        self.assertIsNone(_mesh_first(world=field, pairs=_pairs()))
 
-    def test_the_switch_off_or_no_exact_guard_asks_the_planner(self) -> None:
-        self.assertIn("mesh_first is off", _mesh_first(pairs=_pairs(), mesh_first=False) or "")
+    def test_no_exact_guard_asks_the_planner(self) -> None:
         self.assertIn("no exact mesh guard", _mesh_first(pairs=None) or "")
 
     def test_what_only_the_planner_holds_asks_it(self) -> None:
-        def carrying(arm: URRobotArm) -> None:
-            arm._attached_payload = object()  # type: ignore[assignment]
-
-        self.assertIn("a part is carried", _mesh_first(pairs=_pairs(), arm_setup=carrying) or "")
-        loaded = _Glue(here=_HERE)
-        loaded.carries_part = True
-        self.assertIn("a part is carried", _mesh_first(pairs=_pairs(), planner=loaded) or "")
-        self.assertIn("cannot say whether it carries", _mesh_first(pairs=_pairs(), planner=RoutePlanner(here=_HERE))
-                      or "")
+        world = {"support_plane": _PLANE, "meshes": [{"name": "tote", "path": "assets/tote.obj"}]}
+        self.assertIn("declares meshes the exact guard does not hold", _mesh_first(world=world, pairs=_pairs()) or "")
 
     def test_the_support_plane_asks_the_planner_where_the_arm_comes_near_it(self) -> None:
-        world = {"enabled": True, "support_plane": _PLANE}
+        world = {"support_plane": _PLANE}
         said = _mesh_first(world=world, pairs=_pairs(lowest=2.0)) or ""
         self.assertIn("2.0 mm over the declared support plane", said)
         self.assertIn("within the guard's 3 mm", said)
@@ -243,19 +226,16 @@ class MeshFirstTests(unittest.TestCase):
         self.assertIn("knows no base for this arm", _mesh_first(pairs=_pairs(knows_base=False)) or "")
 
     def test_a_raised_plane_is_read_at_its_height(self) -> None:
-        raised = {"enabled": True, "support_plane": {**_PLANE, "height_mm": 398.0}}
+        raised = {"support_plane": {**_PLANE, "height_mm": 398.0}}
         self.assertIn("2.0 mm over", _mesh_first(world=raised, pairs=_pairs(lowest=400.0)) or "")
 
-    def test_on_a_cell_that_models_a_carried_part_a_hand_not_known_open_asks_the_planner(self) -> None:
+    def test_no_hand_is_read(self) -> None:
+        """No part in the jaws is modelled (the owner, 2026-10-05; every cell since 2026-10-17): whatever the hand
+        says, the exact guard alone judges where it holds what the planner holds."""
         def unknown(arm: URRobotArm) -> None:
             arm.set_hand(None)
 
-        modelled = {"enabled": True, "support_plane": _PLANE, "payload": {"length_mm": 1.0}}
-        self.assertIn("not known to be empty and open", _mesh_first(world=modelled, pairs=_pairs(), arm_setup=unknown)
-                      or "")
-        unmodelled = {"enabled": True, "support_plane": _PLANE, "payload": {"enabled": False}}
-        self.assertIsNone(_mesh_first(world=unmodelled, pairs=_pairs(), arm_setup=unknown),
-                          "a cell that models no carried part reads no hand (the owner, 2026-10-05)")
+        self.assertIsNone(_mesh_first(world={"support_plane": _PLANE}, pairs=_pairs(), arm_setup=unknown))
 
 
 class MeshFirstBesideTheBinTests(unittest.TestCase):
@@ -274,16 +254,17 @@ class MeshFirstBesideTheBinTests(unittest.TestCase):
                          "the planner's spheres were asked about the line")
         self.assertEqual([], planner.set_aside())
 
-    def test_a_hand_not_known_open_on_a_cell_that_models_a_part_leaves_it_to_the_planner(self) -> None:
+    def test_a_hand_not_known_open_runs_the_line_the_same_way(self) -> None:
         from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import OFF, OFF_ON, _cell, _from, _line
 
-        arm, planner = _cell(mesh_first=True, carried_part_mm=40.0)
+        arm, planner = _cell(mesh_first=True)
         arm.set_hand(None)
         _from(arm, planner, OFF)
         result = _line(arm, OFF_ON)
-        self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status, result.message)
-        arm._conn.moveJ.assert_not_called()
-        self.assertIn("the hand is not known to be empty and open", result.message or "")
+        self.assertTrue(result.ok, result.message)
+        arm._conn.moveJ.assert_called_once()
+        self.assertEqual([], [call for call in planner.named("check") if len(call[1]) > 1],
+                         "the planner's spheres were asked about the line")
 
 
 class HowNearTheBaseTests(unittest.TestCase):

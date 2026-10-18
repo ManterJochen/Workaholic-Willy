@@ -1,39 +1,33 @@
-"""A cuRobo joint plan runs cuRobo's own loop, with as many time-optimal passes as the cell asks for (3, today's).
+"""A cuRobo joint plan runs cuRobo's own loop with no time-optimal pass after its first, on every cell.
 
 cuRobo's ``MotionPlanner.plan_cspace`` runs, in every attempt, one optimiser pass that finds a trajectory and three more
 that only shrink its time step towards cuRobo's own limits. The UR driver runs the positions of a plan with ``moveJ`` at
-its own speed and never that timing, so ``safety.planned_motion.finetune_passes`` (3 by default) may ask for fewer
-(``_curobo_cspace``). This file holds that on the CPU:
+its own speed and never that timing, so every cell runs none of the three since 2026-10-17
+(``_curobo_cspace.JOINT_FINETUNE_PASSES``; the owner's cell since the desk A/B of 2026-10-09, when
+``safety.planned_motion.finetune_passes`` was 0 there). This file holds that on the CPU:
 
 * ``plan_cspace`` is cuRobo's loop: cuRobo's own ``plan_cspace`` source, read from the pinned checkout and run against
   the same planner of this file's, makes the same calls in the same order with the same arguments at three passes;
   at any other number only ``finetune_attempts`` differs;
-* the variable: unset is cuRobo's three, anything but 0 to 3 refuses the sidecar's start;
-* the sidecar's ``plan_js`` branch, read as source: cuRobo's own call at three passes, the copy otherwise, both after
-  the seed is reset; ``WILLY_CUROBO_TIMING`` prints and changes nothing else;
-* the client and the config: the variable written only where the cell asks, a shell's leftover never inherited.
-
-That a plan at three passes is today's plan to the bit, and what one pass saves, is the GPU's to say:
-``scripts/curobo/ab_planning_spheres.py --finetune 0`` against ``--finetune 3``.
+* the sidecar's ``plan_js`` branch, read as source: the copy at no pass after the first, after the seed is reset, and
+  no variable that could ask for another number; ``WILLY_CUROBO_TIMING`` prints and changes nothing else;
+* the config: the old key is refused, naming what every cell runs.
 """
 
 from __future__ import annotations
 
 import ast
-import os
 import types
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 from src.robot.safety.planning._curobo_cspace import (
     CUROBO_FINETUNE_DT_SCALE,
     CUROBO_FINETUNE_PASSES,
-    ENV_JOINT_FINETUNE,
     ENV_TIMING,
+    JOINT_FINETUNE_PASSES,
     PlannedAttempts,
-    finetune_passes,
     plan_cspace,
     timing_asked,
 )
@@ -192,20 +186,9 @@ class TheLoopIsCurobosOwnTests(unittest.TestCase):
                                       enable_graph_attempt=0, finetune_attempts=0, succeeded=_succeeded))
 
 
-class TheVariablesTests(unittest.TestCase):
-    def test_unset_is_curobos_three(self) -> None:
-        self.assertEqual(3, finetune_passes({}))
-        self.assertEqual(3, finetune_passes({ENV_JOINT_FINETUNE: ""}))
-
-    def test_a_whole_number_from_0_to_3_is_read(self) -> None:
-        for value in range(4):
-            with self.subTest(value=value):
-                self.assertEqual(value, finetune_passes({ENV_JOINT_FINETUNE: str(value)}))
-
-    def test_anything_else_refuses_the_start(self) -> None:
-        for value in ("4", "-1", "1.5", "one", "+1", "01"):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                finetune_passes({ENV_JOINT_FINETUNE: value})
+class TheNumbersTests(unittest.TestCase):
+    def test_every_cell_runs_no_pass_after_the_first_where_curobo_runs_three(self) -> None:
+        self.assertEqual((0, 3), (JOINT_FINETUNE_PASSES, CUROBO_FINETUNE_PASSES))
 
     def test_timing_is_asked_with_a_one_alone(self) -> None:
         self.assertTrue(timing_asked({ENV_TIMING: "1"}))
@@ -227,24 +210,27 @@ def _block(source: str, head: str) -> str:
     return "\n".join(block)
 
 
-class TheSidecarPlansTodaysWayUnlessAskedTests(unittest.TestCase):
+class TheSidecarPlansWithNoPassAfterTheFirstTests(unittest.TestCase):
     def setUp(self) -> None:
         self.source = _SERVER.read_text(encoding="utf-8")
         self.plan_js = _block(self.source, 'if cmd == "plan_js":')
 
-    def test_three_passes_call_curobos_own_loop_and_any_other_number_the_copy(self) -> None:
+    def test_the_copy_runs_at_no_pass_after_the_first_and_curobos_own_loop_never(self) -> None:
         self.assertTrue(self.plan_js, "the plan_js branch is gone")
-        branch = self.plan_js.find("if _JOINT_FINETUNE == CUROBO_FINETUNE_PASSES:")
-        theirs = self.plan_js.find("result = _planner.plan_cspace(")
-        ours = self.plan_js.find("result = plan_cspace(")
-        self.assertTrue(0 <= branch < theirs < ours, "cuRobo's own call is not what three passes run")
-        self.assertIn("finetune_attempts=_JOINT_FINETUNE", self.plan_js)
-        self.assertIn("_JOINT_FINETUNE = finetune_passes(os.environ)", self.source)
+        self.assertIn("result = plan_cspace(", self.plan_js)
+        self.assertIn("finetune_attempts=JOINT_FINETUNE_PASSES", self.plan_js)
+        self.assertNotIn("_planner.plan_cspace(", self.plan_js, "cuRobo's own three-pass loop runs")
 
-    def test_both_run_after_the_seed_is_reset(self) -> None:
+    def test_no_variable_asks_for_another_number(self) -> None:
+        """A shell's leftover cannot change how a cell plans: no side reads a number of passes from the environment."""
+        cspace = (_ROOT / "src" / "robot" / "safety" / "planning" / "_curobo_cspace.py").read_text(encoding="utf-8")
+        for source in (self.source, cspace):
+            self.assertNotIn("WILLY_CUROBO_JOINT_FINETUNE", source)
+            self.assertNotIn("finetune_passes(os.environ)", source)
+
+    def test_it_runs_after_the_seed_is_reset(self) -> None:
         reset = self.plan_js.find("_planner.reset_seed()")
-        self.assertTrue(0 <= reset < self.plan_js.find("_planner.plan_cspace("))
-        self.assertTrue(0 <= reset < self.plan_js.find("plan_cspace(\n                    _planner,"))
+        self.assertTrue(0 <= reset < self.plan_js.find("result = plan_cspace("))
 
     def test_timing_is_printed_and_nothing_else(self) -> None:
         """The clock waits for the GPU only where timing was asked; a [timing] line is the whole of what it adds."""
@@ -256,32 +242,18 @@ class TheSidecarPlansTodaysWayUnlessAskedTests(unittest.TestCase):
         self.assertNotIn("_emit(", said)
 
 
-class TheClientAndTheConfigTests(unittest.TestCase):
-    def test_the_variable_is_written_only_where_the_cell_asks_and_a_leftover_is_never_inherited(self) -> None:
-        from src.robot.safety.planning.curobo_client import CuroboPlanClient
-
-        with mock.patch.dict(os.environ, {ENV_JOINT_FINETUNE: "0"}):
-            self.assertNotIn(ENV_JOINT_FINETUNE, CuroboPlanClient()._sidecar_env())  # noqa: SLF001
-            env = CuroboPlanClient(joint_finetune_passes=0)._sidecar_env()  # noqa: SLF001
-        self.assertEqual("0", env[ENV_JOINT_FINETUNE])
-
-    def test_the_key_is_todays_three_and_reaches_the_client_through_the_reservation(self) -> None:
+class TheConfigTests(unittest.TestCase):
+    def test_the_old_key_is_refused_naming_what_every_cell_runs(self) -> None:
         from pydantic import ValidationError
 
+        from src.config.schema._removed import removed_key_sentence
         from src.config.schema.robot import RobotConfig
-        from src.robot.safety.planning.curobo_client import CuroboPlanClient
-        from src.robot.safety.planning.reservation import PlannerReservation
 
-        today = RobotConfig.model_validate({"vendor": "ur"})
-        self.assertEqual(3, today.safety.planned_motion.finetune_passes)
-        self.assertEqual(3, PlannerReservation.from_config(robot_cfg=today).finetune_passes)
-        for refused in (-1, 4):
-            with self.subTest(refused=refused), self.assertRaises(ValidationError):
-                RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": {"finetune_passes": refused}}})
-        one = RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": {"finetune_passes": 0}}})
-        client = CuroboPlanClient()
-        client.reserve_world(PlannerReservation.from_config(robot_cfg=one))
-        self.assertEqual("0", client._sidecar_env()[ENV_JOINT_FINETUNE])  # noqa: SLF001
+        with self.assertRaises(ValidationError) as caught:
+            RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": {"finetune_passes": 3}}})
+        self.assertIn("planned_motion", str(caught.exception))
+        said = removed_key_sentence("robot.safety.planned_motion.finetune_passes")
+        self.assertIn("no time-optimal pass after its first", said or "")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,7 @@
 """What one column of a corpus actually contains: the arithmetic every check here is built on.
 
-A second implementation on purpose. `src.robot.grasping.rl.readiness` computes the same statistics
-and reaches the same verdict on a constant column, but importing it would make a datagen package
-depend on the RL layer for twelve lines of arithmetic, and its pure-Python loop takes minutes over a
-corpus this one measures in milliseconds.
-
-So this one is numpy and lives where the data is made. The rule that keeps the two from drifting is
-that they agree row for row: a change here that moves a verdict has to move `readiness` with it.
+Numpy, and it lives where the data is made. `src.robot.grasping.rl.readiness`, the second implementation it
+agreed with row for row, left on 2026-10-16 with the RL layer.
 """
 
 from __future__ import annotations

@@ -321,11 +321,11 @@ landing that warns, because a silent order-of-magnitude slowdown in the pick loo
 the log. Naming a device that is not on the machine refuses rather than falling back to the CPU. An
 indexed device such as `cuda:1` passes straight through for a multi-GPU box.
 
-**Some analytic levers do not apply**, and the factory says which. `ik_service` and
-`corridor_risk_per_candidate` are refused by name under `deep`: without them nothing filters for
-reachability and the uncertainty re-rank reorders nothing, so a run would look like a bad generator
-rather than a wrong wiring. Analytic-only knobs such as `isotropic_radial_closing` are logged as
-ignored, because the learned generator decodes its own closing axis.
+**Some analytic levers do not apply**, and the factory says which. `ik_service` is refused by name
+under `deep`: without it nothing filters for reachability, so a run would look like a bad generator
+rather than a wrong wiring. Analytic-only knobs such as `side_approaches`, which every cell's calculator
+is built with, are logged as ignored, because the learned generator decodes its own approach and
+closing axis.
 
 ---
 

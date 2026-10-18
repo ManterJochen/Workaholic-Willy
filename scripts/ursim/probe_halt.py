@@ -1,14 +1,13 @@
 """Measure "halt now" against a real UR controller (URSim CB3): M0-M9 of the build plan's halt checklist (6.5, item 1).
 
 The console's "Sofort anhalten" latches the arm (``arm.halt``): nothing is sent and no output switched until a person
-says the cell is clear. ``robot.ur.brake_on_halt`` decides what happens to the move in flight. Off, as shipped, it runs
-to its end. On, every move is sent asynchronously and watched by the thread that sent it, which brakes it with
-``stopJ`` or ``stopL`` at max(2.0, the move's own acceleration) and answers ``True`` only at the target. The owner
-switches it on in the cell's own profile only after these measurements have passed:
+says the cell is clear. Every move is sent asynchronously and watched by the thread that sent it, which brakes it with
+``stopJ`` or ``stopL`` at max(2.0, the move's own acceleration) and answers ``True`` only at the target: every UR's
+since 2026-10-17, as the owner's cell ran it (``robot.ur.brake_on_halt`` until then, switched on once these
+measurements had passed):
 
-  M0  baseline, brakes off. (a) A cross-thread ``URConnection.stop()`` during a synchronous moveJ: does the move stop,
-      or arrive anyway? (b) A halt during a synchronous moveJ: the move runs out, the latch's record says it ran out
-      (``HaltState.brake``), and the next one is refused.
+  M0  the baseline, ur_rtde's own synchronous moveJ: does a cross-thread ``URConnection.stop()`` during it stop the
+      move, or does it arrive anyway?
   M1  brake latency, brakes on: a halt during a joint move at cruise. Request to stopJ sent (Python), to the
       controller's target speed falling (the deceleration starts), to standstill. Pass: deceleration within 50 ms, the
       stop sent by the moving thread, and the latch's record ends ``braked``.
@@ -16,16 +15,17 @@ switches it on in the cell's own profile only after these measurements have pass
       joint space. Pass: within 1e-3 rad of the line. Also the stopping distance at max(2.0, a) and at the move's own a,
       the deceleration choice the plan leaves to this measurement.
   M3  200-move parity, brakes on: 200 watched moves with no halt. Pass: zero early returns (a True with the arm off
-      its target or still moving) and zero refusals. The first 20 again with brakes off, for the durations.
+      its target or still moving) and zero refusals. The first 20 again as ur_rtde's synchronous call, for the
+      durations.
   M3b the same for lines, brakes on: 50 watched moveL (``--lines``) with no halt, each turning the tool up to 0.2 rad
       about its axis. Pass: every one True and ``arrived`` (so the controller showed every asynchronous moveL in its
       operation register: a line it never showed is stopped and refused after 1 s), the TCP within 1 mm and 2e-3 rad
-      of the target and the arm still, and zero refusals. The first 10 again with brakes off, for the durations. Every
+      of the target and the arm still, and zero refusals. The first 10 again as ur_rtde's synchronous call, for the durations. Every
       line of a pick (the approach, the line in, the line out) is a moveL, so this is what the owner's picks meet.
   M4  a multi-waypoint path (``CuroboPlanner.execute``, 5 waypoints) halted in leg 3, brakes on. Pass: CANCELLED
       naming waypoint 3, exactly 3 moveJ on the wire, and the arm never heads for waypoint 4.
   M5  the owner's toggle on tool DO0 (``JawIOGripper`` single_toggle): a halt mid-approach, then the close the pick
-      would send. Pass: zero DO0 edges after the halt, read on a second RTDE connection, brakes on and off.
+      would send. Pass: zero DO0 edges after the halt, read on a second RTDE connection.
   M6  a line braked with stopL, brakes on, halted 1.2 s into a 2 s line: past the 1 s a watched move has to show in
       the register, so ``braked`` also says the register showed the line. Pass: ``braked``, one stopL, and the TCP
       stops within 1 mm of the line.
@@ -41,10 +41,9 @@ switches it on in the cell's own profile only after these measurements have pass
 
 Everything runs on 127.0.0.1 and nowhere else: the probe moves the arm and switches tool DO0 without asking, so it has no
 host flag, and it refuses a profile whose ``ur.ip`` is not the loopback. It writes its own scratch profile layer into a
-copy of ``config/`` in a temporary directory (``brake_on_halt: true``, ``payload.length_mm``, the toggle on tool DO0)
-and loads ``ursim,<model>,haltprobe`` from there; no shipped profile changes. Before any check it confirms the layer
-reached the arm (``brakes_in_motion()`` true from the loaded profile: the config-to-connection wiring); each check then
-sets the brake on its connection itself, on or off as that check measures.
+copy of ``config/`` in a temporary directory (``motion.place.part_hang_mm``, the toggle on tool DO0) and loads
+``ursim,<model>,haltprobe`` from there; no shipped profile changes. Before any check it confirms the arm brakes in motion
+(``brakes_in_motion()``).
 
 Where it departs from the build plan's checklist (6.5): the chain is ``ursim,<model>,haltprobe``, an ik arm, not
 ``ursim,ursim_curobo``, because every check drives the connection, the arm's halt and the glue's ``execute`` directly and
@@ -116,11 +115,9 @@ _LAYER = """\
 robot:
   ur:
     model: "{model}"
-    brake_on_halt: true
-  safety:
-    planning_world:
-      payload:
-        length_mm: 60.0
+  motion:
+    place:
+      part_hang_mm: 60.0
   gripper:
     jaw_io:
       actuation: single_toggle
@@ -274,10 +271,9 @@ class Probe:
         self.commands: list[tuple[float, int, str, tuple[Any, ...]]] = []
         self.results: dict[str, Any] = {}
         self.passed: dict[str, bool] = {}
-        # The layer's brake_on_halt reached the arm through the config, before any check sets it on the connection.
+        # Every UR brakes in motion: what each check below measures.
         wired = self.arm.brakes_in_motion()
-        self.results["profile"] = {"chain": f"ursim,{model},haltprobe", "brake_on_halt": self.cfg.ur.brake_on_halt,
-                                   "brakes_in_motion": wired}
+        self.results["profile"] = {"chain": f"ursim,{model},haltprobe", "brakes_in_motion": wired}
         self.passed["profile"] = wired is True
 
     @property
@@ -297,9 +293,8 @@ class Probe:
         self.connect()
 
     def healthy(self) -> None:
-        """Back to HOME, brakes off, no latch, the program running: the start of every check."""
+        """Back to HOME, no latch, the program running: the start of every check."""
         self.conn.clear_halt()
-        self.conn.brake_on_halt = False
         if not self.conn.is_program_running():
             self.reconnect()
         if not self.conn.moveJ(HOME, 0.8, 1.2):
@@ -315,6 +310,12 @@ class Probe:
         thread = threading.Thread(target=lambda: answer.append(verb()), name="probe-move", daemon=True)
         thread.start()
         return thread, answer, started
+
+
+def _synchronous(p: Probe, verb: str, target: list[float], v: float, a: float) -> bool:
+    """ur_rtde's own synchronous ``verb`` (``moveJ``/``moveL``), past the connection's watch and its latch: the baseline
+    every move was before the watched move, for the measurements that compare against it."""
+    return bool(getattr(p.conn._ctrl, verb)(target, v, a, False))
 
 
 def _no_planner() -> Any:
@@ -341,11 +342,11 @@ def _ms(seconds: float | None) -> float | None:
 
 
 def m0(p: Probe, w: Watcher) -> None:
-    """Brakes off: a cross-thread stop() does not stop a synchronous move; the latch lets the move in flight run out."""
+    """The baseline: a cross-thread stop() does not stop ur_rtde's own synchronous move."""
     p.healthy()
     target = list(HOME)
     target[0] += 1.2
-    thread, answer, started = p.moving(lambda: p.conn.moveJ(target, 0.5, 1.0))
+    thread, answer, started = p.moving(lambda: _synchronous(p, "moveJ", target, 0.5, 1.0))
     time.sleep(0.8)
     asked = time.perf_counter()
     p.conn.stop()  # stopJ and stopL from this thread, as the arm's stop() did before the halt
@@ -355,7 +356,7 @@ def m0(p: Probe, w: Watcher) -> None:
     arrived = abs(w.latest()["q"][0] - target[0]) < 2e-3
     decel = w.deceleration_after(asked)
     natural_end = started + 1.2 / 0.5 + 0.5  # cruise plus the ramps at 1.0 rad/s^2
-    p.results["M0a"] = {
+    p.results["M0"] = {
         "moveJ_returned": answer[:1], "arrived_at_target": arrived,
         "stop_returned_after_ms": _ms(returned - asked),
         "deceleration_after_stop_ms": _ms(None if decel is None else decel - asked),
@@ -363,33 +364,9 @@ def m0(p: Probe, w: Watcher) -> None:
         "still_after_stop_ms": _ms(None if ended is None else ended - asked),
         "program_running_after": p.conn.is_program_running(),
     }
-    print(f"  M0a cross-thread stop(): the move {'ARRIVED anyway' if arrived else 'was cut short'}, stop() returned "
+    print(f"  M0 cross-thread stop(): the move {'ARRIVED anyway' if arrived else 'was cut short'}, stop() returned "
           f"after {_ms(returned - asked)} ms")
-    p.passed["M0a"] = True  # a measurement of the baseline, not a check
-
-    p.healthy()
-    thread, answer, started = p.moving(lambda: p.conn.moveJ(target, 0.5, 1.0))
-    time.sleep(0.8)
-    t_req = time.perf_counter()
-    state = p.conn.request_halt("probe M0b: halt with brakes off")
-    thread.join(10.0)
-    arrived = abs(w.latest()["q"][0] - target[0]) < 2e-3
-    after = p.conn.halt_state()
-    refused = p.conn.moveJ(HOME, 0.5, 1.0)
-    end = p.conn.last_move_end
-    time.sleep(0.5)
-    moved_after = max(abs(v) for s in w.since(time.perf_counter() - 0.4) for v in s["qd"])
-    record = None if after is None else after.brake
-    p.results["M0b"] = {"in_motion": state.in_motion, "move_in_flight_returned": answer[:1],
-                        "arrived_at_target": arrived, "record": record, "next_move_answer": refused,
-                        "next_move_end": end.value, "moveJ_sent_after_halt": len(p.sent("moveJ", t_req)),
-                        "speed_after_rad_s": moved_after}
-    ok = answer[:1] == [True] and arrived and refused is False and end is MoveEnd.REFUSED_HALTED and \
-        len(p.sent("moveJ", t_req)) == 0 and record == "ran_out"
-    p.passed["M0b"] = ok
-    print(f"  M0b halt, brakes off: in flight ran out={arrived}, next move refused={refused is False}: "
-          f"{'PASS' if ok else 'FAIL'}")
-    p.conn.clear_halt()
+    p.passed["M0"] = True  # a measurement of the baseline, not a check
 
 
 def m1_m2(p: Probe, w: Watcher) -> None:
@@ -398,7 +375,6 @@ def m1_m2(p: Probe, w: Watcher) -> None:
     for speed, accel, floor in ((0.5, 1.0, 2.0), (1.0, 1.4, 2.0), (1.0, 1.4, 0.0)):
         for _ in range(3):
             p.healthy()
-            p.conn.brake_on_halt = True
             saved = connection_module._BRAKE_MIN_DECEL
             connection_module._BRAKE_MIN_DECEL = floor  # 0.0: the move's own acceleration, for the comparison
             try:
@@ -459,7 +435,6 @@ def m3(p: Probe, w: Watcher, moves: int) -> None:
             t[joint] += rng.uniform(-0.25, 0.25)
         targets.append(t)
     p.healthy()
-    p.conn.brake_on_halt = True
     early, refused, durations = [], 0, []
     for index in range(moves):
         target = targets[index % len(targets)] if index % 2 == 0 else HOME
@@ -474,12 +449,11 @@ def m3(p: Probe, w: Watcher, moves: int) -> None:
         off = max(abs(a - b) for a, b in zip(q, target))
         if off > 2e-3 or speed > 0.01:
             early.append({"move": index, "off_rad": off, "speed_rad_s": speed})
-    p.conn.brake_on_halt = False
     synchronous = []
     for index in range(min(20, moves)):
         target = targets[index % len(targets)] if index % 2 == 0 else HOME
         t0 = time.perf_counter()
-        p.conn.moveJ(target, 1.0, 1.4)
+        _synchronous(p, "moveJ", target, 1.0, 1.4)
         synchronous.append(time.perf_counter() - t0)
     paired = [a - b for a, b in zip(durations, synchronous)]
     p.results["M3"] = {"moves": moves, "early_returns": early, "refused": refused,
@@ -511,7 +485,6 @@ def m3b(p: Probe, w: Watcher, lines: int) -> None:
     targets = [_turned_about_the_tool(start, rng.uniform(-50, 50), rng.uniform(-50, 50), rng.uniform(-40, 40),
                                       rng.uniform(-0.2, 0.2)) for _ in range(10)]
     home_line = start.to_ur_list()
-    p.conn.brake_on_halt = True
     early: list[dict[str, Any]] = []
     ends: dict[str, int] = {}
     refused, durations = 0, []
@@ -531,12 +504,11 @@ def m3b(p: Probe, w: Watcher, lines: int) -> None:
         speed = max(abs(v) for v in p.conn.get_joint_speeds())
         if off_mm > 1.0 or turn_rad > 2e-3 or speed > 0.01 or end != MoveEnd.ARRIVED.value:
             early.append({"line": index, "end": end, "off_mm": off_mm, "turn_rad": turn_rad, "speed_rad_s": speed})
-    p.conn.brake_on_halt = False
     synchronous = []
     for index in range(min(10, lines)):
         target = targets[index % len(targets)] if index % 2 == 0 else home_line
         t0 = time.perf_counter()
-        p.conn.moveL(target, 0.25, 1.2)
+        _synchronous(p, "moveL", target, 0.25, 1.2)
         synchronous.append(time.perf_counter() - t0)
     p.conn.moveL(home_line, 0.25, 1.2)
     p.results["M3b"] = {"lines": lines, "ends": ends, "early_returns": early, "refused": refused,
@@ -552,7 +524,6 @@ def m3b(p: Probe, w: Watcher, lines: int) -> None:
 def m4(p: Probe, w: Watcher) -> None:
     """Brakes on: a 5-waypoint path halted in leg 3 sends no later waypoint."""
     p.healthy()
-    p.conn.brake_on_halt = True
     path = [list(HOME)] + [[HOME[0] + 0.25 * k, *HOME[1:]] for k in range(1, 5)]
     # The controller's joint order, as the arm hands it to its planner since P0e E4: the probe's own arm's.
     planner = CuroboPlanner(p.arm._transport, joint_names=p.arm._joint_names, controller_yaw_deg=p.arm._controller_yaw_deg, client_factory=_no_planner, vel=0.5,
@@ -584,56 +555,50 @@ def m4(p: Probe, w: Watcher) -> None:
 
 
 def m5(p: Probe, w: Watcher) -> None:
-    """The toggle on tool DO0: a halt mid-approach, then the close; no edge of DO0 after the halt, brakes on and off."""
+    """The toggle on tool DO0: a halt mid-approach, then the close; no edge of DO0 after the halt."""
     jaw = p.cfg.gripper.jaw_io
-    rows: dict[str, dict[str, Any]] = {}
-    for brake in (True, False):
-        p.healthy()
-        jaws = JawIOGripper(p.arm, actuation="single_toggle", close_output_pin=jaw.close_output_pin,
-                            io_port=DigitalIOPort.TOOL, pulse_s=jaw.pulse_s, close_settle_s=0.0,
-                            min_width_mm=5.0, max_width_mm=49.99, ask=lambda _question: "open",
-                            sleep=time.sleep)
-        jaws.connect()
-        p.conn.brake_on_halt = brake
-        approach = list(HOME)
-        approach[0] += 0.8
-        approach[1] += 0.2
-        t_start = time.perf_counter()
-        thread, answer, started = p.moving(lambda: p.conn.moveJ(approach, 0.5, 1.0))
-        time.sleep(0.9)
-        t_req = time.perf_counter()
-        p.arm.halt("probe M5: halt mid-approach")
-        thread.join(10.0)
-        try:
-            jaws.set_closed(True)  # the close the pick sends at the part
-            closed = "sent"
-        except ArmHalted as exc:
-            closed = f"refused: {exc}"
-        except Exception as exc:  # noqa: BLE001
-            closed = f"raised {type(exc).__name__}: {exc}"
-        gate = _controller_refusal(p.arm)
-        time.sleep(0.5)
-        rows["brakes_on" if brake else "brakes_off"] = {
-            "move_answer": answer[:1], "close": closed, "hand_gate": gate,
-            "do0_edges_before_halt": w.do0_edges(t_start, t_req), "do0_edges_after_halt": w.do0_edges(t_req),
-        }
-        try:
-            jaws.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
     p.healthy()
-    p.results["M5"] = rows
-    ok = all(row["do0_edges_after_halt"] == 0 and row["close"].startswith("refused") and "halted" in row["hand_gate"]
-             for row in rows.values())
+    jaws = JawIOGripper(p.arm, actuation="single_toggle", close_output_pin=jaw.close_output_pin,
+                        io_port=DigitalIOPort.TOOL, pulse_s=jaw.pulse_s, close_settle_s=0.0,
+                        min_width_mm=5.0, max_width_mm=49.99, ask=lambda _question: "open",
+                        sleep=time.sleep)
+    jaws.connect()
+    approach = list(HOME)
+    approach[0] += 0.8
+    approach[1] += 0.2
+    t_start = time.perf_counter()
+    thread, answer, _started = p.moving(lambda: p.conn.moveJ(approach, 0.5, 1.0))
+    time.sleep(0.9)
+    t_req = time.perf_counter()
+    p.arm.halt("probe M5: halt mid-approach")
+    thread.join(10.0)
+    try:
+        jaws.set_closed(True)  # the close the pick sends at the part
+        closed = "sent"
+    except ArmHalted as exc:
+        closed = f"refused: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        closed = f"raised {type(exc).__name__}: {exc}"
+    gate = _controller_refusal(p.arm)
+    time.sleep(0.5)
+    row: dict[str, Any] = {"move_answer": answer[:1], "close": closed, "hand_gate": gate,
+                           "do0_edges_before_halt": w.do0_edges(t_start, t_req),
+                           "do0_edges_after_halt": w.do0_edges(t_req)}
+    try:
+        jaws.disconnect()
+    except Exception:  # noqa: BLE001
+        pass
+    p.healthy()
+    p.results["M5"] = row
+    ok = row["do0_edges_after_halt"] == 0 and row["close"].startswith("refused") and "halted" in row["hand_gate"]
     p.passed["M5"] = ok
-    print(f"  M5 toggle: DO0 edges after the halt {[r['do0_edges_after_halt'] for r in rows.values()]}, close "
-          f"{[r['close'][:7] for r in rows.values()]}: {'PASS' if ok else 'FAIL'}")
+    print(f"  M5 toggle: DO0 edges after the halt {row['do0_edges_after_halt']}, close {row['close'][:7]}: "
+          f"{'PASS' if ok else 'FAIL'}")
 
 
 def m6(p: Probe, w: Watcher) -> None:
     """Brakes on: a line braked with stopL stops on the line; halted past the register's 1 s, so it showed the line."""
     p.healthy()
-    p.conn.brake_on_halt = True
     start = list(p.conn.get_tcp_pose())
     target = list(start)
     target[1] += 0.3
@@ -664,7 +629,6 @@ def m6(p: Probe, w: Watcher) -> None:
 def m7(p: Probe, w: Watcher) -> None:
     """Brakes on: a protective stop during a watched move answers False, never True."""
     p.healthy()
-    p.conn.brake_on_halt = True
     target = list(HOME)
     target[0] += 1.2
     thread, answer, started = p.moving(lambda: p.conn.moveJ(target, 0.5, 1.0))
@@ -725,7 +689,7 @@ def m8(p: Probe, w: Watcher) -> None:
     target = list(HOME)
     target[0] += 1.2
     level_before = p.conn.get_digital_out(0, "tool")
-    thread, answer, started = p.moving(lambda: p.conn.moveJ(target, 0.5, 1.0))
+    thread, answer, started = p.moving(lambda: _synchronous(p, "moveJ", target, 0.5, 1.0))
     time.sleep(0.8)
     t_req = time.perf_counter()
     dash("stop")
@@ -797,7 +761,7 @@ def main(argv: list[str] | None = None) -> int:
 
     probe = Probe(model_key)
     print(f"controller {model.strip()} at {HOST}, profile ursim,{model_key},haltprobe from {probe.tree}")
-    print(f"  the layer's brake_on_halt reached the arm: brakes_in_motion() is {probe.results['profile']['brakes_in_motion']}"
+    print(f"  the arm brakes in motion: brakes_in_motion() is {probe.results['profile']['brakes_in_motion']}"
           f": {'PASS' if probe.passed['profile'] else 'FAIL'}")
     try:
         probe.connect()

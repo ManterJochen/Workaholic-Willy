@@ -124,21 +124,11 @@ Under any tilt the axis leaves horizontal by roughly that tilt, and a tilted clo
 does not land on two opposing faces; it lands on a face and an edge, which is a non-antipodal
 contact pair.
 
-The correction is one projection: remove the component along the support normal `u_hat`, expressed
-in the camera frame.
-
-```
-a_level = normalise(a_cam - dot(a_cam, u_hat) * u_hat)
-```
-
-`u_hat` is passed in as the support-plane normal and is not assumed to be BASE `+Z`. That is what
-lets a tilted tray or a bin floor be handled by the caller without touching this function. A
-degenerate input, meaning an axis parallel to `u_hat` such as a grasp closing straight down onto the
-table, returns the axis untouched rather than inventing a direction.
-
-Code:
-[`src/robot/grasping/generation/_camera_geometry.py`](../src/robot/grasping/generation/_camera_geometry.py),
-`CameraGeometry.level_axis_to_support_plane`
+The generator closes in the support plane by construction: it plans in BASE, every closing direction a direction
+of the plane the part stands on (section 5), and the camera only places the points. The silhouette stage, which
+lifted the mask's principal axis and levelled it into the plane by removing its component along the support normal,
+`a_level = normalise(a_cam - dot(a_cam, u_hat) * u_hat)`, left on 2026-10-16 with that projection (the owner's
+cleanup).
 
 ---
 
@@ -170,65 +160,65 @@ a raw `(N, 3)` normals array instead of a `SurfaceNormals` bundle, both `conf` a
 collapse to `1.0`: the stability term becomes a constant and stops discriminating between pairs. It
 does not raise. The pairs simply get worse.
 
-These weights are hand-tuned priors, deliberately. The calibrated success model of section 13
-re-weights the same signals as independent features, so this layer stays a cheap deterministic
+These weights are hand-tuned priors, deliberately, so this layer stays a cheap deterministic
 pre-filter. Learning the prior itself needs a real grasp-outcome corpus.
+
+The calculator searched these pairs in its silhouette and geometry-first stages until those left on 2026-10-16
+(the owner's cleanup); the search stays in `contacts/` for a caller of its own.
 
 Code: [`src/robot/grasping/contacts/antipodal.py`](../src/robot/grasping/contacts/antipodal.py)
 
 ---
 
-## 5. Support-footprint enumeration, the other generator
+## 5. The part's own body over its support, the generator
 
-The antipodal search asks which two surface points oppose each other. Support-footprint enumeration
-asks a different question: what is this object's footprint on the support plane, and where can a jaw
-close across it? It plans in BASE, because the support plane and down are BASE concepts, and rotates
-its candidates into CAMERA once, at the seam. It is the default proposal stage
-(`robot.grasping.geometry.stage`), and it needs both a BASE-frame support plane and a CAMERA to BASE
-transform; without either it does not run and the silhouette stage stands.
+The antipodal search above asks which two surface points oppose each other. The calculator's generator asks a
+different question: where can a jaw close across the part as the cameras measured it, standing on its support? It
+plans in BASE, because the support plane and down are BASE concepts, and rotates its candidates into CAMERA once, at
+the seam. It needs both a BASE-frame support plane and a CAMERA to BASE transform; without either the calculator
+offers nothing and says why (`support_footprint_ready` is `False`).
 
-Its score blends five measured physical margins, each a fraction of a budget the plan did not spend,
-with no tuned constants:
+The body is the part's points over the support on a 2 mm grid in BASE x and y, each cell as high as the highest of
+them and the solid under it carried down to the support. For every closing direction (every 5 degrees), every place
+across the part and every height the pads can stand at (every 2 mm, from 10 mm into the part's top down to the
+fingertips over the support), the pads close on one run of the body along the closing axis, or on two or three runs and
+what lies between them, where it stands at least 3 mm into the pad's height. A span holds where it fits the stroke with
+2 mm beside each jaw, no part of the body stands over the open fingertips or between them and the span, and both
+contacts lie inside the friction cone by the body's own flanks: how steeply it rises at the contact, and how its
+outline turns across the pad there.
+
+Its score blends five measured physical margins, each a fraction of a budget the plan did not spend:
 
 ```
 cone_slack   = 1 - worst_contact_angle / cone_half_angle       depth inside the friction cone
 width_margin = 1 - span / jaw.aperture_mm                      aperture left over
-seated       = 0.5 * pad_on_part + 0.5 * near_mid_height       how the grasp sits on the part
-upright      = max(0, dot(-approach, z_hat))                   how top-down the approach is
-centred      = 1 - min(1, abs(t_enter + t_exit) / max(span, 1))  anchor centred in the span
+held         = 0.8 * seated + 0.2 * room                       how the grasp sits on the part, and its room
+upright      = cos(tilt)                                       how top-down the approach is
+centred      = 1 - min(1, abs(t_enter + t_exit) / max(span, 1))  the closing line across the centre of mass
 
-score = 0.35 * cone_slack + 0.20 * width_margin + 0.20 * seated
+score = 0.35 * cone_slack + 0.20 * width_margin + 0.20 * held
       + 0.15 * upright    + 0.10 * centred
 ```
 
-`seated` is half how much of the pad's height lies on the part and half how near the anchor stands to the
-part's middle height. Until 2026-10-05 the third term paid for the fingertip's height over the table, and every
-grasp went to the part's top: the owner saw the hand grip only the top sixth of the parts. The support clearance
-is a check, and pays for nothing more. With side approaches the term is half `seated`, half the room the grasp
-keeps from every obstacle.
+`seated` is half how much of the pad's height lies on the part and half how near the anchor stands to the part's middle
+height; `room` is the room the open fingers keep from every obstacle point, full at 20 mm. With side approaches the
+weights are `(0.35, 0.20, 0.35, 0.0, 0.10)`: upright weighs nothing and the third term counts more, so a lean wins
+only with more room, and vertical on a tie. The grasps are ranked square first (each pad within 8 degrees of square to
+the part's outline in its colour mask), then robust (the grasp still holds with the hand 4 mm off across the table),
+each by score.
 
-The height solve places each anchor as low as the hand may come: the fingertip, and with a tilted approach half
-the finger's width, over the support by `support.min_clearance_mm`. Where the camera world holds the support as a
-solid ([`support_surfaces.py`](../src/robot/safety/planning/support_surfaces.py)), its top stands over the
-reading by what the reading stands over its plane, the band and the allowance, about 7 mm on the owner's mat, and
-the guard keeps its distance from that top. So the hand's floor is the solid's top and the guard's distance
-(`support_footprint.HandFloor`): every finger point, open or closed, and the palm's corners stay over it, and the
-solve starts from it. Planned on the reading alone, a 30 mm cylinder lying on the mat had all 12 of its grasps
-refused afterwards by the filter that holds what the guard holds (the grasp bench, 2026-10-06).
+The hand's floor is the support's clearance, and where the camera world holds the support as a solid
+([`support_surfaces.py`](../src/robot/safety/planning/support_surfaces.py)), its top stands over the reading by what
+the reading stands over its plane, the band and the allowance, about 7 mm on the owner's mat, and the guard keeps its
+distance from that top (`hand.HandFloor`): every finger point, open or closed, and the palm's corners stay over it.
+Planned on the reading alone, a 30 mm cylinder lying on the mat had all 12 of its grasps refused afterwards by the
+filter that holds what the guard holds (the grasp bench, 2026-10-06).
 
-The search is a grid: the footprint's two face axes (a round footprint adds a fan every 30 degrees), three
-anchors across the part, up to six heights, and the approach tilted every 15 degrees up to 90, either way. Where
-that grid finds fewer than three grasps, a finer one runs after it (the owner, 2026-10-06: "die Orientierung
-feiner"): every 7.5 degrees of tilt, each face axis turned 10 and 20 degrees either way, and a round part's fan
-every 15 degrees, and each face axis tilted 10 and 20 degrees out of the horizontal on the coarse tilts, the hand
-rolled about its binormal so one finger stands higher than the other (the owner: "die geneigte Schließachse"). A
-turned or tilted axis closes off the face's normal by the turn, inside the friction cone (26.6 degrees at the shipped
-0.5), and its `cone_slack` pays for that, so a face's own axis still ranks first. A tilted line leaves the part through
-its top or its foot as well as a side, and its pads end there; a contact on the top meets the cone and is refused. A cylinder 12 mm from
-a wall: the best grasp scores 0.806 on the fine grid against 0.788 on the coarse; a folding rule between declared
-walls the coarse grid fits nothing beside gets two grasps turned 20 degrees. The fine grid costs about four times
-the coarse one's time, which only a part with few grasps pays, and its refusals are not counted, so a refusal count
-stays the coarse grid's.
+Every grasp, kept straight down or refused there by the scene, is asked again with the hand leaning about the closing
+axis every 15 degrees to 90 either way, its palm over the support and its way in seen from 15 degrees on. Where that
+leaves fewer than three square grasps, a finer pass runs: the leans every 7.5 degrees, and the part searched again in
+the frames of the hand rolled 10, 20 and 30 degrees about its binormal, one finger higher than the other, so the pads
+lie on a tilted part's leaning faces.
 
 These candidates are deliberately not re-ranked by the geometric scorer of section 9. The breakdowns
 are built with this stage's own score as `total_score` directly, and `stability_score` and
@@ -236,7 +226,8 @@ are built with this stage's own score as `total_score` directly, and `stability_
 not decompose into the calculator's three categories and splitting it into those buckets would be an
 invention. The real margins ride along in `metadata` instead.
 
-Code: [`src/robot/grasping/generation/support_footprint.py`](../src/robot/grasping/generation/support_footprint.py)
+Code: [`src/robot/grasping/generation/body_grasps.py`](../src/robot/grasping/generation/body_grasps.py),
+[`src/robot/grasping/generation/hand.py`](../src/robot/grasping/generation/hand.py)
 and
 [`src/robot/grasping/generation/_support_footprint_stage.py`](../src/robot/grasping/generation/_support_footprint_stage.py)
 
@@ -302,15 +293,15 @@ from a vertical clearance is a category error that puts short objects out of rea
 reason. A gripper may set its fingertip on the table; it may only not go through it.
 
 The envelope is also what sets the floor on object height. With the shipped parallel-jaw geometry
-the fingertip reaches `fingertip_depth_mm` (default 28.72 mm) below the anchor, so clearing
-`support.min_clearance_mm` (default 5.0 mm) needs an object at least 33.72 mm tall for a top-down
-grasp, even with the grasp sitting on its very top edge. That is gripper geometry rather than a
+the fingertip reaches `fingertip_depth_mm` (default 28.72 mm) below the anchor, so clearing the
+1 mm the gripper keeps over the support (`support_resolver.TABLE_CLEARANCE_MM`) needs an object at least
+29.72 mm tall for a top-down grasp, even with the grasp sitting on its very top edge. That is gripper geometry rather than a
 threshold: shorter parts need suction or a different end effector.
 
 The boxes stand where the guard holds the hand. The guard places the hand's meshes by the registry's grasp
 centre and the coupling plates, and the arm puts the TCP where the tool frame says; where the TCP is declared
 short of that grasp centre, by no more than the tool frame's tolerance, the whole jaw stands that much further
-along the approach (`planning.hand.hand_past_the_tcp_mm`, `builders.build_gripper_geometry`). On the owner's cell
+along the approach (`planning.hand.hand_past_the_tcp_mm`, `gripper_model.jaw_envelope`). On the owner's cell
 the TCP is declared 157 mm out and the grasp centre stands at 23 + 136.2 = 159.2 mm, and grasps were refused 2.3
 to 2.96 mm from a neighbour against the guard's 3 until the jaw stood 2.2 mm further out. The palm box is as wide
 as the registry's housing along the closing axis (`palm_thickness_mm`, 75 mm on the Hand-E), not only as the
@@ -352,7 +343,7 @@ Code: [`src/robot/grasping/scoring/force_closure.py`](../src/robot/grasping/scor
 
 ---
 
-## 9. Scoring, four axes and one blend
+## 9. Scoring, three axes and one blend
 
 Every scorer is pure and never rejecting, because hard rejection is a calculator and safety concern.
 Each axis is itself a normalised weighted sum of components.
@@ -384,23 +375,18 @@ approach_align   = clip(1 - theta / max_angle, 0, 1)     theta = angle(approach,
 reachability = (0.70 * workspace_margin + 0.30 * approach_align) / sum_of_weights
 ```
 
-**Feasibility**, meaning IK quality, approach path and corridor risk. It is present in the telemetry
-layout at weight `0.0` by default, with every sub-signal defaulting to a neutral `0.5`.
-
 The top-level blend:
 
 ```
-total = clip(0.50 * geometric + 0.35 * stability + 0.15 * reachability
-           + 0.00 * feasibility, 0, 1)
+total = clip(0.50 * geometric + 0.35 * stability + 0.15 * reachability, 0, 1)
 ```
 
 Ranking sorts descending with a deterministic tie-break by input index, so equal scores never
 reorder from one run to the next.
 
-The default `feasibility = 0.0` is what makes `total_score` identical to the three-axis blend. Every
-advanced re-ranker in this stack is fenced the same way: the shape ships, and the weight is a
-separate deliberate decision. Raising it means setting `robot.grasping.feasibility.weight`, which
-the [config reference](grasping-config-reference.md) covers along with the mode gate in front of it.
+A fourth axis, feasibility (IK quality, approach path and corridor risk), sat in the blend at weight
+`0.0` until 2026-10-16, when it left with `robot.grasping.feasibility`: at that weight it moved no
+score, and raised to `0.5` it changed none of the 479 picks of the owner's cell's replay bank.
 
 Code: [`scoring/`](../src/robot/grasping/scoring/README.md)
 
@@ -461,33 +447,7 @@ Code: [`src/robot/grasping/suction/seal.py`](../src/robot/grasping/suction/seal.
 
 ---
 
-## 11. Uncertainty, seven channels into one number
-
-The seven typed channels (`depth_confidence`, `mask_confidence`, `occlusion_corridor_risk`,
-`feasibility_margin`, `verification_residual`, `topology_risk`, `semantic_confidence`) are fused as
-a convex combination of remapped values:
-
-```
-U = sum_i(w_i * m_i(u_i)) / sum_i(w_i)     over channels where u_i is not None and w_i > 0
-```
-
-`m_i` is a per-channel monotone remap, fitted offline by pool-adjacent-violators (isotonic)
-regression against a labelled replay. Monotonicity is the point: a remap that could reorder a
-channel would change what the channel means, not just its scale.
-
-A missing channel is skipped and not zero filled. Zero filling would make an unobserved signal read
-as maximally certain, and the fusion would grow more confident the less it knew. When every channel
-is missing or zero weighted, the snapshot says so rather than returning a number.
-
-The two channels that are not always produced, `topology_risk` and `semantic_confidence`, ship at
-weight `0.0`; an operator opts one in by raising its weight.
-
-Code: [`src/robot/grasping/uncertainty.py`](../src/robot/grasping/uncertainty.py) and
-[`calibration/`](../src/robot/grasping/calibration/README.md)
-
----
-
-## 12. Multi-view, deciding two blobs are one object
+## 11. Multi-view, deciding two blobs are one object
 
 Fusing clouds across cameras needs an answer to whether camera B's blob is the same object as camera
 A's. Three metrics are available and the default is `overlap`:
@@ -526,46 +486,7 @@ Code: [`src/robot/grasping/multiview/association.py`](../src/robot/grasping/mult
 
 ---
 
-## 13. Learning on top, and the one property that decides everything
-
-Two learned layers sit above the geometry, both default off.
-
-**The success model**, `P(success | features)` over a locked 23-feature vector:
-
-```
-x -> impute missing entries with the training mean -> standardise or traverse -> sigmoid
-  -> isotonic calibration -> p_hat
-```
-
-Three model families share that shape: a logistic regression, a gradient-boosted tree ensemble
-evaluated by a vectorised numpy traversal, and a ReLU multi-layer perceptron. All three finish with
-the same isotonic map, and the map is last because a raw model output is a ranking rather than a
-probability, while every downstream fence (blend weight, promotion threshold) is stated in
-probability units.
-
-**The pairwise ranker**, trained on `(winner, loser)` pairs formed within a group:
-
-```
-P(i beats j) = sigmoid(dot(w, x_i - x_j))
-```
-
-The consequence nobody notices until the model sits at exactly `0.0`: a pairwise ranker differences
-features within a group, so a feature that is identical for every member of a group contributes
-exactly zero, however well populated it is. Scene-level, pick-level and object-level quantities are
-all in that class. Of the 15 declared ranking features, only a handful describe the individual
-grasp; the rest are scene telemetry that cancels. A missing key maps to `0.0` silently, which looks
-the same from the outside.
-
-`python -m src.robot.grasping.rl check-dataset` exists to answer this before a training run rather
-than after: it reports occupancy at both levels and judges them differently.
-
-Code: [`scoring/success_probability/`](../src/robot/grasping/scoring/success_probability/README.md),
-[`src/robot/grasping/rl/ranking_policy.py`](../src/robot/grasping/rl/ranking_policy.py) and
-[`src/robot/grasping/rl/readiness.py`](../src/robot/grasping/rl/readiness.py)
-
----
-
-## 14. Out to the robot
+## 12. Out to the robot
 
 The pose leaves the grasping layer in the BASE frame. For a fixed camera that is one static
 composition; for a wrist camera it is recomposed from the live TCP every frame:
@@ -587,7 +508,7 @@ Code: [`src/robot/grasping/motion/frame_resolver.py`](../src/robot/grasping/moti
 
 ---
 
-## 15. What this math does not know
+## 13. What this math does not know
 
 | | |
 |---|---|
@@ -595,7 +516,7 @@ Code: [`src/robot/grasping/motion/frame_resolver.py`](../src/robot/grasping/moti
 | Reachability | The reachability axis of section 9 is a workspace box and an angle. Real reachability is an IK query against the arm actually bolted to the table. |
 | Concave shape | The analytic reference in [`datagen/grasps/`](../datagen/grasps/README.md) authors many object kinds as a small set of convex solids, so anything it grades is graded as convex primitives. |
 | Real sensor noise | Real depth returns holes inside a mask and leaks at mask edges. The robustness the stack carries was developed against rendered depth, which is a starting point and not a proven answer. |
-| Whether the prompt named the right object | Grounding is a separate question, answered separately, and the phrase grounder answers it badly on attribute prompts: it returns a confident wrong object rather than abstaining. See [`models/vlm/`](../src/models/vlm/README.md). |
+| Whether the prompt named the right object | Grounding is a separate question, answered separately. The phrase grounder that shipped until 2026-10-17 answered it badly on attribute prompts, returning a confident wrong object rather than abstaining, which is why the VLM is the only grounder now. See [`models/vlm/`](../src/models/vlm/README.md). |
 
 ---
 

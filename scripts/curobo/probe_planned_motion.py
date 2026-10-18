@@ -84,10 +84,8 @@ def _arm(joints: "tuple[float, ...]") -> URRobotArm:
         "vendor": "ur",
         "ur": {"model": _ARM}, "motion": {"planner": "curobo"},
         "safety": {
-            "payload": {"enforce": False},
             "self_collision": {"backend": "fcl", "planner_margin_mm": _MARGIN_MM},
-            "planning_world": {"enabled": True, "payload": {"enabled": False},
-                               "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0],
+            "planning_world": {"support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0],
                                                  "thickness_mm": 50.0}},
         },
         "gripper": {"model": "robotiq_2f85", "coupling_plates": [], "tool_frame": {

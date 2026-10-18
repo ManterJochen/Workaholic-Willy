@@ -6,18 +6,20 @@ reports and on the route the arm logged:
 * (u1) a clear move runs as one straight joint line: a Cartesian move 60 mm up from the start logs ``direct line`` with
   one leg, cuRobo plans nothing, and the controller ends within 1 mm of the goal;
 * (u2) a joint move whose straight line crosses a declared block is planned around to the same target: a 60 mm block
-  stands where the hand passes at the middle of a base swing, 130 mm below the flange, in the cell's own config, so the
-  guard and the planner both hold it; the move logs ``cuRobo plan around the straight line`` and the controller ends
-  on the target. A block and not a wall from the bench: on a UR3e the hand passes 256 mm from the base axis, and a wall
-  up to the hand met the upper arm beside the shoulder at the start (measured 2026-09-25, 279.6 mm into it);
+  stands where the hand passes at the middle of a base swing, 130 mm below the flange, a fixture of the cell's own
+  config the guard holds and a box the probe hands the planner (``CuroboPlanner.set_world``), so both hold it; the move
+  logs ``cuRobo plan around the straight line`` and the controller ends on the target. A block and not a wall from the
+  bench: on a UR3e the hand passes 256 mm from the base axis, and a wall up to the hand met the upper arm beside the
+  shoulder at the start (measured 2026-09-25, 279.6 mm into it);
 * (u3) a station written at home - 200 degrees on wrist 3 runs at home + 160 degrees, its full turn inside the half
   turn about home, and the log names the twin.
 
 The cell is the profile's (``ursim,ursim_curobo`` by default, ``ursim,ursim_curobo,ursim_ur3`` for the UR3e), with three
-things added for the probe alone: ``safety.joint_limits.within_half_turn_of_home``, ``safety.planning_world`` on with a
-bench, and the block as a declared fixture. The start is WILLY_ROUTE_START (six radians, comma separated), driven to
-first through the checked joint move; the default is the bed's start of 2026-09-18. It is the MIDDLE of the swing,
-where the block stands, so the arm must not stand there when the probe begins: a fresh UR3e, whose own pose the
+things added for the probe alone: a bench (``safety.planning_world.support_plane``), and the block as a declared
+fixture, handed to the planner by the probe (the half turn about home is every real arm's since 2026-10-17): a
+cell's own fixtures stay the guard's since 2026-10-17. The start is WILLY_ROUTE_START (six radians, comma separated),
+driven to first through the checked joint move; the default is the bed's start of 2026-09-18. It is the MIDDLE of the
+swing, where the block stands, so the arm must not stand there when the probe begins: a fresh UR3e, whose own pose the
 planner refuses, is jogged first through the ik route (``WILLY_PROFILE=ursim,ursim_ur3``, ``move_to_joints``) to the
 swing's left end, the start with the base 0.5 rad lower.
 
@@ -85,8 +87,9 @@ def _flange_mm(model: str, q: "list[float]") -> np.ndarray:
     return np.asarray(frames[-1][:3, 3], dtype=np.float64)
 
 
-def _cell(middle: "list[float]") -> RobotConfig:
-    """The profile's cell, with the window about home, a planning world and the block where the swing's middle passes."""
+def _cell(middle: "list[float]") -> "tuple[RobotConfig, dict[str, Any]]":
+    """The profile's cell, with the window about home, a bench and the block where the swing's middle passes, and that
+    block as a fixture."""
     config = load_robot_config()
     data = config.model_dump(mode="json")
     model = str(config.arm.model)
@@ -95,14 +98,12 @@ def _cell(middle: "list[float]") -> RobotConfig:
             "center_mm": [float(flange[0]), float(flange[1]), float(flange[2]) - _BLOCK_BELOW_FLANGE_MM],
             "half_extents_mm": [_BLOCK_HALF_MM, _BLOCK_HALF_MM, _BLOCK_HALF_MM]}
     safety = data.setdefault("safety", {})
-    safety.setdefault("joint_limits", {})["within_half_turn_of_home"] = True
     collision = safety.setdefault("self_collision", {})
     collision["fixtures"] = [*(collision.get("fixtures") or []), block]
     world = safety.setdefault("planning_world", {})
-    world["enabled"] = True
     if not world.get("support_plane"):  # the dump carries the key as None where the profile declares no bench
         world["support_plane"] = {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}
-    return RobotConfig.model_validate(data)
+    return RobotConfig.model_validate(data), block
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -115,7 +116,7 @@ def main(argv: "list[str] | None" = None) -> int:
     left, middle, right = ([start[0] + turn, *start[1:]] for turn in (-_SWING_RAD / 2.0, 0.0, _SWING_RAD / 2.0))
     record: dict[str, Any] = {"profile": os.environ["WILLY_PROFILE"], "start": start}
     try:
-        config = _cell(middle)
+        config, block = _cell(middle)
     except Exception as exc:  # noqa: BLE001 - a probe reports what refused its cell
         print(f"the probe's cell does not load: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
@@ -135,6 +136,12 @@ def main(argv: "list[str] | None" = None) -> int:
         return 2
     claims: dict[str, Any] = {}
     try:
+        # The block to the planner, beside the declared bench it keeps underneath (``merge_planner_worlds``): the guard
+        # holds it as a fixture, and a cell's fixtures reach no planner since 2026-10-17.
+        from src.robot.safety.planning.world import planner_cuboid
+
+        cuboid = planner_cuboid(str(block["name"]), block["center_mm"], [2.0 * h for h in block["half_extents_mm"]])
+        record["block_registered"] = int(arm._curobo_planner().set_world([cuboid]))
         with arm.without_camera_world(_DECLINED):
             moved = arm.move_to_joints(JointPositions(left))
             record["to_the_left_end"] = f"{moved.status}: {str(moved.message or '')[:200]}"

@@ -332,7 +332,7 @@ class Console:
             # the console can render and an operator can act on; "built, but blind" is not.
             self.session.release()
             # One VLM copy per process, shared by detection and the command reader (Q8 A). A cell that will not
-            # detect with it (the rehearsal, a GroundingDINO cell) hands the copy back here, unless a person loaded it
+            # detect with it (the rehearsal, a closed-set cell) hands the copy back here, unless a person loaded it
             # ("Laden") and the new config still names its weights; a VLM cell's own build reuses or replaces it.
             self._release_the_vlm_unless_this_cell_needs_it(app_cfg.models, rehearse=rehearse)
             # One call, and the same one the CLI runner makes. Building the perception and grasp
@@ -387,17 +387,17 @@ class Console:
             return service
 
     def _log_records_of(self, service: Any, robot: "RobotConfig") -> None:
-        """Record logging is off in the shipped config (``grasping.record_log_path: null``), so a console-driven cell
-        would keep no history at all and a bring-up that goes wrong would leave nothing to diagnose from afterwards. The
-        console therefore turns it on itself, into its own file, without touching the YAML: a cell that never runs the
-        console is unaffected, and an operator who did configure a path keeps it.
+        """A tree that names no record file has its picks appended to the log folder's ``grasp_records.jsonl``
+        (``from_robot_config``, since 2026-10-17); a console-driven cell keeps its records in a file of its own beside
+        the console's logs instead, without touching the YAML. A cell that never runs the console is unaffected, and an
+        operator who did configure a path keeps it.
 
         ``from_robot_config`` has already wired the configured path when there is one; calling
-        ``enable_record_logging`` again would replace it, so this only fills a gap.
+        ``enable_record_logging`` again would replace it, so this only acts where the tree names none.
         """
         if getattr(robot.grasping, "record_log_path", None) is None:
             self.record_log_path.parent.mkdir(parents=True, exist_ok=True)
-            # Warning rather than info: the console is overriding what the YAML says (nothing), and
+            # Warning rather than info: the console is overriding where the YAML leaves the records, and
             # an operator who later cannot find their records in the configured place should be
             # able to grep for the moment the console decided otherwise.
             logger.warning(
@@ -424,7 +424,7 @@ class Console:
     @staticmethod
     def _release_the_vlm_unless_this_cell_needs_it(models: Any, *, rehearse: bool) -> None:
         """Hand the process's one VLM copy back before a build whose cell does not detect with it (the rehearsal, a
-        GroundingDINO cell), unless a person loaded it ("Laden") and the new config still names its weights. Builds and
+        closed-set cell), unless a person loaded it ("Laden") and the new config still names its weights. Builds and
         loads nothing; a failure is said, never a reason to refuse the build."""
         try:
             from src.models.vlm import shared_vlm, vlm_detects  # noqa: PLC0415
@@ -727,7 +727,7 @@ class Console:
 
     def _latch_the_carried_halt(self) -> bool:
         """Latch the arm a build just adopted with the halt this console carries: a rebuild, a restart, ends no halt.
-        Whether it is latched now. An arm with no latch (a sim or KUKA arm) is said and left as it is: it refuses nothing
+        Whether it is latched now. An arm with no latch (a sim arm) is said and left as it is: it refuses nothing
         it ever refused, and the carried halt stays until a person says the cell is clear."""
         from src.robot.core.arm_capabilities import SupportsHalt, halt_state_of  # noqa: PLC0415
 
@@ -867,7 +867,7 @@ def take_down(console: Console, why: str) -> None:
     4. abandon the run;
     5. latch the arm of an abandoned moving run (:data:`DISCONNECT_HALT`), so nothing of that run is sent while the cell
        comes down, and give a brake up to 2 s to stand the arm still where the arm brakes a move in flight
-       (``robot.ur.brake_on_halt``). The latch stays, and the next Connect waits for "the cell is clear", where a move
+       (every UR). The latch stays, and the next Connect waits for "the cell is clear", where a move
        was in flight or the arm braked; on an arm that lets a move run to its end with none in flight it is given back
        once the cell is down, so that Connect connects as it always did. A halt already set (a person's) is kept, and
        so is the teardown's own latch where a person pressed "halt now" while the cell came down;

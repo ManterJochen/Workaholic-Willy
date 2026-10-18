@@ -18,12 +18,11 @@ Pinned:
 * the same with DO0 standing HIGH with the jaws open at the connect, as the owner leaves it after opening them at the
   pendant: the one write is the change from HIGH to LOW, the close. With the policy double, a push and a push that
   stopped write nothing to that DO0 at all, not even the level it stands at;
-* a count that says closed never pushes and never asks, with ``next_target`` allowed as the owner's push config allows
-  it: the pick goes on to next_target, which asks nobody either; in ``PickRun`` the next pick's start asks once; the
-  console run ends before its next pick with the hand's sentence, asking nobody;
+* a count that says closed never pushes and never asks: the pick ends after its looks, writing nothing; in ``PickRun``
+  the next pick's start asks once; the console run ends before its next pick with the hand's sentence, asking nobody;
 * a count nobody can vouch for (DO0 switched at the pendant) never pushes and never asks either, and ends the pick as a
-  gripper fault (the owner, 2026-09-30): no next_target, no look driven again; ``PickRun`` and the console run stop on
-  it, asking nobody.
+  gripper fault (the owner, 2026-09-30): no look driven again; ``PickRun`` and the console run stop on it, asking
+  nobody.
 """
 
 from __future__ import annotations
@@ -142,10 +141,10 @@ class APushWritesNothingToDo0StandingHighTests(unittest.TestCase):
 
 class AJawCountNobodyVouchesForNeverPushesTests(unittest.TestCase):
     """A count that says closed (the one change a close sends, made as the last look is ranked): no push and no
-    question; the pick goes on to next_target, which asks nobody either (the owner's rule: fall through to rescan), and
-    the next pick's start is where the hand is asked about. A count nobody can vouch for (DO0 switched at the pendant
-    then): no push and no question either, and the pick ends there as a gripper fault, as the toggle's own refusal ends
-    one (the owner, 2026-09-30): nothing more moves, and ``PickRun`` and the console run stop on it."""
+    question, and the pick ends after its looks; the next pick's start is where the hand is asked about. A count nobody
+    can vouch for (DO0 switched at the pendant then): no push and no question either, and the pick ends there as a
+    gripper fault, as the toggle's own refusal ends one (the owner, 2026-09-30): nothing more moves, and ``PickRun`` and
+    the console run stop on it."""
 
     @staticmethod
     def _spoiled_at_the_last_look(test: unittest.TestCase, kind: str) -> _PushCell:
@@ -190,21 +189,24 @@ class AJawCountNobodyVouchesForNeverPushesTests(unittest.TestCase):
         cell = self._spoiled_at_the_last_look(self, "closed")
         person = Person("open")
         cell.jaws._ask = person  # noqa: SLF001
-        asked_after: list[int] = []
+        after: list[tuple[int, int, int, list[Any]]] = []
         reports = self._recorded(cell)
 
-        with mock.patch("builtins.input", side_effect=AssertionError("asked at the terminal")):
-            run = cell.campaign(runs=2, on_attempt=lambda _attempt: asked_after.append(len(person.asked)))
+        def seen(_attempt: Any) -> None:
+            after.append((len(person.asked), len(cell.arm.pushes), len(self._written_since_the_spoil(cell)),
+                          [key for kind_, key in cell.arm.motions if kind_ == "joints"]))
 
+        with mock.patch("builtins.input", side_effect=AssertionError("asked at the terminal")):
+            run = cell.campaign(runs=2, on_attempt=seen)
+
+        # The first pick: nothing asked, pushed or written, its looks driven once. The second pick asks once at its
+        # start, and what it does after the person said open is the hand's ordinary pick.
         self.assertEqual(2, len(run.attempts), run.render())
-        self.assertEqual([], cell.arm.pushes, "a push moved on jaws the count says closed")
+        self.assertEqual((0, 0, 0, _keys_of(LOOKS)), after[0], "the first pick moved or asked on jaws said closed")
         self.assertEqual("refused_jaws_closed", reports[0].telemetry["pushes"][0]["code"])
-        self.assertEqual(["next_target"], reports[0].telemetry["recovery_trail_actions"])
-        self.assertEqual([0, 1], asked_after, "asked in the first pick, or not once at the second's start")
+        self.assertEqual([], reports[0].telemetry["recovery_trail_actions"])
+        self.assertEqual(1, after[1][0], "not asked once at the second pick's start")
         self.assertIn("CLOSED", person.asked[0])
-        self.assertEqual([], self._written_since_the_spoil(cell), "DO0 was written")
-        self.assertEqual(_keys_of(LOOKS) * 3, [key for kind_, key in cell.arm.motions if kind_ == "joints"],
-                         "the looks were not what next_target and the next pick drive")
 
     def test_a_pick_run_on_a_count_nobody_vouches_for_stops_at_the_gripper_fault_asking_nobody(self) -> None:
         cell = self._spoiled_at_the_last_look(self, "unknown")
@@ -224,7 +226,7 @@ class AJawCountNobodyVouchesForNeverPushesTests(unittest.TestCase):
         self.assertIn("switched", report.gripper_fault)
         self.assertEqual([], cell.arm.pushes, "a push moved on jaws nobody vouched open")
         self.assertEqual("refused_jaws_unknown", report.telemetry["pushes"][0]["code"])
-        self.assertEqual([], report.telemetry["recovery_trail_actions"], "next_target drove the looks again")
+        self.assertEqual([], report.telemetry["recovery_trail_actions"], "a recovery drove the looks again")
         self.assertEqual([], person.asked, "a person was asked")
         self.assertEqual([], self._written_since_the_spoil(cell), "DO0 was written")
         self.assertEqual(_keys_of(LOOKS), [key for kind_, key in cell.arm.motions if kind_ == "joints"],
@@ -234,9 +236,9 @@ class AJawCountNobodyVouchesForNeverPushesTests(unittest.TestCase):
         from api.runs import RunState
         from tests.test_a_console_run_stops_and_looks_as_a_campaign_does import _drive
 
-        # A count that says closed: the looks of the pick and of its next_target. One nobody vouches for: the pick's.
-        for kind, said, looks in (("closed", "the jaws still hold the last part", 2),
-                                  ("unknown", "the gripper needs a person, so the run stops", 1)):
+        # Either count: the pick drives its looks once, and the run stops before its next pick.
+        for kind, said in (("closed", "the jaws still hold the last part"),
+                           ("unknown", "the gripper needs a person, so the run stops")):
             with self.subTest(count=kind):
                 cell = self._spoiled_at_the_last_look(self, kind)
                 cell.service.configured_looks = LOOKS
@@ -250,7 +252,7 @@ class AJawCountNobodyVouchesForNeverPushesTests(unittest.TestCase):
                 self.assertIn(said, run.error)
                 self.assertEqual([], cell.nobody.asked, "a person was asked")
                 self.assertEqual([], self._written_since_the_spoil(cell), "DO0 was written")
-                self.assertEqual(_keys_of(LOOKS) * looks, [key for kind_, key in cell.arm.motions if kind_ == "joints"],
+                self.assertEqual(_keys_of(LOOKS), [key for kind_, key in cell.arm.motions if kind_ == "joints"],
                                  "the looks were not what the pick drives")
 
 

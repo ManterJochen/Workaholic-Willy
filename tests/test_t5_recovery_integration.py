@@ -4,7 +4,8 @@ Mirrors the T4 integration pattern: verify that
 
 1. the snapshot carries the new T5 ``recovery_orchestrator_*`` keys,
 2. defaults are byte-identical to T4 (every flag OFF, EASY excluded),
-3. the schema's ``apply_modes`` filter permanently excludes EASY.
+3. the cell's recovery (``CELL_RECOVERY``, since the recovery block left the schema on 2026-10-16) excludes EASY
+   from its ``apply_modes``.
 """
 
 from __future__ import annotations
@@ -58,29 +59,22 @@ class EffectiveConfigT5DefaultsTests(unittest.TestCase):
             recovery_orchestrator=EffectiveRecoveryOrchestratorConfig(
                 per_action_budget=(
                     ("rescan", 1),
-                    ("next_target", 2),
+                    ("nudge_target", 2),
                 ),
             ),
         )
         d = eff.to_dict()
         self.assertEqual(
             d["recovery_orchestrator_per_action_budget"],
-            [["rescan", 1], ["next_target", 2]],
+            [["rescan", 1], ["nudge_target", 2]],
         )
 
 
-class SchemaApplyModesLockoutTests(unittest.TestCase):
-    def test_easy_excluded_from_default_apply_modes(self) -> None:
-        from src.config.schema.robot.robot_schema import (
-            GraspingRecoveryConfig,
-        )
+class TheCellsRecoveryLeavesEasyOutTests(unittest.TestCase):
+    def test_easy_is_not_among_its_apply_modes(self) -> None:
+        from src.robot.execution.autonomous_grasp.config import CELL_RECOVERY
 
-        rec = GraspingRecoveryConfig(enabled=True)
-        self.assertNotIn("easy", rec.apply_modes)
-        self.assertEqual(
-            rec.apply_modes,
-            ("auto", "dense_clutter"),
-        )
+        self.assertEqual(("auto", "dense_clutter"), CELL_RECOVERY.apply_modes)
 
 
 if __name__ == "__main__":

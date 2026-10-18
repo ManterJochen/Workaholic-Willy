@@ -347,14 +347,12 @@ class LivePlannerWorld:
     declared_meshes: tuple[dict[str, Any], ...] = ()
     #: How coarse the geometry is and how many boxes there is room for.
     tuning: WorldBuildTuning = field(default_factory=WorldBuildTuning)
-    #: A frame older than this is not planned against. An unstamped frame is older than any value.
+    #: A frame older than this is not planned against. An unstamped frame is older than any value. A
+    #: cell's world is built with `perceived.CAMERA_FRAME_MAX_AGE_MS` (``camera_world_wiring``).
     max_age_ms: float = 500.0
     #: How many more times a camera that cannot vouch for the cell is asked before the refresh
-    #: raises `CameraWorldUnavailable` instead of refusing. From `perceived.fresh_frame_attempts`.
+    #: raises `CameraWorldUnavailable` instead of refusing: `shutter_motion.FRESH_FRAME_ATTEMPTS`.
     fresh_frame_attempts: int = 3
-    #: Whether a registration the planner confirms only in part refuses the motion. From
-    #: `planning_world.require_registration`, so every driver reads the cell's own answer.
-    require_registration: bool = True
     #: The share of the region about a goal a camera looks at, and of a frame's pixels where the
     #: frame is judged whole, that has to hold a depth before it may vouch for anything. Below it a
     #: goal is `UNSEEN` and a frame is `BLIND`. One half is "mostly holes" and nothing finer:
@@ -644,7 +642,7 @@ class LivePlannerWorld:
 
     def hold_pick_views_again(self) -> bool:
         """Hold again the frames the last pick held when it ended, for the place that carries its part straight over a
-        bin's rim (``robot.place.carry: over_the_rim``): the way into the bin is then judged against the walls the
+        bin's rim (``robot.motion.place.carry: over_the_rim``): the way into the bin is then judged against the walls the
         pick's looks saw, as the pick judged its own motions. Once only; ``False`` where no pick left frames, and
         the place then goes via the bin's look as before."""
         frames, self._let_go = list(self._let_go), []
@@ -928,7 +926,7 @@ class LivePlannerWorld:
             *(item for held in earlier for item in (held.camera, held.frame, held.envelope)),
             *(item for view in views for item in (view.surface_depth_mm, view.exclude_masks, view.labelled_masks)),
             *named,
-            *(capsule.surface for capsule in envelope.capsules),
+            *(capsule.surface for capsule in envelope.chains()[1]),
         )
         equal = (
             self.limits, self.tuning,
@@ -939,11 +937,11 @@ class LivePlannerWorld:
                  np.asarray(view.intrinsics, dtype=np.float64).tobytes())
                 for view in views
             ),
-            tuple(np.asarray(frame, dtype=np.float64).tobytes() for frame in envelope.frames_mm),
+            tuple(np.asarray(frame, dtype=np.float64).tobytes() for frame in envelope.chains()[0]),
             tuple(
                 (int(capsule.frame), tuple(float(v) for v in capsule.start_mm), tuple(float(v) for v in capsule.end_mm),
                  float(capsule.radius_mm))
-                for capsule in envelope.capsules
+                for capsule in envelope.chains()[1]
             ),
             envelope.base,
             None if near is None else (near.shape, near.tobytes()),
@@ -1431,12 +1429,14 @@ def _mesh_body(name: str, mesh: dict[str, Any]) -> DeclaredBody:
 
 
 def _placed_body(envelope: SelfEnvelope | None) -> "np.ndarray | None":
-    """The robot's body as the end points of its capsules in BASE, or ``None`` for a body nobody can describe."""
+    """The robot's body, and every other arm's it carries, as the end points of the capsules in BASE, or ``None`` for a
+    body nobody can describe: a frame is served again only while all of it still stands there."""
     if envelope is None:
         return None
+    frames_mm, capsules = envelope.chains()
     points = []
-    for capsule in envelope.capsules:
-        frame = np.asarray(envelope.frames_mm[capsule.frame], dtype=np.float64)
+    for capsule in capsules:
+        frame = np.asarray(frames_mm[capsule.frame], dtype=np.float64)
         for end in (capsule.start_mm, capsule.end_mm):
             points.append(frame[:3, :3] @ np.asarray(end, dtype=np.float64) + frame[:3, 3])
     return np.asarray(points, dtype=np.float64).reshape(-1, 3)
@@ -1688,9 +1688,9 @@ def refresh_planner_world(
     client: Any,
     self_envelope: SelfEnvelope | None,
     near_point_mm: Sequence[float] | None = None,
-    require_registration: bool = True,
     now: float | None = None,
     goal_keep_out: Maybe[GoalKeepOut] = UNSET,
+    partner_cuboids: "Sequence[dict[str, Any]]" = (),
 ) -> WorldRefresh:
     """Build the current world and hand it to the planner, or say why the caller must not plan.
 
@@ -1744,7 +1744,8 @@ def refresh_planner_world(
         )
 
     started = time.perf_counter()
-    boxes = [dict(box) for box in snapshot.cuboids]
+    # The other arms of the cell, declared boxes beside the cell's own, sent with every world (owner, 2026-10-15).
+    boxes = [dict(box) for box in snapshot.cuboids] + [dict(box) for box in partner_cuboids]
     meshes = [dict(m) for m in snapshot.meshes]
     voxel_field = snapshot.perceived.voxels if snapshot.perceived is not None else None
     scene_setter = getattr(client, "set_scene", None)
@@ -1772,13 +1773,12 @@ def refresh_planner_world(
             "the declared world alone while the cameras can see more than that"
         )
     expected = len(boxes) + len(meshes)
-    if registered != expected and require_registration:
+    if registered != expected:
         # Kept beside a field reason rather than written over it, so an operator is told all of
-        # what is wrong.
+        # what is wrong. Every cell refuses here since 2026-10-17: no switch plans on anyway.
         reasons.append(
-            f"the planner confirmed {registered} of {expected} obstacle(s), so it is "
-            "planning against a world that is missing part of this cell. Set "
-            "safety.planning_world.require_registration false to plan anyway, deliberately."
+            f"the planner confirmed {registered} of {expected} obstacle(s), so it would be "
+            "planning against a world that is missing part of this cell"
         )
     if dropped:
         # An obstacle the cameras saw and the planner has no slot for is one it will route through,
@@ -1792,8 +1792,8 @@ def refresh_planner_world(
                 f", counting what {snapshot.held} frame(s) of earlier poses of this pick saw"
                 if snapshot.held else ""
             )
-            + ". Raise safety.planning_world.perceived.max_boxes, which the planner reserves when it starts, or clear "
-            "the cell of what it does not need"
+            + ". The planner reserves that many slots when it starts (perceived.CAMERA_MAX_BOXES, the owner's cell's), "
+            "so clear the cell of what it does not need"
         )
     reason = "; and ".join(reasons)
     return WorldRefresh(

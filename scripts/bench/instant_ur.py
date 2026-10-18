@@ -267,7 +267,7 @@ def install(state: ControllerState) -> dict[str, Any]:
 
         def getTimestamp(self) -> float:  # noqa: N802
             # The controller's clock moves on at its 125 Hz, so the steady gate that reads the joint speeds
-            # (robot.safety.dwell.steady_signal: joint_speeds) sees a fresh sample at every read, as on a real arm.
+            # sees a fresh sample at every read, as on a real arm.
             import time  # noqa: PLC0415
 
             return time.monotonic()

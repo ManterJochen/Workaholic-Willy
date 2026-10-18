@@ -22,13 +22,20 @@ original file is restored and the validation error is returned, so the tree is n
 the loader would refuse.
 
 A pose taught by hand in the console is no measurement either, and it has a door of its own:
-:func:`set_named_pose` and :func:`set_default_place_pose` write ``robot.named_poses`` and
-``robot.default_place_pose``, through the same transaction, into the last layer of the profile chain
+:func:`set_named_pose` and :func:`set_default_place_pose` write ``robot.motion.named_poses`` and
+``robot.motion.default_place_pose``, through the same transaction, into the last layer of the profile chain
 alone (the owner, Q10: the cell's own, untracked layer). Inside a git work tree that layer must be one
 git keeps out, ignored and tracked nowhere (:func:`pose_layer_refusal`), so one cell's poses never land
 in a file every clone shares. The joints are where a person guided the arm, screened by the exact guard
 and the planner while it held; typed into the generic writer they would skip both, so :func:`set_keys`
 refuses every pose key with a sentence of its own (:data:`POSE_KEYS`).
+
+The cell's task settings (``runtime.task``: whether Enter starts a task, its mode, its place, the tick for
+"anything", how its picks look and whether its parts are critical) are chosen on the console's Settings page,
+not measured, and they have a door of their own beside the pose door: :func:`set_task_settings` writes them,
+through the same transaction, into the runtime overlay of the chain's last layer alone, under the same rule
+(the owner, 2026-10-17: "die Konsole schreibt sie", into the cell's own layer). :func:`set_keys` refuses
+them too (:data:`TASK_KEYS`); none of them decides which machine moves, and none starts a task.
 """
 
 from __future__ import annotations
@@ -44,16 +51,19 @@ from typing import Any
 from ._provenance import section_sources
 from ._schema_index import schema_index
 from .schema.robot.robot_schema import pose_label_refusal, pose_name_refusal
+from .schema.runtime import TaskConfig
 
 __all__ = [
     "MISSING",
     "POSE_KEYS",
+    "TASK_KEYS",
     "WRITABLE",
     "WRITTEN_SCREENS",
     "WriteRefused",
     "WriteResult",
     "Writable",
     "is_pose_key",
+    "is_task_key",
     "pose_layer_refusal",
     "pose_target_file",
     "read_key",
@@ -61,7 +71,10 @@ __all__ = [
     "set_key",
     "set_keys",
     "set_named_pose",
+    "set_task_settings",
     "target_file",
+    "task_layer_refusal",
+    "task_target_file",
     "writable",
 ]
 
@@ -79,9 +92,10 @@ class WriteRefused(StrEnum):
     NO_TARGET = "no_target"
     #: The key decides which machine moves, and something is currently connected to one.
     CELL_CONNECTED = "cell_connected"
-    #: A taught pose, and the chain names no layer of the cell's own: none at all, so it would land in the shared base
-    #: file every cell reads, or a last layer git does not keep out, so it would land in the repository
-    #: (:func:`pose_layer_refusal`). Only the pose door returns it.
+    #: A taught pose or a task setting, and the chain names no layer of the cell's own: none at all, so it would land in
+    #: the shared base file every cell reads, or a last layer git does not keep out, so it would land in the repository
+    #: (:func:`pose_layer_refusal`, :func:`task_layer_refusal`). Only the pose door and the task settings' door return
+    #: it.
     NO_LAYER = "no_layer"
     #: A taught pose under a name that is none (``pose_name_refusal``); nothing was written. Only the pose door.
     INVALID_NAME = "invalid_name"
@@ -132,11 +146,12 @@ WRITABLE: tuple[Writable, ...] = (
         unit="mm",
     ),
     Writable(
-        path="robot.safety.planning_world.payload.length_mm",
+        path="robot.motion.place.part_hang_mm",
         label="Carried part length",
         measure=(
-            "How far your longest part hangs below the closed fingertips, in millimetres. The planner carries a "
-            "box of this length under the jaws while a part is held; a task needs it before it starts."
+            "How far your longest part hangs below the closed fingertips, in millimetres. A place sets the part's "
+            "bottom where the taught fingertips stood and keeps it over a box's rim; the pick's looks measure each "
+            "part's own hang where they read under it, and this stands in where they do not."
         ),
         unit="mm",
     ),
@@ -229,23 +244,24 @@ def writable(key: str) -> Writable | None:
 
 #: The keys a taught pose is written under. Never in :data:`WRITABLE`, ``/v1/config/writable`` or a PATCH: only the
 #: pose door (:func:`set_named_pose`, :func:`set_default_place_pose`) writes them, and :func:`set_keys` refuses every
-#: key under ``robot.named_poses`` and ``robot.default_place_pose`` with :data:`_A_POSE_IS_TAUGHT`.
+#: key under ``robot.motion.named_poses`` and ``robot.motion.default_place_pose`` with :data:`_A_POSE_IS_TAUGHT`.
 POSE_KEYS: tuple[str, ...] = (
-    "robot.named_poses.*.joints_deg",
-    "robot.named_poses.*.label",
-    "robot.named_poses.*.taught_at",
-    "robot.named_poses.*.screen",
-    "robot.named_poses.*.note",
-    "robot.default_place_pose",
+    "robot.motion.named_poses.*.joints_deg",
+    "robot.motion.named_poses.*.label",
+    "robot.motion.named_poses.*.taught_at",
+    "robot.motion.named_poses.*.screen",
+    "robot.motion.named_poses.*.note",
+    "robot.motion.default_place_pose",
 )
 #: The screens a taught pose is written with: both the exact guard and the planner clear it, or it lies in the
 #: planner's cushion band. An unscreened or refused pose never is (the owner, 2026-09-30).
 WRITTEN_SCREENS: tuple[str, ...] = ("clear", "band")
 
-_POSE_FIELD = re.compile(r"^robot\.named_poses\.[A-Za-z_][A-Za-z0-9_]*\.(?:joints_deg|label|taught_at|screen|note)$")
+_POSE_FIELD = re.compile(
+    r"^robot\.motion\.named_poses\.[A-Za-z_][A-Za-z0-9_]*\.(?:joints_deg|label|taught_at|screen|note)$")
 #: What the pose door allows: one entry for every key of :data:`POSE_KEYS`, none of which disconnects anything.
 _A_TAUGHT_POSE = Writable(
-    path="robot.named_poses.*",
+    path="robot.motion.named_poses.*",
     label="Taught pose",
     measure=("A person guides the arm there by hand in the console; the exact guard and the planner screen it while it "
              "holds, and only a clear pose or one in the planner's band is written."),
@@ -259,14 +275,46 @@ _A_POSE_IS_TAUGHT = (
 
 
 def is_pose_key(key: str) -> bool:
-    """Whether ``key`` is under ``robot.named_poses`` or is ``robot.default_place_pose``: a taught pose's key."""
+    """Whether ``key`` is under ``robot.motion.named_poses`` or is ``robot.motion.default_place_pose``: a taught pose's
+    key."""
     stripped = re.sub(r"\[\d+\]", "", key)
-    return stripped in ("robot.named_poses", "robot.default_place_pose") or stripped.startswith("robot.named_poses.")
+    return (stripped in ("robot.motion.named_poses", "robot.motion.default_place_pose")
+            or stripped.startswith("robot.motion.named_poses."))
 
 
 def _pose_door(key: str) -> Writable | None:
     """The pose door's allowlist: a key of :data:`POSE_KEYS`, under a name, and nothing else."""
-    return _A_TAUGHT_POSE if key == "robot.default_place_pose" or _POSE_FIELD.match(key) else None
+    return _A_TAUGHT_POSE if key == "robot.motion.default_place_pose" or _POSE_FIELD.match(key) else None
+
+
+#: The keys of the cell's task settings, every key of ``runtime.task``: what a task takes where its sentence says
+#: nothing. Never in :data:`WRITABLE`, ``/v1/config/writable`` or a PATCH of the config: only the task settings' door
+#: (:func:`set_task_settings`) writes them, and :func:`set_keys` refuses each with :data:`_A_TASK_IS_SET_IN_THE_CONSOLE`.
+TASK_KEYS: tuple[str, ...] = tuple(f"runtime.task.{name}" for name in TaskConfig.model_fields)
+#: What the task settings' door allows: one entry for every key of :data:`TASK_KEYS`, none of which disconnects
+#: anything.
+_A_TASK_SETTING = Writable(
+    path="runtime.task.*",
+    label="Task setting",
+    measure=("What a task takes where its sentence says nothing, chosen on the console's Settings page ('Auftrag') for "
+             "every browser of the cell, and written into the cell's own layer."),
+)
+#: Why the generic writer refuses a task setting.
+_A_TASK_IS_SET_IN_THE_CONSOLE = (
+    "{key} is a task setting: it is chosen on the console's Settings page ('Auftrag') and written by the task settings' "
+    "writer alone, into the cell's own layer (PATCH /v1/task/settings). To set it for every cell, edit "
+    "app/runtime.yaml."
+)
+
+
+def is_task_key(key: str) -> bool:
+    """Whether ``key`` is one of the cell's task settings (:data:`TASK_KEYS`), or their block ``runtime.task``."""
+    return key == "runtime.task" or key in TASK_KEYS
+
+
+def _task_door(key: str) -> Writable | None:
+    """The task settings' allowlist: a key of :data:`TASK_KEYS`, and nothing else."""
+    return _A_TASK_SETTING if key in TASK_KEYS else None
 
 
 def _known(key: str) -> bool:
@@ -502,9 +550,10 @@ def set_keys(
     constructed there at all.
 
     ``allowed`` is the allowlist a key is read against: :func:`writable`, the measurements of
-    :data:`WRITABLE`, for every caller but the pose door, which hands its own. A taught pose's key
-    that the allowlist does not take is refused ``NOT_WRITABLE`` with its own sentence, never as an
-    unknown key: it is real, and only the pose door writes it.
+    :data:`WRITABLE`, for every caller but the pose door and the task settings' door, which hand their
+    own. A taught pose's key or a task setting that the allowlist does not take is refused
+    ``NOT_WRITABLE`` with its own sentence, never as an unknown key: it is real, and only its own door
+    writes it.
     """
     # A mismatched pair such as layers=("ur3e",) with profile=None writes into the layer file but
     # validates the base tree: no rollback fires, the read-back reports the base tree's value rather
@@ -535,6 +584,11 @@ def set_keys(
             return WriteResult(
                 applied=False, keys=tuple(items), refused=WriteRefused.NOT_WRITABLE, refused_key=key,
                 message=_A_POSE_IS_TAUGHT.format(key=key),
+            )
+        if entry is None and is_task_key(key):
+            return WriteResult(
+                applied=False, keys=tuple(items), refused=WriteRefused.NOT_WRITABLE, refused_key=key,
+                message=_A_TASK_IS_SET_IN_THE_CONSOLE.format(key=key),
             )
         if entry is not None and entry.requires_disconnected and connected:
             # The controller address is the one writable value that does not describe the tool; it
@@ -647,8 +701,8 @@ def pose_target_file(root: Path, layers: tuple[str, ...]) -> Path | None:
             return None
         # A cell's own tree, outside this repository's config folder (``--data``): its base robot.yaml is the cell's
         # own file, as a layer would be, and git keeps it out or no git holds it (:func:`pose_layer_refusal`).
-        return target_file("robot.named_poses", root, layers)
-    return target_file("robot.named_poses", root, layers)
+        return target_file("robot.motion.named_poses", root, layers)
+    return target_file("robot.motion.named_poses", root, layers)
 
 
 def _is_shipped_tree(root: Path) -> bool:
@@ -694,17 +748,28 @@ def pose_layer_refusal(root: Path, layers: tuple[str, ...], *, what: str = "a ta
     the pose door asks again before it writes. The sentence says what happens and what to do; the caller adds what was
     not done (nothing written, nothing freed).
     """
+    return _own_layer_refusal(root, layers, pose_target_file(root, layers), what=what, base="robot.yaml",
+                              kept="poses", then="teach")
+
+
+def _own_layer_refusal(root: Path, layers: tuple[str, ...], target: Path | None, *, what: str, base: str, kept: str,
+                       then: str) -> str:
+    """Why ``what`` may not be written into ``target``, the overlay of the chain's last layer, or ``""`` where it may:
+    the one rule of the pose door and the task settings' door (the owner, Q10). ``base`` names the shared file a chain
+    with no layer would write, ``kept`` what the cell keeps there, ``then`` what the person does once it is kept out."""
     if not layers and _is_shipped_tree(root):
         return (f"{what} is written into the last layer of the profile chain, the cell's own, and this chain names no "
-                f"layer, so it would land in the shared robot.yaml every cell reads. {_CELL_LAYER}")
-    target = pose_target_file(root, layers)
+                f"layer, so it would land in the shared {base} every cell reads. {_CELL_LAYER}")
     if target is None:
-        return ""  # no robot section to write into: the writer's own refusal says so (NO_TARGET)
-    return _kept_out_of_git(target, what, layers)
+        return ""  # no file backs the section: the writer's own refusal says so (NO_TARGET)
+    return _kept_out_of_git(target, what, layers, kept=kept, then=then)
 
 
-def _kept_out_of_git(target: Path, what: str, layers: tuple[str, ...]) -> str:
-    """``""`` where git keeps ``target`` out, or no git work tree holds it; else why it does not, with the remedy."""
+def _kept_out_of_git(target: Path, what: str, layers: tuple[str, ...], *, kept: str, then: str) -> str:
+    """``""`` where git keeps ``target`` out, or no git work tree holds it; else why it does not, with the remedy.
+
+    Git is asked from the nearest folder that exists: a task settings' overlay may be the first file of its folder
+    (``app/`` in a cell's own tree), which its first write creates."""
     folder = target.parent.resolve()
     top = next((above for above in (folder, *folder.parents) if (above / ".git").exists()), None)
     if top is None:
@@ -713,16 +778,18 @@ def _kept_out_of_git(target: Path, what: str, layers: tuple[str, ...]) -> str:
         shown = target.resolve().relative_to(top).as_posix()
     except ValueError:  # pragma: no cover (the work tree was found above the file itself)
         shown = str(target)
+    asked = next(above for above in (folder, *folder.parents) if above.is_dir())
+    named = (folder / target.name).relative_to(asked).as_posix()
     try:
-        ignored = _git(folder, "check-ignore", "-q", "--", target.name)
+        ignored = _git(asked, "check-ignore", "-q", "--", named)
         # check-ignore reads the index: a tracked file is never ignored, whatever a pattern says. Which of the two it is
         # decides the remedy.
         tracked = (ignored.returncode == 1
-                   and _git(folder, "ls-files", "--error-unmatch", "--", target.name).returncode == 0)
+                   and _git(asked, "ls-files", "--error-unmatch", "--", named).returncode == 0)
     except (OSError, subprocess.SubprocessError) as exc:
         return (f"{what} goes into {shown}, which lies in a git work tree, and git could not be asked whether it keeps "
                 f"that file out ({type(exc).__name__}: {exc}): a layer git may carry into the repository is no cell's "
-                "own. Put git on the console's PATH, or move the config out of the work tree, then teach.")
+                f"own. Put git on the console's PATH, or move the config out of the work tree, then {then}.")
     if ignored.returncode == 0:
         return ""
     if ignored.returncode != 1:
@@ -732,12 +799,12 @@ def _kept_out_of_git(target: Path, what: str, layers: tuple[str, ...]) -> str:
     if tracked:
         chain = ",".join(layers if layers[-1] == "cell" else (*layers, "cell"))
         return (f"{what} goes into the last layer of the chain, {shown}, and that file is tracked by git: every clone "
-                "of the repository shares it, and one cell's poses do not belong there (Q10). End the chain in a layer "
-                f"of the cell's own that git ignores (for example --profile {chain}), or, where this file is the cell's "
-                f"own, stop tracking it (git rm --cached {shown}) and add it to .gitignore.")
+                f"of the repository shares it, and one cell's {kept} do not belong there (Q10). End the chain in a "
+                f"layer of the cell's own that git ignores (for example --profile {chain}), or, where this file is the "
+                f"cell's own, stop tracking it (git rm --cached {shown}) and add it to .gitignore.")
     return (f"{what} goes into {shown}, the cell's own layer, and that file is not git-ignored: the next `git add` "
-            f"would carry this cell's poses into the repository (Q10). Add the line {shown} to .gitignore (or to "
-            ".git/info/exclude, which keeps it out on this machine alone), then teach.")
+            f"would carry this cell's {kept} into the repository (Q10). Add the line {shown} to .gitignore (or to "
+            f".git/info/exclude, which keeps it out on this machine alone), then {then}.")
 
 
 def _git(folder: Path, *args: str) -> "subprocess.CompletedProcess[str]":
@@ -747,7 +814,8 @@ def _git(folder: Path, *args: str) -> "subprocess.CompletedProcess[str]":
 
 
 def _no_layer(keys: tuple[str, ...], why: str) -> WriteResult:
-    """The refusal of a pose write under a chain with no layer of the cell's own (:func:`pose_layer_refusal`)."""
+    """The refusal of a pose write or a task setting's under a chain with no layer of the cell's own
+    (:func:`pose_layer_refusal`, :func:`task_layer_refusal`)."""
     return WriteResult(
         applied=False, keys=keys, refused=WriteRefused.NO_LAYER, refused_key=keys[0] if keys else "",
         message=f"{why} Nothing was written.",
@@ -769,8 +837,8 @@ def set_named_pose(
 ) -> WriteResult:
     """Write one taught pose, and the default place with it where asked, as one transaction into the last layer.
 
-    The group is ``robot.named_poses.<name>``'s five keys (the joints in degrees, the label, when it was taught, the
-    screen and a note), plus ``robot.default_place_pose: <name>`` with ``make_default_place``, written through
+    The group is ``robot.motion.named_poses.<name>``'s five keys (the joints in degrees, the label, when it was taught, the
+    screen and a note), plus ``robot.motion.default_place_pose: <name>`` with ``make_default_place``, written through
     :func:`set_keys` with the pose door's own allowlist: all land, or every file keeps the bytes it had. A pose taught
     again is rewritten in place, every comment kept; a joint list written by hand as a block cannot be rewritten so, and
     the loader's refusal comes back with the file untouched.
@@ -786,9 +854,9 @@ def set_named_pose(
         raise ValueError(
             f"a pose screened {screen!r} is never written: only one the exact guard and the planner clear ('clear') or "
             "one in the planner's band ('band') is; screen it first (screen_configuration while the arm holds)")
-    prefix = f"robot.named_poses.{name}"
+    prefix = f"robot.motion.named_poses.{name}"
     keys = tuple(f"{prefix}.{part}" for part in ("joints_deg", "label", "taught_at", "screen", "note")) + (
-        ("robot.default_place_pose",) if make_default_place else ())
+        ("robot.motion.default_place_pose",) if make_default_place else ())
     refused = pose_name_refusal(name)
     if refused:
         return WriteResult(applied=False, keys=keys, refused=WriteRefused.INVALID_NAME, refused_key=prefix,
@@ -808,7 +876,7 @@ def set_named_pose(
         f"{prefix}.note": _one_line(note),
     }
     if make_default_place:
-        items["robot.default_place_pose"] = name
+        items["robot.motion.default_place_pose"] = name
     return set_keys(items, root=root, layers=layers, profile=profile, allowed=_pose_door)
 
 
@@ -822,13 +890,15 @@ def set_default_place_pose(
     """Choose the pose a task places at when its command names no target, or ``None`` for none, in the last layer.
 
     A name must be a pose name; whether the tree holds that pose is the validators' to say, with the file rolled back
-    where it does not (``INVALID_VALUE``). ``None`` writes the loader's reset (``"__null__"``), not ``null``: a ``null``
-    in an overlay keeps the value a lower layer set, and the default would stay. A chain with no layer of the cell's
-    own is refused (``NO_LAYER``, :func:`pose_layer_refusal`) with nothing written.
+    where it does not (``INVALID_VALUE``). ``None`` writes the loader's reset (``"__null__"``) into a layer, not ``null``:
+    a ``null`` in an overlay keeps the value a lower layer set, and the default would stay; into the base file of a
+    cell's own tree with no layer (``--data``) it writes ``null``, since the loader resolves the reset in layers alone.
+    A chain with no layer of the cell's own over the shipped tree is refused (``NO_LAYER``, :func:`pose_layer_refusal`)
+    with nothing written.
     """
     from .loader import _OVERLAY_RESET  # noqa: PLC0415
 
-    key = "robot.default_place_pose"
+    key = "robot.motion.default_place_pose"
     if name is not None:
         refused = pose_name_refusal(name)
         if refused:
@@ -837,8 +907,71 @@ def set_default_place_pose(
     refused = pose_layer_refusal(root, layers, what="the default place pose")
     if refused:
         return _no_layer((key,), refused)
-    return set_keys({key: _OVERLAY_RESET if name is None else name}, root=root, layers=layers, profile=profile,
+    cleared = _OVERLAY_RESET if layers else None
+    return set_keys({key: cleared if name is None else name}, root=root, layers=layers, profile=profile,
                     allowed=_pose_door)
+
+
+# --------------------------------------------------------------------------------------------------
+# The cell's task settings' own door.
+# --------------------------------------------------------------------------------------------------
+
+def task_target_file(root: Path, layers: tuple[str, ...]) -> Path | None:
+    """The file the cell's task settings are written to under this chain: the runtime overlay of its LAST layer.
+
+    ``app/runtime.<layer>.yaml`` beside the base ``app/runtime.yaml``, created by its first write: under the owner's
+    chain, ``--profile ur10,hande,cell``, ``app/runtime.cell.yaml``. ``None`` for a chain with no layer over this
+    repository's shipped tree, whose base ``runtime.yaml`` every cell reads; a cell's own tree outside the repository
+    (``--data``) with no layer is written in its own base ``app/runtime.yaml``, where it has one, as a taught pose is in
+    its own ``robot.yaml``. Reads nothing and writes nothing; whether the file may take them (git keeps it out) is
+    :func:`task_layer_refusal`'s to say.
+    """
+    if not layers and _is_shipped_tree(root):
+        return None
+    return target_file("runtime.task", root, layers)
+
+
+def task_layer_refusal(root: Path, layers: tuple[str, ...]) -> str:
+    """Why the cell's task settings may not be written under this chain, in one line, or ``""`` where they may.
+
+    The rule of a taught pose (:func:`pose_layer_refusal`, the owner, Q10), for the file :func:`task_target_file` names:
+    a chain with no layer over the shipped tree is refused, its target being the shared ``app/runtime.yaml``; inside a
+    git work tree the file must be one git ignores and tracks nowhere, so one cell's choices never reach every clone
+    (``config/**/*.cell.yaml`` keeps the owner's out); a git that cannot be asked keeps nothing out anyone could vouch
+    for. Nothing is written: the console's Settings page says it before anybody chooses.
+    """
+    return _own_layer_refusal(root, layers, task_target_file(root, layers), what="a task setting",
+                              base="runtime.yaml", kept="task settings", then="set it again")
+
+
+def set_task_settings(
+    values: Mapping[str, Any],
+    *,
+    root: Path,
+    layers: tuple[str, ...],
+    profile: str | None,
+) -> WriteResult:
+    """Write some of the cell's task settings, ``runtime.task``, as one transaction into the last layer of the chain.
+
+    ``values`` maps a setting's name (``start``, ``scope``, ``place``, ``anything``, ``looks``, ``critical_parts``) to
+    its value as the schema takes it, a place as its text (``pose:park``; ``schema.runtime.task_place_text``). They go
+    through :func:`set_keys` with the door's own allowlist into the file :func:`task_target_file` names: all land, or
+    every file keeps the bytes it had, and a value the loader refuses comes back ``INVALID_VALUE`` with the loader's
+    sentence. A setting written again is rewritten on its own line, every comment kept.
+
+    Refused with nothing written: a name that is no task setting (``UNKNOWN_KEY``), and a chain with no layer of the
+    cell's own (``NO_LAYER``, :func:`task_layer_refusal`). No setting decides which machine moves, so nothing is refused
+    for a connected cell, and none starts a task: the next task takes them.
+    """
+    items = {f"runtime.task.{name}": value for name, value in values.items()}
+    unknown = next((key for key in items if key not in TASK_KEYS), None)
+    if unknown is not None:
+        return WriteResult(applied=False, keys=tuple(items), refused=WriteRefused.UNKNOWN_KEY, refused_key=unknown,
+                           message=f"{unknown} is no task setting; the task settings are {', '.join(TASK_KEYS)}.")
+    refused = task_layer_refusal(root, layers)
+    if refused:
+        return _no_layer(tuple(items), refused)
+    return set_keys(items, root=root, layers=layers, profile=profile, allowed=_task_door)
 
 
 def _reload(root: Path, profile: str | None) -> Any:
@@ -872,8 +1005,8 @@ def read_key(cfg: Any, key: str) -> Any:
     Public together with the sentinel: `explain.py` imports both, and a consumer that cannot reach
     them carries a walker of its own returning ``None`` for both "missing" and "the value is None".
     45 of the default tree's 468 keys hold ``None``, and each of them prints as
-    ``camera.stereomatcher.p1`` from such a walker and as
-    ``camera.stereomatcher.p1 = None`` from this one: one key, two answers, across the CLI in
+    ``robot.safety.payload.mass_kg`` from such a walker and as
+    ``robot.safety.payload.mass_kg = None`` from this one: one key, two answers, across the CLI in
     `src/config/__main__.py` and the operator console, the two surfaces `KeyExplanation`
     (`explain.py`) is split out to keep in step. The drift sits one layer above that class, in what
     each surface finds out before calling it.

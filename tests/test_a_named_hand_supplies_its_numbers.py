@@ -1,7 +1,9 @@
-"""A named hand supplies its own envelope and widths at load, and a contradicting profile is refused (lane C4b, C4d).
+"""A named hand supplies its own widths at load, and a contradicting profile is refused (lane C4b, C4d).
 
 The owner's decision of 2026-09-17 (finding 14 of the audit): a profile that named a customer hand and left
-``grasping.gripper_geometry`` and the gripper widths unset planned grasps against a 2F-85's fingers and stroke.
+``grasping.gripper_geometry`` and the gripper widths unset planned grasps against a 2F-85's fingers and stroke. Since
+2026-10-17 the envelope is no key at all: every reader takes it from the registry file (``gripper_model.jaw_envelope``),
+and a tree that still writes the block is refused at load.
 """
 
 from __future__ import annotations
@@ -33,10 +35,11 @@ def _load(tree: _Tree):
     return load_config(tree.root, profile="trial").robot
 
 
-class AnUnsetEnvelopeComesFromTheHandTests(unittest.TestCase):
-    def test_an_unset_envelope_and_widths_come_from_the_named_hand(self) -> None:
+class UnsetWidthsComeFromTheHandTests(unittest.TestCase):
+    def test_unset_widths_come_from_the_named_hand_and_its_envelope_from_its_file(self) -> None:
         from src.config.grippers import load_gripper
         from src.config.hand_numbers import HAND_KEYS
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
 
         robot = _load(_Tree(self, "robot:\n  gripper:\n    model: schunk_egu50\n"))
         spec = load_gripper("schunk_egu50", aliases=False)
@@ -45,17 +48,17 @@ class AnUnsetEnvelopeComesFromTheHandTests(unittest.TestCase):
                 node = robot
                 for part in key.split("."):
                     node = getattr(node, part)
-                expected = str(spec.kind) if field == "kind" else getattr(spec.jaw, field)
-                self.assertEqual(str(node) if field == "kind" else node, expected)
+                self.assertEqual(node, getattr(spec.jaw, field))
+        envelope = jaw_envelope(robot)
+        self.assertEqual((envelope.fingertip_depth_mm, envelope.palm_width_mm),
+                         (spec.jaw.finger_ahead_mm, spec.jaw.palm_width_mm))
 
-    def test_the_table_is_the_pairs_the_measured_hands_test_compares(self) -> None:
-        """⭐ THE CONTROL: one table, the one the Hand-E layer test already compared field by field."""
+    def test_the_table_is_the_three_widths(self) -> None:
+        """⭐ THE CONTROL: the loader fills the actuation widths and nothing else."""
         from src.config.hand_numbers import HAND_KEYS
 
         fields = {field for _, field in HAND_KEYS}
-        self.assertEqual(fields, {"aperture_mm", "min_width_mm", "closed_width_mm", "kind", "finger_length_mm",
-                                  "finger_thickness_mm", "finger_width_mm", "finger_pad_overlap_mm", "finger_ahead_mm",
-                                  "pad_length_mm", "pad_ahead_mm", "palm_depth_mm", "palm_width_mm"})
+        self.assertEqual(fields, {"aperture_mm", "min_width_mm", "closed_width_mm"})
 
     def test_the_robot_section_door_derives_the_same_numbers(self) -> None:
         from src.config.loader import load_robot_section
@@ -77,21 +80,18 @@ class AContradictionIsRefusedTests(unittest.TestCase):
     def test_a_stated_number_that_contradicts_the_named_hand_is_refused_naming_both(self) -> None:
         from src.config.loader import ConfigError
 
-        layer = ("robot:\n  gripper:\n    model: schunk_egu50\n    max_width_mm: 85.0\n"
-                 "  grasping:\n    gripper_geometry:\n      parallel_jaw:\n        palm_width_mm: 70.0\n")
+        layer = "robot:\n  gripper:\n    model: schunk_egu50\n    max_width_mm: 85.0\n    closed_width_mm: 0.0\n"
         with self.assertRaises(ConfigError) as caught:
             _load(_Tree(self, layer))
         said = str(caught.exception)
-        for part in ("robot.gripper.max_width_mm", "85.0", "84.1", "palm_width_mm", "70.0", "72.0",
+        for part in ("robot.gripper.max_width_mm", "85.0", "84.1", "robot.gripper.closed_width_mm", "4.1",
                      "grippers/schunk_egu50.yaml"):
             self.assertIn(part, said)
 
     def test_a_restated_equal_number_and_a_policy_inside_its_range_are_admitted(self) -> None:
-        layer = ("robot:\n  gripper:\n    model: schunk_egu50\n    max_width_mm: 84.1\n    min_width_mm: 10.0\n"
-                 "  grasping:\n    gripper_geometry:\n      parallel_jaw:\n        finger_pad_overlap_mm: 3.0\n")
+        layer = "robot:\n  gripper:\n    model: schunk_egu50\n    max_width_mm: 84.1\n    min_width_mm: 10.0\n"
         robot = _load(_Tree(self, layer))
-        self.assertEqual((robot.gripper.min_width_mm,
-                          robot.grasping.gripper_geometry.parallel_jaw.finger_pad_overlap_mm), (10.0, 3.0))
+        self.assertEqual((robot.gripper.max_width_mm, robot.gripper.min_width_mm), (84.1, 10.0))
 
     def test_a_tree_holding_no_registry_takes_the_numbers_from_the_repository_registry(self) -> None:
         """The owner's one registry authority: a generated data_example tree has no grippers/ and still loads a hand."""
@@ -117,13 +117,13 @@ class AContradictionIsRefusedTests(unittest.TestCase):
             _load(_Tree(self, "robot:\n  gripper:\n    model: schunk_egu50\n    closed_width_mm: 0.0\n"))
         self.assertIn("config/grippers/schunk_egu50.yaml", str(caught.exception))
 
-    def test_a_suction_envelope_stated_for_a_jaw_hand_is_refused(self) -> None:
+    def test_a_tree_still_writing_the_envelope_is_refused_naming_the_registry_file(self) -> None:
         from src.config.loader import ConfigError
 
         layer = "robot:\n  gripper:\n    model: schunk_egu50\n  grasping:\n    gripper_geometry:\n      kind: suction\n"
         with self.assertRaises(ConfigError) as caught:
             _load(_Tree(self, layer))
-        for part in ("kind", "suction", "parallel_jaw"):
+        for part in ("robot.grasping.gripper_geometry", "config/grippers", "delete it"):
             self.assertIn(part, str(caught.exception))
 
 

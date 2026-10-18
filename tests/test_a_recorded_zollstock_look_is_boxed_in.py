@@ -8,7 +8,7 @@ and the pick ended with no typed reason. Replayed here the way the pick loop cal
 replay, ``pick_loop.py:4264-4384``): the owner's Hand-E, the dense mode of that profile, the support the single view
 resolved.
 
-With ``robot.grasping.scene_obstacles`` SFE's prism offered nothing on both looks, with the support model of the look
+With the scene's obstacles SFE's prism offered nothing on both looks, with the support model of the look
 and without it: every one of its builds met a neighbour the camera saw. On all five of the owner's recorded looks (P1-P5,
 ``cellfix/ae/work/replay_zollstock.out``): then 3 of 3 grasps with an open finger in a neighbour, after 0 grasps.
 
@@ -33,6 +33,7 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.grasping.collision.support_resolver import TABLE_CLEARANCE_MM
 from src.geometry import Frame, Transform
 
 
@@ -57,20 +58,15 @@ def _rules() -> Any:
 
 
 def _support(recorded: Any) -> Any:
-    """``pick_loop._resolve_support``, single view: the declared support raised to the target's lowest point when its
-    cloud reaches 25 mm along the support normal."""
-    from src.robot.grasping.collision import resolve_support_plane
+    """``pick_loop._resolve_support``, single view: the cell's support raised to the target's lowest point when its
+    cloud reaches 25 mm up."""
+    from src.robot.grasping.collision.support_resolver import DeclaredSupport
     from src.robot.grasping.geometry.pointcloud import masked_point_cloud
 
-    support = _cell().grasping.support
     cloud = masked_point_cloud(recorded.target_mask, recorded.depth_mm, recorded.intrinsics)
     base = (np.asarray(cloud.points_mm, dtype=float).reshape(-1, 3) @ recorded.camera_to_base[:3, :3].T
             + recorded.camera_to_base[:3, 3])
-    along = base @ np.asarray(support.normal, dtype=float)
-    clouds = [base] if support.refine_from_target and float(along.max() - along.min()) >= 25.0 else None
-    return resolve_support_plane(declared_height_mm=support.height_mm,
-                                 container_floor_mm=support.container.floor_height_mm, normal=support.normal,
-                                 target_clouds_base_mm=clouds, refine_from_target=support.refine_from_target)
+    return DeclaredSupport.of(_cell()).resolve([base] if float(np.ptp(base[:, 2])) >= 25.0 else None)
 
 
 def _model(recorded: Any) -> Any:
@@ -84,8 +80,7 @@ def _model(recorded: Any) -> Any:
 
 
 def _compute(recorded: Any, *, scene: bool, model: Any = None) -> Any:
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
-    from src.robot.execution.autonomous_grasp.config import _profile_for, resolve_grasp_mode
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
     from src.robot.grasping.calculator_factory import build_calculator
 
     cfg = _cell()
@@ -93,17 +88,14 @@ def _compute(recorded: Any, *, scene: bool, model: Any = None) -> Any:
     if scene:
         extra["scene_obstacles"] = _rules()
     calc = build_calculator(cfg, camera_matrix=recorded.intrinsics, max_grip_width_mm=cfg.gripper.max_width_mm,
-                            min_grip_width_mm=cfg.gripper.min_width_mm, support_footprint_geometry=True,
-                            support_footprint_inflate_mm=0.0, **extra)
+                            min_grip_width_mm=cfg.gripper.min_width_mm, **extra)
     support = _support(recorded)
     return calc.compute_result(
         SimpleNamespace(mask=recorded.target_mask, label="Einen Zollstock", score=1.0), recorded.depth_mm,
-        pixel_to_mm=None, dense_sampling=True,
-        grasp_sampling_mode=_profile_for(resolve_grasp_mode(cfg.grasping.default_mode)).sampling_mode,
         other_object_masks=[],
         camera_to_base=Transform.from_matrix(recorded.camera_to_base, from_frame=Frame.CAMERA, to_frame=Frame.BASE),
-        support_plane=support.plane, min_table_clearance_mm=cfg.grasping.support.min_clearance_mm,
-        gripper_model=build_gripper_geometry(cfg.grasping.gripper_geometry),
+        support_plane=support.plane, min_table_clearance_mm=TABLE_CLEARANCE_MM,
+        gripper_model=jaw_envelope(cfg),
         **({"support_model": model} if model is not None else {}))
 
 
@@ -137,7 +129,7 @@ def _in_open_fingers(grasp: Any, points: np.ndarray) -> int:
     grasp planned for a hand that opens only as needed (lever G) as wide as its opening and the slack the guard holds it
     at (``core.gripper.FINGER_OPENING_SLACK_MM``), every other fully."""
     from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
 
     cfg = _cell()
     widest = float(cfg.gripper.max_width_mm)
@@ -146,7 +138,7 @@ def _in_open_fingers(grasp: Any, points: np.ndarray) -> int:
     turn = np.column_stack([grasp.axis, np.cross(grasp.approach, grasp.axis), grasp.approach])
     local = (np.asarray(points, dtype=np.float64) - grasp.position) @ turn
     return int(sum(int(box.contains_local_points(local).sum())
-                   for box in build_gripper_geometry(cfg.grasping.gripper_geometry).collision_boxes(opening)
+                   for box in jaw_envelope(cfg).collision_boxes(opening)
                    if box.label.startswith("finger")))
 
 

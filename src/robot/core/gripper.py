@@ -36,8 +36,9 @@ A hand that toggles
 Whether a hand is known empty and open
 --------------------------------------
 * :func:`why_not_known_open` reads it off the hand, sending nothing and asking nobody: a toggle whose count stands and
-  says open, or a gripper that measures its width fully open. The arm sets the camera's boxes aside in the planner's
-  world for nothing else (the owner, 2026-10-01).
+  says open, or a gripper that measures its width fully open (the owner, 2026-10-01). A blocker's pick backs out only a
+  hand that reads so, the console asks it of a hand it opened, and the arm runs what it judged ahead only while the
+  hand reads as it did then.
 """
 
 from __future__ import annotations
@@ -314,7 +315,7 @@ def closes_onto_the_part_of(gripper: object) -> bool:
 @runtime_checkable
 class GripsFromInside(Protocol):
     """Capability extension: the hand grips a part from inside a bore, its fingers opening until the bore's wall stops
-    them, and says while it holds one so. Such a part is let go by closing (``robot.grasping.inner_grasps``,
+    them, and says while it holds one so. Such a part is let go by closing (``generation.inner_grasps``,
     ``execution.handling``).
 
     It holds from inside where its last command gripped so and its fingers stopped on something while opening (a
@@ -354,9 +355,8 @@ def why_toggle_count_unknown(gripper: object) -> str:
     person), where the hand cannot say (no ``why_jaws_unknown``), where a change of its output failed
     (:attr:`TogglesWithoutSensor.edge_unknown`), and where ``why_jaws_unknown()`` reads the output switched by hand
     since the program's last command, or cannot read it. A read that raises vouches for nothing either. A count that
-    says closed stands: the jaws are where the program left them. What the pick reads before ``next_target`` or a
-    rescan drives the looks again, and the push before each of its contact legs and once its up leg ended (the owner,
-    2026-09-30).
+    says closed stands: the jaws are where the program left them. What the pick reads before a rescan drives the looks
+    again, and the push before each of its contact legs and once its up leg ended (the owner, 2026-09-30).
     """
     toggle = toggle_without_sensor_of(gripper)
     if toggle is None:
@@ -427,7 +427,7 @@ def why_not_known_open(gripper: object) -> str:
     (:class:`MeasuresWidth`) where it is connected, reads within :data:`OPEN_WITHIN_MM` of its widest, and measures no
     part held (:class:`ReportsHoldEvidence`): a part as wide as the jaws open is the one width alone would miss. No
     hand, any other hand, a count that says closed or that nobody can vouch for, a width short of open and a read that
-    fails each say why. The arm sets the camera's boxes aside in the planner's world only where this answers ``""``.
+    fails each say why.
     """
     if gripper is None:
         return "no hand is known to this arm"

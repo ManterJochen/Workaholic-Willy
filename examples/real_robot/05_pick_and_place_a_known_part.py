@@ -10,7 +10,7 @@ robot = Robot.from_tree(load_tree())
 
 # Where the grasp centre between the fingers takes the part and where it lets it go, in millimetres
 # in the robot's base frame with the tool pointing down; choose both inside your cell's workspace.
-# The fingers close the way your cell's hand naturally stands (robot.natural_closing_axis, base x
+# The fingers close the way your cell's hand naturally stands (robot.motion.natural_closing_axis, base x
 # where it names none); yaw_deg turns them further about the vertical, counted from that direction, to
 # meet the part across its width: where the hand stands along -y, yaw_deg=90.0 closes along base x.
 part = robot.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)

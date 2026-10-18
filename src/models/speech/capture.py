@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, runtime_checkable
 
-from src.config.schema.models.models_schema import SampleFormat, SpeechToTextConfig
+from src.config.schema.models.models_schema import SpeechToTextConfig
 from src.contracts import UNSET, Maybe, resolve
 from src.models.speech.engine import SpeechStackUnavailable
 
@@ -27,13 +27,31 @@ if TYPE_CHECKING:  # pragma: no cover, typing only
     import numpy as np
 
 __all__ = [
+    "MICROPHONE_BLOCKSIZE",
+    "MICROPHONE_CHANNELS",
+    "MICROPHONE_FORMAT",
+    "MICROPHONE_SAMPLERATE",
     "AudioBlock",
     "AudioSource",
     "MicrophoneSource",
     "MicrophoneUnavailable",
+    "SampleFormat",
     "to_mono_at_rate",
     "to_mono_float32",
 ]
+
+#: The sample formats the microphone stream opens with. Each has a full scale the stream divides by,
+#: so every block lands in [-1, 1] whatever it arrived as.
+SampleFormat = Literal["int16", "int32", "float32"]
+
+#: The cell PC's microphone stream, fixed since 2026-10-17 at the numbers the owner's cell ran (its
+#: ``models.stt`` of 2026-10-14): Whisper's and Silero's input rate, half a second a block, one channel of
+#: int16. Audio that arrives from anywhere else is resampled to the rate, so it is the model's input rate as
+#: much as the device's.
+MICROPHONE_SAMPLERATE: Final = 16000
+MICROPHONE_BLOCKSIZE: Final = 8000
+MICROPHONE_CHANNELS: Final = 1
+MICROPHONE_FORMAT: Final[SampleFormat] = "int16"
 
 #: The full scale of every sample format the stream opens, so each block lands in [-1, 1].
 _FULL_SCALE: Final[dict[str, float]] = {"int16": 32768.0, "int32": 2147483648.0, "float32": 1.0}
@@ -175,12 +193,14 @@ class MicrophoneSource:
     def from_config(
         cls, *, config: SpeechToTextConfig, device: Maybe[int | str] = UNSET
     ) -> MicrophoneSource:
-        """The YAML door: `models.stt.samplerate`, `blocksize`, `channels` and `dtype`. Opens nothing."""
+        """The speech section's door: the cell PC's microphone at the owner's cell's numbers
+        (:data:`MICROPHONE_SAMPLERATE`, :data:`MICROPHONE_BLOCKSIZE`, :data:`MICROPHONE_CHANNELS`,
+        :data:`MICROPHONE_FORMAT`), which ``models.stt`` no longer names. Opens nothing."""
         return cls.from_parts(
-            samplerate=config.samplerate,
-            blocksize=config.blocksize,
-            channels=config.channels,
-            sample_format=config.dtype,
+            samplerate=MICROPHONE_SAMPLERATE,
+            blocksize=MICROPHONE_BLOCKSIZE,
+            channels=MICROPHONE_CHANNELS,
+            sample_format=MICROPHONE_FORMAT,
             device=device,
         )
 

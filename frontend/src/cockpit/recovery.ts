@@ -22,7 +22,7 @@
  */
 
 import type { CellFactsOut, CellOut, HaltStateOut, ReadinessOut } from '../api/client'
-import { noPartModelled, type RefusalCode } from '../api/codes'
+import { type RefusalCode } from '../api/codes'
 import type { RunView } from '../model/runModel'
 
 /** Brake outcomes only an arm that brakes a move in flight reports (with brakes off the outcome is `ran_out`). */
@@ -68,7 +68,7 @@ export function controllerStopped(readiness: ReadinessOut | null): boolean {
 /**
  * Whether a part may be in the jaws now, as the server would refuse the way back for it (`part_still_held`).
  *
- * The live reads first (a toggle's count that says closed, a planner that models a part), then the server's own word:
+ * The live read first (a toggle's count that says closed), then the server's own word:
  * `part_still_held` among the ready bar's blockers, which also counts a measuring hand's hold and the stop record's
  * belief for a hand that can say nothing. Where the ready bar was not read, or was read before the stop record it
  * should know (the poll reads the cell, then the ready bar; while a record stands the server always lists
@@ -78,7 +78,7 @@ export function controllerStopped(readiness: ReadinessOut | null): boolean {
  * belief stands, whatever the hand turns out to be, so the card never says "no part" about a hand nobody read.
  */
 export function partHeld(cell: CellOut, readiness: ReadinessOut | null): boolean {
-  if (cell.hand?.jaws === 'closed' || !noPartModelled(cell.payload_model)) return true
+  if (cell.hand?.jaws === 'closed') return true
   if (cell.state !== 'connected') return cell.recovery?.holding === true
   const blockers = readiness?.blockers ?? []
   const said = (code: string) => blockers.some((blocker) => blocker.code === code)

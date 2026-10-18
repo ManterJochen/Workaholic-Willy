@@ -1,9 +1,9 @@
 """Inner grasps: the hand comes down into a part's bore with its jaws narrow and opens them onto its wall
-(``robot.grasping.inner_grasps``, on as shipped for a Robotiq hand, the owner, 2026-10-14).
+(every cell with a Robotiq hand, the owner, 2026-10-14: "Nur wo außen nichts geht").
 
 A ring wider than the stroke cannot be closed across at all, and a ring, a tube or a coupling star's hub packed among
 its neighbours leaves no room for a finger outside it; from inside it can be held. The fingers come down into the bore
-as narrow as the bore leaves room for (a Robotiq told a width: their outer faces :data:`support_footprint.NARROW_ROOM_MM`
+as narrow as the bore leaves room for (a Robotiq told a width: their outer faces :data:`hand.NARROW_ROOM_MM`
 inside the wall, lever G's room, closed where it leaves less), open at the close's force until the wall stops them, and
 the part is lifted as a held part; at the place the jaws close and let it go (``grasping.motion.execution_policy``,
 ``execution.handling``). A toggle would need two changes of its output more a pick and says nothing of how it holds:
@@ -25,9 +25,9 @@ taken where no outer grasp is.
   standing over their tips in the finger's band, read off the body's own points. There it stands into the pad by
   :data:`body_grasps.BODY_MIN_OVERLAP_MM`, or the fingers would open onto a ledge under the pad.
 * The hand fits: the jaws as they come down keep the room each side from the wall along the closing
-  axis and across it, the larger of :data:`support_footprint.JAW_SIDE_ROOM_MM` and the guard's distance, with nothing
+  axis and across it, the larger of :data:`hand.JAW_SIDE_ROOM_MM` and the guard's distance, with nothing
   of the body under their tips but the support's clearance below them; and the open stroke meets the wall with
-  :data:`support_footprint.JAW_SIDE_ROOM_MM` of it left a side.
+  :data:`hand.JAW_SIDE_ROOM_MM` of it left a side.
 * Both contacts hold inside the friction cone, read as the outer search reads them (``body_grasps._turn_at``): how the
   wall leans over the pad (a bore that widens upward leans away from it), how it turns across the pad (a pad that
   bridges the arc of a round bore meets it at both its edges and pushes along its own normal; off the bore's centre it
@@ -45,7 +45,7 @@ taken where no outer grasp is.
 What it offers is an :class:`InnerGrasp`: where the hand goes and its closing axis (a ``SupportFootprintCandidate``,
 whose ``grip_width_mm`` is the jaws' opening where their outer faces meet the wall and whose ``open_width_mm`` is the
 narrow opening the hand comes down at), how wide the jaws stand on the way in, the bore across, how deep the fingertips
-stand under the part's top, and the part's extent about the grasp, which the carried part is attached as. Scored as the
+stand under the part's top, and the part's extent about the grasp, which the pick records. Scored as the
 outer search scores (the friction cone's slack, the stroke left, how the pads sit on the wall, the room from every
 obstacle point, the closing line across the part's centre of mass), robust first.
 
@@ -86,7 +86,7 @@ from src.robot.grasping.generation.body_grasps import (
     body_least_height_mm,
     body_map,
 )
-from src.robot.grasping.generation.support_footprint import (
+from src.robot.grasping.generation.hand import (
     _CLEARANCE_FULL_MM,
     _SCORE_WEIGHTS,
     JAW_SIDE_ROOM_MM,
@@ -147,7 +147,7 @@ class InnerGrasp:
         bore_mm (float): The bore across, wall to wall, along the closing axis in the finger's band, at the pads.
         depth_mm (float): How far under the part's top the fingertips stand at the grasp.
         part_width_mm (float): The part's extent about the grasp: the diameter of the circle about the hand's axis that
-            holds it in the plane, what the carried part is attached as.
+            holds it in the plane.
     """
 
     candidate: SupportFootprintCandidate
@@ -293,7 +293,7 @@ def inner_grasps(
     ``max_candidates`` at most.
 
     The hand is told a width (a Robotiq, lever G): it comes down as narrow as the bore leaves
-    :data:`support_footprint.NARROW_ROOM_MM` beside each jaw, and closed where it leaves less. ``refusals``, where
+    :data:`hand.NARROW_ROOM_MM` beside each jaw, and closed where it leaves less. ``refusals``, where
     given, counts why the inner grasps asked were not offered, under the body search's causes:
     ``span`` (no wall either side of the bore's centre), ``aperture`` (the bore narrower than the closed jaws and the
     room, or wider than the stroke reaches), ``prism`` (the part's own body under the fingers' tips, a ledge under the
@@ -307,13 +307,13 @@ def inner_grasps(
         obstacle_points_base_mm: The neighbours' points the camera saw.
         rigid_obstacle_points_base_mm: The declared bodies' points, kept off undilated.
         seen_envelope: The guard's boxes of the neighbours (``scene_obstacles.SeenEnvelope``), or ``None``.
-        hand_floor: The solids the guard holds under the hand (``support_footprint.HandFloor``), or ``None``.
+        hand_floor: The solids the guard holds under the hand (``hand.HandFloor``), or ``None``.
         corridor_seen: Whether a ray of the frame reached a point (``scene_obstacles.SeenInTheFrame``), or ``None``,
             where no inner grasp is offered.
         floor_margin_mm: How far over the support a point still counts as the support.
         max_candidates: The most grasps returned.
         refusals: Counted into where given, as above.
-        score_weights: The stage's five weights, ``None`` for its own (``support_footprint._SCORE_WEIGHTS``).
+        score_weights: The stage's five weights, ``None`` for its own (``hand._SCORE_WEIGHTS``).
         bores_found: Where given, the bores the part's body holds are added to it, a grasp found in them or not.
         hole_xy_mm: The holes of the part's colour mask met at its top (``footprint_hull.mask_hole_xy``), BASE x and y,
             ``None`` for none: their cells are hollow, and what stands a cell inside them is no part of the body.
@@ -558,7 +558,7 @@ def _kept(batch: "list[_Found]", *, jaw: SupportFootprintJaw, support: float, to
           seen_envelope: Any, hand_floor: HandFloor | None, seen: Any, room: _Room, room_weight: float,
           count: Callable[[str, int], None]) -> "list[_Found]":
     """The grasps of ``batch`` the rest of the scene keeps, each scored ``room_weight`` more as the room its fingers keep
-    from ``room``'s points nears :data:`support_footprint._CLEARANCE_FULL_MM`; the cause each other one was refused for
+    from ``room``'s points nears :data:`hand._CLEARANCE_FULL_MM`; the cause each other one was refused for
     is counted. The fingers' way down into the bore (the closed jaws from their tips up the finger's reach and 80 mm
     more, as the outer search sweeps an open finger's way in), their way out to the wall and the open fingers at it have
     to be seen; the closed fingers and the palm stand over the solids the guard holds under the hand; the neighbours'

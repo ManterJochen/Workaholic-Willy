@@ -19,7 +19,6 @@ from typing import Any, Optional, Union
 from src.robot.grasping.recovery.push_planner import PushHand, PushRefusal
 
 __all__ = [
-    "REFUSED_PUSH_HAND_NOT_A_JAW",
     "REFUSED_PUSH_HAND_UNKNOWN",
     "push_hand_from_registry",
     "push_hand_from_robot_config",
@@ -27,10 +26,6 @@ __all__ = [
 
 #: The cell names no hand the registry holds, so nothing says how wide its housing is.
 REFUSED_PUSH_HAND_UNKNOWN = "push_hand_unknown"
-#: The cell's end effector is not a parallel jaw, so it has no finger to push with.
-REFUSED_PUSH_HAND_NOT_A_JAW = "push_hand_not_a_jaw"
-
-_PARALLEL_JAW = "parallel_jaw"
 
 
 def push_hand_from_registry(
@@ -40,8 +35,8 @@ def push_hand_from_registry(
     ``hand``, and the jaws open ``open_width_mm`` apart.
 
     ``gripper_model`` is read by field name (``finger_thickness_mm``, ``finger_width_mm``, ``fingertip_depth_mm``,
-    ``finger_length_mm``, ``palm_width_mm``), so a :class:`ParallelJawGripperModel` and the
-    ``grasping.gripper_geometry.parallel_jaw`` config block both serve. ``hand`` is the registry model name the
+    ``finger_length_mm``, ``palm_width_mm``), as a :class:`ParallelJawGripperModel` carries them. ``hand`` is the
+    registry model name the
     cell carries (``robot.gripper.model``); it is looked up by model name only, as the cell's own lookup is. A
     registry hand that has no ``palm_thickness_mm`` leaves the housing to the planner's fallback, the open
     fingers' outer faces, and the registry file is where to fix that.
@@ -72,25 +67,20 @@ def push_hand_from_registry(
 
 
 def push_hand_from_robot_config(robot: Any) -> Union[PushHand, PushRefusal]:
-    """The push's hand for a loaded robot config: ``robot.grasping.gripper_geometry.parallel_jaw`` (the numbers the
-    loader filled from the named hand), ``robot.gripper.max_width_mm`` as the open width (the hand's aperture; a
-    toggle hand opens all the way) and the registry's ``palm_thickness_mm`` for ``robot.gripper.model``."""
+    """The push's hand for a loaded robot config: the named hand's envelope from its registry file
+    (``gripper_model.jaw_envelope``), ``robot.gripper.max_width_mm`` as the open width (the hand's aperture; a toggle
+    hand opens all the way) and the registry's ``palm_thickness_mm`` for ``robot.gripper.model``."""
 
     gripper = getattr(robot, "gripper", None)
-    geometry = getattr(getattr(robot, "grasping", None), "gripper_geometry", None)
-    if gripper is None or geometry is None:
+    if gripper is None:
         return PushRefusal(
             code=REFUSED_PUSH_HAND_UNKNOWN,
-            sentence="The robot config carries no gripper or no gripper geometry, so the hand a push would plan with "
-                     "is not known and no push is planned.",
+            sentence="The robot config carries no gripper, so the hand a push would plan with is not known and no push "
+                     "is planned.",
         )
-    kind = str(getattr(geometry, "kind", ""))
-    if kind != _PARALLEL_JAW:
-        return PushRefusal(
-            code=REFUSED_PUSH_HAND_NOT_A_JAW,
-            sentence=f"robot.grasping.gripper_geometry.kind is {kind!r}, not a parallel jaw: there is no finger to push "
-                     "with, so no push is planned.",
-        )
-    return push_hand_from_registry(
-        geometry.parallel_jaw, hand=getattr(gripper, "model", None), open_width_mm=float(gripper.max_width_mm),
-    )
+    hand = getattr(gripper, "model", None)
+    if not hand:
+        return push_hand_from_registry(None, hand=None, open_width_mm=float(gripper.max_width_mm))
+    from src.robot.grasping.collision.gripper_model import jaw_envelope  # noqa: PLC0415
+
+    return push_hand_from_registry(jaw_envelope(robot), hand=hand, open_width_mm=float(gripper.max_width_mm))

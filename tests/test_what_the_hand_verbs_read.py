@@ -14,7 +14,7 @@ from src.contracts import UNSET
 from src.robot.core.camera_world import CameraWorldDecline, CameraWorldUse
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.planned.arm import PlannedArm
-from tests._arm_kit import bare_arm, curobo_arm, ik_arm, kit_pose, line_arm, payload_arm
+from tests._arm_kit import bare_arm, curobo_arm, ik_arm, kit_pose, line_arm
 from tests.test_camera_world_on_every_driver import (
     _JOINTS,
     _sim_mock,
@@ -288,72 +288,6 @@ def running_normally(conn: object) -> None:
     conn.is_protective_stopped.return_value = False  # type: ignore[attr-defined]
     conn.is_emergency_stopped.return_value = False  # type: ignore[attr-defined]
     conn.dashboard_safety_status.return_value = ""  # type: ignore[attr-defined]
-
-
-class ThePayloadModelTests(unittest.TestCase):
-    def test_the_planned_arm_says_why_it_models_no_payload_without_starting_a_planner(self) -> None:
-        from src.robot.core.arm_capabilities import CarriesPayload, PayloadModel
-
-        arm = payload_arm(enabled=False)
-        self.assertIsInstance(arm, CarriesPayload)
-        reason = arm.payload_declined_reason()
-        assert reason is not None
-        self.assertIn("safety.planning_world.payload.enabled", reason)
-        self.assertIs(PayloadModel.NONE, arm.payload_model())
-        self.assertIsNone(arm._curobo, "asking why started a planner")
-
-        ik = payload_arm(planner_kind="ik")
-        ik_reason = ik.payload_declined_reason()
-        assert ik_reason is not None
-        self.assertIn("robot.motion.planner", ik_reason)
-
-        self.assertIsNone(payload_arm().payload_declined_reason())
-
-    def test_every_place_the_hand_verbs_ask_about_a_payload_asks_the_same_question(self) -> None:
-        """A pick forgets the last part before it opens its jaws, and a grasp attaches the new one.
-
-        Those two live 200 lines apart in `handling.py` and used to ask differently: the grasp and the release
-        with `isinstance(arm, CarriesPayload)`, the pick body with `getattr(arm, "detach_payload")`. An arm that
-        carried half the capability, which no driver does but several doubles did, was a payload arm to one half
-        and not to the other, and nothing said so. This asserts the halves agree by walking the module.
-        """
-        import ast
-        import inspect
-
-        from src.robot.execution import handling
-
-        tree = ast.parse(inspect.getsource(handling))
-        payload_verbs = {"attach_payload", "detach_payload", "payload_declined_reason", "payload_model"}
-        asked_by_getattr = [
-            node.lineno for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("getattr", "hasattr")
-            and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value in payload_verbs
-        ]
-        self.assertEqual(asked_by_getattr, [], "a payload verb is still reached by name, not by capability")
-
-        isinstance_checks = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "isinstance"
-            and any(getattr(arg, "id", "") == "CarriesPayload" for arg in node.args[1:])
-        ]
-        self.assertGreaterEqual(len(isinstance_checks), 3,
-                                "the hand verbs stopped asking the capability question")
-
-    def test_a_declined_attach_is_filter_only(self) -> None:
-        from src.robot.core.arm_capabilities import PayloadModel
-
-        declined = payload_arm(planner_answer=False)
-        self.assertFalse(declined.attach_payload(60.0))
-        self.assertIs(PayloadModel.FILTER_ONLY, declined.payload_model())
-        declined.detach_payload()
-        self.assertIs(PayloadModel.NONE, declined.payload_model())
-
-        carried = payload_arm(planner_answer=True)
-        self.assertTrue(carried.attach_payload(60.0))
-        self.assertIs(PayloadModel.PLANNER_AND_FILTER, carried.payload_model())
-        carried.detach_payload()
-        self.assertIs(PayloadModel.NONE, carried.payload_model())
 
 
 # ---------------------------------------------------------------------------------------------------

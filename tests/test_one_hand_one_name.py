@@ -44,7 +44,7 @@ def _robot(model: str | None = "robotiq_2f85", plates: list[float] | None = None
     if plates is not None:
         gripper["coupling_plates"] = [{"name": f"plate_{i}", "thickness_mm": float(mm)} for i, mm in enumerate(plates)]
     return RobotConfig.model_validate(
-        {"vendor": "ur", "safety": {"payload": {"enforce": False}}, "gripper": gripper}
+        {"vendor": "ur", "safety": {}, "gripper": gripper}
     )
 
 
@@ -267,17 +267,16 @@ class WhatReadsNoHandGeometryBuildsTests(unittest.TestCase):
 
         Robot.from_config(RobotConfig.model_validate({"vendor": "dummy", "gripper": {"vendor": "dummy"}}))
 
-    def test_a_capsule_guard_and_a_stood_down_guard_build_with_no_hand(self) -> None:
+    def test_a_capsule_guard_builds_with_no_hand(self) -> None:
         """The arm is a ur5e, which the exact mesh guard WOULD read a hand on (the default block refuses it, see
-        test_the_arm_model_is_enough_to_refuse); the capsule backend and the stood-down guard are what spare it."""
+        test_the_arm_model_is_enough_to_refuse); the capsule backend is what spares it (the stood-down guard that
+        spared it too left with the switch, 2026-10-17)."""
         from src.robot.safety.preflight import SafetyPreflight
 
-        for block in ({"backend": "capsule"}, {"enforce": False}):
-            with self.subTest(**block):
-                SafetyPreflight.from_safety_config(
-                    RobotSafetyConfig.model_validate({"self_collision": block}), WorkspaceLimitsConfig(),
-                    arm_model="ur5e",
-                )
+        SafetyPreflight.from_safety_config(
+            RobotSafetyConfig.model_validate({"self_collision": {"backend": "capsule"}}), WorkspaceLimitsConfig(),
+            arm_model="ur5e",
+        )
 
 
 class TheTwoHandKeysAreRefusedAtLoadTests(_ScratchTree):

@@ -153,7 +153,7 @@ def _exact_mesh_engine_row(robot_cfg: "RobotConfig", collision_engine: "Maybe[st
     """
     from src.robot.safety._fcl_self_collision import mesh_backend_status
     from src.robot.safety.planning.environment import import_collision_engine
-    from src.robot.safety.preflight import exact_mesh_path_refusal, no_path_guard_refusal
+    from src.robot.safety.preflight import exact_mesh_path_refusal
 
     selected = robot_cfg.arm
     plans = selected.planner == "curobo"
@@ -165,9 +165,6 @@ def _exact_mesh_engine_row(robot_cfg: "RobotConfig", collision_engine: "Maybe[st
     )
 
     self_collision = robot_cfg.safety.self_collision
-    if not getattr(self_collision, "enforce", True):
-        return PreflightCheck("exact mesh engine", refused, no_path_guard_refusal(),
-                              "set safety.self_collision.enforce: true")
     if str(getattr(self_collision, "backend", "capsule")) != "fcl":
         return PreflightCheck("exact mesh engine", refused, exact_mesh_path_refusal(), fix)
 
@@ -334,8 +331,8 @@ def _camera_world_row(robot_cfg: "RobotConfig", camera: "Maybe[CameraConfig]") -
     return PreflightCheck(
         name, CheckStatus.BLOCK,
         f"{head}. The pick service declines nothing, so every pick motion would be refused before it moves",
-        "calibrate the primary camera and enable safety.planning_world with a measured support_plane and "
-        "perceived.enabled; motions from your own code may decline with robot.without_camera_world(\"<why>\")",
+        "calibrate the primary camera and declare a measured safety.planning_world.support_plane; motions from "
+        "your own code may decline with robot.without_camera_world(\"<why>\")",
     )
 
 
@@ -547,80 +544,52 @@ def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
     return _spec_row("jaw travel time", row) if row is not None else None
 
 
-def _carried_part_row(robot_cfg: "RobotConfig", *, is_real: bool) -> PreflightCheck:
-    """Whether the planner and the self filter model the part a grasp carries, and why not.
-
-    BLOCK on a real cuRobo UR with the payload enabled and no length: every carry would be planned as
-    if the hand were empty. OK names the length and the attach slots the planner reserves. WARN when
-    the payload is disabled, or the planner is not cuRobo, naming what then goes unmodelled.
-    """
-    from src.robot.safety.planning.reservation import PlannerReservation
-
-    name = "carried part"
-    selected = robot_cfg.arm
-    planner = selected.planner
-    payload = robot_cfg.safety.planning_world.payload
-    if planner != "curobo":
-        return PreflightCheck(name, CheckStatus.WARN, (
-            f"{_planner_phrase(selected)}: no planner carries a part, so a lift or a transit after a grasp "
-            "is judged as if the hand were empty"),
-            "set robot.motion.planner to curobo and declare safety.planning_world.payload.length_mm, where a "
-            "carried part should be modelled")
-    if not payload.enabled:
-        return PreflightCheck(name, CheckStatus.WARN, (
-            "safety.planning_world.payload.enabled is false: neither the planner nor the self filter models a part in "
-            "the gripper, so a carry is planned as if the hand were empty and the part stays in what the cameras see"),
-            "enable it and declare safety.planning_world.payload.length_mm, unless this cell never carries a part")
-    if payload.length_mm is None:
-        return PreflightCheck(name, CheckStatus.BLOCK if is_real else CheckStatus.WARN, (
-            "safety.planning_world.payload.length_mm is undeclared: the payload is modelled, and no length is "
-            "implied, so every carry would be planned as if the hand were empty"),
-            "declare safety.planning_world.payload.length_mm, how far the longest part this cell carries hangs past "
-            "the fingertips along the approach, or set enabled: false if it never carries one")
-    slots = PlannerReservation.from_config(robot_cfg=robot_cfg).sphere_slots
-    return PreflightCheck(name, CheckStatus.OK, (
-        f"a part {float(payload.length_mm):g} mm past the fingertips, {float(payload.lateral_margin_mm):g} mm lateral "
-        f"margin, {slots} attach slot(s) the planner reserves and its evidence names"))
-
-
 #: PolyScope's names for a UR's six joints, base to wrist 3, as its Joint Limits screen lists them.
 _POLYSCOPE_JOINTS = ("Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3")
 
 
 def _joint_window_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
-    """The controller's own joint limits that hold the half-turn window about home, or ``None`` where it is off.
+    """The controller's own joint limits that hold the half-turn window about home every real arm keeps, or ``None``
+    for the sim and the dummy.
 
-    Read off the config, as the arm builds its guard: the table with no margin off, narrowed to half a turn either
-    side of ``robot.home_joint_positions`` (the home the arm's description states where that is unset). Those are the numbers for the
-    pendant; the guard keeps ``margin_deg`` inside them, so a move this software commands never reaches them, and
-    the controller then holds the window against anything else. BENCH, because only the pendant can say they are set.
+    Read off the config, as the arm builds its guard: the arm's own table with no margin off, narrowed to half a turn
+    either side of ``robot.motion.home_deg`` (the home the arm's description states where that is unset). Those are
+    the numbers for the pendant; the guard keeps its 5 degrees (``JOINT_LIMIT_MARGIN_DEG``) inside them, so a move
+    this software commands never reaches them, and the controller then holds the window against anything else. BENCH,
+    because only the pendant can say they are set.
     """
     from src.config.arms import described_home
-    from src.robot.safety.joint_limits import half_turn_about_home_deg, half_turn_axes, resolve_joint_limits_deg
+    from src.robot.safety.joint_limits import (
+        JOINT_LIMIT_MARGIN_DEG,
+        half_turn_about_home_deg,
+        half_turn_axes,
+        resolve_joint_limits_deg,
+    )
 
-    jl = robot_cfg.safety.joint_limits
-    if not bool(getattr(jl, "within_half_turn_of_home", False)) or not jl.enforce:
-        return None
     vendor = _vendor(robot_cfg)
+    if vendor in ("sim", "dummy"):
+        # Every real arm keeps the window; the Isaac arm states it keeps its whole envelope (its harness's numbers),
+        # and the dummy carries no safety preflight at all.
+        return None
     # The model the selected arm reports, which the guard resolves its envelope and its UR elbow from (P0d D5).
     selected = robot_cfg.arm
     model = selected.model or None
-    declared = robot_cfg.home_joint_positions
+    declared = robot_cfg.motion.home_rad
     home = tuple(float(v) for v in (declared if declared is not None else (described_home(model) or ())))
-    source = ("robot.home_joint_positions" if declared is not None
-              else "the home the arm's description states, robot.home_joint_positions being unset")
-    table = resolve_joint_limits_deg(jl, model=model)
+    source = ("robot.motion.home_deg" if declared is not None
+              else "the home the arm's description states, robot.motion.home_deg being unset")
+    table = resolve_joint_limits_deg(model=model)
     if table is None or len(table[0]) != len(home):
         return PreflightCheck(
             "joint window", CheckStatus.BLOCK,
-            "safety.joint_limits.within_half_turn_of_home is set and "
+            "the guard keeps half a turn about home and "
             + ("no joint-limit table resolves for this arm" if table is None
                else f"the home has {len(home)} joints where the joint-limit table has {len(table[0])}"),
-            "the arm refuses to build like this; give the table (min_deg, max_deg) or a home of one entry per axis",
+            "the arm refuses to build like this; describe the arm in config/arms or give a home of one entry per axis",
         )
     lower, upper = half_turn_about_home_deg(table[0], table[1], home, model=model)
     narrowed = half_turn_axes(table[0], table[1], model=model)
-    margin = float(jl.margin_deg)
+    margin = JOINT_LIMIT_MARGIN_DEG
     names = _POLYSCOPE_JOINTS if vendor == "ur" and len(lower) == len(_POLYSCOPE_JOINTS) else tuple(
         f"axis {i}" for i in range(len(lower)))
     empty = [name for name, low, high, narrow in zip(names, lower, upper, narrowed)
@@ -629,8 +598,8 @@ def _joint_window_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
         return PreflightCheck(
             "joint window", CheckStatus.BLOCK,
             f"half a turn either side of {source} leaves {', '.join(empty)} no range inside the joint-limit table",
-            "robot.home_joint_positions is read in radians; a home written in degrees reads this way, and the arm "
-            "refuses to build on it",
+            "robot.motion.home_deg is read in degrees, as the pendant shows it; a home outside the joint-limit "
+            "table leaves no window, and the arm refuses to build on it",
         )
     ranges = "; ".join(f"{name} {low:.1f} to {high:.1f}" if narrow else f"{name} as it is"
                        for name, low, high, narrow in zip(names, lower, upper, narrowed))
@@ -658,7 +627,7 @@ def _joint_window_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
         # the base's seam lies wherever 180 degrees happens to point, which may be the middle of this cell.
         return PreflightCheck(
             "joint window", CheckStatus.WARN, detail,
-            "set robot.home_joint_positions (radians) to this cell's own home first: the window is centred on it, "
+            "set robot.motion.home_deg (degrees, as the pendant shows it) to this cell's own home first: the window is centred on it, "
             "and its seam, half a turn away, belongs behind the cell, where nothing is picked; then " + fix,
         )
     return PreflightCheck("joint window", CheckStatus.BENCH, detail, fix)
@@ -677,10 +646,10 @@ def _looks_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
     the loader cannot refuse radians, which are small degrees to it. Read as degrees, such a look sends the arm to a
     pose a few degrees from zero on every joint, which is nowhere a camera was taught to look from.
     """
-    looks = getattr(robot_cfg, "look_joint_positions_deg", None)
+    looks = getattr(getattr(robot_cfg, "motion", None), "look_deg", None)
     if not looks:
         return None
-    key = "robot.look_joint_positions_deg"
+    key = "robot.motion.look_deg"
     radians = [number for number, look in enumerate(looks, start=1)
                if all(abs(float(value)) <= _LOOK_READS_AS_RADIANS for value in look)]
     if radians:
@@ -779,17 +748,10 @@ def run_config_preflight(
 
     # ---- payload -------------------------------------------------------------------------------
     pl = robot_cfg.safety.payload
-    if not pl.enforce:
-        checks.append(PreflightCheck(
-            "payload", CheckStatus.WARN,
-            "safety.payload.enforce is false; the controller's payload is left untouched",
-            "correct only for a genuinely bare flange; a mounted tool needs enforce: true + a "
-            "weighed mass",
-        ))
-    elif pl.mass_kg == 0.0:
+    if pl.mass_kg == 0.0:
         checks.append(PreflightCheck(
             "payload", CheckStatus.BLOCK if is_real else CheckStatus.WARN,
-            "safety.payload has enforce: true but mass_kg: 0.0",
+            "safety.payload has mass_kg: 0.0, the shipped 'not weighed yet'",
             "weigh the tool (+ any carried workpiece) on a bench scale and set "
             "safety.payload.mass_kg and cog_mm; connect() refuses this combination",
         ))
@@ -806,13 +768,6 @@ def run_config_preflight(
             f"{pl.mass_kg} kg at {tuple(round(v, 1) for v in pl.cog_mm)} mm "
             f"(limit {pl.max_mass_kg} kg)",
         ))
-
-    # ---- the carried part ------------------------------------------------------------------------
-    # A cuRobo cell models the part it carries, and its length is the cell's to declare: none is
-    # implied. Read off the tree, starting nothing. A row for an arm whose driver reads robot.motion.planner,
-    # which the selection says by naming a planner (P0i i1): the part is the planner's to model.
-    if selected.planner:
-        checks.append(_carried_part_row(robot_cfg, is_real=is_real))
 
     # ---- the camera -> base frame ---------------------------------------------------------------
     # Declared on the primary rig, camera.cameras.rigs[<id>].extrinsics. Read, not opened: loading
@@ -923,13 +878,6 @@ def run_config_preflight(
             "the dummy arm carries no safety preflight, so no guard judges its motions for self collision",
             "a cell whose motions should be judged runs on the arm it drives, not on the dummy",
         ))
-    elif not getattr(sc, "enforce", True):
-        checks.append(PreflightCheck(
-            "self-collision", CheckStatus.WARN,
-            "the self collision guard is stood down (safety.self_collision.enforce: false), so no motion is judged "
-            "for self collision",
-            "set safety.self_collision.enforce: true",
-        ))
     elif described_ur_model(selected.model) is not None:
         checks.append(PreflightCheck(
             "self-collision", CheckStatus.OK,
@@ -940,15 +888,16 @@ def run_config_preflight(
         named = f"the {selected.model} arm" if selected.model else "this cell's arm, which the tree does not name,"
         checks.append(PreflightCheck(
             "self-collision", CheckStatus.WARN,
-            f"{named} is no UR the arm registry describes, so the guard checks tool against base and fixtures "
-            f"only, with no arm-against-arm check, backend={backend!r}",
-            "arm-against-arm checks exist only for a UR the arm registry describes (vendor: ur, with DH rows, in "
-            "config/arms); any other arm is judged on tool, base and fixtures until a chain for it is written",
+            f"{named} is no UR the arm registry describes, so the guard checks the tool against the fixtures only, "
+            f"with no arm-against-arm check and no base, backend={backend!r}",
+            "arm-against-arm checks and the base exist only for a UR the arm registry describes (vendor: ur, with DH "
+            "rows, in config/arms); any other arm is judged on its tool and the fixtures until a description of it "
+            "is written",
         ))
 
     # ---- the joint window about home -----------------------------------------------------------
-    # With safety.joint_limits.within_half_turn_of_home the guard keeps every full-turn joint within half a turn
-    # of home. The controller can hold the same window as a hard limit, and this row prints the numbers for it.
+    # The guard keeps every full-turn joint within half a turn of home on every real arm. The controller can hold the
+    # same window as a hard limit, and this row prints the numbers for it.
     window_row = _joint_window_row(robot_cfg)
     if window_row is not None:
         checks.append(window_row)
@@ -1058,51 +1007,46 @@ def run_config_preflight(
     # A different question from the one above, with a different answer. The guard checks one
     # commanded configuration; the planner shapes the whole path. Without this block the planner
     # knows its own robot model and a generic table, and routes through everything else.
+    # The planner is told the bench and the meshes wherever the cell declares the bench, and what the cameras see with
+    # it; the guard's own fixtures stay the guard's (2026-10-17).
     from src.robot.safety.planning.reservation import PlannerReservation
-    from src.robot.safety.planning.world import PlanningWorldError, build_planner_cuboids
+    from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes
 
     world_cfg = getattr(robot_cfg.safety, "planning_world", None)
     selected = robot_cfg.arm
     planner_in_use = selected.planner == "curobo"
-    reservation: PlannerReservation | None = None
-    try:
-        # The slot count comes from the reservation the arm starts its planner with, so this row and
-        # the cell cannot disagree about whether a world fits.
-        reservation = PlannerReservation.from_config(robot_cfg=robot_cfg)
-        cuboids = build_planner_cuboids(world_cfg, fixtures, max_cuboids=reservation.cuboid_slots)
-    except PlanningWorldError as exc:
+    told = [*(str(c["name"]) for c in build_planner_cuboids(world_cfg)),
+            *(str(m["name"]) for m in build_planner_meshes(world_cfg))]
+    if told:
         checks.append(PreflightCheck(
-            "planning world", CheckStatus.BLOCK, str(exc),
-            "fix the declaration; the planner cannot be given this world as written",
+            "planning world", CheckStatus.OK,
+            ", ".join(told) + ", and what the cameras see",
+            "" if planner_in_use else f"declared, but {_planner_phrase(selected)}, so no "
+            "planner reads it; set robot.motion.planner: curobo for these obstacles to shape a path",
         ))
     else:
-        if cuboids:
-            checks.append(PreflightCheck(
-                "planning world", CheckStatus.OK,
-                f"{len(cuboids)} box(es): " + ", ".join(str(c["name"]) for c in cuboids),
-                "" if planner_in_use else f"declared, but {_planner_phrase(selected)}, so no "
-                "planner reads it; set robot.motion.planner: curobo for these obstacles to shape a path",
-            ))
-        else:
-            checks.append(PreflightCheck(
-                "planning world", CheckStatus.WARN if planner_in_use else CheckStatus.OK,
-                "not declared; the planner keeps its own generic world",
-                "the planner will route through your bench, bin and fixtures; declare them under "
-                "safety.planning_world" if planner_in_use else "",
-            ))
+        checks.append(PreflightCheck(
+            "planning world", CheckStatus.WARN if planner_in_use else CheckStatus.OK,
+            "no bench declared; the planner keeps its own generic world and no camera world is built",
+            "the planner will route through your bench and everything the cameras see; declare "
+            "safety.planning_world.support_plane" if planner_in_use else "",
+        ))
 
     # ---- what the planner allocates ------------------------------------------------------------
     # Printed rather than budgeted: nothing measures planner VRAM yet, and a budget that counted the
     # grid and the slots alone would claim more than it checks.
-    if planner_in_use and reservation is not None:
-        checks.append(PreflightCheck("planner reservation", CheckStatus.OK, reservation.render()))
+    if planner_in_use:
+        checks.append(PreflightCheck("planner reservation", CheckStatus.OK,
+                                     PlannerReservation.from_config(robot_cfg=robot_cfg).render()))
 
     # ---- record logging ------------------------------------------------------------------------
+    # A cell keeps its records whether or not its tree names a file (2026-10-17): the row says where they go.
+    from src.robot.execution.autonomous_grasp.service import default_record_log
+
     path = getattr(robot_cfg.grasping, "record_log_path", None)
     checks.append(PreflightCheck(
-        "record log", CheckStatus.OK if path else CheckStatus.WARN,
-        f"-> {path}" if path else "grasping.record_log_path is unset; nothing will be recorded",
-        "" if path else "set it; a bring-up with no telemetry cannot be diagnosed afterwards",
+        "record log", CheckStatus.OK,
+        f"-> {path}" if path else f"-> {default_record_log()} (grasping.record_log_path names no file)",
     ))
 
     # ---- what config genuinely cannot answer ----------------------------------------------------

@@ -24,7 +24,7 @@ Protocol, one JSON object per line:
               |   {"status":"error","reason":str,"refusal":{...}?}
 
 The robot config is loaded once and composed as one dict by ``_curobo_body_links``: the
-descriptor named on the command line, the guard's margin, then a payload link. The two
+descriptor named on the command line, then the guard's margin. The two
 sha256 fields over configs are canonical JSON, and the URDF one is over the file the
 kinematics resolved with line endings normalised. A wrist camera's body is loaded on top,
 and ``composed_sha256`` is taken over the config without it, the one the combination
@@ -36,11 +36,10 @@ explain_js, the start and goal checks in front of a plan, the ready gate) on the
 evidence model, whose hashes stay what they are. The ready line then says ``planning``, the model's
 name, spheres and self pairs beside the evidence model's, and ``planning_sha256``, the hash of the
 config the planner loaded; a model it could not build is reported under ``planning`` with the
-reason it ``refused``, and the planner is built on the evidence model. Two switches more, both off
-unless the client asks: ``WILLY_CUROBO_WORLD_IN_PLACE=1`` writes a world of boxes alone into the
-planner's storage in one call (``_curobo_world``), and ``WILLY_CUROBO_JOINT_FINETUNE`` runs a joint
-plan with fewer time-optimal passes than cuRobo's three (``_curobo_cspace``). ``WILLY_CUROBO_TIMING=1``
-prints a ``[timing]`` line per request on stderr.
+reason it ``refused``, and the planner is built on the evidence model. A joint plan runs no
+time-optimal pass after its first, where cuRobo's own loop runs three (``_curobo_cspace``). Every
+world is registered through cuRobo's ``update_world``. ``WILLY_CUROBO_TIMING=1`` prints a
+``[timing]`` line per request on stderr.
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
              {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?,"report_refused":bool?,"name_pairs":bool?,
@@ -79,7 +78,7 @@ and refuses every plan.
 
 check_js judges every configuration of a joint path, in joint_names order, against the
 joint limits, the robot itself and the planner's world, on the planner's own collision
-spheres so that an attached payload counts. A sample passes when those three terms sum to
+spheres. A sample passes when those three terms sum to
 exactly 0, and first_invalid is the 0-based index of the first sample that does not. A
 request with a clearance_m judges the world term at that clearance rather than at no
 penetration, so a sample closer to the world than that is refused (``_curobo_plan_policy``);
@@ -91,8 +90,8 @@ A request with ignore_perceived judges with the named boxes the camera saw set a
 cuboid whose name carries the camera world's prefix, by cuRobo's own enable flag, and put back
 exactly as each flag was before the reply goes out (``_curobo_perceived.SetAside``). The reply
 names them under perceived_ignored. It is refused as a failed call where the names are not every
-camera box this sidecar holds, or while it may hold a carried part, which only it models; a box
-it cannot put back is a world it cannot vouch for, and the sidecar exits. The bench, the declared
+camera box this sidecar holds; a box it cannot put back is a world it cannot vouch for, and the
+sidecar exits. The bench, the declared
 fixtures and meshes and a distance field are never set aside.
 
 Every plan starts from the same seed, and the graph planner seeds its roadmap from the start
@@ -178,12 +177,6 @@ _REQUEST_ID: object = None
 #: vanishes the first time a camera produces a field, and both requests report success.
 _LAST_CUBOIDS: dict = {}
 _LAST_MESHES: dict = {}
-
-#: Whether this sidecar may hold a carried part. Set as an attach is handed to cuRobo, whatever it
-#: answers, and cleared only by a detach cuRobo confirmed. While it is set nothing of the world is
-#: ever set aside: the carried part is modelled by this planner alone, and with the camera's boxes
-#: set aside nobody would judge the part against them.
-_CARRYING = False
 
 #: The checker behind every judgement, built once at start, as _terms uses it, and kept for
 #: the session. It stays None only while the sidecar is still loading: a build that fails is
@@ -362,7 +355,6 @@ try:
     # The composition lives in sibling modules, so it is importable from the python 3.11
     # package as well as from here, and this script's own directory is first on sys.path
     # because the client spawns it by path.
-    from _curobo_attach import ATTACHED_LINK_NAME, ENV_ATTACH_SPHERES  # type: ignore[import-not-found]
     from _curobo_body_links import (  # type: ignore[import-not-found]
         ENV_BODY_LINKS,
         ENV_DEFAULT_Q,
@@ -373,8 +365,8 @@ try:
     )
     from _curobo_cspace import (  # type: ignore[import-not-found]
         CUROBO_FINETUNE_PASSES,
+        JOINT_FINETUNE_PASSES,
         PlannedAttempts,
-        finetune_passes,
         plan_cspace,
         timing_asked,
     )
@@ -422,12 +414,6 @@ try:
         WHERE_PATH,
         WHERE_START,
     )
-    from _curobo_world import (  # type: ignore[import-not-found]
-        InPlaceRefused,
-        boxes_only,
-        in_place_asked,
-        register_boxes_in_place,
-    )
     from curobo._src.robot.types.self_collision_params import (  # type: ignore[import-not-found]
         SelfCollisionKinematicsCfg,
     )
@@ -457,7 +443,7 @@ try:
 
     # The one config this planner loads. The descriptor is read once, with cuRobo's own
     # loader, and composed in memory by _curobo_body_links: body links, then the guard's
-    # margin, then a payload link. The planner, the Kinematics and the check_js checker are
+    # margin. The planner, the Kinematics and the check_js checker are
     # each built from their own deep copy, because cuRobo's LinkParams.create rewrites the
     # dict it is handed. cuRobo's loader and yaml.safe_load read all 33 installed
     # descriptors alike.
@@ -469,11 +455,6 @@ try:
     # paths the guard was always going to refuse: measured, 9.44 to 9.47 mm plans against a
     # 10.000 mm guard margin. Unset, or 0, leaves the config untouched.
     _margin_mm = float(os.environ.get(ENV_SELF_COLLISION_MARGIN_MM, "0") or 0.0)
-    # A link to hang the grasped part from. Without it the planner model ends at the gripper
-    # and every move after a successful close is planned as if the hand were empty.
-    # `franka.yml` declares one and no UR config does. Unset, or 0, leaves the config
-    # untouched, and the attach command then refuses rather than pretending.
-    _attach_spheres = int(os.environ.get(ENV_ATTACH_SPHERES, "0") or 0)
     # The bodies the client adds: the hand a cell names, placed by its declared tool frame,
     # as a fixed link under tool0 (safety/planning/body_link.py). An empty list leaves the
     # descriptor as it is, and the client refuses a sidecar that then reports no hand.
@@ -495,9 +476,8 @@ try:
     _wrist_sent = json.loads(os.environ.get(ENV_WRIST_BODY_LINKS) or "[]")
     if not isinstance(_wrist_sent, list) or not all(isinstance(_body, dict) for _body in _wrist_sent):
         raise ValueError(f"{ENV_WRIST_BODY_LINKS} holds no JSON list of body links")
-    _COMPOSED, _EVIDENCE, _margin_links, _attach_added, _wrist_links = compose_for_cell(
-        _raw, bodies=_bodies, wrist_bodies=_wrist_sent, margin_mm=_margin_mm, attach_spheres=_attach_spheres,
-        default_q=_chosen_q,
+    _COMPOSED, _EVIDENCE, _margin_links, _wrist_links = compose_for_cell(
+        _raw, bodies=_bodies, wrist_bodies=_wrist_sent, margin_mm=_margin_mm, default_q=_chosen_q,
     )
     if _chosen_q is not None:
         print(f"[retract] {[round(float(v), 4) for v in _chosen_q]} from the cell, for this arm and "
@@ -524,12 +504,6 @@ try:
             # Said out loud, because the planner is about to run without the guard margin
             # and can still hand back configurations the guard refuses.
             print(f"[margin] !! {_desc_path} has no self_collision_buffer block; margin not applied",
-                  file=sys.stderr, flush=True)
-    if _attach_spheres > 0:
-        if _attach_added:
-            print(f"[attach] payload link with {_attach_spheres} sphere slot(s)", file=sys.stderr, flush=True)
-        else:
-            print(f"[attach] {_desc_path} already declares {ATTACHED_LINK_NAME}; using it as it is",
                   file=sys.stderr, flush=True)
 
     # Who this sidecar is, said once in the ready line. `_provenance` names the arm and hand
@@ -564,9 +538,6 @@ try:
         try:
             _payload = read_payload(_planning_sent)
             _planning_name = str(_payload["model"])
-            if _attach_spheres > 0:
-                raise PlanningModelError("this sidecar models a carried part, which only the planner's own kinematics "
-                                         "carries, so the evidence model's check would not see it")
             if _urdf_text is None:
                 raise PlanningModelError("the kinematics resolved no URDF to place the planning model's arm in")
             _PLANNING = planning_config(_raw, _payload, urdf_text=_urdf_text, evidence=_COMPOSED,
@@ -602,19 +573,11 @@ try:
     print(f"[cache] {_collision_cache}", file=sys.stderr, flush=True)
     print("[graph] roadmaps seed from the start and the goal alone, never through the retract",
           file=sys.stderr, flush=True)
-    # How a joint plan runs and how a world is registered: cuRobo's own way unless the client
-    # asked otherwise (_curobo_cspace, _curobo_world), and a [timing] line per request where asked.
-    _JOINT_FINETUNE = finetune_passes(os.environ)
+    # How a joint plan runs: cuRobo's loop with no time-optimal pass after the first, as every cell (_curobo_cspace),
+    # and a [timing] line per request where asked.
     _TIMING = timing_asked(os.environ)
-    _WORLD_IN_PLACE = in_place_asked(os.environ)
-    if _JOINT_FINETUNE != CUROBO_FINETUNE_PASSES:
-        print(f"[plan_js] {_JOINT_FINETUNE} time-optimal pass(es) after the first, where cuRobo runs "
-              f"{CUROBO_FINETUNE_PASSES}: the arm runs the positions and never the timing", file=sys.stderr, flush=True)
-    if _WORLD_IN_PLACE:
-        _in_place_too = boxes_only({}, mesh_slots=MESH_CACHE, voxel_reserved=_collision_cache.get("voxel") is not None)
-        print("[world] boxes registered in place" if _in_place_too else
-              "[world] !! boxes registered through update_world: this planner reserved mesh or grid storage, which "
-              "only update_world clears", file=sys.stderr, flush=True)
+    print(f"[plan_js] {JOINT_FINETUNE_PASSES} time-optimal pass(es) after the first, where cuRobo runs "
+          f"{CUROBO_FINETUNE_PASSES}: the arm runs the positions and never the timing", file=sys.stderr, flush=True)
     _planner.warmup(enable_graph=True, num_warmup_iterations=_WARMUP_ITERATIONS)
     _DT = float(_planner.trajopt_solver.config.interpolation_dt)
     _N = len(_planner.joint_names)
@@ -695,16 +658,14 @@ try:
     def _terms(rows: list, clearance_m: float = 0.0) -> tuple:
         """The three costs cuRobo's own validation adds up, per configuration, plus the spheres they were read from.
 
-        The spheres come from the planner's kinematics. A checker keeps a Kinematics of its
-        own, and that copy never sees a payload attached to the planner: a part 50 mm inside
-        a wall passes it. An activation distance of 0.0 makes a zero mean that the spheres do
-        not penetrate, not that they keep any clearance; ``clearance_m`` asks the world term
-        for that clearance, and leaves the robot's own two terms as they are.
+        The spheres come from the planner's kinematics, the robot every plan was made with. An
+        activation distance of 0.0 makes a zero mean that the spheres do not penetrate, not that
+        they keep any clearance; ``clearance_m`` asks the world term for that clearance, and leaves
+        the robot's own two terms as they are.
 
         Where the planner plans on a planning model, its spheres are not the robot this judges,
         so they come from ``_kin``, the evidence model's own kinematics, which the checker's pairs
-        and the pair names are laid out for. No carried part can be missed there: a sidecar that
-        models one builds no planning model.
+        and the pair names are laid out for.
         """
         cq = torch.tensor(rows, device="cuda", dtype=torch.float32)
         if cq.ndim != 2 or cq.shape[0] == 0 or cq.shape[1] != _N:
@@ -894,18 +855,12 @@ for _line in sys.stdin:
             _judged = _clock()
             _planner.reset_seed()
             _attempts = PlannedAttempts()
-            if _JOINT_FINETUNE == CUROBO_FINETUNE_PASSES:
-                # cuRobo's own loop, today's plan to the bit.
-                result = _planner.plan_cspace(
-                    goal, start, max_attempts=_JOINT_PLAN_MAX_ATTEMPTS, enable_graph_attempt=_PLAN_GRAPH_FROM,
-                )
-            else:
-                # The same loop with fewer time-optimal passes, whose timing the arm never runs.
-                result = plan_cspace(
-                    _planner, goal, start, max_attempts=_JOINT_PLAN_MAX_ATTEMPTS,
-                    enable_graph_attempt=_PLAN_GRAPH_FROM, finetune_attempts=_JOINT_FINETUNE,
-                    succeeded=lambda _result: bool(torch.count_nonzero(_result.success) > 0), attempts=_attempts,
-                )
+            # cuRobo's loop with no time-optimal pass after the first, whose timing the arm never runs.
+            result = plan_cspace(
+                _planner, goal, start, max_attempts=_JOINT_PLAN_MAX_ATTEMPTS,
+                enable_graph_attempt=_PLAN_GRAPH_FROM, finetune_attempts=JOINT_FINETUNE_PASSES,
+                succeeded=lambda _result: bool(torch.count_nonzero(_result.success) > 0), attempts=_attempts,
+            )
             _planned = _clock()
             ok = result is not None and bool(result.success.any())
             print(f"[plan_js] goal={[round(x, 3) for x in req['goal_joints']]} -> "
@@ -953,14 +908,13 @@ for _line in sys.stdin:
         # the UR driver asks it where only those boxes may refuse its world, so the exact guard,
         # which holds the same boxes, decides them (the owner's Option 1). Every one of them this
         # sidecar holds, the camera's distance field with them, by cuRobo's own enable flag, and every
-        # flag put back before the reply. The bench, the declared fixtures and meshes stay in. Never
-        # while a part may be carried: only this planner models it.
+        # flag put back before the reply. The bench, the declared fixtures and meshes stay in.
         try:
             _began = _clock()
             _clearance = requested_clearance_m(req)
             # Decided by _curobo_perceived alone, which the CPU suite runs: None for a plain check, which is judged in
-            # the whole world with no storage touched; refused while this sidecar may hold a carried part.
-            _aside = requested_aside(req, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX, carrying=_CARRYING)
+            # the whole world with no storage touched.
+            _aside = requested_aside(req, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX)
             with judged_world(_aside, lambda: _PlannerCuboids(_planner.scene_collision_checker),
                               prefix=PERCEIVED_PREFIX):
                 _bound, _self_hit, _world_hit, _spheres = _terms(req["joints"], _clearance)
@@ -1054,56 +1008,6 @@ for _line in sys.stdin:
             print(f"[explain_js] CALL FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             _emit({"success": False, "planner_error": True, "reason": f"{type(exc).__name__}: {exc}"})
         continue
-    if cmd == "attach":
-        # Hang a box on the tool, so every later plan routes the carried part around
-        # the world as well. dims_m are full side lengths, and pose is
-        # [x, y, z, qw, qx, qy, qz] in the tool frame. The client sends the part's centre
-        # past the fingertips along the hand's placed approach: +Y on the Isaac cell, +Z on
-        # a UR declaring its own flange axis.
-        #
-        # It is refused while measuring: a payload changes the robot the gate is measuring,
-        # and the evidence names none.
-        if _MEASURE_ONLY:
-            _emit({"success": False, "planner_error": False, "reason": _MEASURE_ONLY_REASON})
-            continue
-        try:
-            if _attach_spheres <= 0:
-                _emit({"attached": False,
-                       "reason": f"{ENV_ATTACH_SPHERES} was unset, so this robot config has no "
-                                 f"{ATTACHED_LINK_NAME} link to attach to"})
-                continue
-            from curobo._src.geom.types import Cuboid  # type: ignore[import-not-found]
-
-            _aq = torch.tensor(req["joints"], device="cuda", dtype=torch.float32).unsqueeze(0)
-            state = JointState.from_position(_aq, joint_names=_planner.joint_names)
-            box = Cuboid(name=str(req.get("name", "payload")),
-                         pose=list(req["pose"]), dims=list(req["dims_m"]))
-            # num_spheres is pinned to the slots the link was derived with. The
-            # automatic fit picks a count from the geometry, measured at 13 for an
-            # 80x80x120 mm box, and raises rather than degrading where the link has
-            # fewer, so the budget is not left to chance.
-            #
-            # Marked before it is handed over, whatever cuRobo answers: an attach that raised
-            # half way may hold a part, and only a confirmed detach clears the mark.
-            _CARRYING = True
-            _planner.attachment_manager.attach(
-                state, [box], link_name=ATTACHED_LINK_NAME, num_spheres=_attach_spheres,
-            )
-            print(f"[attach] {req['dims_m']} m at {req['pose']}", file=sys.stderr, flush=True)
-            _emit({"attached": True})
-        except Exception as exc:  # noqa: BLE001 (report, never take the sidecar down mid-session)
-            print(f"[attach] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            _emit({"attached": False, "reason": f"{type(exc).__name__}: {exc}"})
-        continue
-    if cmd == "detach":
-        try:
-            _planner.attachment_manager.detach(link_name=ATTACHED_LINK_NAME)
-            _CARRYING = False
-            _emit({"detached": True})
-        except Exception as exc:  # noqa: BLE001
-            print(f"[detach] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            _emit({"detached": False, "reason": f"{type(exc).__name__}: {exc}"})
-        continue
     if cmd == "set_voxels":
         # Register the live scene as a distance field over a grid, which is the channel
         # that carries a whole cell rather than the boxes a slot budget leaves room for.
@@ -1188,33 +1092,20 @@ for _line in sys.stdin:
                 else:
                     world_scene["voxel"], count = _field_block(voxels)
                     reply.update({"voxels_set": count, "reason": ""})
-            # Boxes alone, on a planner that holds nothing else, go into its storage in one call where the client
-            # asked (_curobo_world): the same slots as update_world fills, without a device sync per box. Everything
-            # else is registered by update_world, as it always was.
-            _how = "through update_world"
-            if _WORLD_IN_PLACE and boxes_only(world_scene, mesh_slots=MESH_CACHE,
-                                              voxel_reserved=_collision_cache.get("voxel") is not None):
-                try:
-                    register_boxes_in_place(_planner.scene_collision_checker, SceneCfg.create(world_scene),
-                                            _planner.graph_planner)
-                    _how = "in place"
-                except InPlaceRefused as _refused_in_place:
-                    print(f"[world] {_refused_in_place}", file=sys.stderr, flush=True)
-            if _how != "in place":
-                _planner.update_world(SceneCfg.create(world_scene))
-                _grids = _planner.scene_collision_checker.scene_model.voxel or []
-                if len(_grids) > 1:
-                    # cuRobo loads a scene's grids one at a time, each in place of the last
-                    # (SceneData.load_from_scene_cfg): the field and its fine grid go in together, a layer each.
-                    _planner.scene_collision_checker.data.voxels.load_batch(_grids, 0)
+            _planner.update_world(SceneCfg.create(world_scene))
+            _grids = _planner.scene_collision_checker.scene_model.voxel or []
+            if len(_grids) > 1:
+                # cuRobo loads a scene's grids one at a time, each in place of the last
+                # (SceneData.load_from_scene_cfg): the field and its fine grid go in together, a layer each.
+                _planner.scene_collision_checker.data.voxels.load_batch(_grids, 0)
             # Remembered because registering voxels replaces the world too, and the
             # declared world has to go back underneath them or the bench disappears the
             # moment a camera speaks.
             _LAST_CUBOIDS = world
             _LAST_MESHES = mesh_block
             _emit(reply)
-            _say_timing("set_world", (f"{len(world)} box(es) and {len(meshes)} mesh(es) registered {_how}",
-                                      _clock() - _began))
+            _say_timing("set_world", (f"{len(world)} box(es) and {len(meshes)} mesh(es) registered through "
+                                      "update_world", _clock() - _began))
         except Exception as exc:  # noqa: BLE001
             _emit({"world_set": None, "reason": f"{type(exc).__name__}: {exc}"})
         continue

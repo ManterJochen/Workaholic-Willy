@@ -4,8 +4,9 @@ cell.
 One module, because they are one question asked three ways. The ready bar says before a button is pressed what the
 server refuses when it is pressed, so both read the same things here, in the same words:
 
-* :func:`readiness` answers ``GET /v1/cell/readiness`` (build plan 1.5): six lights (the robot, the cameras, the
-  planner, the gripper, the carried part, the commands) and the blockers. It always answers and moves nothing;
+* :func:`readiness` answers ``GET /v1/cell/readiness`` (build plan 1.5): five lights (the robot, the cameras, the
+  planner, the gripper, the commands) and the blockers; the light of the carried part left on 2026-10-17, when no
+  cell modelled one any more (a closed hand is judged as an empty one). It always answers and moves nothing;
 * :func:`refuse_unless` is every moving route's gate (1.3.2, 1.3.5, 1.3.6): the cell's state checked in one fixed
   order, before anything is started, and the first refusal raised in the one error envelope;
 * :func:`facts` answers ``GET /v1/cell/facts`` (1.10).
@@ -20,9 +21,8 @@ then the controller's own fields (``RobotStatus.controller_operational``), so a 
 and never as a stopped controller, whose remedy (the pendant) is not the halt's (a person says the cell is clear).
 
 **One rule for a part still held** (:func:`part_held`), the library's (``task._part_may_be_held``): a toggle's count
-that says CLOSED, a planner that still models a part (``payload_model`` not one of ``NO_PART_MODELLED``), or a
-measuring hand that measures one. Where a recovery record stands, the record's own belief counts too for a hand that
-can say nothing (no toggle, no measurement): only the person's "Backen leer" ends it.
+that says CLOSED, or a measuring hand that measures one. Where a recovery record stands, the record's own belief counts
+too for a hand that can say nothing (no toggle, no measurement): only the person's "Backen leer" ends it.
 
 What the console reads of the halt latch is named in :class:`HaltStateLike` and :class:`ReadsHaltState`; the latch is
 read on every poll of ``GET /v1/cell`` and by every gate, so ``halt_state()`` must be a lock-free read that never raises
@@ -40,7 +40,6 @@ from fastapi import HTTPException
 from api.codes import REFUSAL_STATUS, RefusalCode, RunKind, StopCode
 from api.constants import API_LOG_DIR, READINESS_LOG_FILE
 from api.schemas import (
-    NO_PART_MODELLED,
     BlockerOut,
     BrakeFactsOut,
     CarryName,
@@ -48,8 +47,6 @@ from api.schemas import (
     DetectorFactsOut,
     HandOut,
     LightOut,
-    PayloadFactsOut,
-    PayloadModelName,
     PushFactsOut,
     ReadinessOut,
     RigOut,
@@ -69,7 +66,6 @@ __all__ = [
     "facts",
     "halt_reason",
     "part_held",
-    "payload_model_of",
     "readiness",
     "refuse_unless",
     "refusal",
@@ -107,7 +103,7 @@ class HaltStateLike(Protocol):
 
     @property
     def braked(self) -> bool:
-        """The move in flight was braked (``robot.ur.brake_on_halt``); false where it ran to its end first."""
+        """The move in flight was braked (every UR); false where it ran to its end first."""
         ...
 
     @property
@@ -212,29 +208,6 @@ def controller_gate(arm: Any) -> str:
     return controller_reading(arm)[1]
 
 
-def payload_model_of(arm: Any) -> PayloadModelName:
-    """What models the part the gripper carries now, as the arm says it; ``not_applicable`` for an arm that models no
-    part at all (the dummy, sim). ``unknown`` where it models parts and its answer could not be read, or is one this
-    console does not know: ``unknown`` is not in ``NO_PART_MODELLED``, so a part nobody can rule out keeps every gate
-    shut."""
-    from src.robot.core.arm_capabilities import CarriesPayload  # noqa: PLC0415
-
-    try:
-        if arm is None or not isinstance(arm, CarriesPayload):
-            return "not_applicable"
-        answer = arm.payload_model()
-        model = str(getattr(answer, "value", answer))
-    except Exception:  # noqa: BLE001 (a read that fails rules out no part)
-        return "unknown"
-    if model == "none":
-        return "none"
-    if model == "filter_only":
-        return "filter_only"
-    if model == "planner_and_filter":
-        return "planner_and_filter"
-    return "unknown"
-
-
 def _hold_unmeasured(gripper: Any) -> bool:
     """Whether the hand measures nothing about a hold (no toggle count, no hold evidence): only a person can say."""
     from src.robot.core.gripper import HoldEvidence, hold_evidence_of  # noqa: PLC0415
@@ -245,21 +218,18 @@ def _hold_unmeasured(gripper: Any) -> bool:
         return True
 
 
-def part_held(arm: Any, gripper: Any, hand: HandOut, *, record: "RecoveryRecord | None" = None) -> str:
+def part_held(gripper: Any, hand: HandOut, *, record: "RecoveryRecord | None" = None) -> str:
     """Why a part may still be in the jaws now, or ``""``: one rule with the library.
 
-    A toggle's count that says CLOSED, a planner that still models a part (``payload_model`` not in
-    ``NO_PART_MODELLED``), or a measuring hand that measures one. With ``record`` (a recovery record that stands): the
-    record's own belief too, for a hand that can say nothing (not a toggle, and no measurement), until the person's
-    "Backen leer" (``POST /v1/cell/acknowledge`` with ``jaws_empty``) ends it.
+    A toggle's count that says CLOSED, or a measuring hand that measures one; no planner is asked, since no cell models
+    a part in the jaws (2026-10-17). With ``record`` (a recovery record that stands): the record's own belief too, for a
+    hand that can say nothing (not a toggle, and no measurement), until the person's "Backen leer"
+    (``POST /v1/cell/acknowledge`` with ``jaws_empty``) ends it.
     """
     from src.robot.core.gripper import HoldEvidence, hold_evidence_of  # noqa: PLC0415
 
     if hand.kind == "toggle" and hand.jaws == "closed":
         return "the program's count says the toggle's jaws stand CLOSED: a part may be in them"
-    model = payload_model_of(arm)
-    if model not in NO_PART_MODELLED:
-        return f"the planner still models a part in the hand (payload_model {model})"
     try:
         measured = gripper is not None and hand.connected and hold_evidence_of(gripper) is HoldEvidence.HELD
     except Exception as exc:  # noqa: BLE001 (a hand nobody can read may hold anything)
@@ -307,7 +277,6 @@ def _hand(gripper: Any) -> HandOut:
 TASK_GATES: tuple[str, ...] = (
     "not_connected", "run_active", "halted", "controller_stopped", "cell_not_cleared", "restart_required",
     "needs_person", "jaws_question_pending", "part_still_held", "jaws_not_confirmed", "route_refused",
-    "carried_part_not_modelled",
 )
 #: A Restart's: every gate of a task but ``restart_required``, the hand read against the record (1.3.5).
 RESTART_GATES: tuple[str, ...] = tuple(gate for gate in TASK_GATES if gate != "restart_required")
@@ -316,11 +285,9 @@ HOME_GATES: tuple[str, ...] = (
     "not_connected", "run_active", "halted", "controller_stopped", "cell_not_cleared", "needs_person",
     "jaws_question_pending", "part_still_held", "jaws_not_confirmed", "route_refused",
 )
-#: A wave's: a task's, bar a carried part (no wave carries one): a greeting never starts the way back after a stop.
-WAVE_GATES: tuple[str, ...] = (
-    "not_connected", "run_active", "halted", "controller_stopped", "cell_not_cleared", "restart_required",
-    "needs_person", "jaws_question_pending", "part_still_held", "jaws_not_confirmed", "route_refused",
-)
+#: A wave's: a task's own: a greeting never starts the way back after a stop. It left out the carried part's gate until
+#: that gate left with the carried part (2026-10-17).
+WAVE_GATES: tuple[str, ...] = TASK_GATES
 #: ``POST /v1/pick``'s (item 17), after its own ``not_connected``, in 1.3.2's order: a run holding the lock first, so a
 #: run that ends while these are read cannot slip past them unseen (the registry reads the record once more as it
 #: starts the run, under the lock).
@@ -380,7 +347,7 @@ def refuse_unless(console: "Console", gates: Sequence[str], *, record: "Recovery
                 raise refusal(gate, "a jaws question waits for its answer (GET /v1/cell/jaws); nothing moves before.")
         elif gate == "part_still_held":
             hand = hand if hand is not None else _hand(gripper)
-            why = part_held(arm, gripper, hand, record=record)
+            why = part_held(gripper, hand, record=record)
             if why:
                 raise refusal(gate, f"{why}; nothing that moves by itself carries a part outside a task.")
         elif gate == "jaws_not_confirmed":
@@ -400,20 +367,6 @@ def refuse_unless(console: "Console", gates: Sequence[str], *, record: "Recovery
             if not route.runs:
                 raise refusal(gate, (f"this arm's place and return go through no planner that judges them, so a part "
                                      f"picked here could not be set down: {route.reason}"))
-        elif gate == "carried_part_not_modelled":
-            from src.robot.core.arm_capabilities import CarriesPayload, chose_no_carried_part  # noqa: PLC0415
-
-            # A cell that chose to model no carried part carries its parts as an empty hand (the owner, 2026-10-07).
-            if isinstance(arm, CarriesPayload) and not chose_no_carried_part(arm):
-                try:
-                    declined = arm.payload_declined_reason()
-                except Exception as exc:  # noqa: BLE001 (a model nobody can read models nothing)
-                    declined = f"the arm could not say ({type(exc).__name__}: {exc})"
-                if declined is not None:
-                    raise refusal(gate, (
-                        f"a task carries every part it picks, and this arm models no carried part ({declined}): "
-                        "between the close and the release only the planner holds it. Declare "
-                        "safety.planning_world.payload.length_mm in the cell profile."), reason=declined)
         else:  # pragma: no cover - a programmer's error
             raise ValueError(f"no gate {gate!r}")
 
@@ -522,26 +475,6 @@ def _gripper_light(console: "Console", hand: HandOut, waiting: bool) -> LightOut
     return _light("gripper", "ok", "connected", f"{hand.driver} connected")
 
 
-def _carried_part_light(console: "Console") -> LightOut:
-    from src.robot.core.arm_capabilities import CarriesPayload, chose_no_carried_part  # noqa: PLC0415
-
-    arm = console.session.arm
-    if arm is None or not isinstance(arm, CarriesPayload):
-        return _light("carried_part", "ok", "not_applicable", "this arm carries nothing real (a desk arm)")
-    if chose_no_carried_part(arm):
-        # A grey fact, no block: the cell chose it (the owner, 2026-10-05 and 2026-10-07).
-        return _light("carried_part", "info", "not_modelled", (
-            "safety.planning_world.payload.enabled is false: a closed hand is judged as an empty one, by the exact "
-            "guard at full stroke, and the part it holds by nobody"), blocks=False)
-    try:
-        declined = arm.payload_declined_reason()
-    except Exception as exc:  # noqa: BLE001
-        declined = f"the arm could not say ({type(exc).__name__}: {exc})"
-    if declined is not None:
-        return _light("carried_part", "blocked", "not_modelled", declined)
-    return _light("carried_part", "ok", "modelled", "the planner carries the part between the close and the release")
-
-
 def _built_models(console: "Console") -> Any:
     models = getattr(console, "built_models", None)
     if models is not None:
@@ -552,15 +485,15 @@ def _built_models(console: "Console") -> Any:
         return None
 
 
-def _weights_present(model_id: str, model_path: str | None) -> bool:
+def _weights_present(model_id: str, weights_root: str | None) -> bool:
     from api.routers.diagnostics import _vlm_weights_present  # noqa: PLC0415
 
-    key = (model_id, model_path)
+    key = (model_id, weights_root)
     seen = _WEIGHTS_SEEN.get(key)
     now = time.monotonic()
     if seen is not None and now - seen[0] < _WEIGHTS_CACHE_S:
         return seen[1]
-    present = bool(_vlm_weights_present(model_id, model_path))
+    present = bool(_vlm_weights_present(model_id, weights_root))
     _WEIGHTS_SEEN[key] = (now, present)
     return present
 
@@ -575,7 +508,7 @@ def _commands_light(console: "Console") -> LightOut:
         present: bool | None = None
         if pipeline is not None:
             vlm = pipeline.zero_shot.vlm
-            present = _weights_present(str(vlm.model_id), getattr(vlm, "model_path", None))
+            present = _weights_present(str(vlm.model_id), getattr(models, "weights_root", None))
         available = reader_availability(models, weights_present=present)
     except Exception as exc:  # noqa: BLE001 (an informational light never fails the bar)
         return _light("commands", "info", "failed", f"the command reader could not be asked ({type(exc).__name__}: "
@@ -602,7 +535,7 @@ def _blockers(console: "Console", hand: HandOut, waiting: bool) -> list[BlockerO
         blockers.append(BlockerOut(code="needs_person", message=needs))
     session = console.session
     if session.service is not None:
-        held = part_held(session.arm, session.gripper, hand, record=record)
+        held = part_held(session.gripper, hand, record=record)
         if held:
             blockers.append(BlockerOut(code="part_still_held", message=held))
     if waiting:
@@ -621,7 +554,6 @@ def readiness(console: "Console") -> ReadinessOut:
         _camera_light(console),
         _planner_light(console),
         _gripper_light(console, hand, waiting),
-        _carried_part_light(console),
         _commands_light(console),
     ]
     blockers = _blockers(console, hand, waiting)
@@ -655,14 +587,8 @@ def _push_facts(service: Any) -> PushFactsOut:
             default = float(distance())
         except Exception:  # noqa: BLE001
             default = None
-    fixture = getattr(getattr(getattr(service, "effective_config", None), "recovery_orchestrator", None), "fixture",
-                      None)
-    ceiling: float | None = None
-    if isinstance(fixture, (tuple, list)) and len(fixture) > 2 and isinstance(fixture[2], (int, float)):
-        ceiling = float(fixture[2])
-    elif callable(distance):
-        # The service's own rule (``push_distance``): a cell that declares no fixture is held to the hard cap alone.
-        ceiling = float(PUSH_DISTANCE_CAP_MM)
+    # The service's own rule (``push_distance``): every push is held to the owner's hard cap.
+    ceiling: float | None = float(PUSH_DISTANCE_CAP_MM) if callable(distance) else None
     recovery = getattr(getattr(service, "effective_config", None), "recovery_orchestrator", None)
     critical = bool(getattr(recovery, "critical_parts", False) is True)
     into = bool(getattr(recovery, "blocker_into_the_place", True) is not False)
@@ -673,32 +599,29 @@ def _push_facts(service: Any) -> PushFactsOut:
         return PushFactsOut(can_push=True, default_mm=default, ceiling_mm=ceiling, critical_parts=critical,
                             blocker_into_the_place=into, rescan_allowed=rescan_allowed, push_allowed=push_allowed)
     why = str(getattr(cell, "sentence", "") or "") if cell is not None else (
-        "this cell's recovery pushes no part (grasping.recovery.allowed_actions names no nudge_target)")
+        "this cell pushes no part (its grasp mode's recovery allows no nudge_target)")
     return PushFactsOut(can_push=False, why_not=why, default_mm=default, ceiling_mm=ceiling, critical_parts=critical,
                         blocker_into_the_place=into, rescan_allowed=rescan_allowed, push_allowed=push_allowed)
 
 
-#: What a phrase grounder's weights and arithmetic are where its config leaves ``optim.torch_dtype`` unset: the HF
-#: default of fp32 weights, run under CUDA's fp16 autocast (``src/models/_inference.py``, ``autocast_ctx``).
+#: What a model's weights and arithmetic are where its load settings leave ``torch_dtype`` unset: the HF default of
+#: fp32 weights, run under CUDA's fp16 autocast (``src/models/_inference.py``, ``autocast_ctx``).
 _UNSET_DTYPE = "fp32 weights, fp16 autocast"
 #: The VLM loads in the checkpoint's own dtype (``src/models/vlm/qwen.py``: ``dtype="auto"``), FP8 for an -FP8 id.
 _VLM_DTYPE = "auto (the checkpoint's own)"
 
 
-def detector_precision(models: Any, backend: str, router_enabled: bool) -> str | None:
-    """The precision the cell's detector runs at, read from the models config it was built with (``optim.torch_dtype``,
-    as ``build_load_kwargs`` reads it); ``None`` where there is no config to read. A routed stack names both of its
-    grounders. Loads nothing."""
+def detector_precision(models: Any, backend: str) -> str | None:
+    """The precision the cell's detector runs at: the VLM's own checkpoint dtype, or RT-DETR's fixed load settings
+    (``src/models/_inference.py``, ``RTDETR``, as ``build_load_kwargs`` reads them); ``None`` where there is no config
+    to read. Loads nothing."""
     if models is None:
         return None
-
-    def configured(block: str) -> str:
-        dtype = getattr(getattr(getattr(models, block, None), "optim", None), "torch_dtype", None)
-        return str(dtype) if dtype else _UNSET_DTYPE
-
     if backend == "vlm":
-        return f"VLM {_VLM_DTYPE}; GroundingDINO {configured('objectdetector')}" if router_enabled else _VLM_DTYPE
-    return configured("rtdetr" if backend == "rtdetr" else "objectdetector")
+        return _VLM_DTYPE
+    from src.models._inference import RTDETR  # noqa: PLC0415 (torch, which a desk console has)
+
+    return str(RTDETR.torch_dtype) if RTDETR.torch_dtype else _UNSET_DTYPE
 
 
 def _detector_facts(console: "Console") -> DetectorFactsOut:
@@ -709,26 +632,25 @@ def _detector_facts(console: "Console") -> DetectorFactsOut:
     except Exception:  # noqa: BLE001
         return DetectorFactsOut()
     try:
-        precision = detector_precision(_built_models(console), stack.backend, stack.router_enabled)
+        precision = detector_precision(_built_models(console), stack.backend)
     except Exception:  # noqa: BLE001 (a fact nobody can read is not claimed)
         precision = None
-    return DetectorFactsOut(backend=stack.backend, router_enabled=stack.router_enabled,
-                            vlm_model_id=stack.vlm_model_id, precision=precision)
+    return DetectorFactsOut(backend=stack.backend, vlm_model_id=stack.vlm_model_id, precision=precision)
 
 
 def _carry_of(arm: Any) -> CarryName | None:
-    """How the cell carries a part to a bin its camera found (``robot.place.carry``), for the console's switch to
+    """How the cell carries a part to a bin its camera found (``robot.motion.place.carry``), for the console's switch to
     start from; ``None`` where the arm says nothing."""
-    carry = getattr(getattr(getattr(arm, "config", None), "place", None), "carry", None)
+    carry = getattr(getattr(getattr(getattr(arm, "config", None), "motion", None), "place", None), "carry", None)
     if carry == "over_the_rim":
         return "over_the_rim"
     return "via_the_look" if carry == "via_the_look" else None
 
 
 def facts(console: "Console") -> CellFactsOut:
-    """What this cell is: its cameras and looks, its hand's natural axis, push, detector, brake, carried part, route.
-    Read once after build and once after connect; moves nothing."""
-    from src.robot.core.arm_capabilities import CarriesPayload, SupportsHalt, brakes_in_motion_of  # noqa: PLC0415
+    """What this cell is: its cameras and looks, its hand's natural axis, push, detector, brake, route. Read once after
+    build and once after connect; moves nothing."""
+    from src.robot.core.arm_capabilities import SupportsHalt, brakes_in_motion_of  # noqa: PLC0415
     from src.robot.execution.lifecycle import service_cameras  # noqa: PLC0415
     from src.robot.execution.looks import look_label  # noqa: PLC0415
     from src.robot.execution.motion import route_of  # noqa: PLC0415
@@ -745,16 +667,6 @@ def facts(console: "Console") -> CellFactsOut:
                for index, camera in enumerate(service_cameras(service))]
     looks = [look_label(look) for look in (configured_looks_of(service) or ())]
     axis = getattr(getattr(getattr(service, "runtime", None), "orchestrator", None), "natural_closing_axis", None)
-    declined: str | None = None
-    modelled = False
-    if isinstance(arm, CarriesPayload):
-        try:
-            declined = arm.payload_declined_reason()
-        except Exception as exc:  # noqa: BLE001
-            declined = f"the arm could not say ({type(exc).__name__}: {exc})"
-        modelled = declined is None
-    length = getattr(getattr(getattr(getattr(getattr(arm, "config", None), "safety", None), "planning_world", None),
-                             "payload", None), "length_mm", None)
     return CellFactsOut(
         wrist_camera=getattr(service, "perceives_from_the_wrist", False) is True,
         cameras=cameras,
@@ -765,8 +677,6 @@ def facts(console: "Console") -> CellFactsOut:
         detector=_detector_facts(console),
         hand_eye_warn_mm=HAND_EYE_DRIFT_WARN_MM,
         brake=BrakeFactsOut(latches=isinstance(arm, SupportsHalt), brakes_in_motion=brakes_in_motion_of(arm)),
-        payload=PayloadFactsOut(modelled=modelled, declined_reason=declined,
-                                length_mm=float(length) if isinstance(length, (int, float)) else None),
         route=RouteFactsOut(route=route.route.value, sentence=route.reason),  # type: ignore[arg-type]
         rehearsal=rehearsal_of(service),
     )

@@ -1029,24 +1029,23 @@ class FreshFrameAttemptsTests(unittest.TestCase):
         self.assertIs(refresh.verdict, WorldVerdict.UNUSABLE)
         self.assertEqual(camera.grabs, 1)
 
-    def test_the_key_reaches_the_world_source(self) -> None:
+    def test_every_cells_world_asks_a_camera_three_more_times(self) -> None:
+        """A key until the owner's cleanup of 2026-10-17 fixed it at the owner's cell's: a camera that cannot vouch for
+        the cell is asked 3 more times (``shutter_motion.FRESH_FRAME_ATTEMPTS``). A world the planner confirms only in
+        part refuses the motion on every cell too (``tests/test_planning_world.py``)."""
         from types import SimpleNamespace
 
         from src.config.schema.robot import RobotConfig
-        from src.config.schema.robot.safety_schema import PerceivedWorldConfig
         from src.geometry import Frame, Transform
+        from src.robot.core.shutter_motion import FRESH_FRAME_ATTEMPTS
         from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldWiring
 
-        self.assertEqual(PerceivedWorldConfig().fresh_frame_attempts, 3)
+        self.assertEqual(FRESH_FRAME_ATTEMPTS, 3)
         cfg = RobotConfig.model_validate({
             "vendor": "ur",
             "safety": {
-                "payload": {"enforce": False},
                 "planning_world": {
-                    "enabled": True,
-                    "require_registration": False,
                     "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                    "perceived": {"fresh_frame_attempts": 5},
                 },
             },
         })
@@ -1067,8 +1066,7 @@ class FreshFrameAttemptsTests(unittest.TestCase):
         world = CameraWorldWiring.from_cameras(cfg, plan=plan, cameras={"overhead": owner}).world
 
         assert world is not None
-        self.assertEqual(world.fresh_frame_attempts, 5)
-        self.assertFalse(world.require_registration)
+        self.assertEqual(world.fresh_frame_attempts, FRESH_FRAME_ATTEMPTS)
 
 
 class LoopHandsOverItsMasksTests(unittest.TestCase):

@@ -21,10 +21,8 @@ import sys
 import unittest
 from pathlib import Path
 
-import yaml
-
-from src.config.schema.robot.safety_schema import JointLimitSafetyConfig
 from src.config.arms import available_arms, load_arm
+from src.robot.safety.joint_limits import JOINT_LIMIT_MARGIN_DEG
 
 
 def _guard_envelopes() -> dict[str, tuple[tuple[float, ...], tuple[float, ...]]]:
@@ -119,13 +117,13 @@ def _bounds(block: str) -> "list[float]":
 class ThePlannerStaysInsideTheGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.limits = _limits()
-        self.margin = JointLimitSafetyConfig().margin_deg
+        self.margin = JOINT_LIMIT_MARGIN_DEG
 
     def test_every_bundled_arm_and_the_sim_cell(self) -> None:
+        """Every arm's guard holds its description's envelope since 2026-10-17, the Isaac arm's too (the ur5e it reports;
+        the sim profile wrote the same +-360 out until then)."""
         cells = {model: (model, lo, hi) for model, (lo, hi) in _guard_envelopes().items()}
-        sim = yaml.safe_load((_ROOT / "config/robot/robot.sim.yaml").read_text(encoding="utf-8"))
-        joint_limits = sim["robot"]["safety"]["joint_limits"]
-        cells["robot.sim.yaml"] = ("ur5e", tuple(joint_limits["min_deg"]), tuple(joint_limits["max_deg"]))
+        cells["the Isaac arm"] = ("ur5e", *_guard_envelopes()["ur5e"])
         for cell, (model, lo, hi) in cells.items():
             with self.subTest(cell=cell):
                 envelope = _degrees(_envelope(self.limits, model))

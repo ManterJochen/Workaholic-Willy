@@ -16,11 +16,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from src.calibration.serialization import FlangeToTcp, load_cam_to_tool_artifact, load_extrinsics
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Transform
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from src.calibration.extrinsics import Extrinsics
 
 __all__ = ["RigArtifactMissing", "RigCalibration", "RigCalibrationError", "RigNotCalibrated"]
 
@@ -106,6 +109,9 @@ class RigCalibration:
     #: How far the cell's flange to TCP may lie from the record before a body placed from it is refused.
     record_tolerance_mm: float | None = None
     record_tolerance_deg: float | None = None
+    #: A fixed camera's solve as its artifact holds it: its errors, how many samples and when. ``None`` for a wrist
+    #: camera, whose artifact holds the transform alone.
+    solve: "Extrinsics | None" = None
 
     @classmethod
     def from_config(cls, rig_id: str, extrinsics_cfg: Any) -> RigCalibration:
@@ -121,9 +127,11 @@ class RigCalibration:
         mode = extrinsics_cfg.mounting_mode
         path = str(extrinsics_cfg.artifact_path)
         record: Maybe[FlangeToTcp] = UNSET
+        solve: Extrinsics | None = None
         try:
             if mode == "eye_to_hand":
-                transform = load_extrinsics(path).transform
+                solve = load_extrinsics(path)
+                transform = solve.transform
             else:
                 transform, record = load_cam_to_tool_artifact(path)
         except FileNotFoundError as exc:
@@ -151,6 +159,7 @@ class RigCalibration:
             flange_to_tcp=record,
             record_tolerance_mm=getattr(extrinsics_cfg, "record_tolerance_mm", None),
             record_tolerance_deg=getattr(extrinsics_cfg, "record_tolerance_deg", None),
+            solve=solve,
         )
 
     def flange_to_tcp_refusal(self, tool_frame: Any) -> "str | None":

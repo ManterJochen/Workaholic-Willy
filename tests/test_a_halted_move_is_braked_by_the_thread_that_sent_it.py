@@ -1,9 +1,9 @@
-"""With ``robot.ur.brake_on_halt`` on, a halted move is braked under control by the thread that sent it.
+"""A halted move is braked under control by the thread that sent it: every UR's since 2026-10-17.
 
 The ur_rtde docstring of ``moveJ``: "If async is true it is possible to stop a move command using either the stopJ or stopL
 function. Default is false, this means the function will block until the movement has completed." A synchronous move
 cannot be stopped from another thread (the control script runs it in its main loop, and a ``stopJ`` waits behind it), so
-with the brake on every move is sent asynchronously and the thread that sent it polls it every 8 ms: the async operation
+every move is sent asynchronously and the thread that sent it polls it every 8 ms: the async operation
 register, the stop flags, the program state. A halt is a flag that poll reads, and the same thread then brakes with
 ``stopJ`` for a joint move or ``stopL`` for a line, each decelerating along the line it was running, at max(2.0, the
 move's own acceleration). ``halt()`` itself sends nothing from the thread that calls it.
@@ -45,9 +45,9 @@ _FAR = [0.6, -1.2, 1.3, -0.4, 1.5, 0.2]  # 0.6 rad on the shoulder: 1.2 s at 0.5
 _REASON = "the operator pressed halt now"
 
 
-def _conn(sim: SimulatedUr, clock: VirtualClock | None, *, acc: float = 0.8, brake: bool = True) -> URConnection:
+def _conn(sim: SimulatedUr, clock: VirtualClock | None, *, acc: float = 0.8) -> URConnection:
     kwargs: dict[str, Any] = {} if clock is None else {"clock": clock, "sleep": clock.sleep}
-    conn = URConnection("127.0.0.1", vel=0.5, acc=acc, brake_on_halt=brake, **kwargs)
+    conn = URConnection("127.0.0.1", vel=0.5, acc=acc, **kwargs)
     return sim.attach(conn)
 
 
@@ -518,7 +518,7 @@ class TheLatchAndTheSendAreOneStepTests(unittest.TestCase):
     """A halt that lands between the latch's check and the send either refuses the send or finds the move in flight:
     never a move sent that the record calls not in flight."""
 
-    def test_brakes_on_a_halt_during_the_read_before_the_send_sends_nothing(self) -> None:
+    def test_a_halt_during_the_read_before_the_send_sends_nothing(self) -> None:
         """Red before: the latch was read before the register, the halt landed during the register read, and the move
         was sent and braked while the record said no move was in flight."""
         clock, sim = _virtual()
@@ -539,8 +539,8 @@ class TheLatchAndTheSendAreOneStepTests(unittest.TestCase):
         assert state is not None
         self.assertEqual((False, False, "none"), (state.in_motion, state.braked, state.brake))
 
-    def test_brakes_off_a_halt_right_after_the_latch_was_asked_sends_nothing(self) -> None:
-        """Red before: with brakes off a halt landing after the check went out with the move."""
+    def test_a_halt_right_after_the_latch_was_asked_sends_nothing(self) -> None:
+        """Red before: a halt landing after the check went out with the move."""
         clock = VirtualClock()
         sim = SimulatedUr(_HERE, clock=clock, wait=clock.sleep)
         conn = sim.attach(URConnection("127.0.0.1", vel=0.5, acc=0.8, clock=clock, sleep=clock.sleep))
@@ -586,10 +586,9 @@ class TheLatchAndTheSendAreOneStepTests(unittest.TestCase):
 class TheArmAnswersABrakedMoveCancelledTests(unittest.TestCase):
     """The arm's verbs say CANCELLED for a move the halt braked, where they said CONTROLLER_REJECTED for a moveJ failure."""
 
-    def _arm(self, planner: str = "ik", *, brake: bool = True, halt_at: float = 0.3) -> tuple[Any, VirtualClock,
-                                                                                             SimulatedUr]:
+    def _arm(self, planner: str = "ik", *, halt_at: float = 0.3) -> tuple[Any, VirtualClock, SimulatedUr]:
         clock, sim = _virtual()
-        arm = ur_arm_on(sim, planner, brake_on_halt=brake)
+        arm = ur_arm_on(sim, planner)
         arm._conn._clock, arm._conn._sleep = clock, clock.sleep
         clock.at(halt_at, lambda: arm.halt(_REASON))
         return arm, clock, sim
@@ -668,14 +667,6 @@ class TheArmAnswersABrakedMoveCancelledTests(unittest.TestCase):
         result = arm.move_to_joints(JointPositions(_FAR))
         self.assertIs(MotionStatus.CANCELLED, result.status)
         self.assertIn("cleared since", result.message)
-
-    def test_with_brakes_off_the_move_in_flight_runs_out_and_the_next_verb_is_cancelled(self) -> None:
-        arm, _clock, sim = self._arm(brake=False)
-        self.assertIs(MotionStatus.EXECUTED, arm.move_to_joints(JointPositions(_FAR)).status)
-        np.testing.assert_allclose(sim.q, _FAR)
-        self.assertIs(MotionStatus.CANCELLED, arm.move_to_joints(JointPositions(_HERE)).status)
-        self.assertEqual(1, len(sim.named("moveJ")))
-        self.assertEqual([], sim.named("stopJ"))
 
 
 if __name__ == "__main__":  # pragma: no cover

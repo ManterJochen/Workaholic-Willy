@@ -63,8 +63,7 @@ markers = [
 source = ["src", "api", "datagen"]
 branch = false
 omit = [
-  # Vendor robot SDK boundaries (ur_rtde, EKI, robotiq_gripper):
-  "*/robot/drivers/kuka/*",
+  # Vendor robot SDK boundaries (ur_rtde, robotiq_gripper):
   "*/robot/drivers/ur/connection.py",
   "*/robot/drivers/ur/motion.py",
   "*/robot/grippers/robotiq.py",

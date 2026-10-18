@@ -3,10 +3,12 @@
  * collapsed by default with its settings in one summary line.
  *
  * How each pick looks, one choice (the owner, 2026-10-08 night: "Multi-View" and "Alle Posen" together): the first look
- * only, when needed (the settings' default) or every look. The closing axis (any), critical parts and the push distance
- * (the cell's, hidden where the cell cannot push), and, for a target the camera finds, whether the part is carried
- * straight over its rim (the cell's, shown where the camera is on the wrist) and the air over its rim (20 mm, 10-50).
- * The tech view adds the overlay switch, as the measuring aid it is. Each setting says in one line what it does.
+ * only, when needed or every look, starting from the cell's task settings (`runtime.task.looks`, when needed as
+ * shipped). The closing axis (any), critical parts and the push distance (the cell's, hidden where the cell cannot
+ * push; critical parts ticked as the built cell runs them, `facts.push.critical_parts`, which is what a task that says
+ * nothing gets), and, for a target the camera finds, whether the part is carried straight over its rim (the cell's,
+ * shown where the camera is on the wrist) and the air over its rim (20 mm, 10-50). The tech view adds the overlay
+ * switch, as the measuring aid it is. Each setting says in one line what it does.
  *
  * Decluttered on the same day: the picks' looks are always kept on disk (no "Aufnahmen" switch), and "Beide
  * Backenflächen" is a program's switch, said in the summary only where a run's plan carried it.
@@ -14,7 +16,7 @@
 
 import type { CellFactsOut } from '../api/client'
 import { useT } from '../i18n'
-import { LOOKS_CHOICES, type LooksChoice } from '../model/prefs'
+import { LOOKS_CHOICES, type LooksChoice } from '../model/taskSettings'
 import { CLOSING_AXES, PUSH_MIN_MM, PUSH_MM, RIM_AIR_MM, RIM_AIR_RANGE, cameraPlaced, type ClosingAxis, type Draft, type DraftOptions } from './draft'
 import { COCKPIT } from './i18n'
 
@@ -48,7 +50,7 @@ export default function AdvancedDrawer({ draft, facts, tech, change, opened }: A
   const clearOn = o.clear ?? facts?.push?.push_allowed ?? canPush
   const rimShown = o.rimAirMm ?? RIM_AIR_MM
   // The carry to a bin the camera finds (the owner's switch, 2026-10-08 night): a wrist camera's; it starts from the
-  // cell's own (robot.place.carry) and overrides it for this task alone.
+  // cell's own (robot.motion.place.carry) and overrides it for this task alone.
   const carryShown = camera && facts?.wrist_camera !== false
   const overTheRim = o.carryOverTheRim ?? facts?.carry === 'over_the_rim'
   const onOff = (on: boolean) => t(on ? 'ck.adv.on' : 'ck.adv.off')

@@ -1,9 +1,8 @@
-"""Segmentation: the shared :class:`SegmentationResult` type and two backends.
+"""Segmentation: the shared :class:`SegmentationResult` type and SAM2, the segmenter of every stack.
 
-The torch-heavy segmenter wrappers live under ``realtime`` (SAM2, box-prompted,
-fast) and ``research`` (OneFormer, universal, higher-accuracy, GPU-heavy) and are
-imported from there directly. Only the lightweight result type is re-exported
-here, so importing this package stays torch-free.
+The torch-heavy wrapper lives under ``realtime`` (SAM2, box-prompted) and is imported
+from there directly. Only the lightweight result type is re-exported here, so
+importing this package stays torch-free.
 """
 
 from __future__ import annotations

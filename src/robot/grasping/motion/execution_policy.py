@@ -47,43 +47,44 @@ exception on the report, never as an exception out of :meth:`execute`.
 
 The retreat is judged before the jaws close
 -------------------------------------------
-On an arm that judges a line as if its jaws held a part
+On an arm that judges a grasp's lift before the jaws close
 (:class:`JudgesCarriedLines`, the UR driver), the policy asks it at the
-part, with the jaws still open, whether the retreat would run carrying the
-part. A halted arm is not asked: the halt latch is read first, and a halt
-that fell during the line in ends the pick there, with no way back up. A part can refuse a retreat its empty hand would run, and the arm
-would then stand at the part with the part in its jaws. Where the arm would
-refuse it, the jaws are not closed: the arm goes back up the line it came
-down, to the standoff, and the pick ends as
+part, with the jaws still open, whether the retreat would run. A halted arm
+is not asked: the halt latch is read first, and a halt that fell during the
+line in ends the pick there, with no way back up. A retreat refused once the
+jaws hold the part would hold the arm at the part with the part in its jaws.
+Where the arm would refuse it, the jaws are not closed: the arm goes back up
+the line it came down, to the standoff, and the pick ends as
 :attr:`PolicyOutcome.CARRIED_RETREAT_REFUSED` (the owner, 2026-10-01). An
 arm that cannot judge it closes and retreats as before. Where it would run,
-the controller is asked once more, last before the jaws, and they close. The
-retreat is then judged again as it starts, as every motion is: a new camera
-frame, the part's spheres fitted anew by the attach, a part a measuring hand
-reads wider than the grasp said, or a retreat in steps can still refuse it,
-and the arm then holds the part where it stands until a person opens the jaws
+the controller is asked once more, last before the jaws, and they close. No
+part in the jaws is modelled (the owner, 2026-10-05, every cell since
+2026-10-17): a closed hand is judged as an empty one, by the exact guard at
+full stroke. The retreat is then judged again as it starts, as every motion
+is: a new camera frame or a retreat in steps can still refuse it, and the arm
+then holds the part where it stands until a person opens the jaws
 (``Robot.release``).
 
 A grasp from inside a bore
 --------------------------
-A grasp the calculator found inside a part's bore (``types.grasp_point.grips_from_inside``, ``robot.grasping.inner_grasps``)
+A grasp the calculator found inside a part's bore (``types.grasp_point.grips_from_inside``, ``generation.inner_grasps``)
 comes down with the jaws as narrow as it was planned, opens them at the part with the close's force and speed as far
-as the hand goes, the bore's wall stopping them (a Robotiq's ``gOBJ`` 1, held), and carries the part attached at its own
-width about the grasp. Only a hand that says how it holds (:class:`GripsFromInside`) takes one, for its release must
+as the hand goes, the bore's wall stopping them (a Robotiq's ``gOBJ`` 1, held), and carries the part at its own width
+about the grasp. Only a hand that says how it holds (:class:`GripsFromInside`) takes one, for its release must
 close: any other is refused one before anything is commanded. From the judgement ahead to the lift the guard holds the
 fingers at the wall, the widest they stand (``types.grasp_point.fingers_held_at``), and after the open where the hand
 reads them, wider where the bore read small.
 
 Judged while the arm waits
 --------------------------
-Three switches move a judgement to where the arm waits anyway, and change nothing of what is judged (the owner,
-2026-10-09, "solange wir keine Qualität verlieren"); each is off as shipped. On an arm that gates its own sends
-(``safety.dwell.gate_at`` ``send``) a move is asked with no steady gate here: the arm judges it first, while it
-settles, and waits for steady right before it sends. On an arm that holds the world a grasp was judged in ahead
-(``safety.planning_world.hold.standoff``) the move to the standoff and the line down are judged in that world, with no
-frame at the standoff. On an arm that judges the next leg (``robot.motion.judge_next_leg``) the close leaves the jaws'
-stroke to the policy where the hand can (``wait_settled``): the one change goes out, the part is attached, the joint
-move a task declared after the pick is judged meanwhile in the world held at the part, and the stroke is waited out
+Three rules move a judgement to where the arm waits anyway, and change nothing of what is judged (the owner,
+2026-10-09, "solange wir keine Qualität verlieren"). On an arm that gates its own sends (a cuRobo arm, the owner's cell's
+``safety.dwell.gate_at: send`` until 2026-10-17) a move is asked with no steady gate here: the arm judges it first, while it settles, and waits for steady
+right before it sends. On an arm that holds the world a grasp was judged in ahead (``holds_world_at``, at the
+standoff on every cell since 2026-10-17) the move to the standoff and the line down are judged in that world, with no
+frame at the standoff. On an arm that judges the next leg (every cuRobo arm) the close leaves the jaws'
+stroke to the policy where the hand can (``wait_settled``): the one change goes out, the joint move a task declared
+after the pick is judged meanwhile in the world held at the part, and the stroke is waited out
 before the lift is sent; where no stroke was left, the lift's send judges it while the lift runs.
 
 Numerics
@@ -98,7 +99,6 @@ This module imports no vendor driver. It talks only to the
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
@@ -120,7 +120,6 @@ from src.robot.core import (
     SupportsRobotStatus,
 )
 from src.robot.core.arm_capabilities import (
-    CarriesPayload,
     HoldsItsWorld,
     JudgesCarriedLines,
     JudgesGraspsAhead,
@@ -141,7 +140,6 @@ from src.robot.core.gripper import (
     guard_holds_the_fingers_at,
     hold_evidence_of,
     toggle_without_sensor_of,
-    width_is_measured_of,
 )
 from src.robot.grasping.geometry.closing_axis import ClosingAxis, closing_axis_of
 from src.robot.grasping.types.grasp_point import (
@@ -180,13 +178,6 @@ class PolicyOutcome(str, Enum):
     orchestrator. No motion was commanded.
     """
 
-    APPROACH_PATH_BLOCKED = "approach_path_blocked"
-    """The approach and retreat sweep of every ranked candidate collided with a neighbour in the
-    scene obstacle cloud, as judged by the swept-volume validator, so no candidate was executed.
-    The dense-mode approach-validation fallback in the orchestrator surfaces this. No motion was
-    commanded.
-    """
-
     GRIPPER_FAULT = "gripper_fault"
     """The gripper raised while it was commanded (``error`` carries it), or a hand that toggles
     with no sensor would not start the pick: it believed its jaws closed and nobody at a terminal
@@ -195,10 +186,10 @@ class PolicyOutcome(str, Enum):
     """
 
     CARRIED_RETREAT_REFUSED = "carried_retreat_refused"
-    """At the part, before the jaws closed, the arm judged the retreat as if they held the part
+    """At the part, before the jaws closed, the arm judged the retreat
     (:class:`~src.robot.core.arm_capabilities.JudgesCarriedLines`) and would refuse it, or could
-    not judge it (``error``). The jaws stayed open, nothing was attached, and the arm went back up
-    the line it came down, to the standoff, empty-handed. ``motion_status`` and ``motion_message``
+    not judge it (``error``). The jaws stayed open, and the arm went back up the line it came
+    down, to the standoff, empty-handed. ``motion_status`` and ``motion_message``
     say why the retreat would be refused. The pick loop reads it as a failed execution and goes on
     to its next part or reports (the owner, 2026-10-01).
     """
@@ -416,11 +407,6 @@ class GraspExecutionPolicy:
                 return _gripper_fault(exc, line_motion=line_motion)
             if why:
                 return PolicyReport(outcome=PolicyOutcome.GRIPPER_FAULT, motion_message=why, line_motion=line_motion)
-        # Forget any part from a previous pick. Detaching here rather than on release means a
-        # stale attachment cannot survive a failed pick, a recovery, or a runner that never released:
-        # the planner is only ever told about a part between a confirmed close and the next attempt.
-        if isinstance(self.arm, CarriesPayload):
-            self.arm.detach_payload()
         waypoints = self._build_waypoints(grasp)
 
         # Pre-open the gripper before driving the approach so the jaws
@@ -465,9 +451,9 @@ class GraspExecutionPolicy:
         if reading is not None:
             # The standoff, planned, then one line to the grasp.
             legs = [(approach[0], False), (approach[-1], True)]
-        # The owner's O2 (safety.planning_world.hold.standoff, 2026-10-09): where the arm holds it, the move to the
-        # standoff and the line down from it are judged in the world the grasp was judged in ahead, at the look, and no
-        # frame is taken at the standoff; elsewhere the block changes nothing.
+        # The owner's O2 (2026-10-09, every cell's since 2026-10-17): where the arm holds it, the move to the standoff
+        # and the line down from it are judged in the world the grasp was judged in ahead, at the look, and no frame is
+        # taken at the standoff; elsewhere the block changes nothing.
         with _the_approach_held(self.arm, reading, approach[0]):
             return self._approach_and_the_part(grasp, waypoints, approach, legs, reading, line_motion)
 
@@ -541,7 +527,7 @@ class GraspExecutionPolicy:
         last_message: str,
     ) -> PolicyReport:
         """The jaws at the part and the way back up: the lift judged before they close (or the line back up with them
-        open), the close, the attach and the lift. :meth:`execute` holds the arm's world around it."""
+        open), the close and the lift. :meth:`execute` holds the arm's world around it."""
         # Close the gripper at the grasp point.
         object_detected: bool | None = None
         # When the jaws' stroke is over where the hand left it to this policy (``wait_settled``), else None.
@@ -555,7 +541,7 @@ class GraspExecutionPolicy:
                 return _stopped_at_the_part(refused, commanded, stamps, line_motion)
             # The retreat as if the jaws held the part, asked before they close (the owner, 2026-10-01): a part can
             # refuse a retreat the empty hand would run, and the arm would stand here with the part in its jaws.
-            held = self._carried_retreat_refusal(grasp, waypoints[-1], reading)
+            held = self._carried_retreat_refusal(waypoints[-1], reading)
             if held is not None:
                 return self._back_out(held, approach[0], commanded, stamps, line_motion,
                                       inside=grips_from_inside(grasp))
@@ -578,7 +564,7 @@ class GraspExecutionPolicy:
                     # The grasp width read against closed_below_mm opens a two-state gripper when the part is wider
                     # than the threshold, and the loop then reported object_not_detected on jaws it never closed
                     # (URSim, the owner's toggle cell, 2026-09-23). A grasp is a close. Its stroke is left to this
-                    # policy where the arm judges the next leg meanwhile (robot.motion.judge_next_leg): one change goes
+                    # policy where the arm judges the next leg meanwhile (every cuRobo arm): one change goes
                     # out, as ever, and nothing is sent before the stroke is waited out below.
                     settles_at = _close_leaving_the_stroke(self.gripper, self.arm)
                 else:
@@ -607,22 +593,11 @@ class GraspExecutionPolicy:
                     line_motion=line_motion,
                 )
 
-        # The planner learns what it is carrying, before the first motion that carries it. A lift,
-        # transit or place planned as if the hand were empty ignores the part, and on a cell lifting a
-        # part out of a bin that part is the geometry most likely to meet a wall.
-        if isinstance(self.arm, CarriesPayload):
-            # The commanded width is not the width of the part. On the adaptive branch the command
-            # is `grip_width` less `close_squeeze_mm`, a number the jaws never reach by design, so it
-            # is the size of something nobody measured. Reading the jaws is a measurement and, since
-            # a close waits for the fingers, a settled one. A stroke left to this policy is one only a hand that
-            # measures nothing leaves (``wait_settled``), whose width is the one it was told.
-            self.arm.attach_payload(self._measured_or_commanded_width(grasp))
-
         # While the jaws close, the joint move a task declared after the pick (the carry) is judged ahead from where the
-        # lift will end, in the world held at the part, the part attached (robot.motion.judge_next_leg,
-        # safety.planning_world.hold.carry); where no stroke was left, the lift's send judges it on a second thread while
-        # it runs (in_settles_and_motion). It sends nothing, and the stroke is waited out before the lift, whatever it
-        # found. On an arm that judges no next leg nothing of this runs.
+        # lift will end, in the world held at the part; where no stroke was left, the
+        # lift's send judges it on a second thread while it runs (in_settles_and_motion). It sends nothing, and the
+        # stroke is waited out before the lift, whatever it found. On an arm that judges no next leg nothing of this
+        # runs.
         try:
             if self.gripper is not None:
                 _the_next_leg_judged(self.arm, waypoints[-1], junction="carry", now=settles_at is not None)
@@ -698,7 +673,7 @@ class GraspExecutionPolicy:
     def _drive_to(self, pose: Pose, *, linear: bool = False) -> MotionResult:
         """Drive ``arm`` to ``pose`` through the typed :meth:`RobotArm.move` and return its result.
 
-        The steady gate (``safety.dwell``) is the arm's own since P0e, inside ``move``: a planned arm that did not come
+        The steady gate is the arm's own since P0e, inside ``move``: a planned arm that did not come
         to rest answers TIMEOUT, which the execute() loop maps to ``PolicyOutcome.MOTION_FAILED`` as before.
         """
         # Only a line passes the keyword, so a planned move is the plain call any arm accepts.
@@ -732,8 +707,7 @@ class GraspExecutionPolicy:
             # Judged with the fingers where the grasp opens them (lever G): its world leaves out the space between the
             # jaws as wide as they will be, and the move to the standoff and the line down are later driven in it.
             with _fingers_as_planned(self.arm, grasp):
-                said = self.arm.grasp_refusal_ahead(standoff=approach[0], grasp=approach[-1], lift=waypoints[-1],
-                                                    grip_width_mm=self._judged_width(grasp))
+                said = self.arm.grasp_refusal_ahead(standoff=approach[0], grasp=approach[-1], lift=waypoints[-1])
         except CameraWorldUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001 (a grasp nobody could judge ahead is not driven to)
@@ -767,46 +741,28 @@ class GraspExecutionPolicy:
         return self._build_waypoints(grasp)[0]
 
     def _carried_retreat_refusal(
-        self, grasp: GraspPoint, top: Pose, reading: object
+        self, top: Pose, reading: object
     ) -> tuple[MotionStatus | None, str, Exception | None] | None:
-        """Why the retreat, judged at the part as if the jaws held it, would be refused: its status, the sentence and
+        """Why the retreat, judged at the part before the jaws close, would be refused: its status, the sentence and
         the error where the judgement raised; ``None`` where it would run, and on an arm that does not judge it.
 
-        Asked only of an arm that keeps its lines and judges one carrying (:class:`JudgesCarriedLines`), of the line from
-        the part to ``top``, the retreat's last waypoint, which covers every retreat step, at the width
-        :meth:`_judged_width` gives. An answer that is no :class:`MotionResult` refusal is no judgement, as on an arm
-        without the verb. A camera that cannot vouch for the cell leaves the pick, as on every motion of it.
+        Asked only of an arm that keeps its lines and judges a lift before the close (:class:`JudgesCarriedLines`), of
+        the line from the part to ``top``, the retreat's last waypoint, which covers every retreat step. An answer that is
+        no :class:`MotionResult` refusal is no judgement, as on an arm without the verb. A camera that cannot vouch for
+        the cell leaves the pick, as on every motion of it.
         """
         if reading is None or not isinstance(self.arm, JudgesCarriedLines):
             return None
-        width = self._judged_width(grasp)
         try:
-            refused = self.arm.carried_line_refusal(top, grip_width_mm=width)
+            refused = self.arm.carried_line_refusal(top)
         except CameraWorldUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001 (a retreat nobody could judge is no retreat the jaws close for)
-            return None, (f"the retreat could not be judged as if the jaws held the part ({type(exc).__name__}: "
-                          f"{exc})"), exc
+            return None, f"the retreat could not be judged before the jaws close ({type(exc).__name__}: {exc})", exc
         if not isinstance(refused, MotionResult) or refused.ok:
             return None
-        return refused.status, (f"the retreat, judged at the part as if the jaws held the part {width:g} mm across, "
-                                f"would be refused: {refused.message}"), None
-
-    def _judged_width(self, grasp: GraspPoint) -> float:
-        """The width a retreat is judged carrying before the jaws close: what the attach after the close carries, where
-        that is known ahead. A hand that does not measure its width is attached at the width it is told
-        (:meth:`_measured_or_commanded_width`), so it is judged at exactly that: the box the attach hands the planner
-        (verifier W, 2026-10-01). A hand that measures is attached at what it measures, which nobody knows before the
-        close; the part's own width stands in for it there, never a narrower one than the jaws are told. A part held from
-        inside a bore is judged at its own width about the grasp, as it is attached."""
-        inside = grip_from_inside_of(grasp)
-        if inside is not None:
-            return inside.part_width_mm
-        told = self._resolve_close_width(grasp)
-        if not (callable(getattr(self.gripper, "get_width_mm", None)) and width_is_measured_of(self.gripper)):
-            return told
-        part = float(grasp.grip_width_mm)
-        return max(told, part) if math.isfinite(part) and part > 0.0 else told
+        return (refused.status, f"the retreat, judged at the part before the jaws close, would be refused: "
+                                f"{refused.message}", None)
 
     def _back_out(
         self,
@@ -826,7 +782,7 @@ class GraspExecutionPolicy:
         """
         status, sentence, error = held
         jaws = "stayed as narrow as they came down into the bore" if inside else "stayed open"
-        said = f"{sentence.rstrip('.')}. The jaws {jaws} and nothing was attached"
+        said = f"{sentence.rstrip('.')}. The jaws {jaws}"
         try:
             result = self._drive_to(standoff, linear=True)
         except CameraWorldUnavailable:
@@ -866,35 +822,6 @@ class GraspExecutionPolicy:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _measured_or_commanded_width(self, grasp: GraspPoint) -> float:
-        """What the jaws actually hold, falling back to what they were told.
-
-        The fallback is not a nicety: a gripper that cannot report a width, or one whose read fails
-        mid-cell, must still attach something or the planner goes back to lifting the part as if the
-        hand were empty. A commanded width is a worse number than a measured one and a much better
-        number than none.
-
-        The jaws are read only where the gripper says its width is measured (``MeasuresWidth``), as
-        the robot's grasp verb does. A jaw driven over digital I/O reports the band it was commanded
-        to, its closed band 5 mm on the owner's Hand-E, and the carried part was attached 5 mm wide
-        for a 40 mm grasp, so the planner lifted it out of a bin about 34 mm too narrow across the
-        jaws (owner-cell audit, reproduced 2026-09-23).
-
-        A part held from inside a bore is attached at its own width about the grasp: the jaws read the bore.
-        """
-        inside = grip_from_inside_of(grasp)
-        if inside is not None:
-            return inside.part_width_mm
-        read = getattr(self.gripper, "get_width_mm", None)
-        if callable(read) and width_is_measured_of(self.gripper):
-            try:
-                measured = float(read())
-            except Exception:  # noqa: BLE001 (a failed read is not a failed pick)
-                measured = float("nan")
-            if measured == measured and measured > 0.0:  # not NaN
-                return measured
-        return self._resolve_close_width(grasp)
 
     def _resolve_close_width(self, grasp: GraspPoint) -> float:
         """Pick the jaw width to command at the grasp point."""
@@ -1011,9 +938,9 @@ def _the_world_held_at_the_part(arm: object, reading: LineReading | None) -> Abs
 
 def _the_approach_held(arm: object, reading: LineReading | None, standoff: Pose) -> AbstractContextManager[object]:
     """The block in which ``arm`` holds the world a grasp was judged in ahead, for the move to ``standoff`` and the line
-    down from it (``holding_the_approach``, ``safety.planning_world.hold.standoff``), on an arm that keeps its lines and
-    holds its world; elsewhere a block that changes nothing. The arm holds it only where its switch is on and the route
-    judged ahead to ``standoff`` stands ready to run as judged."""
+    down from it (``holding_the_approach``, the owner's O2), on an arm that keeps its lines and holds its world;
+    elsewhere a block that changes nothing. The arm holds it only where the route judged ahead to ``standoff`` stands
+    ready to run as judged."""
     hold = getattr(arm, "holding_the_approach", None)
     if reading is None or not isinstance(arm, HoldsItsWorld) or not callable(hold):
         return nullcontext()
@@ -1023,7 +950,7 @@ def _the_approach_held(arm: object, reading: LineReading | None, standoff: Pose)
 
 
 def _judges_next_legs(arm: object) -> bool:
-    """Whether ``arm`` judges the next leg while the jaws' stroke is waited out (``robot.motion.judge_next_leg``), read
+    """Whether ``arm`` judges the next leg while the jaws' stroke is waited out (every cuRobo arm), read
     as ``is True``, so a double that answers every attribute does not."""
     return getattr(arm, "judges_next_legs", False) is True
 

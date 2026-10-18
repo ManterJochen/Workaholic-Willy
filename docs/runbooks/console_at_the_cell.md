@@ -12,9 +12,9 @@ jaws), and a **D415 on the wrist** in its robobrain.eye housing. The pages behin
 (a UR10, PolyScope 3.15.8): `probe_halt.py` M0 to M9 on 2026-10-01 and M0 to M5 again on 2026-10-02, and
 `probe_console_task.py` C1 to C5 on 2026-10-02. **Not at the cell yet.**
 
-**The one line version.** Measure halt now on URSim first, switch `robot.ur.brake_on_halt` on only after it
-passed there and at the cell, and for every first at the cell keep a hand on the emergency stop: "Sofort
-anhalten" is not one.
+**The one line version.** Measure halt now on URSim first, try it slowly at the cell, and for every first at the
+cell keep a hand on the emergency stop: "Sofort anhalten" is not one. Every UR brakes the move in flight on a halt
+since 2026-10-17, as the owner's cell ran it (`robot.ur.brake_on_halt` until then).
 
 ---
 
@@ -24,8 +24,7 @@ Any of:
 
 1. The console runs at a cell for the first time, or after an update of the console, the UR driver's halt path
    or the cell's hand.
-2. Before `robot.ur.brake_on_halt: true` goes into a cell's profile.
-3. A halt, a stop record, the jaws question or a teach behaves unlike [`api/README.md`](../../api/README.md)
+2. A halt, a stop record, the jaws question or a teach behaves unlike [`api/README.md`](../../api/README.md)
    says.
 
 ---
@@ -38,13 +37,17 @@ Any of:
   `robot/robot.cell.yaml` under the config root, exists (one comment line is enough; the loader refuses a layer
   with no file). Git ignores every `*.cell.yaml`, and the console refuses to teach into a layer git does not keep
   out (`no_layer`): `git check-ignore -v config/robot/robot.cell.yaml` names the rule.
-* **The carried part.** `safety.planning_world.payload.length_mm`, the longest part's hang past the fingertips.
-  Without it every task is refused (`carried_part_not_modelled`) and the ready bar's carried-part light is red:
-  between the close and the release only the planner holds the part.
+* **How far the parts hang.** `robot.motion.place.part_hang_mm` (1 on the owner's cell), the longest part's hang
+  past the fingertips, sets where a place lets the part go; `null`, as shipped, hangs the part from the TCP. No task
+  waits on it since 2026-10-17: no cell models the carried part (a closed hand is judged as an empty one), so the
+  ready bar has no light for it, and a tree that still declares `safety.planning_world.payload.length_mm` is refused
+  at load, naming the new key; `python -m src.config migrate PATH --write` moves it there.
 * **The wrist housing at its real size.** A teach screens every pose at once, and an arm that was not handed the
   wrist camera's housing screens nothing (`screen_unavailable`): a pose the housing meets would read clear.
-* **`robot.ur.brake_on_halt` stays `false`** until steps 1 to 3 of Mitigate have passed on URSim and step 5 at the
-  cell. Off, a halt latches and the move in flight runs to its end; on, it is braked under control.
+* **No brake switch.** A halt latches the arm and every UR brakes the move in flight under control since
+  2026-10-17. A profile that still writes `robot.ur.brake_on_halt` is refused at load, and
+  `python -m src.config migrate PATH --write` deletes the line. Steps 1 to 3 of Mitigate on URSim and step 5 at the
+  cell are what vouch for the brake.
 * `python -m src.config --profile <your cell>,cell` exits 0, and `python -m src.robot.execution.real_cell --check`
   blocks on nothing a person has not decided.
 
@@ -76,12 +79,12 @@ every other row holds for every run of it):
 
 | Check | What it proves | Measured |
 |---|---|---|
-| M0 | brakes off: a cross-thread `stop()` does not stop a synchronous move, and the latch lets the move in flight run out and refuses the next | the move arrived anyway, `stop()` returned after 2.3 s; the next move refused, nothing sent |
+| M0 | the baseline, `ur_rtde`'s own synchronous move: a cross-thread `stop()` does not stop it, which is why every move is watched and braked by the thread that sent it (on 2026-10-01 also: with brakes off the latch let the move in flight run out and refused the next) | the move arrived anyway, `stop()` returned after 2.3 s; the next move refused, nothing sent |
 | M1 | brakes on: the brake's latency | stop sent 0.7 to 8.2 ms after the request and deceleration 18.7 to 37.1 ms after it on 2026-10-01, 0.3 to 5.0 ms and 12.3 to 34.2 ms on 2026-10-02; standing still after 0.26 to 0.75 s by speed on both |
 | M2 | the stop point stays on the judged joint line | at most 2.3e-7 rad off the line |
 | M3, M3b | 200 watched moveJ and 50 watched moveL, no halt: every one true only at its target | 0 early returns, 0 refused; a watched move no slower than a synchronous one |
 | M4 | a 5-waypoint judged path halted in leg 3 sends no later waypoint | cancelled, 3 moveJ sent, the base stopped short of waypoint 3 |
-| M5 | the toggle on tool DO0: no output change after a halt, brakes on and off | 0 DO0 edges after the halt; the close refused |
+| M5 | the toggle on tool DO0: no output change after a halt (brakes on and off on 2026-10-01; braked alone since 2026-10-17) | 0 DO0 edges after the halt; the close refused |
 | M6 | a line braked with stopL stays on the line | 0.042 mm off it |
 | M7 | a protective stop during a watched move answers false, never true | false; the first reconnect timed out, the second worked |
 | M8 | the alternative not taken: the program stopped from the dashboard | still after 175 ms, DO0 unchanged, the control program gone |
@@ -108,8 +111,7 @@ the shipped reading is pinned on a local dashboard double
 
 **Not measured on URSim:** a halt with the hand inside a bin (the bed has no camera world, so the path home is
 judged against no frame), Disconnect during a jaws question and during a free teach, a pose taught by URSim
-freedrive, the teach's largest sample gap while a VLM load or a parse runs, and a Disconnect with brakes off and
-a move in flight. Each is a step below.
+freedrive, and the teach's largest sample gap while a VLM load or a parse runs. Each is a step below.
 
 ---
 
@@ -125,11 +127,11 @@ a move in flight. Each is a step below.
    ```
 
    Exit 0 means every check that ran passed. The probe moves the arm and switches tool DO0 without asking, so it
-   runs on 127.0.0.1 only and writes its own scratch profile layer (`brake_on_halt: true`, the toggle on tool
-   DO0, a declared `payload.length_mm`) into a temporary copy of `config/`.
+   runs on 127.0.0.1 only and writes its own scratch profile layer (the toggle on tool DO0, a declared
+   `part_hang_mm`) into a temporary copy of `config/`.
 2. **The console's task.** First move URSim to the probe's home, [-90, -90, -100, -80, 90, 0] deg. Step 1
-   leaves wrist 2 at -90 deg, half a turn from that home and outside the joint window the UR10 profile keeps
-   about it (`safety.joint_limits.within_half_turn_of_home`): every path would be refused at its first sample,
+   leaves wrist 2 at -90 deg, half a turn from that home and outside the joint window every real arm keeps
+   about its home (half a turn, no key since 2026-10-17): every path would be refused at its first sample,
    C1 would end `failed_in_a_row`, and its stop record would refuse C2 to C4 (`cell_not_cleared`). The probe
    reads where the arm stands before it moves anything, with the console's own joint guard, and refuses to start
    outside that window (exit 2, naming the axis). Jog it there at the pendant's Move tab, or send it there with the
@@ -147,8 +149,8 @@ a move in flight. Each is a step below.
 
    Exit 2 where the console proves no simulator (Diagnose 3), and on an arm outside the window. It also
    writes its own layer: the Hand-E as
-   `jaw_io` `single_toggle` on tool DO0, `brake_on_halt: true`, `payload.length_mm: 40`, a home inside the
-   workspace box, and two taught poses.
+   `jaw_io` `single_toggle` on tool DO0, `part_hang_mm: 40`, a home inside the workspace box, and two
+   taught poses.
 3. **The console in the browser, by hand.** Copy the probe's layer (`_LAYER` in `probe_console_task.py`, with
    `{model}` replaced by `ur10`) into a `robot/robot.cell.yaml` and start
    `python -m api --profile ursim,ur10,ursim_curobo,cell`, the arm at that layer's home as step 2 left it; then
@@ -162,9 +164,10 @@ a move in flight. Each is a step below.
 
 The owner stands at the emergency stop, the pendant's speed slider turned well down, hands and cables clear.
 
-1. **Pull, declare, restart.** Pull the commit. Declare `safety.planning_world.payload.length_mm` in the cell
-   profile, create the cell's own layer if it is missing (Diagnose 1), and restart the planner. The carried-part
-   light turns green.
+1. **Pull, declare, restart.** Pull the commit. Bring the cell profile to today's keys with
+   `python -m src.config migrate PATH --write`: it moves every key of how the cell moves under `robot.motion` and the
+   parts' hang to `robot.motion.place.part_hang_mm`, comments and all (the load refuses each old key, naming the new
+   one). Create the cell's own layer if it is missing (Diagnose 1), and restart the planner.
 2. **Build and connect.** Build real, read the preview, connect. The Hand-E's jaws question opens in the browser:
    time it, look at the jaws, answer what you see. Where they stand closed, answer "closed", hold the part, then
    "Jetzt öffnen": one change of DO0, and the answer returns within 5 s of the stroke. While a stop from before
@@ -181,16 +184,14 @@ The owner stands at the emergency stop, the pendant's speed slider turned well d
 4. **One task, slowly.** `Einmal`, the default place, at reduced speed. Watch tool DO0 on the pendant's I/O tab:
    exactly 2 changes per part, the close and the release. Measure the release height against the taught fingertip
    height. Then a `Bis leer` task and **"Nach diesem Teil stoppen"**: the part is placed and the arm returns.
-5. **Halt now, slowly.** Only once URSim M1 to M5 have passed. "Sofort anhalten" during a slow approach. With
-   `brake_on_halt` off the button says "hält vor der nächsten Bewegung": the move in flight ends at its target and
-   nothing after it is sent. Then the stop card: "Zelle ist frei", "Backen prüfen" (the jaws question: a count that
-   says closed asks "Jetzt öffnen" at once, so hold the part first), Restart; its first motion is the planned move
-   home. Once, stop the server while the card stands and start it again: the card is back, uncleared, the build's
+5. **Halt now, slowly.** Only once URSim M1 to M5 have passed. "Sofort anhalten" during a slow approach: the
+   button says "bremst kontrolliert", the move in flight is braked to a stop on its own line and nothing after it
+   is sent, and "Not-Aus drücken" never appears on a halt the arm confirmed. Then the stop card: "Zelle ist frei",
+   "Backen prüfen" (the jaws question: a count that says closed asks "Jetzt öffnen" at once, so hold the part
+   first), Restart; its first motion is the planned move home. Once, stop the server while the card stands and start it again: the card is back, uncleared, the build's
    arm is latched and Connect refuses `halted` until "Zelle ist frei"; then the jaws question and Restart. Repeat
    the halt once with the hand inside the bin: jog it clear at the pendant
-   first, since the move home is planned against what the camera sees now and the D415 never sees the fingers. Only
-   then decide `brake_on_halt`; switched on, repeat this step and check "bremst kontrolliert", and that "Not-Aus
-   drücken" never appears on a halt the arm confirmed.
+   first, since the move home is planned against what the camera sees now and the D415 never sees the fingers.
 6. **A protective stop** mid-move, provoked the way the cell's safety setup allows: the card says to clear it at
    the pendant, and "Zelle ist frei" is refused until it is. Clear it, Disconnect, Connect (again if the first
    refuses), "Zelle ist frei", the jaws question, Restart.
@@ -200,7 +201,8 @@ The owner stands at the emergency stop, the pendant's speed slider turned well d
    obstacle appears at the jaws during the carry.
 8. **Commands.** First set Settings → Auftrag → Start to **"Erst die Karte"**: as shipped, Enter starts a task at
    once where the sentence reads clean and the cell is ready (the owner, 2026-10-08), and this step reads
-   sentences, it starts nothing. Ten of the owner's own sentences, German and English. Time "Laden", read each
+   sentences, it starts nothing. The setting is the cell's since 2026-10-17, for every browser at once, written into
+   the cell's own layer (`app/runtime.cell.yaml`). Ten of the owner's own sentences, German and English. Time "Laden", read each
    answer's latency and attempts (`model.latency_ms`, `model.attempts` of `POST /v1/commands/parse`, shown in the
    tech view, where a known sentence reads "bekannter Satz" and a sentence typed again "aus dem Gedächtnis"), watch
    the VRAM with `nvidia-smi` while everything is loaded, and check each card before Start. Set Start back
@@ -251,8 +253,8 @@ German voice.
 ## Rollback
 
 * **Stop motion**: the physical emergency stop. Nothing in software outranks it, and "Sofort anhalten" is not it.
-* **The brake**: `robot.ur.brake_on_halt: false` in the cell profile, and the arm halts before its next motion
-  only, as shipped.
+* **The brake** has no switch since 2026-10-17 (`robot.ur.brake_on_halt` until then): every UR brakes the move
+  in flight on a halt, and no profile turns it off. The emergency stop stays the safety stop.
 * **A pose taught wrong**: teach it again with "replace", or edit `robot/robot.cell.yaml` by hand; the console
   never renames or deletes a pose. The default place: choose another in Setup, or none.
 * **A stop record that will not end**: it ends at a Restart's or a Home run's arrival. A restart of the server

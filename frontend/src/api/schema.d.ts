@@ -298,8 +298,8 @@ export interface paths {
         };
         /**
          * What this cell is (read after build and after connect)
-         * @description Its cameras and looks, its hand's natural axis, push, the detector, the brake, the carried part and how its
-         *     moves are planned. Moves nothing.
+         * @description Its cameras and looks, its hand's natural axis, push, the detector, the brake and how its moves are planned.
+         *     Moves nothing.
          */
         get: operations["get_facts_v1_cell_facts_get"];
         put?: never;
@@ -349,7 +349,7 @@ export interface paths {
          *
          *     ``jaws_empty: true`` is the person's word that the hand holds nothing: taken for a hand that cannot say it itself
          *     (a toggle answers the jaws question instead, and is taken only while its count says open; a hand that measures a
-         *     part refuses it), and then the planner is told the hand is empty too. A person's hands were at the jaws for it, so
+         *     part refuses it). A person's hands were at the jaws for it, so
          *     the next motion counts down 3 s first (owner decision Q2 = A); it answers no jaws question.
          */
         post: operations["post_acknowledge_v1_cell_acknowledge_post"];
@@ -373,8 +373,8 @@ export interface paths {
          * @description Halt now: stops the run and latches the arm; not an emergency stop; the red button is.
          *
          *     The run stops commanding, and where the arm latches, every next motion and output switch is refused before
-         *     anything is sent, until a person confirms the cell is clear. Only where the arm also brakes a move in flight
-         *     (``robot.ur.brake_on_halt``, off as shipped) is that move braked under control; elsewhere the move in flight runs
+         *     anything is sent, until a person confirms the cell is clear. Where the arm also brakes a move in flight
+         *     (every UR) that move is braked under control; elsewhere the move in flight runs
          *     to its end and nothing after it is sent. A request over a socket depends on latency, an open tab and an awake
          *     laptop, which is why the red button stays the safety halt.
          */
@@ -425,7 +425,7 @@ export interface paths {
          *     console's answer to a greeting in the chat, at once or on a click as the app config says
          *     (``runtime.greeting.wave``), after a 3 s countdown where a person's hands were last at the arm.
          *
-         *     Refused as a new task is, bar a carried part: during a run, on a halted or stopped controller, before the cell is
+         *     Refused as a new task is: during a run, on a halted or stopped controller, before the cell is
          *     cleared after a stop and while a Restart is required (a wave is no way back), while a person is needed, while the
          *     jaws question waits or a toggle's jaws are not confirmed, while a part is held, and on an arm whose motions are
          *     refused.
@@ -452,30 +452,6 @@ export interface paths {
          *     arm whose planner is off; this starts it again after it stopped or failed.
          */
         post: operations["post_planner_v1_cell_planner_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/diagnostics/route": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Which route a prompt would take; no GPU, no model, no image
-         * @description Answer 'why was that pick slow / why was it refused' by typing the prompt instead of running it.
-         *
-         *     Pure text analysis, so it costs nothing and works on a cell with no weights at all. It also reports
-         *     whether the chosen route could actually run here, which is the difference between "the router would
-         *     send this to the VLM" and "this pick will work".
-         */
-        get: operations["preview_route_v1_diagnostics_route_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -938,6 +914,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/task/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The cell's task settings (moves nothing)
+         * @description What every task the console is given takes where its sentence says nothing, for every browser of the cell:
+         *     whether Enter starts it, its mode, its place, the tick for "anything", how its picks look and whether its parts are
+         *     critical; the file a change is written to, and why none can be (``why_not_code`` ``no_layer``). Moves nothing.
+         */
+        get: operations["get_task_settings_v1_task_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change the cell's task settings, into its own layer (moves nothing)
+         * @description Write the settings named into the cell's own layer, all or none, and answer every setting as the tree now holds
+         *     it. One left out or null keeps its value. Nothing starts: the next task the console is given takes them.
+         *
+         *     Refused with nothing written: ``run_active`` (409); ``empty_patch`` (400) for a change that names none;
+         *     ``unknown_pose`` (422) for a place at a pose the tree holds none of; ``no_layer`` (422: the chain has no layer of the
+         *     cell's own, or its last is one git does not keep out); ``invalid_value`` (422, the loader's sentence) where the tree
+         *     refuses the result, which is rolled back.
+         */
+        patch: operations["patch_task_settings_v1_task_settings_patch"];
+        trace?: never;
+    };
     "/v1/runs/{run_id}/overlays/{n}": {
         parameters: {
             query?: never;
@@ -1313,14 +1321,12 @@ export interface paths {
          * Read a sentence into a task card (moves nothing)
          * @description The whole sentence goes to the VLM, which answers the object and the place as English phrases with the
          *     operator's own words, the one part the sentence singles out (``which``) and where the parts lie (``source``), a
-         *     taught pose by its NAME (a spoken label comes back as the name), the scope and where to go after. Each phrase
-         *     carries the route the detector would take, the object's that of the phrase its picks would ground as the task's
-         *     route guard judges it (the which, or the object where the parts lie); ``startable`` says whether the console may
-         *     start the task on the person's Enter without the card.
+         *     taught pose by its NAME (a spoken label comes back as the name), the scope and where to go after; ``startable``
+         *     says whether the console may start the task on the person's Enter without the card.
          *
-         *     A sorting sentence answers every rule (``rules``, the first the fields above), each phrase of each with its route as
-         *     the task route judges it; ``startable`` holds for a sort only where every rule is clean, and Enter then starts the
-         *     whole sort (``TaskIn.more_rules``), never its first rule alone.
+         *     A sorting sentence answers every rule (``rules``, the first the fields above); ``startable`` holds for a sort only
+         *     where every rule is clean, and Enter then starts the whole sort (``TaskIn.more_rules``), never its first rule
+         *     alone.
          *
          *     A known sentence is read by the table first, where the app config says so, and asks no model. A ``def`` route: a
          *     VLM cell's first command loads the model, several seconds, on the thread pool. Refused: ``run_active`` (409)
@@ -1343,8 +1349,8 @@ export interface paths {
         };
         /**
          * Is the command reader loaded?
-         * @description Where the reader stands (``ready``, ``idle``, ``loading``, ``missing``, ``failed``, ``not_configured``), and why.
-         *     It loads nothing.
+         * @description Where the reader stands (``ready``, ``idle``, ``loading``, ``missing``, ``failed``), and why. It loads
+         *     nothing.
          */
         get: operations["get_status_v1_commands_status_get"];
         put?: never;
@@ -1517,6 +1523,20 @@ export interface components {
             said?: string | null;
         };
         /**
+         * CameraPlaceSetting
+         * @description A target the camera finds, such as a bin, by the English phrase it looks for: at most what a card's field takes,
+         *     on one line, with no ``" #"``.
+         */
+        CameraPlaceSetting: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "camera";
+            /** Phrase */
+            phrase: string;
+        };
+        /**
          * CellFactsOut
          * @description What this cell is, read once: the cockpit's Advanced drawer, the stop buttons and the ready bar need it.
          */
@@ -1542,7 +1562,6 @@ export interface components {
              */
             hand_eye_warn_mm: number;
             brake?: components["schemas"]["BrakeFactsOut"];
-            payload?: components["schemas"]["PayloadFactsOut"];
             route: components["schemas"]["RouteFactsOut"];
             /**
              * Rehearsal
@@ -1584,12 +1603,6 @@ export interface components {
             needs_person: string;
             halted?: components["schemas"]["HaltStateOut"] | null;
             planner?: components["schemas"]["PlannerOut"];
-            /**
-             * Payload Model
-             * @default not_applicable
-             * @enum {string}
-             */
-            payload_model: "none" | "filter_only" | "planner_and_filter" | "not_applicable" | "unknown";
             recovery?: components["schemas"]["RecoveryOut"] | null;
             /** Jaws Confirmed At */
             jaws_confirmed_at?: number | null;
@@ -1627,16 +1640,16 @@ export interface components {
             /** Event Types */
             event_types: ("run_started" | "run_countdown" | "run_stop_requested" | "run_halt_requested" | "run_error" | "run_finished" | "pick.pick_started" | "pick.attempt_started" | "pick.perceived" | "pick.ranked" | "pick.no_candidate" | "pick.executing" | "pick.attempt_finished" | "pick.pick_finished" | "pick.cancelled" | "pick_result" | "task.pose_screened" | "task.survey_started" | "task.target_found" | "task.target_missing" | "task.part_started" | "task.nothing_found" | "task.carry_started" | "task.target_checked" | "task.target_lost" | "task.drop_planned" | "task.place_started" | "task.placed" | "task.place_failed" | "task.put_back" | "task.return_started" | "task.returned" | "task.return_failed" | "task.part_finished" | "task.rule" | "task.target_relocated" | "task.unsorted" | "home.started" | "home.arrived" | "home.refused" | "teach.free" | "teach.say" | "teach.outside" | "teach.inside" | "teach.time_warning" | "teach.holding_when_still" | "teach.holding" | "teach.screening" | "teach.saved" | "teach.refused" | "teach.not_saved" | "planner.starting" | "planner.ready" | "planner.failed" | "wave.started" | "wave.done" | "wave.refused" | "cell.jaws_question" | "cell.jaws_answered" | "cell.jaws_ended" | "cell.halted" | "cell.recovery" | "cell.recovery_ended" | "cell.acknowledged" | "cell.planner")[];
             /** Refusal Codes */
-            refusal_codes: ("bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed")[];
+            refusal_codes: ("bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "camera_target_unavailable" | "object_required" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed")[];
             /** Light Ids */
-            light_ids: ("robot" | "cameras" | "planner" | "gripper" | "carried_part" | "commands")[];
+            light_ids: ("robot" | "cameras" | "planner" | "gripper" | "commands")[];
             /** Light States */
             light_states: ("ok" | "wait" | "blocked" | "info")[];
             /** Light Codes */
-            light_codes: ("connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "modelled" | "not_modelled" | "not_applicable" | "idle" | "loading" | "missing" | "not_configured")[];
+            light_codes: ("connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "idle" | "loading" | "missing")[];
             /** Light Codes Of */
             light_codes_of: {
-                [key: string]: ("connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "modelled" | "not_modelled" | "not_applicable" | "idle" | "loading" | "missing" | "not_configured")[];
+                [key: string]: ("connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "idle" | "loading" | "missing")[];
             };
             /** Blocker Codes */
             blocker_codes: ("run_active" | "cell_not_cleared" | "restart_required" | "needs_person" | "part_still_held" | "jaws_question_pending")[];
@@ -1734,7 +1747,7 @@ export interface components {
         };
         /**
          * CommandPhraseOut
-         * @description One field the reader filled: the English phrase, the operator's words, and how the detector would route it.
+         * @description One field the reader filled: the English phrase and the operator's words.
          */
         CommandPhraseOut: {
             /** Phrase */
@@ -1746,7 +1759,6 @@ export interface components {
              * @default false
              */
             verified: boolean;
-            route?: components["schemas"]["RoutePreviewOut"] | null;
         };
         /**
          * CommandProvenanceIn
@@ -1824,7 +1836,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "ready" | "idle" | "loading" | "missing" | "failed" | "not_configured";
+            state: "ready" | "idle" | "loading" | "missing" | "failed";
             /** Model Id */
             model_id?: string | null;
             /** Weights Present */
@@ -1931,6 +1943,17 @@ export interface components {
             /** Name */
             name: string | null;
         };
+        /**
+         * DefaultPlaceSetting
+         * @description The cell's default place pose, ``robot.motion.default_place_pose``.
+         */
+        DefaultPlaceSetting: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "default";
+        };
         /** DetectorFactsOut */
         DetectorFactsOut: {
             /**
@@ -1938,11 +1961,6 @@ export interface components {
              * @default
              */
             backend: string;
-            /**
-             * Router Enabled
-             * @default false
-             */
-            router_enabled: boolean;
             /** Vlm Model Id */
             vlm_model_id?: string | null;
             /** Precision */
@@ -2044,7 +2062,7 @@ export interface components {
         };
         /**
          * HomeIn
-         * @description Where the Home button drives: ``home`` or a name in ``robot.named_poses``.
+         * @description Where the Home button drives: ``home`` or a name in ``robot.motion.named_poses``.
          */
         HomeIn: {
             /**
@@ -2141,7 +2159,7 @@ export interface components {
              * Id
              * @enum {string}
              */
-            id: "robot" | "cameras" | "planner" | "gripper" | "carried_part" | "commands";
+            id: "robot" | "cameras" | "planner" | "gripper" | "commands";
             /**
              * State
              * @enum {string}
@@ -2151,7 +2169,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "modelled" | "not_modelled" | "not_applicable" | "idle" | "loading" | "missing" | "not_configured";
+            code: "connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "idle" | "loading" | "missing";
             /**
              * Message
              * @default
@@ -2261,21 +2279,6 @@ export interface components {
             precaution: string;
         };
         /**
-         * PayloadFactsOut
-         * @description Whether the planner models a carried part; a task refuses to run unless it does (a real cuRobo arm).
-         */
-        PayloadFactsOut: {
-            /**
-             * Modelled
-             * @default false
-             */
-            modelled: boolean;
-            /** Declined Reason */
-            declined_reason?: string | null;
-            /** Length Mm */
-            length_mm?: number | null;
-        };
-        /**
          * PayloadOut
          * @description The payload the controller compensates for: it decides whether a freed arm floats, sinks or rises.
          */
@@ -2311,16 +2314,10 @@ export interface components {
          * @description Which perception stack this cell is configured for, and whether it can actually run.
          *
          *     Answers the question an operator asks before a pick: which models will this prompt touch? The VLM
-         *     route can be perfectly configured and still unrunnable because the weights are not on this box,
-         *     and nothing says so until the first complex prompt arrives. This checks presence without loading
-         *     anything.
+         *     can be perfectly configured and still unrunnable because the weights are not on this box, and
+         *     nothing says so until the first prompt arrives. This checks presence without loading anything.
          */
         PerceptionStackOut: {
-            /**
-             * Pipeline Configured
-             * @description False = the legacy keys decide everything (the byte-identical default).
-             */
-            pipeline_configured: boolean;
             /**
              * Kind
              * @description zero_shot | closed_set
@@ -2328,28 +2325,21 @@ export interface components {
             kind: string;
             /**
              * Backend
-             * @description grounded_sam | vlm | rtdetr
+             * @description vlm | rtdetr
              */
             backend: string;
-            /** Segmenter */
-            segmenter: string;
             /**
-             * Router Enabled
-             * @description True = each prompt is routed between the phrase grounder and the VLM.
+             * Segmenter
+             * @description sam2, the segmenter of every stack
              */
-            router_enabled: boolean;
+            segmenter: string;
             /** Vlm Model Id */
             vlm_model_id?: string | null;
             /**
              * Vlm Weights Present
-             * @description Whether the VLM checkpoint is in the local cache. None when no VLM is configured.
+             * @description Whether the VLM checkpoint is in the weights folder or the Hugging Face cache. None when the VLM is not the detector.
              */
             vlm_weights_present?: boolean | null;
-            /**
-             * Vlm On Unavailable
-             * @description refuse = reject the pick | degrade = fall back, loudly.
-             */
-            vlm_on_unavailable?: string | null;
             /**
              * Detail
              * @description One sentence an operator can act on.
@@ -2472,6 +2462,19 @@ export interface components {
             /** Pose */
             pose?: string | null;
         };
+        /**
+         * PosePlaceSetting
+         * @description A taught pose, by its name in ``robot.motion.named_poses``.
+         */
+        PosePlaceSetting: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "pose";
+            /** Pose */
+            pose: string;
+        };
         /** PosesOut */
         PosesOut: {
             home: components["schemas"]["PoseOut"];
@@ -2493,7 +2496,7 @@ export interface components {
              * Why Not Code
              * @default
              */
-            why_not_code: ("bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed") | "";
+            why_not_code: ("bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "camera_target_unavailable" | "object_required" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed") | "";
             /** Target File */
             target_file?: string | null;
         };
@@ -2756,49 +2759,6 @@ export interface components {
             sentence: string;
         };
         /**
-         * RoutePreviewOut
-         * @description What route a prompt would take, decided without a GPU, a model, or an image.
-         *
-         *     The router is pure text analysis, so this is free and instant. It exists because "why was that
-         *     pick slow?" and "why did it refuse?" are usually answered by the route, and an operator should be
-         *     able to find that out by typing the prompt rather than by running it.
-         */
-        RoutePreviewOut: {
-            /** Prompt */
-            prompt: string;
-            /**
-             * Route
-             * @description simple | vlm
-             */
-            route: string;
-            /**
-             * Reason
-             * @description the rule that decided it, e.g. non_english, negation
-             */
-            reason: string;
-            /**
-             * Description
-             * @description human-readable, e.g. 'vlm (non_english)'
-             */
-            description: string;
-            /**
-             * Normalized Prompt
-             * @description What the phrase grounder would actually receive. None on the VLM route, which gets the operator's words untouched.
-             */
-            normalized_prompt?: string | null;
-            /** Signals */
-            signals?: {
-                [key: string]: unknown;
-            };
-            /**
-             * Runnable
-             * @description False when this route is configured but cannot run on this box right now.
-             */
-            runnable: boolean;
-            /** Blocked Reason */
-            blocked_reason?: string | null;
-        };
-        /**
          * RunOut
          * @description One run. The counts are the honest summary; the event stream is the detail.
          */
@@ -2890,7 +2850,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed";
+            code: "bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "camera_target_unavailable" | "object_required" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed";
             /** Status */
             status: number;
         };
@@ -3152,6 +3112,66 @@ export interface components {
             place: components["schemas"]["PosePlaceIn"] | components["schemas"]["CameraPlaceIn"];
         };
         /**
+         * TaskSettingsIn
+         * @description A change of the cell's task settings: those named are written into the cell's own layer, all or none, and one
+         *     left out or null keeps its value.
+         */
+        TaskSettingsIn: {
+            /** Start */
+            start?: ("enter" | "card") | null;
+            /** Scope */
+            scope?: ("once" | "until_empty") | null;
+            /** Place */
+            place?: (components["schemas"]["DefaultPlaceSetting"] | components["schemas"]["PosePlaceSetting"] | components["schemas"]["CameraPlaceSetting"]) | null;
+            /** Anything */
+            anything?: boolean | null;
+            /** Looks */
+            looks?: ("first" | "when_needed" | "every") | null;
+            /** Critical Parts */
+            critical_parts?: boolean | null;
+        };
+        /**
+         * TaskSettingsOut
+         * @description The cell's task settings, ``runtime.task``: what every task the console is given takes where its sentence says
+         *     nothing, for every browser of the cell (the owner, 2026-10-16). None of them starts a task; a card may differ for
+         *     its own.
+         */
+        TaskSettingsOut: {
+            /**
+             * Start
+             * @enum {string}
+             */
+            start: "enter" | "card";
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "once" | "until_empty";
+            /** Place */
+            place: components["schemas"]["DefaultPlaceSetting"] | components["schemas"]["PosePlaceSetting"] | components["schemas"]["CameraPlaceSetting"];
+            /** Anything */
+            anything: boolean;
+            /**
+             * Looks
+             * @enum {string}
+             */
+            looks: "first" | "when_needed" | "every";
+            /** Critical Parts */
+            critical_parts: boolean;
+            /** Target File */
+            target_file?: string | null;
+            /**
+             * Why Not
+             * @default
+             */
+            why_not: string;
+            /**
+             * Why Not Code
+             * @default
+             */
+            why_not_code: ("bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "camera_target_unavailable" | "object_required" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed") | "";
+        };
+        /**
          * TeachIn
          * @description Teach one pose by hand. The names are checked by the route (``invalid_name``, ``invalid_label``).
          */
@@ -3224,8 +3244,8 @@ export interface components {
          * TelemetryOut
          * @description One live snapshot of the cell.
          *
-         *     Every measurement is optional because every one comes from an optional capability: sim, dummy and
-         *     KUKA advertise no force/torque or controller-status Protocol at all. A missing field means "this
+         *     Every measurement is optional because every one comes from an optional capability: the sim and the dummy
+         *     advertise no force/torque or controller-status Protocol at all. A missing field means "this
          *     driver does not offer it", which is not an error and does not appear in ``unavailable``.
          */
         TelemetryOut: {
@@ -3327,8 +3347,6 @@ export interface components {
             ready: boolean;
             /** Note */
             note: string;
-            /** Platforms */
-            platforms?: string[];
             /** Sdks */
             sdks?: components["schemas"]["SdkOut"][];
         };
@@ -3987,37 +4005,6 @@ export interface operations {
             };
         };
     };
-    preview_route_v1_diagnostics_route_get: {
-        parameters: {
-            query: {
-                prompt: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RoutePreviewOut"];
-                };
-            };
-            /** @description The one failure envelope. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorOut"];
-                };
-            };
-        };
-    };
     get_diagnostics_v1_diagnostics_get: {
         parameters: {
             query?: never;
@@ -4598,6 +4585,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_task_settings_v1_task_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskSettingsOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    patch_task_settings_v1_task_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskSettingsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskSettingsOut"];
                 };
             };
             /** @description The one failure envelope. */

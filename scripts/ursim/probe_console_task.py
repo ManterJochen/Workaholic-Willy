@@ -39,8 +39,8 @@ Not measured here, and said so when it runs:
 It refuses to run, before any task or Home, unless the console says ``controller_is_simulator is True``
 (``GET /v1/cell/status``): its controller's serial is URSim's placeholder and its address the loopback. A profile whose
 ``ur.ip`` is not the loopback is refused before anything connects. Everything it writes is a scratch layer in a copy of
-``config/`` in a temporary directory (``ursim,<model>,ursim_curobo,consoleprobe``: ``brake_on_halt``, the toggle, a
-declared ``payload.length_mm``, a home inside the workspace box, two taught poses); no shipped profile changes.
+``config/`` in a temporary directory (``ursim,<model>,ursim_curobo,consoleprobe``: the toggle, a
+declared ``motion.place.part_hang_mm``, a home inside the workspace box, two taught poses); no shipped profile changes.
 
 Start the CB3 controller as ``scripts/ursim/README.md`` says (UR10, the safety dialogs confirmed), with the cuRobo
 environment the planner's sidecar runs in on this machine, then:
@@ -99,10 +99,22 @@ _LAYER = """\
 robot:
   ur:
     model: "{model}"
-    brake_on_halt: true
-  # Tool down, the grasp centre (-164, -679, 392) mm on a UR10: inside the workspace box, which the shipped default home,
-  # the arm standing straight up, is not.
-  home_joint_positions_deg: [-90.0, -90.0, -100.0, -80.0, 90.0, 0.0]
+  motion:
+    # Tool down, the grasp centre (-164, -679, 392) mm on a UR10: inside the workspace box, which the shipped default
+    # home, the arm standing straight up, is not.
+    home_deg: [-90.0, -90.0, -100.0, -80.0, 90.0, 0.0]
+    named_poses:
+      drop:
+        joints_deg: [-70.0, -95.0, -110.0, -65.0, 90.0, 0.0]
+        label: "Ablage"
+        screen: clear
+      park:
+        joints_deg: [-100.0, -95.0, -110.0, -65.0, 90.0, 0.0]
+        label: "Parkposition"
+        screen: clear
+    default_place_pose: drop
+    place:
+      part_hang_mm: 40.0
   gripper:
     vendor: "jaw_io"
     model: robotiq_hande
@@ -117,20 +129,6 @@ robot:
       actuation: single_toggle
       close_output_pin: 0
       io_port: tool
-  safety:
-    planning_world:
-      payload:
-        length_mm: 40.0
-  named_poses:
-    drop:
-      joints_deg: [-70.0, -95.0, -110.0, -65.0, 90.0, 0.0]
-      label: "Ablage"
-      screen: clear
-    park:
-      joints_deg: [-100.0, -95.0, -110.0, -65.0, 90.0, 0.0]
-      label: "Parkposition"
-      screen: clear
-  default_place_pose: drop
 """
 
 
@@ -311,7 +309,7 @@ class Bed:
         from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
 
         _app, robot = self.console.resolved()
-        calculator, perception, _desk, _rigs, _calculators = build_rehearsal_components(robot, data_dir=self.tree)
+        calculator, perception, _desk, _rigs = build_rehearsal_components(robot, data_dir=self.tree)
         resolver = StaticCameraToBaseResolver(transform=Transform(
             translation_mm=np.array(CAMERA_MM), quaternion_xyzw=np.array([1.0, 0.0, 0.0, 0.0]),
             from_frame=Frame.CAMERA, to_frame=Frame.BASE))
@@ -367,16 +365,12 @@ class Bed:
                 return "the jaws check did not answer within 120 s"
             return "" if answered.status_code == 200 else str(answered.text)
         from api.readiness import controller_gate
-        from src.robot.core.arm_capabilities import CarriesPayload
-
         arm, hand = self.console.session.arm, self.console.session.gripper
         self.answers.script = list(answers)
         refused = hand.confirm_where_the_jaws_stand(reason, before_change=lambda: controller_gate(arm))
         if refused:
             return str(refused)
         self.console.stamp_jaws_open(opened="open_now" in answers)
-        if isinstance(arm, CarriesPayload):
-            arm.detach_payload()
         return ""
 
     def _answering_in_the_browser(self, request: Callable[[], Any], answers: list[str]) -> Any:
@@ -500,7 +494,7 @@ def _halt_on(bed: Bed, w: Watcher, check: Check, event_type: str, delay_s: float
     brake = bed.client.post("/v1/cell/brake")
     stopped = bed.finished(run_id)
     check.results["brake"] = brake.json() if brake.status_code == 200 else {"status": brake.status_code}
-    # The latch's own record of the move in flight: braked (brake_on_halt), ran out, or nothing was moving.
+    # The latch's own record of the move in flight: braked, ran out, or nothing was moving.
     check.results["latch"] = bed.client.get("/v1/cell").json().get("halted")
     check.results["stopped"] = {key: stopped[key] for key in ("stop_code", "stop_class", "holding", "error")}
     check.results["moving_routes_while_halted"] = {
@@ -705,18 +699,15 @@ def outside_the_window(q_rad: Sequence[float], lower_deg: Sequence[float], upper
 
 def where_it_starts(bed: Bed, q_rad: Sequence[float] | None) -> str:
     """Why the checks cannot start where the arm stands, or ``""``: the window the console's joint guard keeps every
-    path inside (``safety.joint_limits``, half a turn either side of the home the built arm states), read with the
+    path inside (half a turn either side of the home the built arm states, as every real arm keeps), read with the
     guard's own limits and margin. A probe started outside it would have every path refused, so C1 would end
     ``failed_in_a_row`` and its stop record would refuse C2-C4."""
     from src.robot.safety.joint_limits import JointLimitGuard, stated_home_rad
 
     if q_rad is None:
         return "the second RTDE connection has read no joints yet"
-    _app, robot = bed.console.resolved()
-    if not robot.safety.joint_limits.enforce:
-        return ""
     arm = bed.console.session.arm
-    guard = JointLimitGuard(robot.safety.joint_limits)
+    guard = JointLimitGuard()
     limits = guard.limits_for_arm(arm)
     if limits is None:
         return ""

@@ -21,6 +21,7 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.grasping.collision.support_resolver import bench_height_mm
 from src.config.schema.robot import RobotConfig
 from src.camera.setup.image_taking.frames import RGBDFrame
 from src.geometry import Frame, Pose, to_rotation_matrix
@@ -55,11 +56,14 @@ def _tall_block() -> np.ndarray:
     return _cloud(x=(380.0, 420.0), y=(-20.0, 20.0), height_mm=80.0)
 
 
-def _flat_block() -> np.ndarray:
-    """60 x 60 x 30 mm: too low for a vertical jaw to clear the table, so its grasps come from the side. 40 mm was low
-    enough until the fingers stood where the hand puts them (2026-10-05); since, a vertical jaw takes a 40 mm block at
-    34 mm, and from 35 mm down the grasps come from the side."""
-    return _cloud(x=(400.0, 460.0), y=(-30.0, 30.0), height_mm=30.0)
+def _leaning() -> tuple[Any, ...]:
+    """The grasps of a cylinder 12 mm off a wall, side approaches on and a camera high over it
+    (``test_a_side_grasp_wins_where_it_keeps_more_room``): its best leans away from the wall. The part's body leans only
+    where a ray of a frame vouches for the way in, so a cloud with no frame (``Scene.from_cloud``) is grasped straight
+    down; a flat block, which SFE's prism once grasped from the side, is too (2026-10-16)."""
+    from tests.test_a_side_grasp_wins_where_it_keeps_more_room import _side  # noqa: PLC0415
+
+    return tuple(_side(12.0, max_candidates=6))
 
 
 class _TracingArm(DummyRobotArm):
@@ -89,10 +93,11 @@ class ASceneCandidateGivesItsPoseTests(unittest.TestCase):
     """Fails with AttributeError where ``SupportFootprintCandidate`` has no ``pose``."""
 
     def test_every_candidate_gives_a_base_pose_whose_z_is_its_approach_and_whose_x_its_closing_axis(self) -> None:
-        for name, cloud in (("tall", _tall_block()), ("flat", _flat_block())):
-            grasps = Scene.from_cloud(cloud, support_height_mm=0.0).grasps(max_candidates=6)
-            self.assertTrue(grasps.candidates, f"{name}: the fixture must yield candidates\n{grasps.render()}")
-            for index, candidate in enumerate(grasps.candidates):
+        tall = Scene.from_cloud(_tall_block(), support_height_mm=0.0).grasps(max_candidates=6)
+        self.assertTrue(tall.candidates, f"tall: the fixture must yield candidates\n{tall.render()}")
+        for name, candidates in (("tall", tall.candidates), ("leaning", _leaning())):
+            self.assertTrue(candidates, f"{name}: the fixture must yield candidates")
+            for index, candidate in enumerate(candidates):
                 with self.subTest(block=name, candidate=index):
                     pose = candidate.pose()
                     self.assertIsInstance(pose, Pose)
@@ -106,10 +111,10 @@ class ASceneCandidateGivesItsPoseTests(unittest.TestCase):
     def test_the_fixtures_cover_a_vertical_and_a_side_approach(self) -> None:
         """The control on the test above: both approach families are exercised, not one of them twice."""
         tall = Scene.from_cloud(_tall_block(), support_height_mm=0.0).grasps().best
-        flat = Scene.from_cloud(_flat_block(), support_height_mm=0.0).grasps().best
-        assert tall is not None and flat is not None
+        assert tall is not None
         np.testing.assert_allclose(tall.pose().to_matrix()[:3, 2], (0.0, 0.0, -1.0), atol=1e-9)
-        self.assertLess(abs(float(flat.pose().to_matrix()[2, 2])), 0.5, "the flat block's best grasp comes from the side")
+        self.assertLess(abs(float(_leaning()[0].pose().to_matrix()[2, 2])), 0.5,
+                        "the cylinder's best grasp beside the wall comes from the side")
 
 
 class RobotPickTakesTheCandidateAsItIsTests(unittest.TestCase):
@@ -234,21 +239,23 @@ class ALocatedObjectReachesThePickTests(unittest.TestCase):
     def test_the_scene_is_the_objects_surface_with_the_other_objects_as_obstacles(self) -> None:
         located = _two_objects()
         self.assertEqual(["cube", "box"], [obj.label for obj in located.objects])
-        # The other objects alone, as before the cell fixes: ``robot.grasping.scene_obstacles`` off.
         config = RobotConfig()
-        config = config.model_copy(update={"grasping": config.grasping.model_copy(update={"scene_obstacles": False})})
 
         scene = located.scene(0, config)
 
         np.testing.assert_array_equal(scene.target_points_base_mm, located.objects[0].points_base_mm)
         assert scene.obstacle_points_base_mm is not None
-        np.testing.assert_array_equal(scene.obstacle_points_base_mm, located.objects[1].points_base_mm)
-        self.assertEqual(float(config.grasping.support.height_mm), scene.support_height_mm)
-        np.testing.assert_array_equal(located.scene(1, config).obstacle_points_base_mm,
-                                      located.objects[0].points_base_mm)
+        # The other objects first; what the frame shows beside the object follows them (the next test).
+        others = located.objects[1].points_base_mm
+        np.testing.assert_array_equal(scene.obstacle_points_base_mm[:others.shape[0]], others)
+        self.assertEqual(bench_height_mm(config), scene.support_height_mm)
+        first = located.objects[0].points_base_mm
+        beside_the_box = located.scene(1, config).obstacle_points_base_mm
+        assert beside_the_box is not None
+        np.testing.assert_array_equal(beside_the_box[:first.shape[0]], first)
 
-    def test_with_the_scene_on_the_frame_beside_the_object_joins_the_other_objects(self) -> None:
-        """The cell fixes' Track A, on by default: the other objects first, then what the frame shows beside the object
+    def test_the_frame_beside_the_object_joins_the_other_objects(self) -> None:
+        """The cell fixes' Track A, every cell's: the other objects first, then what the frame shows beside the object
         that nobody segmented, by the planner world's rules."""
         located = _two_objects()
         others = located.objects[1].points_base_mm

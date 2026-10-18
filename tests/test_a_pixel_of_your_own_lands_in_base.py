@@ -283,10 +283,8 @@ class _Arm(DummyRobotArm):
 
 
 def _robot(arm: Any) -> SimpleNamespace:
-    """A connected robot as a capture reads it: its arm, and the tool frame and retakes of its robot section."""
-    section = SimpleNamespace(gripper=SimpleNamespace(tool_frame=_TOOL_FRAME),
-                              safety=SimpleNamespace(planning_world=SimpleNamespace(
-                                  perceived=SimpleNamespace(fresh_frame_attempts=2))))
+    """A connected robot as a capture reads it: its arm, and the tool frame of its robot section."""
+    section = SimpleNamespace(gripper=SimpleNamespace(tool_frame=_TOOL_FRAME))
     return SimpleNamespace(arm=arm, robot_config=section)
 
 

@@ -647,18 +647,18 @@ class TheCellsOwnLayerKeepsThePoseTests(_Case):
         self.assertEqual("saved", taught.outcome, taught.render())
         self.assertTrue(Path(taught.written).samefile(self.cell))
         robot = self.robot()
-        pose = robot.named_poses["drop_left"]
+        pose = robot.motion.named_poses["drop_left"]
         self.assertEqual([round(v, 4) + 0.0 for v in LOOK_1_DEG], list(pose.joints_deg))
         self.assertEqual(("Ablage links", "clear", ""), (pose.label, pose.screen, pose.note))
         assert taught.pose is not None
         self.assertEqual(taught.pose.taught_at, pose.taught_at)
-        self.assertEqual("drop_left", robot.default_place_pose)
+        self.assertEqual("drop_left", robot.motion.default_place_pose)
 
     def test_a_band_pose_keeps_the_screens_own_words_on_one_line(self) -> None:
         self.arm(screen=BAND)
         taught = self.teach(store=ProfilePoseStore(self.tree, "drop_left", "Ablage links"))
         self.assertEqual("saved", taught.outcome, taught.render())
-        pose = self.robot().named_poses["drop_left"]
+        pose = self.robot().motion.named_poses["drop_left"]
         self.assertEqual("band", pose.screen)
         for part in ("cushion band", "forearm|wrist_2", "Nearby, both clear"):
             self.assertIn(part, pose.note)
@@ -701,8 +701,8 @@ class TheCellsOwnLayerKeepsThePoseTests(_Case):
         """A pose answers to its name and to its label (a pose written by hand with no label is said by its name), and
         the command reader hands a pose on by the word a person said: two poses answering to one word could send a part
         to either (review of 2026-10-01)."""
-        self.cell.write_text("robot:\n  named_poses:\n    park:\n"
-                             "      joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n", encoding="utf-8")
+        self.cell.write_text("robot:\n  motion:\n    named_poses:\n      park:\n"
+                             "        joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n", encoding="utf-8")
         for name, label, code in (("drop", "Park", "invalid_label"),     # the label is the unlabelled pose's word
                                   ("Park", "Parken", "invalid_name"),    # the name differs from 'park' only in case
                                   ("drop", "park", "invalid_label")):
@@ -741,8 +741,8 @@ class TheCellsOwnLayerKeepsThePoseTests(_Case):
     def test_a_write_the_loader_refuses_comes_back_as_the_reason_with_the_file_untouched(self) -> None:
         """A pose written by hand in block style cannot be rewritten line by line: the teach ends not saved, saying the
         loader's own words, and the cell's file keeps every byte."""
-        self.cell.write_text("robot:\n  named_poses:\n    drop_left:\n      joints_deg:\n"
-                             + "".join(f"        - {value}\n" for value in (-60.0, -95.0, -120.0, -55.0, 90.0, 0.0)),
+        self.cell.write_text("robot:\n  motion:\n    named_poses:\n      drop_left:\n        joints_deg:\n"
+                             + "".join(f"          - {value}\n" for value in (-60.0, -95.0, -120.0, -55.0, 90.0, 0.0)),
                              encoding="utf-8")
         before = self.cell.read_bytes()
         self.arm()
@@ -754,7 +754,7 @@ class TheCellsOwnLayerKeepsThePoseTests(_Case):
     def test_a_tree_that_does_not_load_is_left_to_the_pose_doors_own_refusal(self) -> None:
         """Nothing can be checked against a tree that does not load: the store is made, and the write that follows is
         refused with the loader's own words, the file untouched."""
-        self.cell.write_text("robot:\n  named_poses: [1, 2]\n", encoding="utf-8")
+        self.cell.write_text("robot:\n  motion:\n    named_poses: [1, 2]\n", encoding="utf-8")
         before = self.cell.read_bytes()
         store = ProfilePoseStore(self.tree, "drop_left", "Ablage links")
         self.assertTrue(store.write(TaughtPose.from_sample("drop_left", _sample(LOOK_1_DEG)), CLEAR))

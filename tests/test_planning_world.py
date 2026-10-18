@@ -1,8 +1,9 @@
 """The cell's static geometry on its way to the trajectory planner.
 
-Two silent failures are what this covers. A duplicate NAME collapses two obstacles into one, because
-the planner keys its world by name. And a registration the planner only partly confirms reads as
-success at every layer above, while the planner routes straight through whatever it never received.
+What a cell declares to the planner is its bench and its meshes, wherever it declares the bench; the
+guard's fixtures stay the guard's (2026-10-17). The silent failure this covers: a registration the
+planner only partly confirms reads as success at every layer above, while the planner routes
+straight through whatever it never received, and every cell refuses it.
 
 The arms are ``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``), and the planner
 glue is built over the fake too: what reaches the planner is the planning half's, whichever vendor is below it.
@@ -13,7 +14,6 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
-import numpy as np
 import pytest
 
 from src.config.schema.robot import (
@@ -24,10 +24,9 @@ from src.config.schema.robot import (
 from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from src.robot.safety.planning import CuroboUnavailableError
 from src.robot.safety.planning.world import (
-    DEFAULT_MAX_CUBOIDS,
-    PlanningWorldError,
     build_planner_cuboids,
     describe_planner_world,
+    planner_cuboid,
 )
 
 from src.config.arms import load_arm
@@ -44,31 +43,32 @@ def _bench(height_mm: float = 0.0, thickness_mm: float = 50.0) -> SupportPlaneCo
     )
 
 
-def _wall(name: str, y_mm: float) -> FixtureBoxConfig:
-    return FixtureBoxConfig(
-        name=name, center_mm=(400.0, y_mm, 75.0), half_extents_mm=(150.0, 8.0, 75.0)
-    )
+def _wall(name: str, y_mm: float) -> dict:
+    """A wall a caller hands the planner itself, as the glue's ``set_world`` takes it."""
+    return planner_cuboid(name, (400.0, y_mm, 75.0), (300.0, 16.0, 150.0))
 
 
-def test_absent_or_disabled_registers_nothing() -> None:
+def test_no_bench_registers_nothing() -> None:
+    # Registering a world REPLACES the planner's own, boot table included. A cell that declares no
+    # bench would therefore delete the only surface the planner knows about: it registers nothing.
     assert build_planner_cuboids(None) == []
     assert build_planner_cuboids(PlanningWorldConfig()) == []
-    assert build_planner_cuboids(PlanningWorldConfig(), [_wall("w", 0.0)]) == []
 
 
-def test_enabling_without_a_bench_is_refused_at_load() -> None:
-    # Registering a world REPLACES the planner's own, boot table included. Enabling this block
-    # without declaring a bench would therefore delete the only surface the planner knows about.
-    with pytest.raises(ValueError, match="support_plane"):
-        PlanningWorldConfig(enabled=True)
+def test_the_old_switch_is_refused_at_load_and_names_the_bench() -> None:
+    """``enabled`` left on 2026-10-17: the world is on wherever the bench is declared."""
+    from src.config.schema._removed import removed_key_sentence
+
+    with pytest.raises(ValueError):
+        PlanningWorldConfig.model_validate({"enabled": True})
+    said = removed_key_sentence("robot.safety.planning_world.enabled")
+    assert said is not None and "support_plane" in said
 
 
 def test_the_support_height_is_the_TOP_surface() -> None:
     """The number an operator can measure is the surface, not the centre of a slab."""
     for thickness in (20.0, 50.0, 200.0):
-        cuboids = build_planner_cuboids(
-            PlanningWorldConfig(enabled=True, support_plane=_bench(-5.0, thickness))
-        )
+        cuboids = build_planner_cuboids(PlanningWorldConfig(support_plane=_bench(-5.0, thickness)))
         (plane,) = cuboids
         centre_z_mm = 1000.0 * plane["pose"][2]
         top_mm = centre_z_mm + 1000.0 * plane["dims_m"][2] / 2.0
@@ -76,9 +76,7 @@ def test_the_support_height_is_the_TOP_surface() -> None:
 
 
 def test_units_and_quaternion_order_flip_at_this_boundary() -> None:
-    (plane,) = build_planner_cuboids(
-        PlanningWorldConfig(enabled=True, support_plane=_bench(0.0, 50.0))
-    )
+    (plane,) = build_planner_cuboids(PlanningWorldConfig(support_plane=_bench(0.0, 50.0)))
     assert plane["dims_m"] == pytest.approx([1.6, 1.6, 0.05])
     # WXYZ identity, not the stack's XYZW.
     assert plane["pose"][3:] == [1.0, 0.0, 0.0, 0.0]
@@ -86,9 +84,7 @@ def test_units_and_quaternion_order_flip_at_this_boundary() -> None:
 
 def test_the_bench_defaults_to_sitting_under_the_robot() -> None:
     """Every configuration written before `center_mm` existed meant this box."""
-    (plane,) = build_planner_cuboids(
-        PlanningWorldConfig(enabled=True, support_plane=_bench(0.0, 50.0))
-    )
+    (plane,) = build_planner_cuboids(PlanningWorldConfig(support_plane=_bench(0.0, 50.0)))
     assert plane["pose"][:2] == pytest.approx([0.0, 0.0])
 
 
@@ -97,7 +93,7 @@ def test_the_bench_can_sit_where_the_bench_is() -> None:
     plane_cfg = SupportPlaneConfig(
         height_mm=0.0, extent_mm=(600.0, 800.0), thickness_mm=50.0, center_mm=(525.0, 0.0)
     )
-    (plane,) = build_planner_cuboids(PlanningWorldConfig(enabled=True, support_plane=plane_cfg))
+    (plane,) = build_planner_cuboids(PlanningWorldConfig(support_plane=plane_cfg))
     assert 1000.0 * plane["pose"][0] == pytest.approx(525.0)
     assert 1000.0 * plane["pose"][1] == pytest.approx(0.0)
     # The slab now spans x = 225 to 825, which is the bench, rather than -300 to 300, which is
@@ -112,7 +108,8 @@ def test_the_bench_covers_every_fixture_standing_on_it() -> None:
 
     A cell that declares a bin at the far end of a bench and a slab centred on the robot gets a
     planner world where the bin floats: the planner will happily route a link through the space
-    where the table is, because in its world there is no table there.
+    where the table is, because in its world there is no table there. The fixture is the guard's;
+    the slab under it is the planner's.
     """
     bench = SupportPlaneConfig(
         height_mm=0.0, extent_mm=(600.0, 800.0), thickness_mm=50.0, center_mm=(525.0, 0.0)
@@ -120,59 +117,21 @@ def test_the_bench_covers_every_fixture_standing_on_it() -> None:
     bin_wall = FixtureBoxConfig(
         name="bin_far", center_mm=(700.0, 0.0, 75.0), half_extents_mm=(100.0, 200.0, 75.0)
     )
-    plane, fixture = build_planner_cuboids(
-        PlanningWorldConfig(enabled=True, support_plane=bench), [bin_wall]
-    )
+    (plane,) = build_planner_cuboids(PlanningWorldConfig(support_plane=bench))
 
     for axis in (0, 1):
         plane_lo = plane["pose"][axis] - plane["dims_m"][axis] / 2.0
         plane_hi = plane["pose"][axis] + plane["dims_m"][axis] / 2.0
-        fixture_lo = fixture["pose"][axis] - fixture["dims_m"][axis] / 2.0
-        fixture_hi = fixture["pose"][axis] + fixture["dims_m"][axis] / 2.0
+        fixture_lo = (bin_wall.center_mm[axis] - bin_wall.half_extents_mm[axis]) / 1000.0
+        fixture_hi = (bin_wall.center_mm[axis] + bin_wall.half_extents_mm[axis]) / 1000.0
         assert plane_lo <= fixture_lo and fixture_hi <= plane_hi, (
             f"axis {axis}: the fixture stands off the declared bench"
         )
 
 
-def test_a_fixture_arrives_as_full_extents_at_its_centre() -> None:
-    cfg = PlanningWorldConfig(enabled=True, support_plane=_bench())
-    _, wall = build_planner_cuboids(cfg, [_wall("left", -180.0)])
-    assert wall["name"] == "left"
-    assert wall["dims_m"] == pytest.approx([0.300, 0.016, 0.150])
-    assert wall["pose"][:3] == pytest.approx([0.400, -0.180, 0.075])
-
-
-def test_include_fixtures_false_keeps_only_the_bench() -> None:
-    cfg = PlanningWorldConfig(enabled=True, support_plane=_bench(), include_fixtures=False)
-    assert [c["name"] for c in build_planner_cuboids(cfg, [_wall("left", -180.0)])] == [
-        "support_plane"
-    ]
-
-
-def test_a_zero_extent_fixture_is_skipped() -> None:
-    """The schema documents an all-zero fixture as the way to disable one without deleting it."""
-    cfg = PlanningWorldConfig(enabled=True, support_plane=_bench())
-    disabled = FixtureBoxConfig(name="off", half_extents_mm=(0.0, 0.0, 0.0))
-    assert [c["name"] for c in build_planner_cuboids(cfg, [disabled])] == ["support_plane"]
-
-
-def test_duplicate_names_are_refused_because_they_would_collapse() -> None:
-    cfg = PlanningWorldConfig(enabled=True, support_plane=_bench())
-    with pytest.raises(PlanningWorldError, match="more than once"):
-        build_planner_cuboids(cfg, [_wall("wall", -180.0), _wall("wall", 180.0)])
-
-
-def test_a_world_larger_than_the_reserved_slots_is_refused() -> None:
-    cfg = PlanningWorldConfig(enabled=True, support_plane=_bench())
-    many = [_wall(f"w{i}", float(i)) for i in range(DEFAULT_MAX_CUBOIDS)]
-    with pytest.raises(PlanningWorldError, match="collision slots"):
-        build_planner_cuboids(cfg, many)
-    assert len(build_planner_cuboids(cfg, many[:-1])) == DEFAULT_MAX_CUBOIDS
-
-
 def test_the_description_is_millimetres_for_a_human() -> None:
-    cfg = PlanningWorldConfig(enabled=True, support_plane=_bench(-5.0))
-    text = describe_planner_world(build_planner_cuboids(cfg, [_wall("left", -180.0)]))
+    cfg = PlanningWorldConfig(support_plane=_bench(-5.0))
+    text = describe_planner_world([*build_planner_cuboids(cfg), _wall("left", -180.0)])
     assert "2 planner obstacle(s)" in text
     assert "support_plane" in text and "left" in text
     assert "1600.0" in text  # metres would read 1.6
@@ -224,8 +183,9 @@ def _zero() -> Any:
 
 
 def _cuboids(n: int = 2) -> list[dict]:
-    cfg = PlanningWorldConfig(enabled=True, support_plane=_bench())
-    return build_planner_cuboids(cfg, [_wall(f"w{i}", 100.0 * i) for i in range(n - 1)])
+    """The declared bench and ``n - 1`` walls, the world a planner glue is handed."""
+    cfg = PlanningWorldConfig(support_plane=_bench())
+    return [*build_planner_cuboids(cfg), *(_wall(f"w{i}", 100.0 * i) for i in range(n - 1))]
 
 
 def test_the_world_is_registered_once_not_per_move() -> None:
@@ -273,23 +233,12 @@ def test_a_partial_registration_refuses_the_SECOND_move_too() -> None:
         assert len(client.worlds) == attempt, "each refused move must try to register again"
 
 
-def test_a_partial_registration_can_be_accepted_deliberately() -> None:
-    client = _FakeClient([[0.0] * 6, [0.1] * 6], confirm=1)
-    planner = CuroboPlanner(
-        _zero(),
-        client_factory=lambda: client,
-        world_cuboids=_cuboids(3),
-        require_registration=False,
-        joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
-    )
-    assert planner.plan_joint(_GOAL) is not None
-
-
 def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
     """The wiring, not the pieces. A block nothing reads is the failure mode this guards.
 
     `robot.grasping.calculator` sat inert for weeks because every call site named the analytic class
-    directly, and the flag guard could not see it. Same shape here: assert the declared boxes arrive.
+    directly, and the flag guard could not see it. Same shape here: assert the declared bench arrives,
+    and the guard's own fixture does not (2026-10-17: a cell's fixtures stay the guard's).
     """
     from src.config.schema.robot import RobotConfig
 
@@ -297,13 +246,14 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
         "vendor": "ur",
         "gripper": {"model": "robotiq_2f85"},
         "safety": {
-            "payload": {"enforce": False},
             "self_collision": {
                 # The margin every cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
                 # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
                 "planner_margin_mm": 4.0,
-                # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
+                # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does, and 10 from what the
+                # camera saw: 4 over the 6 mm every camera world grows its boxes by.
                 "min_distance_mm": 10.0,
+                "perceived_min_distance_mm": 4.0,
                 "fixtures": [{
                     "name": "bin_wall_left",
                     "center_mm": [400.0, -180.0, 75.0],
@@ -311,7 +261,6 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
                 }],
             },
             "planning_world": {
-                "enabled": True,
                 "support_plane": {"height_mm": -5.0, "extent_mm": [1600.0, 1600.0],
                                   "thickness_mm": 50.0},
             },
@@ -322,10 +271,11 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
     arm._curobo_client_factory = lambda: client  # type: ignore[assignment]
     arm._curobo_planner().plan_joint(_GOAL)
 
-    assert [c["name"] for c in client.worlds[0]] == ["support_plane", "bin_wall_left"]
+    assert [c["name"] for c in client.worlds[0]] == ["support_plane"]
 
-    # And with the block off, nothing is registered: the byte-identical path.
-    off = RobotConfig.model_validate({"vendor": "ur", "safety": {"payload": {"enforce": False}, "self_collision": {"planner_margin_mm": 4.0}}, "gripper": {"model": "robotiq_2f85"}})
+    # And with no bench declared, nothing is registered: the byte-identical path.
+    off = RobotConfig.model_validate({"vendor": "ur", "safety": {"self_collision": {"planner_margin_mm": 4.0}},
+                                      "gripper": {"model": "robotiq_2f85"}})
     quiet = _FakeClient([[0.0] * 6])
     arm_off = planned_arm(off, transport=_zero())
     arm_off._curobo_client_factory = lambda: quiet  # type: ignore[assignment]
@@ -359,7 +309,7 @@ def test_an_injected_factory_still_gets_the_reservation() -> None:
     """Every test injects its own client factory, so the reservation cannot live only in the default one."""
     from src.robot.safety.planning.reservation import PlannerReservation
 
-    reservation = PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid="", sphere_slots=0)
+    reservation = PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid="")
     client = _ReservingClient([[0.0] * 6, [0.1] * 6])
 
     CuroboPlanner(_zero(), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
@@ -377,12 +327,10 @@ def test_a_declared_mesh_is_registered_without_a_live_world() -> None:
         "vendor": "ur",
         "gripper": {"model": "robotiq_2f85"},
         "safety": {
-            "payload": {"enforce": False},
             # The margin every cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
             # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
             "self_collision": {"planner_margin_mm": 4.0},
             "planning_world": {
-                "enabled": True,
                 "support_plane": {"height_mm": -5.0, "extent_mm": [1600.0, 1600.0],
                                   "thickness_mm": 50.0},
                 "meshes": [{"name": "tote", "path": "assets/tote.obj", "center_mm": [450.0, 0.0, 0.0]}],
@@ -411,13 +359,12 @@ def test_the_preflight_reads_the_fixture_list_where_it_actually_lives() -> None:
         "vendor": "ur",
         "safety": {
             # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
-            "self_collision": {"min_distance_mm": 10.0, "fixtures": [{
+            "self_collision": {"min_distance_mm": 10.0, "perceived_min_distance_mm": 4.0, "fixtures": [{
                 "name": "bench_leg",
                 "center_mm": [0.0, 0.0, 0.0],
                 "half_extents_mm": [50.0, 50.0, 300.0],
             }]},
             "planning_world": {
-                "enabled": True,
                 "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0],
                                   "thickness_mm": 50.0},
             },
@@ -426,12 +373,12 @@ def test_the_preflight_reads_the_fixture_list_where_it_actually_lives() -> None:
     rows = {c.name: c for c in run_config_preflight(declared).checks}
     assert "bench_leg" in rows["fixtures"].detail
     assert "support_plane" in rows["planning world"].detail
-    assert "bench_leg" in rows["planning world"].detail
+    assert "bench_leg" not in rows["planning world"].detail, "a fixture is the guard's, not the planner's"
 
     bare = RobotConfig.model_validate({"vendor": "ur"})
     bare_rows = {c.name: c for c in run_config_preflight(bare).checks}
     assert "none declared" in bare_rows["fixtures"].detail
-    assert "not declared" in bare_rows["planning world"].detail
+    assert "no bench declared" in bare_rows["planning world"].detail
 
 
 # --------------------------------------------------------------------------------------------
@@ -444,9 +391,8 @@ def _preflight(*, fixtures=()):
     from src.robot.safety import SafetyPreflight
 
     safety = RobotSafetyConfig.model_validate({
-        "payload": {"enforce": False},
         # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
-        "self_collision": {"min_distance_mm": 10.0, "fixtures": [
+        "self_collision": {"min_distance_mm": 10.0, "perceived_min_distance_mm": 4.0, "fixtures": [
             {"name": f.name, "center_mm": list(f.center_mm),
              "half_extents_mm": list(f.half_extents_mm)} for f in fixtures
         ]},
@@ -472,9 +418,12 @@ def _samples(*configs):
 
 
 class _Arm:
+    from src.config.arms import described_home
     from src.robot.core.capabilities import RobotCapabilities
 
     capabilities = RobotCapabilities(vendor="ur", model="ur5e", has_native_fk=True, dof=6, controller=None, owns_a_controller=True)
+    #: The home it drives to, its description's, which the joint-limit guard centres every real arm's window on.
+    home_joint_positions = described_home("ur5e")
 
 
 #: A configuration that folds a finger into the forearm. The exact-mesh backend refuses it with
@@ -545,199 +494,6 @@ def test_a_declared_fixture_is_checked_along_the_path_too() -> None:
     )
     preflight = _preflight(fixtures=(post,))
     assert preflight.gate_joint_path(_samples(_CLEAR), arm=_Arm()) is not None
-
-
-# --------------------------------------------------------------------------------------------
-# The carried part. The planner's model used to end at the gripper.
-# --------------------------------------------------------------------------------------------
-
-
-def _ur5e_config_path() -> str:
-    # Named by arm and hand from Step 4i; skips until the box rebuilds its descriptors.
-    return "ext_deps/curobo/curobo/content/configs/robot/ur5e_robotiq_2f85.yml"
-
-
-def test_the_derived_config_declares_a_payload_link_on_the_tool_frame() -> None:
-    import yaml
-
-    from src.robot.safety.planning._curobo_attach import (
-        ATTACHED_LINK_NAME, apply_attached_object_link,
-    )
-
-    src = pathlib.Path(_ur5e_config_path())
-    if not src.is_file():
-        pytest.skip("cuRobo content not installed on this box")
-    config = yaml.safe_load(src.read_text(encoding="utf-8"))
-    derived, added = apply_attached_object_link(config, spheres=16)
-    assert added
-    kin = derived["robot_cfg"]["kinematics"]
-    assert kin["collision_link_names"][-1] == ATTACHED_LINK_NAME
-    assert kin["extra_collision_spheres"][ATTACHED_LINK_NAME] == 16
-    assert kin["extra_links"][ATTACHED_LINK_NAME]["parent_link_name"] == "tool0"
-    # The source is untouched: the transform copies.
-    assert ATTACHED_LINK_NAME not in config["robot_cfg"]["kinematics"]["collision_link_names"]
-
-
-def test_the_payload_is_ignored_against_the_links_that_HOLD_it() -> None:
-    """Without this the planner refuses everything.
-
-    MEASURED on ur5e.yml against the real planner: with the link derived but no ignore entries,
-    carrying a 10 mm cube turned a 61-waypoint plan into no plan. That is not the part meeting the
-    world, it is the part permanently inside the gripper holding it.
-    """
-    from src.robot.safety.planning._curobo_attach import (
-        ATTACHED_LINK_NAME, apply_attached_object_link,
-    )
-
-    config = {"robot_cfg": {"kinematics": {
-        "tool_frames": ["tool0"],
-        "collision_link_names": ["wrist_3_link", "tool0"],
-        "self_collision_ignore": {"wrist_3_link": ["tool0"], "wrist_2_link": ["tool0"]},
-    }}}
-    derived, added = apply_attached_object_link(config, spheres=8)
-    assert added
-    ignore = derived["robot_cfg"]["kinematics"]["self_collision_ignore"]
-    # The parent, and everything the config itself already calls adjacent to the parent.
-    assert ATTACHED_LINK_NAME in ignore["tool0"]
-    assert ATTACHED_LINK_NAME in ignore["wrist_3_link"]
-    assert ATTACHED_LINK_NAME in ignore["wrist_2_link"]
-
-
-def test_a_config_that_already_declares_the_link_is_left_alone() -> None:
-    """franka.yml ships one. A robot whose author declared it keeps exactly what they wrote."""
-    from src.robot.safety.planning._curobo_attach import apply_attached_object_link
-
-    config = {"robot_cfg": {"kinematics": {
-        "tool_frames": ["panda_hand"],
-        "collision_link_names": ["panda_hand", "attached_object"],
-    }}}
-    derived, added = apply_attached_object_link(config, spheres=16)
-    assert added is False
-    assert derived is config
-
-
-def test_zero_slots_is_the_byte_identical_path() -> None:
-    from src.robot.safety.planning._curobo_attach import apply_attached_object_link
-
-    config = {"robot_cfg": {"kinematics": {"tool_frames": ["tool0"], "collision_link_names": []}}}
-    derived, added = apply_attached_object_link(config, spheres=0)
-    assert added is False
-    assert derived is config
-
-
-def test_a_config_with_no_tool_frame_is_refused_rather_than_guessed() -> None:
-    from src.robot.safety.planning._curobo_attach import apply_attached_object_link
-
-    config = {"robot_cfg": {"kinematics": {"collision_link_names": ["link"]}}}
-    assert apply_attached_object_link(config, spheres=16)[1] is False
-
-
-def test_the_arm_turns_a_jaw_WIDTH_into_a_box_the_planner_can_use() -> None:
-    """The jaw opening measures the part at the grasp LINE. The length is a declared worst case."""
-    from src.config.schema.robot import RobotConfig
-
-    config = RobotConfig.model_validate({
-        "vendor": "ur",
-        "motion": {"planner": "curobo"},
-        "gripper": {"model": "robotiq_2f85"},
-        "safety": {
-            "payload": {"enforce": False},
-            "planning_world": {
-                "enabled": True,
-                "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0],
-                                  "thickness_mm": 50.0},
-                "payload": {"enabled": True, "length_mm": 120.0, "lateral_margin_mm": 10.0},
-            },
-        },
-    })
-    arm = planned_arm(config, transport=_zero())
-    seen: dict = {}
-
-    class _Planner:
-        def attach_payload(self, joints, dims_mm, centre_mm):
-            seen.update(joints=list(joints), dims=tuple(dims_mm), centre=tuple(centre_mm))
-            return True
-
-    arm._curobo = _Planner()  # type: ignore[assignment]
-    assert arm.attach_payload(60.0) is True
-    # Along the hand's approach, tool0 +Y as Step 4g.0 measured it, from the fingertips, as the self filter has the part
-    # (Step 4h). It was 120 mm along tool0 +Z from the flange: 90 degrees off the hand, and inside the wrist.
-    from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
-    from src.robot.safety.planning.self_envelope import hand_spheres
-
-    spheres = hand_spheres(arm._preflight.planner_hand(arm), "ur5e")  # noqa: SLF001
-    assert spheres is not None
-    approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
-    tip = max(float(np.dot(np.asarray(s.start_mm), approach)) + s.radius_mm for s in spheres)
-    assert float(np.abs(np.asarray(seen["dims"])) @ np.abs(approach)) == 120.0, "the length runs along the approach"
-    assert sorted(seen["dims"]) == [70.0, 70.0, 120.0], "jaw width plus the lateral margin on the two other axes"
-    assert np.allclose(seen["centre"], approach * (tip + 60.0)), "the centre sits half the length past the tips"
-
-
-def test_a_cell_that_declares_no_length_models_no_part_and_names_the_key() -> None:
-    """Step 8e (owner Q8 A with O1 A): the carried part is modelled by default, and no length is implied.
-
-    It was off by default and 120 mm when switched on, a number nobody measured. Now the model is on and the length is
-    the cell's to declare: without one nothing is attached, and the arm says which key is missing.
-    """
-    from src.config.schema.robot import RobotConfig
-
-    arm = planned_arm(RobotConfig.model_validate({"vendor": "ur", "gripper": {"model": "robotiq_2f85"}}), transport=_zero())
-    assert arm.attach_payload(60.0) is False
-    assert arm.detach_payload() is True  # nothing was ever attached
-    reason = arm.payload_declined_reason()
-    assert reason is not None and "safety.planning_world.payload.length_mm" in reason
-
-
-def _curobo_arm_with(payload: dict) -> object:
-    from src.config.schema.robot import RobotConfig
-
-    arm = planned_arm(RobotConfig.model_validate({
-        "vendor": "ur",
-        "motion": {"planner": "curobo"},
-        "gripper": {"model": "robotiq_2f85"},
-        "safety": {"payload": {"enforce": False}, "planning_world": {"payload": payload}},
-    }), transport=_zero())
-    return arm
-
-
-def test_a_curobo_arm_with_a_declared_length_models_its_payload_by_default() -> None:
-    from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
-
-    arm = _curobo_arm_with({"length_mm": 20.0})
-    seen: dict = {}
-
-    class _Planner:
-        def attach_payload(self, joints, dims_mm, centre_mm):  # noqa: ANN001, ANN202
-            seen.update(dims=tuple(dims_mm))
-            return True
-
-    arm._curobo = _Planner()  # type: ignore[attr-defined]
-    assert arm.attach_payload(30.0) is True  # type: ignore[attr-defined]
-    approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
-    assert float(np.abs(np.asarray(seen["dims"])) @ np.abs(approach)) == 20.0, "the declared length runs along the approach"
-
-
-def test_a_curobo_arm_without_a_length_models_nothing_and_names_the_key() -> None:
-    arm = _curobo_arm_with({"enabled": True})
-    planner = type("_Planner", (), {"attach_payload": lambda self, *a: True})()
-    arm._curobo = planner  # type: ignore[attr-defined]
-
-    assert arm.attach_payload(30.0) is False  # type: ignore[attr-defined]
-    assert arm._attached_payload is None, "the self filter took out a part of a length nobody declared"  # type: ignore[attr-defined]
-    reason = arm.payload_declined_reason()  # type: ignore[attr-defined]
-    assert reason is not None and "safety.planning_world.payload.length_mm" in reason
-
-
-def test_an_ik_arm_still_declines_and_says_why() -> None:
-    """The control, green before and after: an ik arm models no part, with a length or without."""
-    from src.config.schema.robot import RobotConfig
-
-    arm = planned_arm(RobotConfig.model_validate({
-        "vendor": "ur", "motion": {"planner": "ik"}, "gripper": {"model": "robotiq_2f85"},
-        "safety": {"planning_world": {"payload": {"enabled": True, "length_mm": 50.0}}},
-    }), transport=_zero())
-    assert arm.attach_payload(30.0) is False
 
 
 # --------------------------------------------------------------------------------------------

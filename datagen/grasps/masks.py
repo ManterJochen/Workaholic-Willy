@@ -1,15 +1,19 @@
-"""The other mask source: GroundingDINO + SAM2 instead of the renderer's ground truth.
+"""The other mask source: the cell's own perception instead of the renderer's ground truth.
 
 The renderer's own instance masks are the right starting point, because they isolate the grasp
 generator from the perception in front of it, and they are also an advantage no real cell has. Both
 sources are reported separately: predicted masks are written in exactly the encoding the
 ground-truth ones use, and :mod:`datagen.eval.ladder` reads whichever it is pointed at.
 
-The prompt deliberately does not test grounding. It names every object kind in the scene at once and
-every detection is matched to the ground-truth instance it overlaps most, so a detector that finds
-the right objects but attaches the wrong words to them still scores. Whether GroundingDINO picks the
-object a sentence refers to is a different question, and mixing it in here would make a mask-quality
-number unreadable. What this measures is narrower and is what the grasp generator consumes: given
+The masks are what a cell would cut (the owner, 2026-10-17): the stack its ``models.pipeline`` builds,
+through the same builder (``PerceptionSpec.from_config(...).build()``), the VLM grounding each kind and
+SAM2 cutting each box on a zero-shot tree, RT-DETR's classes on a closed-set one.
+
+The prompt deliberately does not test grounding. It names every object kind in the scene at once (a
+class list, each kind grounded on its own) and every detection is matched to the ground-truth instance
+it overlaps most, so a detector that finds the right objects but attaches the wrong words to them still
+scores. Whether the detector picks the object a sentence refers to is a different question, and mixing
+it in here would make a mask-quality number unreadable. What this measures is narrower and is what the grasp generator consumes: given
 that the right object was found, how good is its silhouette, and what does the difference cost the
 grasps.
 
@@ -80,28 +84,24 @@ def _match(predicted: list[np.ndarray], truth: dict[int, np.ndarray]) -> dict[in
 
 
 def predict_masks(
-    root: Path, *, limit: int | None = None, progress_every: int = 25, threshold: float | None = None,
-    profile: str = "sim",
+    root: Path, *, limit: int | None = None, progress_every: int = 25, profile: str | None = None,
 ) -> dict:
     """Detect and segment every rendered view; write predicted instance maps and a report.
 
-    Needs a GPU and downloads the two models on first use. Writes ``<view>_pred_instances.png`` next
-    to each ground-truth map and ``masks_pred_report.json`` at the dataset root.
+    Needs a GPU and the weights the tree's models name on this machine (``scripts/model_weights/fetch.py``
+    writes them); nothing is downloaded. Writes ``<view>_pred_instances.png`` next to each ground-truth
+    map and ``masks_pred_report.json`` at the dataset root.
 
-    The sim profile by default, and the choice is not cosmetic. These images come out of Isaac, and
-    the sim profile is the one whose detector settings were measured against Isaac renders: it names
-    a Hugging Face model rather than a local checkout that does not exist in a fresh tree, and it
-    leaves ``torch_dtype`` unset. Under the default profile the detector loads in fp16, which the
-    loading path itself warns can drop small-object recall. The resolved model ids and dtype land in
-    the report, so no mask number is quoted without the model that produced it.
+    The stack is the one the tree's ``models.pipeline`` builds for a cell, read under ``profile``
+    (``None``: the base tree); since 2026-10-17 the sim profile carries the same models, so a render
+    is cut as a cell would cut it. The detector and the segmenter land in the report, so no mask number
+    is quoted without the models that produced it.
     """
     from PIL import Image  # noqa: PLC0415
 
-    from src.config.loader import load_config  # noqa: PLC0415
-    from src.models.detection.zero_shot.detector import (  # noqa: PLC0415
-        GroundingDinoObjectDetector,
-    )
-    from src.models.segmentation.realtime.segmenter import Sam2Segmenter  # noqa: PLC0415
+    from src.config.loader import load_perception_section  # noqa: PLC0415
+    from src.models.perception_spec import PerceptionSpec  # noqa: PLC0415
+    from src.models.vlm.qwen import class_list_prompt  # noqa: PLC0415 (imports no torch)
 
     root = Path(root)
     # The profile is passed, not set. Calling `set_active_profile(profile)` here and restoring
@@ -112,22 +112,18 @@ def predict_masks(
     # `profile=None` means the base tree, not "nobody said". The loader distinguishes the two with a
     # sentinel, so forwarding a None straight through would disable WILLY_PROFILE for anyone who
     # exports it. This site always names a profile, so it forwards a string.
-    cfg = load_config(profile=profile)
-    detector_cfg = cfg.models.objectdetector
-    if threshold is not None:
-        detector_cfg = detector_cfg.model_copy(update={"threshold": float(threshold)})
-    # Which weights, at which precision, before a single mask exists. The dtype is logged because
-    # fp16 can drop small-object recall, and a mask report that does not say which precision
+    spec = PerceptionSpec.from_config(load_perception_section(profile=profile))
+    resolution = spec.resolve()
+    detector_name = resolution.vlm_model_id if resolution.detector == "vlm" else (
+        spec.rtdetr.model_id if spec.rtdetr is not None else "")
+    segmenter_name = spec.segmenter.model_id if spec.segmenter is not None else ""
+    # Which models, before a single mask exists: a mask report that does not say which detector and segmenter
     # produced it cannot be compared with the one before it.
-    logger.info("loading detector %s (threshold %.2f, torch_dtype %s) and segmenter %s "
-                "under profile '%s'",
-                detector_cfg.model_id or detector_cfg.model_path, float(detector_cfg.threshold),
-                detector_cfg.optim.torch_dtype,
-                cfg.models.segmenter.model_id or cfg.models.segmenter.model_path, profile)
+    logger.info("building the cell's perception: %s %s and SAM2 %s under profile %r",
+                resolution.detector, detector_name, segmenter_name, profile)
     load_started = time.perf_counter()
-    detector = GroundingDinoObjectDetector(detector_cfg)
-    segmenter = Sam2Segmenter(cfg.models.segmenter)
-    logger.info("models ready in %.1f s", time.perf_counter() - load_started)
+    backend = spec.build()
+    logger.info("models ready in %.1f s (the VLM loads at the first view)", time.perf_counter() - load_started)
 
     rows: list[dict] = []
     scenes = views = 0
@@ -139,7 +135,7 @@ def predict_masks(
         if limit is not None and scenes >= limit:
             break
         payload = json.loads(scene_json.read_text(encoding="utf-8"))
-        prompt = ". ".join(_kinds_in_scene(payload)) + "."
+        prompt = class_list_prompt(_kinds_in_scene(payload))
         scenes += 1
         for view in payload["views"]:
             if str(view.get("outcome")) not in ("rendered", "rendered_after_resample"):
@@ -154,24 +150,13 @@ def predict_masks(
                      for obj in view["objects"]}
             truth = {k: m for k, m in truth.items() if m.any()}
 
-            detect_started = time.perf_counter()
-            detections = detector.detect_all(bgr, prompt)
-            detect_ms = (time.perf_counter() - detect_started) * 1000.0
-
-            masks: list[np.ndarray] = []
-            segment_ms = 0.0
-            for detection in detections:
-                segment_started = time.perf_counter()
-                try:
-                    result = segmenter.segment_detection(bgr, detection)
-                except (RuntimeError, ValueError):
-                    # SAM2 raises on an empty mask. That is a detection that segmented to nothing,
-                    # which is a miss rather than a crash, recorded by its absence from the
-                    # assignment.
-                    continue
-                finally:
-                    segment_ms += (time.perf_counter() - segment_started) * 1000.0
-                masks.append(np.asarray(result.mask, dtype=bool))
+            # One perceive, as a cell's look runs it: the detector's boxes, then SAM2 per box. A box SAM2 cut to
+            # nothing is a miss rather than a crash, recorded by its absence from the assignment, as the seam
+            # drops it (``TwoStageBackend``).
+            perceive_started = time.perf_counter()
+            perceived = backend.perceive(bgr, prompt)
+            perceive_ms = (time.perf_counter() - perceive_started) * 1000.0
+            masks: list[np.ndarray] = [np.asarray(obj.segmentation.mask, dtype=bool) for obj in perceived]
 
             assignment = _match(masks, truth)
             predicted = np.zeros(instances.shape, dtype=np.uint16)
@@ -198,10 +183,9 @@ def predict_masks(
                 })
             rows.append({
                 "scene_id": scene_dir.name, "view": view["name"], "instance_id": -1,
-                "detections": len(detections), "segmented": len(masks),
+                "detections": len(perceived), "segmented": len(masks),
                 "matched": len(assignment), "objects": len(truth),
-                "prompt": prompt, "detect_ms": round(detect_ms, 1),
-                "segment_ms": round(segment_ms, 1),
+                "prompt": prompt, "perceive_ms": round(perceive_ms, 1),
             })
             views += 1
         if progress_every and scenes % progress_every == 0:
@@ -212,18 +196,15 @@ def predict_masks(
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
     report = summarise_masks(root)
-    # Aggregated: the detector and the segmenter log their own per-inference lines, so a second one
-    # per view here would double the log for nothing. Recall and IoU are the pass's result.
+    # Aggregated: the detector, the segmenter and the perception seam log their own per-inference lines, so a
+    # second one per view here would double the log for nothing. Recall and IoU are the pass's result.
     logger.info("predicted masks for %d view(s) over %d scene(s) in %.1f s: "
                 "%d/%d objects found (%.1f%%), median IoU %.3f -> %s",
                 views, scenes, time.perf_counter() - started, report["found"], report["objects"],
                 report["recall"] * 100.0, report["iou"].get("median", 0.0),
                 root / "masks_pred.jsonl")
-    report["model"] = {"detector": detector_cfg.model_id or detector_cfg.model_path,
-                       "threshold": float(detector_cfg.threshold),
-                       "torch_dtype": str(detector_cfg.optim.torch_dtype),
-                       "profile": profile,
-                       "segmenter": cfg.models.segmenter.model_id or cfg.models.segmenter.model_path}
+    report["model"] = {"detector": resolution.detector, "detector_model": detector_name,
+                       "segmenter": segmenter_name, "profile": profile}
     (root / "masks_pred_report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return report

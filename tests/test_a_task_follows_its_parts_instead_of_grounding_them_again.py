@@ -1,11 +1,11 @@
-"""A task follows its parts instead of grounding them again (``robot.grasping.follow_parts``, the owner, 2026-10-09).
+"""A task follows its parts instead of grounding them again (every cell built from a tree; the owner, 2026-10-09).
 
 "Qwen on the first pick and on every trigger, SAM2 on the known parts between." The owner's scene on the real chain:
 three grey cubes and two red ones, every grey cube onto the drop until none is left, from four wrist looks. With
 following on, the first pick grounds every part; the next pick's first look finds the parts the last one kept with SAM2
 on their boxes and no detector; and the check look after the last part is always asked of the detector. A push, a
-blocker, a recovery, a try that sent motion and failed, a gripped part that was not kept, ``refresh_every_picks`` and a
-Restart ground again. DO0 still changes twice per part.
+blocker, a recovery, a try that sent motion and failed, a gripped part that was not kept and a Restart ground again.
+DO0 still changes twice per part.
 
 Real: the task, the pick service with its pick loop and grasp policy, the camera source with its kept scene, label
 mapping and colour check, over a ``TwoStageBackend``; the owner's toggle on tool DO0. Stand-ins as in
@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import GraspingFollowPartsConfig, GraspingSupportConfig
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.geometry import Frame, Transform
 from src.robot.grippers.jaw_io import JawIOGripper
 from tests._task_fakes import POSES, RecordingHooks, TaskArm, do0_changes
@@ -74,8 +74,10 @@ class _Ran:
         return [pick for _, pick, report in self.hooks.picks if not report.telemetry.get("followed")]
 
 
-def _service(arm: TaskArm, mat: _Mat, log: list[Any], *, fails: "Callable[[], bool] | None" = None) -> Any:
-    """The owner's cell on the real chain, its calculator finding no grasp while ``fails`` says so."""
+def _service(arm: TaskArm, mat: _Mat, log: list[Any], *, fails: "Callable[[], bool] | None" = None,
+             follow: bool = True) -> Any:
+    """The owner's cell on the real chain, its calculator finding no grasp while ``fails`` says so; its pick loop follows
+    the parts as every cell built from a tree does (``from_robot_config``), unless ``follow`` is false."""
     from src.robot.execution.autonomous_grasp import AutonomousGraspService, GraspMode
     from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
     from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
@@ -104,30 +106,23 @@ def _service(arm: TaskArm, mat: _Mat, log: list[Any], *, fails: "Callable[[], bo
         arm=arm, calculator=_Calculating(mat), perception=source, mode=GraspMode.EASY,  # type: ignore[arg-type]
         gripper=jaws, policy=policy, frame_resolver=resolver, max_attempts=1)
     # The bench the parts stand on, as the cell declares its mat: what a part stands over.
-    service.runtime.orchestrator.support_config = GraspingSupportConfig(height_mm=0.0)
+    service.runtime.orchestrator.declared_support = DeclaredSupport()
     service.configured_looks = LOOKS
+    service.runtime.orchestrator.follow_parts = follow
     return service
 
 
-def _arm(log: list[Any], follow: "GraspingFollowPartsConfig | None") -> TaskArm:
-    arm = TaskArm(log)
-    if follow is not None:
-        arm.config = SimpleNamespace(grasping=SimpleNamespace(follow_parts=follow), workspace_limits=None)
-    return arm
-
-
-def _task(parts: list[_Part], *, follow: "GraspingFollowPartsConfig | None" = GraspingFollowPartsConfig(enabled=True),
-          scope: str = "until_empty", fails: "Callable[[int], bool] | None" = None,
+def _task(parts: list[_Part], *, follow: bool = True, scope: str = "until_empty", fails: "Callable[[int], bool] | None" = None,
           after_pick: "Callable[[int, Any, Any], Any] | None" = None, **options: Any) -> _Ran:
     """Every grey cube onto the drop, on the real chain; ``fails(pick)`` makes the calculator find no grasp in that pick,
     and ``after_pick(pick, report, service)`` may change what a pick reports to the task."""
     from src.robot.execution.task import PlaceAt, TaskOptions, TaskPlan, run_task
 
     log: list[Any] = []
-    arm = _arm(log, follow)
+    arm = TaskArm(log)
     mat = _Mat(arm, parts)
     calls: list[dict[str, Any]] = []
-    service = _service(arm, mat, log, fails=(lambda: fails(len(calls))) if fails is not None else None)
+    service = _service(arm, mat, log, fails=(lambda: fails(len(calls))) if fails is not None else None, follow=follow)
     events: list[Any] = []
     service.attach_progress_listener(events.append)
     picked = service.pick
@@ -188,22 +183,15 @@ class ATaskGroundsOnceAndFollowsItsPartsTests(unittest.TestCase):
         self.assertEqual(["home"], telemetry[1]["looks_followed"])
 
 
-class WithFollowingOffNothingChangesTests(unittest.TestCase):
-    def _events(self, ran: _Ran) -> list[Any]:
-        return [(str(event.stage), event.segmentation_count, event.route, event.route_reason) for event in ran.events]
-
-    def test_following_off_hands_no_pick_anything_and_grounds_every_pick(self) -> None:
-        off = _task(_owner_s_scene(), follow=GraspingFollowPartsConfig(enabled=False))
-        today = _task(_owner_s_scene(), follow=None)
+class ALoopThatDoesNotFollowGroundsEveryPickTests(unittest.TestCase):
+    def test_a_loop_built_by_hand_hands_no_pick_anything_and_grounds_every_pick(self) -> None:
+        off = _task(_owner_s_scene(), follow=False)
 
         self.assertEqual([{"look": LOOKS}] * 4, [{key: call[key] for key in ("look",)} for call in off.calls])
         self.assertTrue(all("follow" not in call and "follow_looks" not in call for call in off.calls))
         self.assertEqual(4, off.groundings())
-        self.assertEqual(self._events(today), self._events(off))
-        timeless = [[(name, {key: value for key, value in data.items() if key != "duration_s"})
-                     for name, data in ran.hooks.events] for ran in (today, off)]
-        self.assertEqual(timeless[0], timeless[1])
-        self.assertEqual(do0_changes(today.log), do0_changes(off.log))
+        self.assertEqual([1, 2, 3, 4], off.picks_grounded())
+        self.assertEqual((3, 6), (off.report.parts_placed, do0_changes(off.log)))
 
 
 class ATriggerGroundsTheNextPickTests(unittest.TestCase):
@@ -250,13 +238,6 @@ class ATriggerGroundsTheNextPickTests(unittest.TestCase):
 
         self.assertEqual([1, 3, 4], self._with(elsewhere).picks_grounded())
 
-    def test_refresh_every_picks_2_grounds_at_picks_1_3_and_5(self) -> None:
-        ran = _task(_grey_cubes(5), follow=GraspingFollowPartsConfig(enabled=True, refresh_every_picks=2))
-
-        self.assertEqual(5, ran.report.parts_placed)
-        self.assertEqual([1, 3, 5, 6], ran.picks_grounded(), "and the check look after the last part")
-        self.assertEqual(10, do0_changes(ran.log))
-
     def test_without_the_check_look_the_pick_after_the_last_part_grounds_too(self) -> None:
         ran = _task(_grey_cubes(3), check_look=False)
 
@@ -282,7 +263,7 @@ class ARestartStartsWithNothingKeptTests(unittest.TestCase):
         from src.robot.execution.task import PlaceAt, TaskPlan, run_task
 
         log: list[Any] = []
-        arm = _arm(log, GraspingFollowPartsConfig(enabled=True))
+        arm = TaskArm(log)
         mat = _Mat(arm, _grey_cubes(3))
         service = _service(arm, mat, log)
         plan = TaskPlan(object="grey cube", place=PlaceAt(pose="drop_left"), scope="once")

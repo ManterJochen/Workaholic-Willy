@@ -10,8 +10,8 @@ What this file holds, on the CPU:
 
 * which planner link is which of the guard's parts, and that the pair rule is the guard backend's own (not a copy): a
   pair on neighbouring DH frames is not the guard's unless a wrist camera is in it, one on the same frame never is;
-* why a refusal stands (:func:`admission_refusal`): bounds, world, the carried part, an unnamed pair, a pair the guard
-  does not check, and only the rest is left to the guard;
+* why a refusal stands (:func:`admission_refusal`): bounds, world, an unnamed pair, a pair the guard does not check,
+  and only the rest is left to the guard;
 * which joints turn one link of a pair against the other, and the neighbours of a band pose: at most 20 degrees per
   joint (the owner, 2026-09-30, after LOOK[1]), on those joints alone, one check request at most, nearest by the path
   gate's own measure;
@@ -130,7 +130,7 @@ class WhichPlannerLinkIsWhichPartTests(unittest.TestCase):
         self.assertEqual(guard_parts("wrist_camera_wrist"), ("wrist_camera_wrist",))
 
     def test_the_links_it_does_not(self) -> None:
-        """⭐ The carried part is the planner's alone, and so is anything this does not know."""
+        """⭐ Anything this does not know is the planner's alone: the link a carried part had, a plate, the flange."""
         for link in ("attached_object", "coupling", "tool0", "base_link", "wrist_camera_", "elbow"):
             with self.subTest(link=link):
                 self.assertEqual(guard_parts(link), ())
@@ -209,7 +209,6 @@ class WhenTheRefusalStandsTests(unittest.TestCase):
         cases = {
             "bounds": _row(("forearm_link", "wrist_2_link"), bound_ok=False),
             "world": _row(("forearm_link", "wrist_2_link"), world_ok=False),
-            "the carried part": _row(("forearm_link", "wrist_2_link"), ("attached_object", "forearm_link")),
             "a pair the guard skips": _row(("hand", "wrist_2_link")),
             "the robot's base": _row(("hand", "shoulder_link"), padding_mm=_MARGIN_MM + 70.0),
             "an unnamed pair": _row(("forearm_link", "wrist_2_link"), named=False),
@@ -219,8 +218,6 @@ class WhenTheRefusalStandsTests(unittest.TestCase):
         for what, row in cases.items():
             with self.subTest(what=what):
                 self.assertIsNotNone(admission_refusal(row, self.exact, margin_mm=_MARGIN_MM))
-        self.assertIn("carried part", admission_refusal(cases["the carried part"], self.exact,
-                                                        margin_mm=_MARGIN_MM) or "")
 
     def test_only_the_margins_padding_is_ever_lifted(self) -> None:
         """⭐ WHICH BUFFERS THE ADMISSION MAY LIFT (review of F1, 2026-09-30): the planner_margin_mm padding and the
@@ -321,14 +318,13 @@ def owner_like_arm() -> "object":
 
     return URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         # Where the owner's looks put the tool is the cell's box to say, and this file is about the pairs.
-        "workspace_limits": OPEN_WORKSPACE,
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo", "workspace": OPEN_WORKSPACE},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0}},
+        "safety": {"self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 4.0,
+                                      "planner_margin_mm": 4.0}},
     }))
 
 
@@ -396,10 +392,10 @@ class TheComposedConfigIsTheOneTheEvidenceMeasuredTests(unittest.TestCase):
         link = HandLink.from_hand(hand, arm="ur10")
         default_q = read_retract("ur10", hand.model, float(hand.coupling_mm), 4.0,
                                  placement=f"{link.placement.approach}{link.placement.closing}")
-        _, evidence, _, _, _ = compose_for_cell(
+        _, evidence, _, _ = compose_for_cell(
             yaml.safe_load(descriptor.read_text(encoding="utf-8")), bodies=[link.to_dict(), *coupling_bodies(hand, arm="ur10")],
-            margin_mm=4.0, attach_spheres=0, default_q=default_q)
-        committed = json.loads((EVIDENCE_DIR / "ur10_robotiq_hande_c20mm_+Z+X_m4mm_a0.json").read_text(encoding="utf-8"))
+            margin_mm=4.0, default_q=default_q)
+        committed = json.loads((EVIDENCE_DIR / "ur10_robotiq_hande_c20mm_+Z+X_m4mm.json").read_text(encoding="utf-8"))
         self.assertEqual(canonical_sha256(evidence), committed["composed_sha256"])
 
 

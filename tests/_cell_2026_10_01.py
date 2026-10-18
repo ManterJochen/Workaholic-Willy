@@ -39,7 +39,7 @@ _FILES = {"P1": "p1_pick-63e1b3dac29f.npz", "P5": "p5_pick-44c3e7e060ac.npz"}
 #: The names :func:`look` answers.
 LOOKS = tuple(_FILES)
 
-#: The owner's workspace box (the cell's ``robot.workspace_limits``), the bench declared at 0 with the 5 mm band.
+#: The owner's workspace box (the cell's ``robot.motion.workspace``), the bench declared at 0 with the 5 mm band.
 OWNER_LIMITS = WorldBuildLimits(
     x_mm=(-420.0, 400.0), y_mm=(-900.0, -270.0), z_mm=(16.0, 800.0), support_plane_top_mm=0.0,
     plane_clearance_mm=5.0,
@@ -144,23 +144,21 @@ def owner_robot(**safety_world: object) -> dict[str, Any]:
     its PolyScope tool frame, the cell's workspace box and 5 mm distances, and the bench declared under the work area as
     the Monday config moves it. ``safety_world`` goes into ``safety.planning_world`` on top."""
     world: dict[str, Any] = {
-        "enabled": True, "include_fixtures": False,
         "support_plane": {"height_mm": 0.0, "extent_mm": [900.0, 700.0], "thickness_mm": 50.0,
                           "center_mm": [-10.0, -585.0]},
-        "payload": {"enabled": False},
     }
     world.update(safety_world)
     return {
         "vendor": "ur",
-        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
-        "workspace_limits": {"x_min": -420.0, "x_max": 400.0, "y_min": -900.0, "y_max": -270.0, "z_min": 16.0,
-                             "z_max": 800.0},
+        "ur": {"model": "ur10"},
+        "motion": {"planner": "curobo",
+                   "workspace": {"x_min": -420.0, "x_max": 400.0, "y_min": -900.0, "y_max": -270.0, "z_min": 16.0,
+                                 "z_max": 800.0}},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "hand_adapter", "thickness_mm": 23.0}],
                     "tool_frame": {"source": "controller", "offset_mm": [0.0, 0.0, 157.0],
                                    "rotation_quat_xyzw": [0.0, 0.0, -0.7071068, 0.7071068]}},
-        "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 5.0, "perceived_min_distance_mm": 5.0,
-                                      "planner_margin_mm": 4.0, "tool_model": "finger"},
+        "safety": {"self_collision": {"backend": "fcl", "min_distance_mm": 5.0, "perceived_min_distance_mm": 5.0,
+                                      "planner_margin_mm": 4.0},
                    "planning_world": world},
     }
 
@@ -219,10 +217,14 @@ class OwnerCell:
         return goal_keep_out(self.preflight, self.arm, tcp)
 
     def world(self, recorded: CellLook, depth_mm: "np.ndarray | None" = None, config: Any = None,
-              stamp: "float | None" = None) -> Any:
+              stamp: "float | None" = None, tuning: "dict[str, Any] | None" = None) -> Any:
         """The cell's live camera world over the wrist camera, answering with ``depth_mm`` (the look's own by default),
         built the way the cell builds it (``camera_world_wiring._live_planner_world``) from ``config`` (this cell's by
-        default). Each frame is stamped ``stamp``, or the time it is grabbed."""
+        default). Each frame is stamped ``stamp``, or the time it is grabbed. ``tuning`` changes fields of the world's
+        :class:`WorldBuildTuning` on the cell's own wiring, for a test that measures what one of its fixed numbers
+        does: every cell's world is tuned at ``perceived.CAMERA_*`` since 2026-10-17, and no key changes it."""
+        from dataclasses import replace
+
         from src.robot.execution.camera_world_wiring import _live_planner_world
         from src.robot.safety.planning.live_world import CameraView, DepthSnapshot
 
@@ -234,9 +236,12 @@ class OwnerCell:
                                      timestamp=time.time() if stamp is None else float(stamp),
                                      tool_to_base_mm=recorded.tool_to_base)
 
-        return _live_planner_world(self.config if config is None else config,
-                                   [CameraView(name="EIH_Cam", depth_source=_Wrist(),
-                                               camera_to_tool=recorded.camera_to_tool)])
+        world = _live_planner_world(self.config if config is None else config,
+                                    [CameraView(name="EIH_Cam", depth_source=_Wrist(),
+                                                camera_to_tool=recorded.camera_to_tool)])
+        if tuning:
+            world.tuning = replace(world.tuning, **tuning)
+        return world
 
     def refused(self, boxes: Any, joints_rad: Any) -> str:
         """What the exact guard says of ``joints_rad`` against the guard boxes ``boxes``: empty where it accepts."""

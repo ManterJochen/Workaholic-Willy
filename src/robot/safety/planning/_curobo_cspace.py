@@ -14,12 +14,11 @@ succeeds with one pass exactly where it succeeds with four. What one pass change
 those are judged sample by sample as every plan's are.
 
 :func:`plan_cspace` is cuRobo's loop as it stands, with the number of those passes a parameter: the attempts, the
-attempt the graph seeds from, the graph seed per attempt and the step scale are cuRobo's, call for call. At
-:data:`CUROBO_FINETUNE_PASSES` the sidecar does not even call it: it calls cuRobo's own ``plan_cspace``, which is
-today's plan to the bit. At 0 a plan is the first pass's, which every later pass starts from.
-
-``WILLY_CUROBO_JOINT_FINETUNE`` carries the number (:func:`finetune_passes`), written by the client from
-``safety.planned_motion.finetune_passes`` (3, today's, by default). ``WILLY_CUROBO_TIMING=1`` makes the sidecar print
+attempt the graph seeds from, the graph seed per attempt and the step scale are cuRobo's, call for call; at
+:data:`CUROBO_FINETUNE_PASSES` it makes cuRobo's own calls. The sidecar runs it at :data:`JOINT_FINETUNE_PASSES`, 0:
+a plan is the first pass's, which every later pass starts from, about a quarter of the optimiser's work per attempt
+(the owner's cell after the desk A/B of 2026-10-09, every cell since 2026-10-17, when
+``robot.safety.planned_motion.finetune_passes`` left). ``WILLY_CUROBO_TIMING=1`` makes the sidecar print
 one ``[timing]`` line per request it answers (:func:`timing_asked`): what it judged first, what the plan took on the
 wall clock and on the optimiser's own GPU timer, and what the reply took. It changes nothing else.
 
@@ -36,10 +35,9 @@ from typing import Any
 __all__ = [
     "CUROBO_FINETUNE_DT_SCALE",
     "CUROBO_FINETUNE_PASSES",
-    "ENV_JOINT_FINETUNE",
     "ENV_TIMING",
+    "JOINT_FINETUNE_PASSES",
     "PlannedAttempts",
-    "finetune_passes",
     "plan_cspace",
     "timing_asked",
 ]
@@ -49,28 +47,11 @@ CUROBO_FINETUNE_PASSES = 3
 #: The step scale between those passes that ``plan_cspace`` asks, for an attempt seeded by a line or by the graph.
 CUROBO_FINETUNE_DT_SCALE = 0.75
 
-#: How many time-optimal passes a joint plan runs after its first, written by the client; unset is cuRobo's three.
-ENV_JOINT_FINETUNE = "WILLY_CUROBO_JOINT_FINETUNE"
+#: How many time-optimal passes a joint plan runs after its first on every cell: none. The arm runs a plan's positions
+#: with ``moveJ`` at its own speed and never its timing, and a later pass never decides whether a plan is found.
+JOINT_FINETUNE_PASSES = 0
 #: ``1`` prints a ``[timing]`` line per request on the sidecar's stderr; unset prints none.
 ENV_TIMING = "WILLY_CUROBO_TIMING"
-
-
-def finetune_passes(environ: Mapping[str, str]) -> int:
-    """The time-optimal passes a joint plan runs after its first: ``WILLY_CUROBO_JOINT_FINETUNE``, or cuRobo's three.
-
-    ``ValueError`` for anything but a whole number from 0 to :data:`CUROBO_FINETUNE_PASSES`: a sidecar started on a
-    number it cannot read says so before it plans anything, rather than planning with some other number.
-    """
-    text = str(environ.get(ENV_JOINT_FINETUNE, "") or "").strip()
-    if not text:
-        return CUROBO_FINETUNE_PASSES
-    try:
-        value = int(text)
-    except ValueError:
-        value = -1
-    if not 0 <= value <= CUROBO_FINETUNE_PASSES or str(value) != text:
-        raise ValueError(f"{ENV_JOINT_FINETUNE} has to be a whole number from 0 to {CUROBO_FINETUNE_PASSES}, got {text!r}")
-    return value
 
 
 def timing_asked(environ: Mapping[str, str]) -> bool:

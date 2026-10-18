@@ -1,9 +1,10 @@
-"""The self filter, the hand tip and the carried part follow the declared hand, not a hard coded tool0 +Y (UM lane S07).
+"""The self filter and the hand tip follow the declared hand, not a hard coded tool0 +Y (UM lane S07).
 
 The self filter takes the robot's own body back out of what the cameras see. Its hand was the sphere map on the flange,
 each sphere grown to hold the hand's mesh, and the carried part hung from the fingertips, all along tool0 +Y. On a hand
 declared along the UR convention (+Z) that is a body 90 degrees from where the hand is: the real hand stays in the
-camera world as an obstacle and empty space is filtered out.
+camera world as an obstacle and empty space is filtered out. (No carried part hangs from the hand since 2026-10-17: no
+cell models one.)
 
 So the hand is placed exactly as the guard places it (S06): the plate along the model's approach, then the rotation
 the declaration derives. The identity does no arithmetic, and S02's golden holds the sim cells byte for byte.
@@ -76,35 +77,6 @@ class TheFilterHoldsTheDeclaredHandTests(unittest.TestCase):
         radii = np.asarray([s.radius_mm for s in self.spheres_z])
         outside = np.min(np.linalg.norm(wrong[:, None, :] - centres[None, :, :], axis=2) - radii[None, :], axis=1)
         self.assertGreater(float(outside.max()), 10.0)
-
-
-class TheCarriedPartHangsFromTheDeclaredHandTests(unittest.TestCase):
-    def test_the_box_lies_along_z(self) -> None:
-        from src.robot.safety.planning.self_envelope import carried_part_box, hand_spheres
-
-        hand = _hand(_UR_FRAME)
-        spheres = hand_spheres(hand, "ur5e")
-        dims, centre = carried_part_box(hand, spheres, grip_width_mm=60.0, length_mm=120.0, lateral_margin_mm=10.0)
-        tip = max(float(s.start_mm[2]) + s.radius_mm for s in spheres)
-        self.assertEqual(dims, (70.0, 70.0, 120.0))
-        np.testing.assert_allclose(centre, (0.0, 0.0, tip + 60.0), atol=1e-9)
-
-    def test_the_capsule_lies_along_z(self) -> None:
-        from src.robot.safety.planning.self_envelope import hand_spheres, payload_capsule
-
-        hand = _hand(_UR_FRAME)
-        capsule = payload_capsule(hand, hand_spheres(hand, "ur5e"), length_mm=120.0, lateral_margin_mm=10.0)
-        axis = np.asarray(capsule.end_mm) - np.asarray(capsule.start_mm)
-        np.testing.assert_allclose(axis, (0.0, 0.0, 120.0), atol=1e-9)
-
-    def test_the_sim_hand_still_hangs_along_y(self) -> None:
-        """The control: the identity placement is today's +Y, and S02's golden holds its numbers."""
-        from src.robot.safety.planning.self_envelope import carried_part_box, hand_spheres
-
-        hand = _hand(_SIM_FRAME)
-        dims, _ = carried_part_box(hand, hand_spheres(hand, "ur5e"), grip_width_mm=60.0, length_mm=120.0,
-                                   lateral_margin_mm=10.0)
-        self.assertEqual(dims, (70.0, 120.0, 70.0))
 
 
 if __name__ == "__main__":  # pragma: no cover

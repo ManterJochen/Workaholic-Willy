@@ -4,8 +4,9 @@
  * Three helpers, so every area tests against the same providers and the same fakes:
  *
  * * `renderWith(ui, { lang, route })` renders under a router and the console's providers (language, preferences, the
- *   shared cell poll, the run on screen). German unless the test says otherwise, because German is what the cell PC
- *   shows; `lang: 'en'` pins the English copy;
+ *   shared cell poll, the cell's task settings, the run on screen). German unless the test says otherwise, because
+ *   German is what the cell PC shows; `lang: 'en'` pins the English copy. A test that stubs no `/v1/task/settings`
+ *   meets the server's 404: no settings are read, and Enter only reads, as with "Erst die Karte";
  * * `stubApi(routes)` answers `fetch` from a table keyed `"METHOD /path"` (or just `"/path"` for any method) and
  *   RECORDS every call, so a test can assert what was sent, and that nothing that moves was sent unasked. An
  *   unknown route answers the backend's own 404 envelope;
@@ -29,6 +30,7 @@ import type { RunOut } from '../api/client'
 import type { RunEvent } from '../api/events'
 import { I18nProvider, type Lang } from '../i18n'
 import { PrefsProvider } from '../model/prefs'
+import { TaskSettingsProvider } from '../model/taskSettings'
 import { CellProvider } from '../model/useCell'
 import { RunProvider } from '../model/useRun'
 
@@ -41,13 +43,15 @@ export interface RenderOptions {
   providers?: boolean
 }
 
-/** Render `ui` as the console would: router, language, preferences, the shared cell, the run on screen. */
+/** Render `ui` as the console would: router, language, preferences, the shared cell, its task settings, the run on screen. */
 export function renderWith(ui: ReactElement, options: RenderOptions = {}): RenderResult {
   const { lang = 'de', route = '/', providers = true } = options
   const inner = providers ? (
     <PrefsProvider>
       <CellProvider>
-        <RunProvider>{ui}</RunProvider>
+        <TaskSettingsProvider>
+          <RunProvider>{ui}</RunProvider>
+        </TaskSettingsProvider>
       </CellProvider>
     </PrefsProvider>
   ) : (

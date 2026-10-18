@@ -34,10 +34,13 @@ def _arm(*, safety: bool = True) -> IsaacRobotArm:
                                        robot_model="ur5e"))
     arm._connected = True
     if safety:
-        # The sim profile declares the table itself, as every non-UR cell must (robot.sim.yaml).
-        cell = RobotConfig.model_validate({"vendor": "sim", "ur": {"model": "ur5e"}, "safety": {"joint_limits": {
-            "min_deg": [-360.0] * 6, "max_deg": [360.0] * 6}}})
-        arm._preflight = SafetyPreflight.from_safety_config(cell.safety, cell.workspace_limits, arm_model=None)
+        # The Isaac arm's own numbers (its harness's table): the ur5e's whole +-360 envelope, which it reports, with no
+        # window about home, as the sim profile's table stated it until 2026-10-17.
+        from src.willy_sim.guard_numbers import ISAAC
+
+        cell = RobotConfig.model_validate({"vendor": "sim", "ur": {"model": "ur5e"}})
+        arm._preflight = SafetyPreflight.from_safety_config(cell.safety, cell.motion.workspace, arm_model=None,
+                                                            numbers=ISAAC)
     else:
         arm._preflight = None
     return arm

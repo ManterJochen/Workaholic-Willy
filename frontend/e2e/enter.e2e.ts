@@ -5,12 +5,21 @@
  * spec). A known sentence is read by the table, with no model asked: "Leg den Würfel auf Ablage links" names a part
  * and a taught pose, both found in the sentence, so on a ready cell the person's Enter starts it at once. No card
  * opens, and the chat says the first motion. The setting "Erst die Karte" gives the card back, and Enter then starts
- * nothing.
+ * nothing. The setting is the cell's since 2026-10-17, written by the Settings page into the cell's own layer of the
+ * scratch tree, so each spec here starts from Enter starting, as shipped, and leaves it so for the specs after it.
  */
 
 import { expect, test, type APIRequestContext } from '@playwright/test'
 
 import { connected, reset, untilCell, untilEnded, type Run } from './cell'
+
+/** The cell's setting as shipped: Enter starts. */
+async function enterStarts(request: APIRequestContext): Promise<void> {
+  expect((await request.patch('/v1/task/settings', { data: { start: 'enter' } })).ok()).toBeTruthy()
+}
+
+test.beforeEach(async ({ request }) => enterStarts(request))
+test.afterEach(async ({ request }) => enterStarts(request))
 
 /** The task runs the server keeps, newest first. */
 async function tasks(request: APIRequestContext): Promise<Run[]> {

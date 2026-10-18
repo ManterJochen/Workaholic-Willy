@@ -42,8 +42,8 @@ with Camera.from_tree(tree) as camera:
     robot = Robot.from_tree(tree, cameras=[camera])
     locator = Locator.from_tree(tree, camera=camera, tool_pose=robot.arm.get_tcp_pose)
     hands = build_hand_finder_on_camera(  # MediaPipe over the open camera, each frame taken as the Locator's
-        tree.app_config.models.handdetect, camera, tool_frame=tree.robot.gripper.tool_frame,
-        tool_pose=robot.arm.get_tcp_pose, attempts=tree.robot.safety.planning_world.perceived.fresh_frame_attempts)
+        camera, weights_root=tree.app_config.models.weights_root, tool_frame=tree.robot.gripper.tool_frame,
+        tool_pose=robot.arm.get_tcp_pose)
 
     with robot.connected():
         located = locator.locate(spoken.confirmed)

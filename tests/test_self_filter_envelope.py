@@ -8,9 +8,9 @@ uses, so its filter stood mirrored through the base.
 
 Now the arm is one capsule per link, fitted once to the committed bundle in the link's own DH frame; the hand is the
 spheres of its resolved sphere map, the model the planner checks against, each grown just enough to hold the hand's
-committed mesh; a part in the gripper is one capsule from the
-fingertips while it is attached; everything is padded by `perceived.margin_mm`; and the model and the yaw are the self
-collision guard's.
+committed mesh; everything is padded by the margin every cell's camera world grows its boxes by; and the model and
+the yaw are the self collision guard's. A part in the gripper was one capsule from the fingertips while it was attached,
+until no cell modelled one (2026-10-17).
 """
 
 from __future__ import annotations
@@ -213,68 +213,6 @@ class TheSimFilterUsesTheGuardYawTests(unittest.TestCase):
         np.testing.assert_allclose(arm._flange_mm(JointPositions(_REACH)), _yawed(truth, 180.0)[6][:3, 3], atol=1e-6)  # noqa: SLF001
 
 
-class APartInTheGripperIsFilteredWhileAttachedTests(unittest.TestCase):
-    """Q7 A, on a planned arm, the family that attaches a payload (a ``PlannedArm`` over the fake since P0g slice 13)."""
-
-    def test_a_point_100_mm_past_the_fingertips_is_filtered_while_attached(self) -> None:
-        from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
-        from src.robot.safety.planning.perceived import SelfBody
-        from tests._arm_kit import planned_arm
-        from tests._fake_transport import fake_transport
-
-        config = RobotConfig.model_validate({
-            "vendor": "ur",
-            "motion": {"planner": "curobo"},
-            "gripper": {"model": "robotiq_2f85"},
-            "safety": {
-                "payload": {"enforce": False},
-                "planning_world": {
-                    "enabled": True,
-                    "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                    "payload": {"enabled": True, "length_mm": 120.0, "lateral_margin_mm": 10.0},
-                },
-            },
-        })
-        arm: Any = planned_arm(config, transport=fake_transport(joints=list(_REACH)))
-        planner = MagicMock()
-        planner.attach_payload.return_value = True
-        planner.detach_payload.return_value = True
-        arm._curobo = planner  # noqa: SLF001
-
-        frames = ur_link_transforms_mm("ur5e", _REACH)
-        assert frames is not None
-        point = _place(frames[6], (np.asarray(HAND_APPROACH_IN_TOOL0) * (_tip_mm(_hand()) + 100.0))[None, :])
-
-        def filtered() -> bool:
-            envelope = arm._self_envelope()  # noqa: SLF001
-            assert envelope is not None
-            return bool(SelfBody.from_frames(envelope.frames_mm, envelope.capsules, padding_mm=_PADDING_MM)
-                        .contains(point)[0])
-
-        self.assertFalse(filtered(), "the part is filtered before anything was attached")
-        arm.attach_payload(60.0)
-        self.assertTrue(filtered(), "the attached part is not filtered")
-        arm.detach_payload()
-        self.assertFalse(filtered(), "the part is still filtered after it was detached")
-
-    def test_the_planner_carries_the_part_the_filter_takes_out(self) -> None:
-        """The planner's box and the filter's capsule are one part: along the approach, from the fingertips.
-
-        Before, the planner hung a box 120 mm along tool0 +Z from the flange (the attach pose in curobo_motion.py), 90
-        degrees off the hand Step 4g.0 measured and inside the wrist, while the filter took the part out past the tips.
-        """
-        from src.robot.safety.planning.self_envelope import carried_part_box, payload_capsule
-
-        spheres = _spheres()
-        capsule = payload_capsule(_hand(), spheres, length_mm=120.0, lateral_margin_mm=10.0)
-        dims, centre = carried_part_box(_hand(), spheres, grip_width_mm=60.0, length_mm=120.0, lateral_margin_mm=10.0)
-        start, end = np.asarray(capsule.start_mm), np.asarray(capsule.end_mm)
-        np.testing.assert_allclose(centre, (start + end) / 2.0, atol=1e-9)
-        axis = (end - start) / np.linalg.norm(end - start)
-        self.assertAlmostEqual(float(np.abs(np.asarray(dims)) @ np.abs(axis)), 120.0, places=9)
-        self.assertEqual(sorted(dims), [70.0, 70.0, 120.0])
-
-
 class ACameraThatSeesTheArmRegistersNoBoxAroundItTests(unittest.TestCase):
     """The ur5e bundle arm and hand rendered into a synthetic overhead depth frame, beside one real block."""
 
@@ -366,19 +304,24 @@ class ACameraThatSeesTheArmRegistersNoBoxAroundItTests(unittest.TestCase):
 
 
 class TheTwoRadiusKeysAreRefusedTests(unittest.TestCase):
+    """The two radius keys left before the whole ``perceived`` block did (the owner's cleanup, 2026-10-17): a load
+    refuses either with the block's sentence, which names the self filter's 15 mm."""
+
     def test_the_schema_refuses_both(self) -> None:
-        from src.config.schema.robot.safety_schema import PerceivedWorldConfig
+        from src.config.schema.robot.safety_schema import PlanningWorldConfig
 
         for key in ("self_radius_mm", "tool_radius_mm"):
             with self.subTest(key=key), self.assertRaises(ValidationError):
-                PerceivedWorldConfig.model_validate({key: 90.0})
+                PlanningWorldConfig.model_validate({"perceived": {key: 90.0}})
 
-    def test_the_refusal_names_the_padding(self) -> None:
-        from src.config.schema._removed import REMOVED_KEYS
+    def test_the_refusal_names_the_self_filter(self) -> None:
+        from src.config.schema._removed import removed_key_sentence
 
         for key in ("self_radius_mm", "tool_radius_mm"):
             with self.subTest(key=key):
-                self.assertIn("perceived.margin_mm", REMOVED_KEYS[f"robot.safety.planning_world.perceived.{key}"])
+                sentence = removed_key_sentence(f"robot.safety.planning_world.perceived.{key}")
+                assert sentence is not None
+                self.assertIn("the self filter takes the robot's body out by at least 15 mm", sentence)
 
 
 if __name__ == "__main__":  # pragma: no cover

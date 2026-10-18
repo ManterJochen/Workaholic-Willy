@@ -1,8 +1,9 @@
 """RT-DETR fine-tuning from the command line: the shell face of ``DetectorTraining`` (``training/api.py``).
 
 A dataset is a COCO or YOLO folder (``training/datasets.py`` lists the layouts the labelling tools export). Training
-keeps the best epoch by validation mAP in ``--output-dir``, which ``RtDetrObjectDetector`` loads with
-``model_path=<out>, local=True``; the class vocabulary comes from the dataset, so the classes need not be COCO's.
+keeps the best epoch by validation mAP in ``--output-dir``, which a cell loads as ``models.rtdetr.model_id: <out>``
+(``RtDetrObjectDetector`` reads a folder id as it is); the class vocabulary comes from the dataset, so the classes need
+not be COCO's.
 
     python -m src.models.detection.closed_set.train inspect --data-dir data/detect/v1
     python -m src.models.detection.closed_set.train train   --data-dir data/detect/v1 --output-dir assets/models/rtdetr/v1

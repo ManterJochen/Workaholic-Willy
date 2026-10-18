@@ -1,4 +1,5 @@
-"""Phase F: analytical force-closure certificate tests."""
+"""Phase F: analytical force-closure certificate tests (the calculator stamped them on the silhouette's contact pairs
+until that stage left on 2026-10-16; the certificate itself stays a library function)."""
 
 from __future__ import annotations
 
@@ -9,7 +10,6 @@ import numpy as np
 
 from src.robot.grasping import (
     ForceClosureCertificate,
-    GraspCalculator,
     certify_contact_pair,
 )
 from src.robot.grasping.contacts import ContactPair
@@ -149,80 +149,6 @@ class CertifyContactPairTests(unittest.TestCase):
     def test_invalid_pair_type_rejected(self) -> None:
         with self.assertRaises(TypeError):
             certify_contact_pair("not a pair", friction_coefficient=0.4)  # type: ignore[arg-type]
-
-
-class GraspCalculatorFrictionWiringTests(unittest.TestCase):
-    """Confirm Phase F integration is strictly additive."""
-
-    def test_default_constructor_leaves_certification_disabled(self) -> None:
-        calc = GraspCalculator()
-        self.assertIsNone(calc.friction_coefficient)
-
-    def test_invalid_friction_coefficient_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            GraspCalculator(friction_coefficient=-0.1)
-        with self.assertRaises(ValueError):
-            GraspCalculator(friction_coefficient=5.0)
-        with self.assertRaises(ValueError):
-            GraspCalculator(friction_coefficient=float("nan"))
-
-    def test_friction_coefficient_accepted_in_range(self) -> None:
-        calc = GraspCalculator(friction_coefficient=0.4)
-        self.assertAlmostEqual(calc.friction_coefficient or 0.0, 0.4)
-
-    def test_helper_is_noop_when_friction_disabled(self) -> None:
-        calc = GraspCalculator()  # friction_coefficient = None
-        # Helper should run and not touch pose metadata.
-        from src.robot.grasping.planning import generate_grasp_poses
-
-        pair = _pair(
-            (-30.0, 0.0, 0.0), (30.0, 0.0, 0.0), (-1, 0, 0), (1, 0, 0)
-        )
-        poses = generate_grasp_poses([pair])
-        self.assertEqual(len(poses), 1)
-        before = dict(poses[0].metadata)
-        certified = calc._apply_force_closure_certificates([pair], poses)
-        self.assertEqual(certified, 0)
-        self.assertNotIn("force_closure", poses[0].metadata)
-        self.assertNotIn("force_closure_certified", poses[0].metadata)
-        self.assertEqual(poses[0].metadata, before)
-
-    def test_helper_stamps_certificate_when_enabled(self) -> None:
-        from src.robot.grasping.planning import generate_grasp_poses
-
-        calc = GraspCalculator(friction_coefficient=0.4)
-        pair = _pair(
-            (-30.0, 0.0, 0.0), (30.0, 0.0, 0.0), (-1, 0, 0), (1, 0, 0)
-        )
-        poses = generate_grasp_poses([pair])
-        certified = calc._apply_force_closure_certificates([pair], poses)
-        self.assertEqual(certified, 1)
-        meta = poses[0].metadata
-        self.assertTrue(meta["force_closure_certified"])
-        self.assertEqual(meta["force_closure"]["is_certified"], True)
-        self.assertEqual(meta["confidence_kind"], "analytical")
-
-    def test_helper_keeps_heuristic_when_not_certified(self) -> None:
-        from src.robot.grasping.planning import generate_grasp_poses
-
-        calc = GraspCalculator(friction_coefficient=0.1)
-        # Tilt 60deg outside the friction cone (atan(0.1) ~= 5.7 deg).
-        a = math.radians(60.0)
-        pair = _pair(
-            (-30.0, 0.0, 0.0),
-            (30.0, 0.0, 0.0),
-            (-math.cos(a), math.sin(a), 0.0),
-            (math.cos(a), math.sin(a), 0.0),
-        )
-        poses = generate_grasp_poses([pair])
-        # Mark the heuristic kind the way the calculator pipeline does.
-        poses[0].metadata.setdefault("confidence_kind", "heuristic")
-        certified = calc._apply_force_closure_certificates([pair], poses)
-        self.assertEqual(certified, 0)
-        meta = poses[0].metadata
-        self.assertFalse(meta["force_closure_certified"])
-        # Non-certified candidates retain their heuristic marker.
-        self.assertEqual(meta["confidence_kind"], "heuristic")
 
 
 if __name__ == "__main__":

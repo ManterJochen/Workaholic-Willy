@@ -49,7 +49,8 @@ cell>,cell`), and open http://127.0.0.1:8000. Work in this order:
 2. **Setup, Posen**: teach the default place and a park pose by hand, one at a time.
 3. **Cockpit**: a command, typed or spoken; read the card; **Start**.
 4. **History** for the session and the logged attempts; **Settings** for language, theme, view, voice output,
-   the talk key, how a task starts (Enter or the card, the mode, the defaults) and the bench values.
+   the talk key, how a task starts for the whole cell (Enter or the card, the mode, the defaults) and the bench
+   values.
 
 The runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md),
 [the first pick on a physical arm](../docs/runbooks/real_cell_first_pick.md) and
@@ -59,9 +60,9 @@ The runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md),
 > **The controls that start motion are filled lime**: Start, the ask card's options that move, Restart, and the
 > confirm of Home, which is outlined until then. **What arms something is filled red**: Verbinden, "Arm
 > freigeben" in the teach dialog and "Jetzt öffnen" in the jaws question. **"Sofort anhalten" is
-> orange**: one click stops the run and latches the arm, so nothing after the move in flight is sent; only
-> with `robot.ur.brake_on_halt` on (off as shipped) is that move braked under control. It is **not the
-> emergency stop**: the stop for a moving arm is the physical red button at the cell.
+> orange**: one click stops the run and latches the arm, so nothing after the move in flight is sent, and a UR
+> brakes that move under control (every UR since 2026-10-17; `robot.ur.brake_on_halt` until then). It is **not
+> the emergency stop**: the stop for a moving arm is the physical red button at the cell.
 
 ## The pages
 
@@ -70,7 +71,7 @@ The runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md),
 | **Cockpit** | `/` | the live image, the task's steps, the two stops and Home under it; the numbers and the chat beside it; the ready bar or the run header across the top |
 | **Einrichten / Setup** | `/setup` | Prüfen → Aufbauen → Vorschau → Verbinden → Bereit, the taught poses and the teach dialog, and what this cell is |
 | **Verlauf / History** | `/history` | the session's tasks in numbers and two charts, every run with its kind, its command and how it ended, the logged attempts and their KPIs, CSV |
-| **Einstellungen / Settings** | `/settings` | language, theme, demo or tech view, voice output, the talk key; how a task starts ("Auftrag"); the config explained and its bench values written |
+| **Einstellungen / Settings** | `/settings` | language, theme, demo or tech view, voice output, the talk key, for this browser; how a task starts ("Auftrag"), for the whole cell; the config explained and its bench values written |
 | **Audience window** | `/demo.html` | a read-only mirror of the cell for a projector: no button, no link, always the black stage |
 
 The old addresses redirect, so a bookmark lands where its work now is: `/pick` to the cockpit, `/cell` to
@@ -127,7 +128,8 @@ bewegt". It stays as the thumbnail of its part's card.
   understood task, no note, its part and its place found in the sentence) on a cell the server says is ready
   starts at once, and the chat says the first motion ("Verstanden, ich fange an: der Roboter fährt zu Blick 1.").
   What and where come from the sentence; the mode (Einmal or Bis leer) and the place where the sentence names
-  none come from **Settings → Auftrag**, and the line under the box says them. Any doubt opens the
+  none come from **Settings → Auftrag**, the cell's settings for every browser, and the line under the box says
+  them. Until the cockpit has read them, Enter only reads, as with "Erst die Karte". Any doubt opens the
   **Understood card** (Greifen, Welches, Woher, Ablegen, Umfang: Einmal or Bis leer, Danach, and the Advanced
   drawer) with the first reason in the chat: a note, a word not found in the sentence, no part named, a cell not
   ready, a language model the cell detects with that is not loaded yet, a refused start. With "Erst die Karte"
@@ -138,18 +140,19 @@ bewegt". It stays as the thumbnail of its part's card.
   out starts once, whatever mode the settings set. **Woher** is where the parts lie ("on the black mat"). Both are
   English, both editable, and empty where the sentence said nothing of it; the pick's route badge judges what the
   picks will ground, the which alone or the object where the parts lie, as the server's guard does at Start.
-- **"Kritische Teile"** in the Advanced drawer is the cell's `recovery.critical_parts` for this run, ticked
-  where the cell says so. Ticked, nothing is pushed: a blocker is gripped and set aside, the push distance
+- **"Kritische Teile"** in the Advanced drawer is the cell's `runtime.task.critical_parts` for this run, ticked
+  where the built cell says so (`facts.push.critical_parts`; Settings → Auftrag writes the cell's, which the cell
+  reads at its next build). Ticked, nothing is pushed: a blocker is gripped and set aside, the push distance
   field goes, and the summary says "kritische Teile: nur wegräumen". Unticked, a boxed-in part is pushed
   first and the push may rearrange the scene; a push distance left untouched lets the cell go longer, up to
   its ceiling, where its own frees no direction (2026-10-03).
 - **"Blicke"** is one choice (the owner, 2026-10-08 night: "Multi-View" and "Alle Posen" together): **Nur erster
-  Blick** (`multi_view: false`), **Bei Bedarf** (the looks until a grasp is safe; where the cell turns its weak-look
-  trigger on, a weak look is not) or **Alle Posen** (`every_look: true`, every configured look). Settings → Auftrag
+  Blick** (`multi_view: false`), **Bei Bedarf** (the looks until a grasp is safe, and a weak look is not, on every
+  cell since 2026-10-17) or **Alle Posen** (`every_look: true`, every configured look). Settings → Auftrag
   sets it for every task, the line under the box says it where it is not "Bei Bedarf", and the card's drawer may
   change it for its task. **"Direkt über die Kante tragen"** shows for a bin the wrist camera finds: ticked as the
-  cell carries (`facts.carry`, `robot.place.carry`), sent only where touched (`options.carry`). The drawer has no
-  "Aufnahmen" switch any more (every pick keeps its looks, the library's own rule) and no
+  cell carries (`facts.carry`, `robot.motion.place.carry`), sent only where touched (`options.carry`). The drawer
+  has no "Aufnahmen" switch any more (every pick keeps its looks, the library's own rule) and no
   "Beide Backenflächen" (a program's switch; a card made from a run's plan keeps it, and the summary says it).
 - **Start is the confirmation.** One click, no second dialog, and its label names the first motion: "Start –
   der Roboter fährt zu Blick 1" (configured looks), "nach Home und schaut" (a wrist camera with no looks) or
@@ -206,8 +209,8 @@ box says why.
   the arm returns. For a Home run it stops the move before it is sent; for a pick run, before its next attempt.
   It never stops the arm.
 - **"Sofort anhalten"** is one click, no dialog, and is **not the e-stop**: it says "bremst kontrolliert" where
-  the arm brakes a move in flight, and "hält vor der nächsten Bewegung" where it only latches, as the owner's
-  cell does as shipped. It is enabled whenever the cell is connected, with or without a run: drawn calm (a
+  the arm brakes a move in flight, as every UR does since 2026-10-17, and "hält vor der nächsten Bewegung" where
+  it only latches, as the desk's dummy arm does. It is enabled whenever the cell is connected, with or without a run: drawn calm (a
   darker orange, no glow) while nothing runs, full orange during a run, and one click whatever else is open,
   the Diagnostics drawer included (the stop row stays above the drawer's shade).
 - **"Anhalten nicht bestätigt: Not-Aus drücken"** appears only where the arm brakes and no confirmation came
@@ -262,8 +265,8 @@ live only and once each, in the cockpit. The teach dialog says its own 30 s warn
   noch", after a restart of the server too) is offered the same word there once the cell is built, before
   Verbinden: a toggle's "Jetzt öffnen" at Connect waits for it, and so does "Backen prüfen" in the ready panel.
 - **The cell's facts** say what was built, in words: the cameras and the looks, the push, how "halt now" acts,
-  whether the carried part is modelled, and the detector by name (GroundingDINO + SAM, VLM, RT-DETR); its config
-  word (`grounded_sam`, `vlm`, `rtdetr`) is in the tech view, and so is the raw telemetry (TCP, quaternion,
+  and the detector by name (VLM, RT-DETR); its config
+  word (`vlm`, `rtdetr`) is in the tech view, and so is the raw telemetry (TCP, quaternion,
   joints).
 
 ### Poses and teaching
@@ -309,9 +312,21 @@ The answer returns the next stage, a read that lands after an answer is dropped,
 Language, theme, the demo or tech view, voice output (off by default) with "Stimme testen", and the talk key: F8
 unless another is set, and only F1-F24, Pause or Scroll Lock, keys typing never uses. Each switch writes the key
 the rest of the console reads (`willy.lang`, `willy.theme`, `willy.view`, `willy.voiceOut`, `willy.talkKey`),
-per browser. Below them the keys this server may write, each in the reader's words with a one-line hint (the
-server's own English sentence under "Details (Server)" in the demo view), and a controller address only for the
-cell's own vendor.
+per browser.
+
+**Auftrag** is the cell's, for every browser (the owner, 2026-10-16): Start (Enter at once or the card first),
+Modus, Blicke, Ablegen ohne Angabe, Kein Teil genannt and Kritische Teile, `runtime.task` of the cell's config.
+The page reads them from `GET /v1/task/settings` (`model/taskSettings.ts`, shared by the cockpit) and writes each
+choice through `PATCH /v1/task/settings` into the cell's own layer, `app/runtime.cell.yaml` under the cell's
+chain, the way a taught pose is written (2026-10-17); a camera place is written once its phrase is typed and the
+field is left. One change at a time: the rows wait for the answer, a refusal is said under them, and where the
+chain has no layer of the cell's own the rows are off and say why. Kritische Teile is read by the cell when it is
+built, and the row says where the built cell still runs the other choice. No browser keeps these any more; the
+keys an older console left (`willy.taskStart`, `willy.taskScope`, `willy.taskPlace`, `willy.taskAnything`,
+`willy.taskLooks`) are read by nothing.
+
+Below them the keys this server may write, each in the reader's words with a one-line hint (the server's own English
+sentence under "Details (Server)" in the demo view), and a controller address only for the cell's own vendor.
 
 ### The audience window
 
@@ -437,7 +452,7 @@ to what the console says.
 | `src/api/client.ts`, `src/api/events.ts` | the only code that talks to the server, typed from `schema.d.ts`; the event streams, resumed from `since_seq`, with gaps shown |
 | `src/api/codes.ts`, `src/api/schema.d.ts` | the catalog of `GET /v1/codes`; generated types, do not edit |
 | `src/i18n/` | `I18nProvider`, `useT()`, the shell's catalog and every code's text in both languages |
-| `src/model/` | the shared cell poll (`useCell`), the run on screen (`useRun`, `runModel`), the cell stream (`cellModel`), the conversation (`chat`), the preferences (`prefs`) and the confirm host (`confirm`) |
+| `src/model/` | the shared cell poll (`useCell`), the run on screen (`useRun`, `runModel`), the cell stream (`cellModel`), the conversation (`chat`), this browser's preferences (`prefs`), the cell's task settings (`taskSettings`) and the confirm host (`confirm`) |
 | `src/cockpit/` | the cockpit: stage, ready bar, timeline, stop buttons, stop and ask cards, Understood card and Advanced drawer, chat, numbers, voice output |
 | `src/prompt/` | the command box, typed or spoken, the WAV encoder, its catalog |
 | `src/speech/speak.ts` | voice output through the browser's speech synthesis |

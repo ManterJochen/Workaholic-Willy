@@ -47,7 +47,6 @@ from src.willy_sim.scene import SceneHandles, build_combined_scene
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.app import AppConfig
-    from src.config.schema.robot.safety_schema import DwellSafetyConfig
     from src.config.schema.robot.sim_schema import SimConfig
     from src.robot.grippers.sim import IsaacGripper
 
@@ -252,7 +251,7 @@ class SimCell:
     """The booted Isaac sim cell shared by every runner's ``build_service``.
 
     Carries the live arm + gripper + scene handles plus the loaded, ``robot``-narrowed config, so
-    a runner reads ``cell.sim`` / ``cell.robot.gripper`` / ``cell.dwell`` without re-deriving them.
+    a runner reads ``cell.sim`` / ``cell.robot.gripper`` without re-deriving them.
     """
 
     arm: IsaacRobotArm
@@ -261,7 +260,6 @@ class SimCell:
     cfg: AppConfig
     robot: RobotConfig
     sim: SimConfig
-    dwell: DwellSafetyConfig
     #: Engines the cell routes through that are not installed (empty == fully anchored). Non-empty only
     #: when the operator explicitly opted into a degraded run; carried so a runner can stamp it onto its
     #: results, because a pick rate measured without them describes a different system.
@@ -312,7 +310,7 @@ def bootstrap_sim_cell(
     cell needs neither, because nothing plans against a world there.
     """
     # ``robot_model`` selects a second profile layer ("sim,ur3e"), so the whole robot-dependent
-    # config, meaning the reach-limited scene geometry, safe_pose and the arm model the guard judges,
+    # config, meaning the reach-limited scene geometry and the arm model the guard judges,
     # comes from that layer's YAML rather than from per-runner patching. ``None`` loads plain "sim".
     started = time.perf_counter()
     _LOG.info(
@@ -335,9 +333,9 @@ def bootstrap_sim_cell(
     # boot. The camera section is untouched, so the one cross-section rule on AppConfig, the primary
     # camera calibrated in one place, cannot change here.
     #
-    # The hand's own widths and envelope come with it, the way the loader derives them for a hand
-    # named in YAML: the dump holds the tree hand's numbers in every one of those keys, so they are
-    # dropped before the new hand fills them. A tree naming no hand that states widths loses them
+    # The hand's own widths come with it, the way the loader derives them for a hand named in YAML
+    # (its envelope is its registry file's wherever it is read): the dump holds the tree hand's numbers
+    # in every one of those keys, so they are dropped before the new hand fills them. A tree naming no hand that states widths loses them
     # here; no shipped sim chain does, because the sim layer names its hand.
     if hand is not None:
         from src.config.hand_numbers import HAND_KEYS, apply_named_hand
@@ -388,7 +386,6 @@ def bootstrap_sim_cell(
     # the robot layer that anchors the scene, so nothing guarantees the two agree about where the
     # workspace is. A scene outside the frame reads as a perception failure, not a geometry one.
     warn_if_out_of_frame(robot)
-    dwell = robot.safety.dwell
     sim = robot.sim
     preflight = sim_safety_preflight(cfg) if safety else None
     driver_cfg = sim_driver_config(cfg, headless=headless)
@@ -441,17 +438,13 @@ def bootstrap_sim_cell(
     held: CellCameraWorld | None = None
     if isinstance(camera_world, CameraWorldDecline):
         held = hold_camera_world_decline(arm, camera_world, ExitStack())
-    # The cell's own geometry, underneath whatever the runner registers. ``set_world`` replaces the
-    # planner's world, so a runner that declares its bin walls would drop the bench with them. The
-    # declaration is the one the guard reads, so a cell has a single description of its furniture.
+    # The cell's own geometry, underneath whatever the runner registers: the bench and the meshes, wherever the tree
+    # declares the bench. ``set_world`` replaces the planner's world, so a runner that declares its bin walls would drop
+    # the bench with them. The guard's own fixtures stay the guard's, as on every cell (2026-10-17).
     from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes
 
     _world_cfg = getattr(robot.safety, "planning_world", None)
-    _reservation = driver_cfg.planner_reservation
-    _base_world = build_planner_cuboids(
-        _world_cfg, robot.safety.self_collision.fixtures,
-        **({"max_cuboids": _reservation.cuboid_slots} if _reservation is not None else {}),
-    )
+    _base_world = build_planner_cuboids(_world_cfg)
     _base_meshes = build_planner_meshes(_world_cfg)
     if _base_world:
         arm.set_planner_base_world(_base_world, _base_meshes)
@@ -504,7 +497,7 @@ def bootstrap_sim_cell(
         f" degraded={list(degraded)}" if degraded else "",
     )
     return SimCell(
-        arm=arm, gripper=gripper, handles=handles, cfg=cfg, robot=robot, sim=sim, dwell=dwell,
+        arm=arm, gripper=gripper, handles=handles, cfg=cfg, robot=robot, sim=sim,
         degraded_engines=degraded, mount=mount, camera_world=held,
     )
 
@@ -532,8 +525,8 @@ def _refuse_a_sim_camera_world(request: SimCameraWorld, robot: RobotConfig, *, p
     if not plan.rig_ids:
         raise ValueError(
             f"camera_world=SimCameraWorld({request.rig_id!r}) and this tree gives no live world: "
-            f"{plan.reason}. Add the sim_camera_world profile layer, which enables "
-            "safety.planning_world with the scene's table as its support plane"
+            f"{plan.reason}. Add the sim_camera_world profile layer, which declares the scene's table as "
+            "safety.planning_world.support_plane"
         )
 
 

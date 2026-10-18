@@ -1,3 +1,10 @@
+"""SAM2, the segmenter of every perception stack: one box in, one mask out.
+
+The weights are read from ``config.model_id`` through the one resolver (:mod:`src.models.weights`), and the model
+loads as the owner's cell ran it (:data:`~src.models._inference.SAM2`): fp32 weights under fp16 autocast, which keeps
+small parts whole, sdpa attention, channels last.
+"""
+
 from __future__ import annotations
 
 import time
@@ -11,6 +18,7 @@ from transformers import Sam2Model, Sam2Processor
 
 from src.config.schema.models.models_schema import SegmenterConfig
 from src.models._inference import (
+    SAM2,
     autocast_ctx,
     build_load_kwargs,
     finalize_model,
@@ -19,6 +27,7 @@ from src.models._inference import (
 from src.models.constants import MODELS_LOG_DIR, SEGMENTER_LOG_FILE
 from src.models.detection.types import Detection
 from src.models.segmentation.types import SegmentationResult
+from src.models.weights import resolve_weights
 from src.utility import (
     bgr_to_rgb,
     create_logger,
@@ -30,6 +39,11 @@ from src.utility import (
 
 
 class Sam2Segmenter:
+    """SAM2 for one box at a time: ``segment_detection(image_bgr, detection)`` cuts the object the box holds.
+
+    ``weights_root`` is the tree's ``models.weights_root`` (``None`` is the repository's folder), and ``local``
+    ``False`` lets an id that is not on this machine be downloaded, which only ``ObjectDetector.from_weights`` asks.
+    """
 
     def __init__(
         self,
@@ -38,12 +52,13 @@ class Sam2Segmenter:
         debug_subdir: str = "segmentation",
         keep_largest_component: bool = True,
         morph_kernel_size: int = 5,
+        *,
+        weights_root: str | None = None,
+        local: bool = True,
     ) -> None:
         self.device = get_device()
         self.model_id = config.model_id
-        self.model_path = config.model_path
-        self.local = config.local
-        self.optim = config.optim
+        self.settings = SAM2
         self.save_debug = save_debug
         self.debug_subdir = debug_subdir
         self.keep_largest_component = keep_largest_component
@@ -52,12 +67,13 @@ class Sam2Segmenter:
         self.logger = create_logger("SAM2", log_file=SEGMENTER_LOG_FILE, log_dir=MODELS_LOG_DIR)
         self.logger.info("Initializing Sam2Segmenter on device: %s", self.device)
 
-        source = self.model_path if self.local else self.model_id
-        if not source:
-            raise ValueError("model_path (local=True) or model_id (local=False) must be set.")
-        base_kwargs = {"local_files_only": True} if self.local else {}
+        found = resolve_weights(config.model_id, kind="segmentation", root=weights_root, local=local,
+                                key="models.segmenter.model_id")
+        #: Where the weights are read from: the folder, or the id the Hugging Face cache (or the Hub) holds.
+        self.source = source = found.source
+        base_kwargs = {"local_files_only": True} if found.local else {}
         proc_kwargs = dict(base_kwargs)
-        model_kwargs = build_load_kwargs(self.optim, self.device, base_kwargs)
+        model_kwargs = build_load_kwargs(self.settings, self.device, base_kwargs)
         self._model_dtype = model_kwargs.get("torch_dtype")
 
         try:
@@ -73,7 +89,7 @@ class Sam2Segmenter:
             raise
 
         self.model = finalize_model(
-            self.model, self.device, self.optim, vision=True,
+            self.model, self.device, self.settings, vision=True,
         )
 
         # Debug images go through :func:`debug_dir` in ``_save_debug_overlay``,
@@ -87,7 +103,7 @@ class Sam2Segmenter:
         detection: Detection,
         frame_id: str | None = None,
     ) -> SegmentationResult:
-        """Segment one ``Detection`` from ``GroundingDinoObjectDetector``.
+        """Segment one ``Detection`` of the cell's detector (the VLM's or RT-DETR's).
 
         Takes the OpenCV BGR image, converts it to RGB and calls ``segment``.
         """
@@ -141,7 +157,7 @@ class Sam2Segmenter:
 
         inputs = move_inputs_to_device(dict(inputs), self.device)
 
-        if self.optim and self.optim.channels_last and self.device.type == "cuda":
+        if self.settings.channels_last and self.device.type == "cuda":
             pv = inputs.get("pixel_values")
             if torch.is_tensor(pv) and pv.dim() == 4:
                 inputs["pixel_values"] = pv.to(memory_format=torch.channels_last)

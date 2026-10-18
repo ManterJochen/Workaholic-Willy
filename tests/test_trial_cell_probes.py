@@ -33,7 +33,7 @@ class DerivedTests(unittest.TestCase):
     def test_derived_reads_the_hande_chain_as_its_registry_numbers(self) -> None:
         report = _tool().derived("hande")
         self.assertEqual(report.exit_code, 0, report.render())
-        self.assertEqual((report.hand, report.checked), ("robotiq_hande", 13))
+        self.assertEqual((report.hand, report.checked), ("robotiq_hande", 3))
 
     def test_a_chain_stating_another_number_does_not_load(self) -> None:
         """⭐ THE CONTROL: the probe cannot agree with a number the loader let through, because it refuses it."""

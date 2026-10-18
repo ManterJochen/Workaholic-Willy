@@ -6,11 +6,10 @@ shows live in a window of its own, each attempt's grasp overlay pinned on the pr
 Measured in simulation on the datagen reference: the best ranked grasp is graspable for 43.5 % of objects from one
 view and 55.9 % fused. Never run on hardware: no physical multi-camera cell has been built with this code.
 
-The tree is asked first, before a camera opens or a model loads. Fusing needs robot.grasping.fusion.enabled (the
-other cameras' CAMERA to BASE are built under it) and fusion.geometry.enabled, two or more rigs in fusion.cameras with
-the primary among them, and each an enabled RGB-D rig that declares its calibration. A cell short of any of it is
-refused in one sentence; config/robot/robot.eth2.yaml with config/camera/cam.eth2.yaml is the reference cell. A
-calibrated wrist camera counts as one of the views too, and then the look below is where it looks from.
+The tree is asked first, before a camera opens or a model loads. There is no switch: a cell fuses by itself wherever
+its camera section declares two or more enabled RGB-D rigs with their calibration, the primary among them. A cell
+short of that is refused in one sentence; config/camera/cam.eth2.yaml is the reference cell. A calibrated wrist camera
+counts as one of the views too, and then the look below is where it looks from.
 
 Run it at the cell, under the cell's profile, once every camera is calibrated (07-10):
     WILLY_PROFILE=<your cell> python examples/real_robot/17_pick_with_fused_cameras.py

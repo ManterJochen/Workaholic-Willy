@@ -72,31 +72,9 @@ class PreflightTests(unittest.TestCase):
         report = run_config_preflight(RobotConfig(vendor="ur"), camera=load_config().camera,
                                       curobo_available=True, collision_engine="coal")
         blocking = {c.name for c in report.blocking}
-        # Step 8e: the carried part is modelled by default and the base tree declares no length for it.
         self.assertEqual(blocking, {"tool frame", "payload", "camera -> base", "camera world", "hand", "planner margin",
-                                    "carried part", "controller address"})
+                                    "controller address"})
         self.assertFalse(report.ok)
-
-    def test_the_checklist_blocks_a_real_curobo_ur_with_no_carried_length(self) -> None:
-        """Step 8e: a cuRobo UR models the part it carries, and a cell that declares no length is stopped at the desk,
-        naming the key, rather than planning every carry as if the hand were empty."""
-        def row(payload: dict, planner: str = "curobo"):  # noqa: ANN202
-            report = run_config_preflight(
-                RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": planner},
-                                            "safety": {"planning_world": {"payload": payload}}}),
-                curobo_available=True, collision_engine="coal",
-            )
-            return _named(report, "carried part")
-
-        blocked = row({})
-        self.assertIs(CheckStatus.BLOCK, blocked.status)
-        self.assertIn("safety.planning_world.payload.length_mm", blocked.detail + blocked.fix)
-        declared = row({"length_mm": 60.0})
-        self.assertIs(CheckStatus.OK, declared.status)
-        self.assertIn("60", declared.detail)
-        self.assertIn("16", declared.detail)
-        self.assertIs(CheckStatus.WARN, row({"enabled": False}).status)
-        self.assertIs(CheckStatus.WARN, row({}, planner="ik").status)
 
     def test_a_curobo_cell_without_the_environment_blocks(self) -> None:
         """A cuRobo cell refuses every motion without the sidecar, which looks like a broken robot.
@@ -113,7 +91,7 @@ class PreflightTests(unittest.TestCase):
         blocking = {c.name for c in report.blocking}
         self.assertEqual(
             blocking, {"tool frame", "payload", "camera -> base", "camera world", "cuRobo environment", "hand",
-                       "planner margin", "wrist camera body", "carried part"}
+                       "planner margin", "wrist camera body"}
         )
         fix = _named(report, "cuRobo environment").fix
         # The doctor lives on the planning CLI. `execution.real_cell --doctor` was named here for months and that
@@ -197,19 +175,6 @@ class PreflightTests(unittest.TestCase):
                      "exact mesh engine")
         self.assertIs(row.status, CheckStatus.WARN)
 
-    def test_a_cell_that_enforces_nothing_is_told_the_other_sentence(self) -> None:
-        """⭐ THE CONTROL that the row reports the REASON and not one fixed sentence."""
-        from src.robot.safety.preflight import no_path_guard_refusal
-
-        cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "curobo"},
-            "safety": {"self_collision": {"enforce": False, "planner_margin_mm": 4.0}},
-        })
-        row = _named(run_config_preflight(cfg, curobo_available=True, collision_engine="coal"),
-                     "exact mesh engine")
-        self.assertIs(row.status, CheckStatus.BLOCK)
-        self.assertEqual(row.detail, no_path_guard_refusal())
-
     def test_a_sim_cell_has_no_such_row(self) -> None:
         """Only a real arm. A sim cell reaches its guard through its own driver."""
         names = {c.name for c in run_config_preflight(RobotConfig(vendor="sim"),
@@ -230,18 +195,13 @@ class PreflightTests(unittest.TestCase):
             # cell lock holds the cell by this same name.
             "ur": {"ip": "127.0.0.1", "model": "ur3e"},
             "gripper": {"model": "robotiq_2f85", "tool_frame": _GOOD_TOOL},
-            "safety": {"payload": {"enforce": True, "mass_kg": 1.1, "cog_mm": (0.0, 0.0, 55.0)},
+            "safety": {"payload": {"mass_kg": 1.1, "cog_mm": (0.0, 0.0, 55.0)},
                        # Every cuRobo cell declares its planner margin (B1 S17), and a fully configured one
                        # has a committed evidence file for its combination (S22): ur3e, 2F-85, +Y+X, 4 mm.
                        "self_collision": {"planner_margin_mm": 4.0},
                        # A calibrated cuRobo cell feeds its planner a live world, by owner decision.
                        "planning_world": {
-                           "enabled": True,
                            "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                           # A cell states whether it carries a part (Step 8e). This one says it carries none: the
-                           # committed evidence for its combination was measured with no attach slots, and a cell
-                           # that declares a length needs the `_a16` file measured first (gate.py --attach).
-                           "payload": {"enabled": False},
                        }},
         })
         # The primary camera's calibration is declared on its rig, in the camera section of the same tree.
@@ -258,12 +218,11 @@ class PreflightTests(unittest.TestCase):
         """
         from src.config import load_config
 
-        world = {"enabled": True,
-                 "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}}
+        world = {"support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}}
         wired = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "safety": {"planning_world": world}})
         rows = (
             ("the base tree and the shipped camera", RobotConfig(vendor="ur"), load_config().camera,
-             CheckStatus.BLOCK, "planning_world.enabled is false"),
+             CheckStatus.BLOCK, "declares no support_plane"),
             ("a block, a plane and a calibrated primary", wired, _calibrated_camera("logs/eth.json"),
              CheckStatus.OK, "camera world from"),
             ("an ik cell", RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "ik"}}),
@@ -308,7 +267,7 @@ class PreflightTests(unittest.TestCase):
 
     def test_a_declared_but_zero_cog_is_caught(self) -> None:
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "safety": {"payload": {"enforce": True, "mass_kg": 2.2}},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "safety": {"payload": {"mass_kg": 2.2}},
         })
         self.assertIs(_named(run_config_preflight(cfg, curobo_available=True), "payload").status, CheckStatus.BLOCK)
 
@@ -493,11 +452,12 @@ class RunnerEndToEndTests(unittest.TestCase):
         from src.config.schema.robot import RobotConfig
         from src.robot.execution.cell_lock import LockKeyRequired, cell_lock_key
 
-        for vendor in ("franka", "kuka", "ros2"):
-            with self.subTest(vendor=vendor), self.assertRaises(LockKeyRequired) as refused:
-                cell_lock_key(RobotConfig.model_validate({"vendor": vendor}))
-            self.assertIn(vendor, str(refused.exception))
-            self.assertIn("address", str(refused.exception))
+        # A vendor this layer has no block for: no RobotVendor names one since 2026-10-17, so set past validation.
+        foreign = RobotConfig.model_validate({"vendor": "ur"}).model_copy(update={"vendor": "acme"})
+        with self.assertRaises(LockKeyRequired) as refused:
+            cell_lock_key(foreign)
+        self.assertIn("acme", str(refused.exception))
+        self.assertIn("address", str(refused.exception))
 
         with self.assertRaises(LockKeyRequired):
             cell_lock_key(RobotConfig.model_validate({"vendor": "ur"}))

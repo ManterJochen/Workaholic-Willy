@@ -61,7 +61,6 @@ _LAZY: dict[str, tuple[str, str]] = {
     # What a robot's hand verbs report.
     "HandReport": ("src.robot.execution.handling", "HandReport"),
     "HandOutcome": ("src.robot.execution.handling", "HandOutcome"),
-    "PayloadState": ("src.robot.execution.handling", "PayloadState"),
     "HandlingReport": ("src.robot.execution.handling", "HandlingReport"),
     "HandlingOutcome": ("src.robot.execution.handling", "HandlingOutcome"),
     "PoseProvider": ("src.robot.execution.pose_provider", "PoseProvider"),
@@ -182,7 +181,6 @@ __all__ = [
     "RouteReading",
     "HandReport",
     "HandOutcome",
-    "PayloadState",
     "HandlingReport",
     "HandlingOutcome",
     "CalibrationResult",

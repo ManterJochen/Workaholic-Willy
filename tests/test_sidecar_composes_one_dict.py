@@ -1,4 +1,4 @@
-"""The sidecar loads ONE config: the descriptor, then the guard's margin, then a payload link, composed as a dict.
+"""The sidecar loads ONE config: the descriptor, then the guard's margin, composed as a dict.
 
 It used to derive a temporary yaml per step, chained by file name, and handed each cuRobo consumer a path: the planner,
 ``Kinematics`` and the check_js checker each read a file, and nothing said which bytes the planner actually held. Now
@@ -6,7 +6,8 @@ the descriptor is read once, composed in memory and hashed, and every consumer i
 one dict, because cuRobo's ``LinkParams.create`` rewrites the dict it is handed (UM lane S09).
 
 The sidecar runs in the cuRobo environment, so its half is read as source, as test_curobo_client_error_vs_verdict.py
-does. The composition is a sibling module both interpreters load, and is tested here directly.
+does. The composition is a sibling module both interpreters load, and is tested here directly. No payload link
+follows the margin since 2026-10-17: no cell models a carried part.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from pathlib import Path
 import yaml
 
 from src.contracts import UNSET
-from src.robot.safety.planning._curobo_attach import apply_attached_object_link
 from src.robot.safety.planning._curobo_margin import apply_self_collision_margin
 
 _SERVER = Path(__file__).resolve().parents[1] / "src/robot/safety/planning/curobo_planner_server.py"
@@ -61,28 +61,20 @@ class TheSidecarComposesOneDictTests(unittest.TestCase):
 
         self.compose = compose_sidecar_config
 
-    def test_margin_then_attach_is_what_the_file_chain_derived(self) -> None:
+    def test_the_margin_is_what_the_file_chain_derived(self) -> None:
         chained, _ = apply_self_collision_margin(_descriptor(), 10.0)
-        chained, added = apply_attached_object_link(chained, spheres=16)
-        self.assertTrue(added)
-        self.assertEqual(self.compose(_descriptor(), bodies=(), margin_mm=10.0, attach_spheres=16), chained)
-
-    def test_the_order_is_load_bearing(self) -> None:
-        """⭐ THE CONTROL. Attach first and the margin lands on the payload link too, which the planner must not get."""
-        attached, _ = apply_attached_object_link(_descriptor(), spheres=16)
-        swapped, _ = apply_self_collision_margin(attached, 10.0)
-        self.assertNotEqual(self.compose(_descriptor(), bodies=(), margin_mm=10.0, attach_spheres=16), swapped)
+        self.assertEqual(self.compose(_descriptor(), bodies=(), margin_mm=10.0), chained)
 
     def test_no_margin_and_no_slots_is_the_descriptor_as_written(self) -> None:
         source = _descriptor()
-        composed = self.compose(source, bodies=(), margin_mm=0.0, attach_spheres=0)
+        composed = self.compose(source, bodies=(), margin_mm=0.0)
         self.assertEqual(composed, source)
         self.assertIsNot(composed, source, "a consumer that rewrites the result would rewrite the descriptor")
 
     def test_the_descriptor_is_never_mutated(self) -> None:
         source = _descriptor()
         before = copy.deepcopy(source)
-        composed = self.compose(source, bodies=(), margin_mm=10.0, attach_spheres=16)
+        composed = self.compose(source, bodies=(), margin_mm=10.0)
         composed["robot_cfg"]["kinematics"]["collision_link_names"].append("mutated")
         self.assertEqual(source, before)
 
@@ -91,7 +83,7 @@ class TheSidecarComposesOneDictTests(unittest.TestCase):
         from src.robot.safety.planning._curobo_body_links import BodyLinkError
 
         with self.assertRaises(BodyLinkError):
-            self.compose(_descriptor(), bodies=({"link_name": "hand"},), margin_mm=10.0, attach_spheres=16)
+            self.compose(_descriptor(), bodies=({"link_name": "hand"},), margin_mm=10.0)
 
 
 class TheConfigHashIsCanonicalTests(unittest.TestCase):

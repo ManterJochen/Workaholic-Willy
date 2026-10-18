@@ -1,17 +1,21 @@
 # Combination evidence (`src/robot/safety/planning/robot/evidence`)
 
-One committed file per measured combination of arm, hand, coupling, placement, planner margin and attach
-slots. A planner starts only on a combination a file here measured: both drivers read it where a planner
+One committed file per measured combination of arm, hand, coupling, placement and planner margin. A
+planner starts only on a combination a file here measured: both drivers read it where a planner
 starts, and the real cell checklist reads it at the desk. You do not call these files; you add one when
 your cell's combination has none.
 
 The file name is the combination, so nothing maps one to the other:
 
 ```
-{arm}_{hand}_c{coupling}mm_{approach}{closing}_m{margin}mm_a{attach}.json
-ur5e_robotiq_2f85_c0mm_+Y+X_m4mm_a0.json
-ur5e_robotiq_2f85_c0mm_+Z+X_m4mm_a0.json
+{arm}_{hand}_c{coupling}mm_{approach}{closing}_m{margin}mm.json
+ur5e_robotiq_2f85_c0mm_+Y+X_m4mm.json
+ur5e_robotiq_2f85_c0mm_+Z+X_m4mm.json
 ```
+
+Until 2026-10-17 the name also counted the sphere slots a carried part reserved (`_a0`, `_a16`). No cell
+models a carried part since, so the files measured without slots lost the suffix and the field, their
+measurements and hashes unchanged, and the ones measured with slots were deleted.
 
 ## The two placements
 

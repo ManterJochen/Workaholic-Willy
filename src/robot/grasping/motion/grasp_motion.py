@@ -153,7 +153,7 @@ def build_execution_policy(
     """The one policy a pick service drives: the caller's motion, the service's arm and hand, and every guard.
 
     ``base_frame_required`` is whether a frame resolver is wired, so a camera frame grasp is refused before any
-    motion. The steady gate (``safety.dwell``) is the arm's own since P0e, inside every motion verb. The jaws open to
+    motion. The steady gate is the arm's own since P0e, inside every motion verb. The jaws open to
     ``motion.pre_open_width_mm``, else the hand's widest, before every approach,
     except on a hand that toggles with no sensor, which takes no width and is never switched before the arm moves: its
     pre-open is dropped and no width is checked. Refused (``ValueError``): a pre-open wider than the hand opens, and a

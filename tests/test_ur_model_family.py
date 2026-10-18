@@ -34,7 +34,6 @@ import unittest
 from pathlib import Path
 
 from src.config.arms import admitted_arms, available_arms, load_arm
-from src.config.schema.robot.safety_schema import JointLimitSafetyConfig
 from src.robot.drivers.sim.robot_models import simulable_models, ur_model_spec
 from src.robot.safety._ur_kinematics import ur_dh_rows
 from src.robot.safety.joint_limits import resolve_joint_limits_deg
@@ -70,7 +69,7 @@ class EveryAdmittedArmAnswersEveryReaderTests(unittest.TestCase):
 
     def test_every_configurable_model_has_joint_limits(self) -> None:
         missing = sorted(model for model in admitted_arms()
-                         if resolve_joint_limits_deg(JointLimitSafetyConfig(), model=model) is None)
+                         if resolve_joint_limits_deg(model=model) is None)
         self.assertEqual(missing, [], "resolve_joint_limits_deg returns None, which callers must "
                                       "treat as guard unavailable rather than as no limit")
 
@@ -251,7 +250,7 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
         self.assertEqual(self._status("ur5e", "schunk_egu50"), "ok")
         self.assertEqual(self._status("ur3e", "schunk_egu50"), "ok")
         common = {"hand": "schunk_egu50", "coupling_mm": 0.0, "approach": "+Y", "closing": "+X",
-                  "planner_margin_mm": 4.0, "attach_spheres": 0}
+                  "planner_margin_mm": 4.0}
         self.assertTrue(evidence_path(arm="ur3e", **common).is_file())  # type: ignore[arg-type]
         self.assertFalse(evidence_path(arm="ur5", **common).is_file())  # type: ignore[arg-type]
 

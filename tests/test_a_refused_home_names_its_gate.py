@@ -19,6 +19,7 @@ home's pose is read through ``controller_fk``, and a stopped controller is a sta
 
 from __future__ import annotations
 
+import math
 import unittest
 from types import SimpleNamespace
 from typing import Any
@@ -45,7 +46,7 @@ from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.execution.robot import Robot
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.planning import JointCheckVerdict, StateRefusal, StateRefusalKind, StateWhere
-from tests._arm_kit import bare_arm, controller_pose, kit_pose, kit_tree, planned_arm
+from tests._arm_kit import bare_arm, controller_pose, kit_pose, kit_tree, planned_arm, with_the_whole_envelope
 from tests._fake_transport import Raises, fake_transport
 
 _BENCH = "bench check, no cameras mounted"
@@ -54,7 +55,7 @@ _BENCH = "bench check, no cameras mounted"
 _HERE = (0.0, -1.5, 1.5, 0.0, 0.0, 0.0)
 #: Clear, a short joint move away. The home in most tests below.
 _THERE = (0.2, -1.5, 1.5, 0.0, 0.0, 0.0)
-#: A home copied off the pendant in degrees.
+#: A home copied off the pendant in degrees and handed to the arm, which reads radians.
 _DEGREES = (0.0, -90.0, 90.0, -90.0, -90.0, 0.0)
 #: What the fake controller's FK answers for a home inside the shipped box: (400, 0, 300) mm, tool down.
 _INSIDE = [0.4, 0.0, 0.3, 0.0, 3.14159, 0.0]
@@ -92,15 +93,16 @@ class _Planner:
 
 
 def _arm(*, home: tuple[float, ...] | None = _THERE, planner: _Planner | None = None,
-         motion_planner: str = "curobo") -> Any:
+         motion_planner: str = "curobo", home_joints: tuple[float, ...] | None = None) -> Any:
     """A planned arm with the real guards on a fake controller that stands at ``_HERE``, completes every moveJ and
-    reports the home ``_INSIDE`` the box."""
-    blocks: dict[str, Any] = {"safety": {"payload": {"enforce": False}}, "gripper": {"tool_frame": _TOOL}}
+    reports the home ``_INSIDE`` the box. ``home`` is the tree's, radians written into ``robot.motion.home_deg`` in
+    degrees; ``home_joints`` is handed to the arm itself, in radians, in its place."""
+    blocks: dict[str, Any] = {"safety": {}, "gripper": {"tool_frame": _TOOL}}
     if home is not None:
-        blocks["home_joint_positions"] = home
+        blocks["motion"] = {"home_deg": [math.degrees(v) for v in home]}
     fake = fake_transport(joints=_HERE)
     fake.always("controller_fk", controller_pose(_INSIDE))
-    arm: Any = planned_arm(kit_tree(motion_planner, **blocks), transport=fake)
+    arm: Any = planned_arm(kit_tree(motion_planner, **blocks), transport=fake, home_joints=home_joints)
     if motion_planner == "curobo":
         arm._curobo = planner if planner is not None else _Planner()
     return arm
@@ -204,9 +206,10 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         self.assertIs(MotionStatus.WORKSPACE_REJECTED, report.status, report.render())
         self.assertIs(MotionCommand.MOVE_HOME, report.result.command)
         self.assertIn("the home grasp centre (", report.message)
-        self.assertIn("workspace_limits (x -500.0 to 500.0, y -500.0 to 500.0, z 0.0 to 500.0 mm)", report.message)
+        self.assertIn("robot.motion.workspace (x -500.0 to 500.0, y -500.0 to 500.0, z 0.0 to 500.0 mm)",
+                      report.message)
         self.assertIn("plus the declared tool frame, and not the flange itself", report.message)
-        self.assertIn("in radians", report.message)
+        self.assertIn("in degrees as the pendant shows it", report.message)
         _assert_nothing_sent(self, arm)
         self.assertIsNone(planner.checked, "a home the box refused was judged as a path")
 
@@ -217,11 +220,14 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         report = _home(arm)
 
         self.assertIs(MotionStatus.WORKSPACE_REJECTED, report.status, report.render())
-        self.assertIn("No robot.home_joint_positions is set", report.message)
+        self.assertIn("No robot.motion.home_deg is set", report.message)
         np.testing.assert_allclose(report.result.target_joints.values, (0.0, -np.pi / 2, 0.0, -np.pi / 2, 0.0, 0.0))
 
     def test_a_home_in_degrees_is_joint_limit_rejected_and_says_degrees(self) -> None:
-        arm = _arm(home=_DEGREES)
+        """On an arm held to its whole envelope, as the Isaac arm is: on a real arm the window about such a home leaves
+        no range, and ``create_arm`` refuses the arm at build, naming the home (``test_safety_joint_limits.py``)."""
+        arm = _arm(home=None, home_joints=_DEGREES)
+        with_the_whole_envelope(arm._preflight)
 
         report = _home(arm)
 
@@ -230,7 +236,11 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         self.assertIn("[safety:joint_limit/joint_limit] axis 1", report.message)
         self.assertIn("reads as degrees", report.message)
         self.assertEqual([], _fake(arm).calls("controller_fk"), "a home in degrees was boxed")
-        _assert_nothing_sent(self, arm, anchor="wait_until_steady")
+        # Refused before the controller is asked anything: a cuRobo arm waits for steady at its send, not first. The
+        # tape's emptiness says something only where the tape records, so the control reads it once.
+        self.assertEqual([], [call.verb for call in _fake(arm).tape], "a home in degrees reached the controller")
+        _fake(arm).read_joints()
+        _assert_nothing_sent(self, arm, anchor="read_joints")
 
     def test_a_home_the_controller_cannot_place_is_controller_rejected(self) -> None:
         arm = _arm()
@@ -358,7 +368,8 @@ class TheBoolIsTheTypedVerbsOkTests(unittest.TestCase):
             self.assertEqual(1, len(_moves(arm)))
 
     def test_a_degrees_home_is_false_and_reads_joint_limit(self) -> None:
-        arm = _arm(home=_DEGREES)
+        arm = _arm(home=None, home_joints=_DEGREES)
+        with_the_whole_envelope(arm._preflight)  # as above: a real arm with this home is refused at build
         self.enterContext(arm.without_camera_world(_BENCH))
         self.assertFalse(arm.move_home())
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, arm.move_to_home().status)

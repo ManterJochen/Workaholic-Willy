@@ -1,17 +1,9 @@
 {
   "auto_success": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": null,
     "mode": "auto",
     "orch_state": {
       "last_policy_report_set": true,
-      "perception_calls": 1,
-      "watchdog_history_len": 0
+      "perception_calls": 1
     },
     "outcome": "succeeded",
     "pick_report": {
@@ -23,8 +15,7 @@
     },
     "profile": {
       "recovery_allowed_actions": [
-        "rescan",
-        "next_target"
+        "rescan"
       ],
       "sampling_mode": "auto"
     },
@@ -33,309 +24,14 @@
       "attempt_id": "<volatile>",
       "attempt_wall_time_s": "<volatile>",
       "low_level_outcome": "PickOutcome.EXECUTED",
-      "ranking_latency_ms": "<volatile>",
       "sampling_mode": "auto"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
-    }
-  },
-  "decision_block_auto": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": {
-      "action": "fail_closed",
-      "attempt_id": "<volatile>",
-      "channel_disagreement": null,
-      "channel_disagreement_triggered": false,
-      "mode": "auto",
-      "penalised_top_score": null,
-      "ranking_penalty_applied": false,
-      "reason_code": "drift_blocked_auto",
-      "reobservation_count": 0,
-      "threshold_used": 0.0,
-      "top_score": null,
-      "uncertainty_fused": null,
-      "uncertainty_fused_available": false,
-      "uncertainty_score": null,
-      "uncertainty_source": "legacy"
-    },
-    "mode": "auto",
-    "orch_state": {
-      "last_policy_report_set": false,
-      "perception_calls": 0,
-      "watchdog_history_len": 2
-    },
-    "outcome": "drift_blocked_auto",
-    "pick_report": null,
-    "profile": {
-      "recovery_allowed_actions": [
-        "rescan",
-        "next_target"
-      ],
-      "sampling_mode": "auto"
-    },
-    "recovery_actions": [],
-    "telemetry": {
-      "attempt_id": "<volatile>",
-      "attempt_wall_time_s": "<volatile>",
-      "channel_disagreement": null,
-      "channel_disagreement_triggered": false,
-      "decision_action": "fail_closed",
-      "decision_reason_code": "drift_blocked_auto",
-      "degraded_mode_active": true,
-      "drift_severity": "severe",
-      "mode": "auto",
-      "ood_flagged": true,
-      "penalised_top_score": null,
-      "ranking_penalty_applied": false,
-      "reobservation_count": 0,
-      "sampling_mode": "auto",
-      "threshold_used": 0.0,
-      "top_score": null,
-      "uncertainty_fused": null,
-      "uncertainty_fused_available": false,
-      "uncertainty_score": null,
-      "uncertainty_source": "legacy",
-      "watchdog_aggregate_severity": "severe",
-      "watchdog_enforced": true,
-      "watchdog_recommended_action": "block_auto"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
-    }
-  },
-  "decision_grasp_now": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": {
-      "action": "grasp_now",
-      "attempt_id": "<volatile>",
-      "channel_disagreement": null,
-      "channel_disagreement_triggered": false,
-      "mode": "auto",
-      "penalised_top_score": null,
-      "ranking_penalty_applied": false,
-      "reason_code": "confident_grasp",
-      "reobservation_count": 0,
-      "threshold_used": 0.4,
-      "top_score": 0.9,
-      "uncertainty_fused": null,
-      "uncertainty_fused_available": false,
-      "uncertainty_score": 0.1,
-      "uncertainty_source": "legacy"
-    },
-    "mode": "auto",
-    "orch_state": {
-      "last_policy_report_set": true,
-      "perception_calls": 2,
-      "watchdog_history_len": 1
-    },
-    "outcome": "succeeded",
-    "pick_report": {
-      "attempt_actions": [
-        "executed"
-      ],
-      "n_attempts": 1,
-      "outcome": "executed"
-    },
-    "profile": {
-      "recovery_allowed_actions": [
-        "rescan",
-        "next_target"
-      ],
-      "sampling_mode": "auto"
-    },
-    "recovery_actions": [],
-    "telemetry": {
-      "attempt_id": "<volatile>",
-      "attempt_wall_time_s": "<volatile>",
-      "channel_disagreement": null,
-      "channel_disagreement_triggered": false,
-      "decision_action": "grasp_now",
-      "decision_latency_ms": "<volatile>",
-      "decision_reason_code": "confident_grasp",
-      "low_level_outcome": "PickOutcome.EXECUTED",
-      "mode": "auto",
-      "penalised_top_score": null,
-      "ranking_latency_ms": "<volatile>",
-      "ranking_penalty_applied": false,
-      "reobservation_count": 0,
-      "sampling_mode": "auto",
-      "threshold_used": 0.4,
-      "top_score": 0.9,
-      "uncertainty_fused": null,
-      "uncertainty_fused_available": false,
-      "uncertainty_score": 0.1,
-      "uncertainty_source": "legacy"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
-    }
-  },
-  "decision_uncertainty_active": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": {
-      "action": "grasp_now",
-      "attempt_id": "<volatile>",
-      "channel_disagreement": 0.0,
-      "channel_disagreement_triggered": false,
-      "mode": "auto",
-      "penalised_top_score": null,
-      "ranking_penalty_applied": false,
-      "reason_code": "confident_grasp",
-      "reobservation_count": 0,
-      "threshold_used": 0.4,
-      "top_score": 0.9,
-      "uncertainty_fused": null,
-      "uncertainty_fused_available": false,
-      "uncertainty_score": 0.1,
-      "uncertainty_source": "legacy_fallback"
-    },
-    "mode": "auto",
-    "orch_state": {
-      "last_policy_report_set": true,
-      "perception_calls": 2,
-      "watchdog_history_len": 1
-    },
-    "outcome": "succeeded",
-    "pick_report": {
-      "attempt_actions": [
-        "executed"
-      ],
-      "n_attempts": 1,
-      "outcome": "executed"
-    },
-    "profile": {
-      "recovery_allowed_actions": [
-        "rescan",
-        "next_target"
-      ],
-      "sampling_mode": "auto"
-    },
-    "recovery_actions": [],
-    "telemetry": {
-      "attempt_id": "<volatile>",
-      "attempt_wall_time_s": "<volatile>",
-      "channel_disagreement": 0.0,
-      "channel_disagreement_triggered": false,
-      "decision_action": "grasp_now",
-      "decision_latency_ms": "<volatile>",
-      "decision_reason_code": "confident_grasp",
-      "degraded_mode_active": false,
-      "drift_severity": "none",
-      "low_level_outcome": "PickOutcome.EXECUTED",
-      "mode": "auto",
-      "ood_flagged": false,
-      "penalised_top_score": null,
-      "ranking_latency_ms": "<volatile>",
-      "ranking_penalty_applied": false,
-      "reobservation_count": 0,
-      "sampling_mode": "auto",
-      "threshold_used": 0.4,
-      "top_score": 0.9,
-      "uncertainty_fused": null,
-      "uncertainty_fused_available": false,
-      "uncertainty_score": 0.1,
-      "uncertainty_source": "legacy_fallback",
-      "watchdog_aggregate_severity": "none",
-      "watchdog_enforced": false,
-      "watchdog_recommended_action": "none"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
     }
   },
   "dense_clutter_success": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": null,
     "mode": "dense_clutter",
     "orch_state": {
       "last_policy_report_set": true,
-      "perception_calls": 1,
-      "watchdog_history_len": 0
+      "perception_calls": 1
     },
     "outcome": "succeeded",
     "pick_report": {
@@ -348,7 +44,6 @@
     "profile": {
       "recovery_allowed_actions": [
         "rescan",
-        "next_target",
         "nudge_target"
       ],
       "sampling_mode": "dense_clutter"
@@ -358,42 +53,14 @@
       "attempt_id": "<volatile>",
       "attempt_wall_time_s": "<volatile>",
       "low_level_outcome": "PickOutcome.EXECUTED",
-      "ranking_latency_ms": "<volatile>",
       "sampling_mode": "dense_clutter"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
     }
   },
   "easy_no_target": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": null,
     "mode": "easy",
     "orch_state": {
       "last_policy_report_set": false,
-      "perception_calls": 1,
-      "watchdog_history_len": 0
+      "perception_calls": 1
     },
     "outcome": "no_target",
     "pick_report": {
@@ -413,40 +80,13 @@
       "attempt_wall_time_s": "<volatile>",
       "low_level_outcome": "PickOutcome.NO_PERCEPTION",
       "sampling_mode": "single_object"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
     }
   },
   "easy_rescan_exhausted": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": null,
     "mode": "easy",
     "orch_state": {
       "last_policy_report_set": false,
-      "perception_calls": 5,
-      "watchdog_history_len": 0
+      "perception_calls": 5
     },
     "outcome": "no_valid_grasp",
     "pick_report": {
@@ -469,42 +109,14 @@
       "attempt_id": "<volatile>",
       "attempt_wall_time_s": "<volatile>",
       "low_level_outcome": "PickOutcome.RESCANNED_EXHAUSTED",
-      "ranking_latency_ms": "<volatile>",
       "sampling_mode": "single_object"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
     }
   },
   "easy_success": {
-    "carriers_set": {
-      "ranking_blend_telemetry": false,
-      "shadow_router_telemetry": false,
-      "shadow_success_telemetry": false,
-      "uncertainty_rerank_telemetry": false
-    },
-    "decision": null,
     "mode": "easy",
     "orch_state": {
       "last_policy_report_set": true,
-      "perception_calls": 1,
-      "watchdog_history_len": 0
+      "perception_calls": 1
     },
     "outcome": "succeeded",
     "pick_report": {
@@ -523,27 +135,7 @@
       "attempt_id": "<volatile>",
       "attempt_wall_time_s": "<volatile>",
       "low_level_outcome": "PickOutcome.EXECUTED",
-      "ranking_latency_ms": "<volatile>",
       "sampling_mode": "single_object"
-    },
-    "uncertainty": {
-      "calibration_id": null,
-      "channels": {
-        "depth_confidence": null,
-        "feasibility_margin": null,
-        "mask_confidence": null,
-        "occlusion_corridor_risk": null,
-        "semantic_confidence": null,
-        "topology_risk": null,
-        "verification_residual": null
-      },
-      "disagreement": 0.0,
-      "disagreement_threshold": 1.01,
-      "disagreement_triggered": false,
-      "fail_closed": false,
-      "fail_closed_threshold": 0.4,
-      "fused": 0.0,
-      "fused_available": false
     }
   }
 }

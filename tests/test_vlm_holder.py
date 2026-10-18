@@ -203,7 +203,7 @@ class _ByModel:
 
 
 def _grounder(loads: _Loads, model_id: str = MODEL) -> Qwen3VLGrounder:
-    grounder = Qwen3VLGrounder(model_id=model_id, local=True)
+    grounder = Qwen3VLGrounder(model_id=model_id)
     grounder._load = loads  # type: ignore[method-assign]
     return grounder
 
@@ -213,14 +213,22 @@ def _holder(loads: _Loads) -> VlmHolder:
 
 
 def _vlm(**overrides: Any) -> VlmConfig:
-    return VlmConfig(**{"model_id": MODEL, "local": True, **overrides})
+    return VlmConfig(**{"model_id": MODEL, **overrides})
 
 
-def _models(*, backend: str = "vlm", router: bool = False, kind: str = "zero_shot", **vlm: Any) -> Any:
-    """The one field the availability rule reads, as a loaded config carries it."""
-    pipeline = PipelineConfig(kind=kind, zero_shot={"backend": backend, "vlm": _vlm(**vlm)},
-                              router={"enabled": router})
+def _models(*, kind: str = "zero_shot", **vlm: Any) -> Any:
+    """The one field the availability rule reads, as a loaded config carries it: a VLM cell, or a closed-set one."""
+    pipeline = PipelineConfig(kind=kind, zero_shot={"vlm": _vlm(**vlm)})
     return SimpleNamespace(pipeline=pipeline)
+
+
+def _built(models: Any) -> Any:
+    """The perception stack a cell builds from ``models``, SAM2 stood in for: nothing is loaded."""
+    from src.models import factory
+    from src.models.segmentation.realtime import segmenter
+
+    with mock.patch.object(segmenter, "Sam2Segmenter", return_value="SEG"):
+        return factory.build_perception(models)
 
 
 class _Clean(unittest.TestCase):
@@ -240,8 +248,8 @@ class TheHolderKeepsOneCopyTests(_Clean):
     def test_the_same_weights_get_the_same_grounder(self) -> None:
         holder = self._forgets(_holder(_Loads()))
         first = holder.grounder_for(_vlm())
-        self.assertIs(holder.grounder_for(_vlm(preload=True, on_unavailable="degrade")), first,
-                      "preload and on_unavailable name the same weights")
+        self.assertIs(holder.grounder_for(_vlm(), weights_root="D:/elsewhere"), first,
+                      "the folder the weights are read from takes no part in which copy it is")
 
     def test_a_grounder_is_built_without_loading(self) -> None:
         loads = _Loads()
@@ -277,54 +285,48 @@ class TheHolderKeepsOneCopyTests(_Clean):
         self.assertIs(shared_vlm(), shared_vlm())
 
     def test_the_weights_are_what_decide_the_copy(self) -> None:
-        self.assertEqual(VlmWeights.of(_vlm()), VlmWeights(model_id=MODEL, model_path=None, local=True))
-        self.assertNotEqual(VlmWeights.of(_vlm()), VlmWeights.of(_vlm(local=False)))
+        self.assertEqual(VlmWeights.of(_vlm()), VlmWeights(model_id=MODEL))
+        self.assertEqual(VlmWeights.of(_vlm(), weights_root="R"), VlmWeights.of(_vlm()))
+        self.assertNotEqual(VlmWeights.of(_vlm()), VlmWeights.of(_vlm(model_id=OTHER)))
 
 
 class TheBuildsGrounderIsTheHoldersTests(_Clean):
     """The perception build takes its grounder from the shared holder: one copy reads commands and detects."""
 
-    def _build(self, **pipeline: Any) -> tuple[Any, VlmConfig]:
+    def _build(self) -> tuple[Any, VlmConfig]:
         from src.config.loader import load_config
-        from src.models import factory
 
-        models = load_config().models.model_copy(update={"pipeline": PipelineConfig(**pipeline)})
-        with mock.patch.object(factory, "_build_named_segmenter", return_value="SEG"):
-            backend = factory.build_perception(models)
-        assert models.pipeline is not None
-        return backend, models.pipeline.zero_shot.vlm
+        models = load_config().models  # the shipped stack: zero-shot, the VLM grounds
+        return _built(models), models.pipeline.zero_shot.vlm
 
     def test_the_vlm_stack_grounds_with_the_holders_copy(self) -> None:
-        backend, vlm = self._build(zero_shot={"backend": "vlm"}, router={"enabled": False})
-        self.assertIs(backend._vlm.detector, shared_vlm().grounder_for(vlm))  # noqa: SLF001
-
-    def test_the_routed_stack_builds_its_vlm_route_on_the_holders_copy(self) -> None:
-        from src.models.routing import Route
-
-        backend, vlm = self._build(zero_shot={"backend": "vlm"}, router={"enabled": True})
-        guarded = backend._backend_for(Route.VLM)  # noqa: SLF001 - the lazy route, built on demand
-        self.assertIs(guarded._vlm.detector, shared_vlm().grounder_for(vlm))  # noqa: SLF001
+        backend, vlm = self._build()
+        self.assertIs(backend.detector, shared_vlm().grounder_for(vlm))
 
     def test_two_builds_share_one_copy(self) -> None:
-        first, _ = self._build(zero_shot={"backend": "vlm"}, router={"enabled": False})
-        second, _ = self._build(zero_shot={"backend": "vlm"}, router={"enabled": False})
-        self.assertIs(first._vlm.detector, second._vlm.detector)  # noqa: SLF001
+        first, _ = self._build()
+        second, _ = self._build()
+        self.assertIs(first.detector, second.detector)
 
-    def test_a_preloaded_build_loads_once_and_a_rebuild_loads_nothing(self) -> None:
-        """The owner's profile: backend vlm, router off, preload on."""
+    def test_a_build_loads_nothing_and_the_first_look_loads_once(self) -> None:
+        """The owner's cell: the VLM loads at its first prompt, never at the build (preload left on 2026-10-17 at the
+        cell's false), and a rebuild finds the copy loaded."""
         loads = _Loads()
         with mock.patch.object(Qwen3VLGrounder, "_load", loads):
-            first, vlm = self._build(zero_shot={"backend": "vlm", "vlm": {"preload": True}}, router={"enabled": False})
-            second, _ = self._build(zero_shot={"backend": "vlm", "vlm": {"preload": True}}, router={"enabled": False})
+            first, vlm = self._build()
+            second, _ = self._build()
+            self.assertEqual(loads.calls, 0, "a build loaded the VLM")
+            first.detector.ensure_loaded()  # the first look
+            second.detector.ensure_loaded()
         self.assertEqual(loads.calls, 1)
-        self.assertTrue(first._vlm.detector.loaded)  # noqa: SLF001
-        self.assertIs(first._vlm.detector, second._vlm.detector)  # noqa: SLF001
+        self.assertTrue(first.detector.loaded)
+        self.assertIs(first.detector, second.detector)
         self.assertTrue(shared_vlm().loaded_for(vlm))
 
     def test_the_reader_asks_the_copy_the_cell_detects_with(self) -> None:
-        backend, vlm = self._build(zero_shot={"backend": "vlm"}, router={"enabled": False})
+        backend, vlm = self._build()
         asker = shared_vlm().asker_for(vlm, may_load=True)
-        self.assertIs(asker.grounder, backend._vlm.detector)  # noqa: SLF001
+        self.assertIs(asker.grounder, backend.detector)
 
 
 class OneCopyWhateverTheConfigNamesTests(_Clean):
@@ -332,16 +334,15 @@ class OneCopyWhateverTheConfigNamesTests(_Clean):
     command nor Laden puts the second on the card beside the first. Only a build switches the weights, and the build
     unloads the copy it replaces."""
 
-    def _build(self, model_id: str, *, preload: bool = True, router: bool = False) -> Any:
+    def _build(self, model_id: str, *, look: bool = True) -> Any:
+        """A VLM cell built for ``model_id``, and with ``look`` its first look, which loads the copy."""
         from src.config.loader import load_config
-        from src.models import factory
 
-        pipeline = PipelineConfig(zero_shot={"backend": "vlm",
-                                             "vlm": {"model_id": model_id, "local": True, "preload": preload}},
-                                  router={"enabled": router})
-        models = load_config().models.model_copy(update={"pipeline": pipeline})
-        with mock.patch.object(factory, "_build_named_segmenter", return_value="SEG"):
-            return factory.build_perception(models)
+        pipeline = PipelineConfig(zero_shot={"vlm": {"model_id": model_id}})
+        backend = _built(load_config().models.model_copy(update={"pipeline": pipeline}))
+        if look:
+            backend.detector.ensure_loaded()
+        return backend
 
     def test_a_command_naming_other_weights_is_refused_and_loads_nothing(self) -> None:
         loads = _ByModel()
@@ -352,7 +353,7 @@ class OneCopyWhateverTheConfigNamesTests(_Clean):
         self.assertEqual(caught.exception.code, "vlm_not_loaded")
         self.assertIn("rebuild", caught.exception.cause.lower())
         self.assertEqual(loads.loaded, [MODEL], "a second checkpoint went on the card beside the cell's")
-        grounder = cell._vlm.detector  # noqa: SLF001
+        grounder = cell.detector
         self.assertTrue(grounder.loaded)
         self.assertIs(shared_vlm().held_for(_vlm()), grounder, "the refused command took the cell's copy away")
 
@@ -370,22 +371,22 @@ class OneCopyWhateverTheConfigNamesTests(_Clean):
         loads = _ByModel()
         with loads.install():
             self._build(MODEL)
-        for backend in ("vlm", "grounded_sam"):
-            with self.subTest(backend=backend):
-                rule = reader_availability(_models(backend=backend, model_id=OTHER), weights_present=True)
+        for kind in ("zero_shot", "closed_set"):
+            with self.subTest(kind=kind):
+                rule = reader_availability(_models(kind=kind, model_id=OTHER), weights_present=True)
                 self.assertEqual((rule.refusal, rule.warmup_refusal, rule.may_load),
                                  ("vlm_not_loaded", "vlm_not_loaded", False))
                 self.assertIn("rebuild", rule.cause.lower())
                 self.assertIn(MODEL, rule.cause)
 
     def test_a_refused_command_takes_nothing_away(self) -> None:
-        """A GroundingDINO cell with a copy a person loaded: a command naming other weights leaves it in place."""
+        """A closed-set cell with a copy a person loaded: a command naming other weights leaves it in place."""
         loads = _ByModel()
         with loads.install():
             shared_vlm().load_for(_vlm())
             held = shared_vlm().held_for(_vlm())
             with self.assertRaises(CommandRefused):
-                read_command("Stopp", models=_models(backend="grounded_sam", model_id=OTHER), poses=POSES,
+                read_command("Stopp", models=_models(kind="closed_set", model_id=OTHER), poses=POSES,
                              weights_present=True)
             with self.assertRaises(VlmNotLoadedError):
                 shared_vlm().asker_for(_vlm(model_id=OTHER), may_load=False)
@@ -399,43 +400,20 @@ class OneCopyWhateverTheConfigNamesTests(_Clean):
         with loads.install():
             first = self._build(MODEL)
             second = self._build(OTHER)
-        old, new = first._vlm.detector, second._vlm.detector  # noqa: SLF001
+        old, new = first.detector, second.detector
         self.assertFalse(old.loaded, "the replaced copy still holds the card")
         self.assertTrue(new.loaded)
         self.assertEqual(loads.loaded, [MODEL, OTHER])
         self.assertEqual(loads.torch.cuda.emptied, 1, "the replaced copy's memory went back to the card")
-
-    def test_a_routed_rebuild_naming_other_weights_releases_the_old_copy(self) -> None:
-        """A routed cell builds its VLM route lazily, so the build itself lets the old copy go."""
-        loads = _ByModel()
-        with loads.install():
-            first = self._build(MODEL)
-            routed = self._build(OTHER, preload=False, router=True)
-            self.assertFalse(first._vlm.detector.loaded)  # noqa: SLF001
-            self.assertIsNone(shared_vlm().held_for(_vlm()))
-            self.assertEqual(routed.built_routes(), ())
-            reading = read_command("Stopp", models=_models(router=True, model_id=OTHER), poses=POSES,
-                                   weights_present=True)
-        self.assertTrue(reading.loaded_now)
-        self.assertEqual(loads.loaded, [MODEL, OTHER])
-
-    def test_a_routed_rebuild_naming_the_same_weights_keeps_the_loaded_copy(self) -> None:
-        loads = _ByModel()
-        with loads.install():
-            first = self._build(MODEL)
-            self._build(MODEL, preload=False, router=True)
-        self.assertTrue(first._vlm.detector.loaded)  # noqa: SLF001
-        self.assertIs(shared_vlm().held_for(_vlm()), first._vlm.detector)  # noqa: SLF001
-        self.assertEqual(loads.loaded, [MODEL])
 
     def test_a_cell_that_loads_its_replaced_copy_again_blocks_a_second_one(self) -> None:
         """Two cells in one program, built with different checkpoints: once the first one's look loads its copy
         again, a command naming the second checkpoint is refused rather than loading it beside."""
         loads = _ByModel()
         with loads.install():
-            first = self._build(MODEL, preload=False)
-            self._build(OTHER, preload=False)
-            first._vlm.detector.ensure_loaded()  # noqa: SLF001 - the first cell's look
+            first = self._build(MODEL, look=False)
+            self._build(OTHER, look=False)
+            first.detector.ensure_loaded()  # the first cell's look
             with self.assertRaises(CommandRefused) as caught:
                 read_command("Stopp", models=_models(model_id=OTHER), poses=POSES, weights_present=True)
         self.assertEqual(caught.exception.code, "vlm_not_loaded")
@@ -745,7 +723,7 @@ class TheTextAskerTests(_Clean):
     def test_an_asker_that_may_not_load_refuses_a_held_copy_that_is_not_loaded(self) -> None:
         loads = _Loads()
         holder = self._forgets(_holder(loads))
-        holder.grounder_for(_vlm())  # a cell built with preload off: held, never loaded
+        holder.grounder_for(_vlm())  # a cell built and not looked with yet: held, never loaded
         with self.assertRaises(VlmNotLoadedError):
             holder.asker_for(_vlm(), may_load=False)("S", "U")
         self.assertEqual(loads.calls, 0)
@@ -866,7 +844,7 @@ class TheAnswerFailsTests(_Clean):
 
 class TheReaderAvailabilityTests(_Clean):
     """Owner decision Q8 A: one shared copy; loaded at the first command where the VLM is the detector; on a
-    GroundingDINO cell only after a person's "Laden"."""
+    closed-set cell only after a person's "Laden"."""
 
     def _rule(self, models: Any, *, loads: _Loads | None = None, weights_present: bool | None = True,
               prepare: Any = None) -> Any:
@@ -876,69 +854,57 @@ class TheReaderAvailabilityTests(_Clean):
         return reader_availability(models, weights_present=weights_present, holder=holder)
 
     def test_a_vlm_cell_reads_its_first_command_by_loading_the_detectors_copy(self) -> None:
-        rule = self._rule(_models(backend="vlm"))
+        rule = self._rule(_models())
         self.assertEqual((rule.state, rule.refusal, rule.may_load), ("idle", "", True))
         self.assertTrue(rule.shared_with_detection)
         self.assertTrue(rule.may_parse)
 
-    def test_a_routed_vlm_cell_counts_as_a_vlm_cell(self) -> None:
-        rule = self._rule(_models(backend="vlm", router=True))
-        self.assertEqual((rule.refusal, rule.may_load, rule.shared_with_detection), ("", True, True))
-
-    def test_a_grounding_dino_cell_refuses_until_a_person_loads_it(self) -> None:
-        rule = self._rule(_models(backend="grounded_sam"))
+    def test_a_closed_set_cell_refuses_until_a_person_loads_it(self) -> None:
+        rule = self._rule(_models(kind="closed_set"))
         self.assertEqual((rule.state, rule.refusal, rule.may_load), ("idle", "vlm_not_loaded", False))
         self.assertEqual(rule.warmup_refusal, "", "Laden is how it gets loaded")
         self.assertFalse(rule.shared_with_detection)
         self.assertIn("Laden", rule.cause)
 
-    def test_a_grounding_dino_cell_reads_once_it_was_loaded(self) -> None:
-        rule = self._rule(_models(backend="grounded_sam"), prepare=lambda h: h.load_for(_vlm()))
+    def test_a_closed_set_cell_reads_once_it_was_loaded(self) -> None:
+        rule = self._rule(_models(kind="closed_set"), prepare=lambda h: h.load_for(_vlm()))
         self.assertEqual((rule.state, rule.refusal), ("ready", ""))
         self.assertFalse(rule.shared_with_detection)
 
     def test_a_closed_set_cell_is_no_vlm_cell(self) -> None:
-        rule = self._rule(_models(kind="closed_set", backend="grounded_sam"))
+        rule = self._rule(_models(kind="closed_set"))
         self.assertEqual((rule.refusal, rule.may_load), ("vlm_not_loaded", False))
 
     def test_one_rule_says_which_cell_detects_with_the_vlm(self) -> None:
         """The console releases the copy when it builds a cell this rule says does not detect with it."""
-        cases = ((_models(backend="vlm"), True), (_models(backend="vlm", router=True), True),
-                 (_models(backend="grounded_sam"), False), (_models(kind="closed_set", backend="grounded_sam"), False),
-                 (SimpleNamespace(pipeline=None), False))
+        cases = ((_models(), True), (_models(kind="closed_set"), False), (SimpleNamespace(pipeline=None), False))
         for models, detects in cases:
             with self.subTest(models=models):
                 self.assertIs(vlm_detects(models), detects)
                 if models.pipeline is not None:
                     self.assertIs(self._rule(models).shared_with_detection, detects)
 
-    def test_a_cell_without_a_pipeline_block_names_no_vlm(self) -> None:
-        rule = self._rule(SimpleNamespace(pipeline=None))
-        self.assertEqual((rule.state, rule.refusal, rule.warmup_refusal), ("not_configured", "vlm_unavailable",
-                                                                           "vlm_unavailable"))
-        self.assertIsNone(rule.model_id)
-
     def test_missing_weights_refuse_both_reading_and_loading(self) -> None:
-        rule = self._rule(_models(backend="vlm"), weights_present=False)
+        rule = self._rule(_models(), weights_present=False)
         self.assertEqual((rule.state, rule.refusal, rule.warmup_refusal), ("missing", "vlm_model_missing",
                                                                            "vlm_model_missing"))
         self.assertIn("fetch", rule.cause)
 
     def test_loaded_weights_need_no_files(self) -> None:
-        rule = self._rule(_models(backend="vlm"), weights_present=False, prepare=lambda h: h.load_for(_vlm()))
+        rule = self._rule(_models(), weights_present=False, prepare=lambda h: h.load_for(_vlm()))
         self.assertEqual((rule.state, rule.refusal), ("ready", ""))
 
     def test_a_failed_load_is_refused_until_a_person_loads_again(self) -> None:
         loads = _Loads(fail=OSError("no weights on disk"))
-        rule = self._rule(_models(backend="vlm"), loads=loads, prepare=lambda h: h.load_for(_vlm()))
+        rule = self._rule(_models(), loads=loads, prepare=lambda h: h.load_for(_vlm()))
         self.assertEqual((rule.state, rule.refusal, rule.warmup_refusal), ("failed", "vlm_unavailable", ""))
         self.assertIn("no weights on disk", rule.cause)
         self.assertFalse(rule.may_load, "a command never retries a failed load by itself")
 
     def test_missing_weights_still_answer_missing_after_a_failed_load(self) -> None:
-        """A preload or a pick's look failed for want of the weights: fetching them is the answer, not Laden."""
+        """A pick's look failed for want of the weights: fetching them is the answer, not Laden."""
         loads = _Loads(fail=OSError("no weights on disk"))
-        rule = self._rule(_models(backend="vlm"), loads=loads, weights_present=False,
+        rule = self._rule(_models(), loads=loads, weights_present=False,
                           prepare=lambda h: h.load_for(_vlm()))
         self.assertEqual((rule.state, rule.refusal, rule.warmup_refusal), ("missing", "vlm_model_missing",
                                                                            "vlm_model_missing"))
@@ -951,33 +917,33 @@ class TheReaderAvailabilityTests(_Clean):
         loader.start()
         try:
             self.assertTrue(loads.started.wait(5.0))
-            vlm_cell = reader_availability(_models(backend="vlm"), weights_present=True, holder=holder)
-            dino_cell = reader_availability(_models(backend="grounded_sam"), weights_present=True, holder=holder)
+            vlm_cell = reader_availability(_models(), weights_present=True, holder=holder)
+            closed_cell = reader_availability(_models(kind="closed_set"), weights_present=True, holder=holder)
         finally:
             release.set()
             loader.join(5.0)
         self.assertEqual((vlm_cell.state, vlm_cell.refusal), ("loading", ""))
-        self.assertEqual((dino_cell.state, dino_cell.refusal), ("loading", "vlm_not_loaded"))
+        self.assertEqual((closed_cell.state, closed_cell.refusal), ("loading", "vlm_not_loaded"))
 
     def test_unknown_weights_do_not_refuse(self) -> None:
-        rule = self._rule(_models(backend="vlm"), weights_present=None)
+        rule = self._rule(_models(), weights_present=None)
         self.assertEqual(rule.refusal, "")
 
     def test_the_rule_loads_and_builds_nothing(self) -> None:
         loads = _Loads()
         built: list[Any] = []
         holder = self._forgets(VlmHolder.from_parts(build=lambda w: built.append(w) or _grounder(loads)))
-        for models in (_models(backend="vlm"), _models(backend="grounded_sam"), SimpleNamespace(pipeline=None)):
+        for models in (_models(), _models(kind="closed_set")):
             reader_availability(models, weights_present=True, holder=holder)
         self.assertEqual((loads.calls, built), (0, []))
 
     def test_the_rule_reads_the_shared_holder_by_default(self) -> None:
         shared_vlm().grounder_for(_vlm())._load = _Loads()  # type: ignore[method-assign]
         shared_vlm().load_for(_vlm())
-        self.assertEqual(reader_availability(_models(backend="grounded_sam"), weights_present=True).state, "ready")
+        self.assertEqual(reader_availability(_models(kind="closed_set"), weights_present=True).state, "ready")
 
     def test_the_answer_renders_ascii_and_serialises_without_the_block(self) -> None:
-        rule = self._rule(_models(backend="grounded_sam"))
+        rule = self._rule(_models(kind="closed_set"))
         rule.render().encode("ascii")
         payload = rule.to_dict()
         self.assertNotIn("vlm", payload)
@@ -992,7 +958,7 @@ class ReleasingTheCopyTests(_Clean):
         loads = _Loads()
         holder = self._forgets(_holder(loads))
         grounder = holder.grounder_for(_vlm())
-        grounder.ensure_loaded()  # a VLM cell's preload, or its first look
+        grounder.ensure_loaded()  # a VLM cell's first look
         self.assertTrue(holder.release_unless_requested(_vlm()))
         self.assertFalse(grounder.loaded)
         self.assertIsNone(holder.held_for(_vlm()))
@@ -1024,15 +990,15 @@ class ReleasingTheCopyTests(_Clean):
         holder = self._forgets(_holder(_Loads()))
         self.assertFalse(holder.release_unless_requested(_vlm()))
 
-    def test_after_a_vlm_cell_a_grounding_dino_cell_waits_for_laden_again(self) -> None:
-        """The probe that found it: a VLM cell's preload, then the YAML switched to grounded_sam and rebuilt."""
+    def test_after_a_vlm_cell_a_closed_set_cell_waits_for_laden_again(self) -> None:
+        """The probe that found it: a VLM cell's first look, then the YAML switched to a closed set and rebuilt."""
         loads = _Loads()
         holder = self._forgets(_holder(loads))
         holder.grounder_for(_vlm()).ensure_loaded()
-        self.assertEqual(reader_availability(_models(backend="grounded_sam"), weights_present=True,
+        self.assertEqual(reader_availability(_models(kind="closed_set"), weights_present=True,
                                              holder=holder).state, "ready", "the precondition: still held")
         holder.release_unless_requested(_vlm())  # what the console's build does for a cell that is no VLM cell
-        rule = reader_availability(_models(backend="grounded_sam"), weights_present=True, holder=holder)
+        rule = reader_availability(_models(kind="closed_set"), weights_present=True, holder=holder)
         self.assertEqual((rule.state, rule.refusal, rule.warmup_refusal), ("idle", "vlm_not_loaded", ""))
 
 
@@ -1043,11 +1009,11 @@ class ReadCommandTests(_Clean):
              '"place_said": null, "place_pose": "ablage_links", "scope": "until_empty", "count": null, ' \
              '"return_to": null}'
 
-    def test_a_grounding_dino_cell_refuses_and_loads_nothing(self) -> None:
+    def test_a_closed_set_cell_refuses_and_loads_nothing(self) -> None:
         loads = _Loads(answer=self.ANSWER)
         holder = self._forgets(_holder(loads))
         with self.assertRaises(CommandRefused) as caught:
-            read_command("Nimm alle Schrauben und leg sie auf Ablage links", models=_models(backend="grounded_sam"),
+            read_command("Nimm alle Schrauben und leg sie auf Ablage links", models=_models(kind="closed_set"),
                          poses=POSES, weights_present=True, holder=holder)
         self.assertEqual(caught.exception.code, "vlm_not_loaded")
         self.assertEqual(loads.calls, 0)
@@ -1055,13 +1021,13 @@ class ReadCommandTests(_Clean):
     def test_a_vlm_cell_loads_at_its_first_command(self) -> None:
         loads = _Loads(answer=self.ANSWER)
         holder = self._forgets(_holder(loads))
-        reading = read_command("Nimm alle Schrauben und leg sie auf Ablage links", models=_models(backend="vlm"),
+        reading = read_command("Nimm alle Schrauben und leg sie auf Ablage links", models=_models(),
                                poses=POSES, weights_present=True, holder=holder)
         self.assertTrue(reading.understood)
         self.assertTrue(reading.loaded_now)
         self.assertEqual(reading.model_id, MODEL)
         self.assertEqual((reading.place_pose, reading.scope), ("ablage_links", "until_empty"))
-        again = read_command("Nimm alle Schrauben und leg sie auf Ablage links", models=_models(backend="vlm"),
+        again = read_command("Nimm alle Schrauben und leg sie auf Ablage links", models=_models(),
                              poses=POSES, weights_present=True, holder=holder)
         self.assertFalse(again.loaded_now)
         self.assertEqual(loads.calls, 1)
@@ -1070,7 +1036,7 @@ class ReadCommandTests(_Clean):
         loads = _Loads(answer=self.ANSWER)
         holder = self._forgets(_holder(loads))
         with self.assertRaises(CommandRefused) as caught:
-            read_command("Stopp", models=_models(backend="vlm"), poses=POSES, weights_present=False, holder=holder)
+            read_command("Stopp", models=_models(), poses=POSES, weights_present=False, holder=holder)
         self.assertEqual(caught.exception.code, "vlm_model_missing")
         self.assertEqual(loads.calls, 0)
 
@@ -1078,11 +1044,11 @@ class ReadCommandTests(_Clean):
         loads = _Loads(fail=OSError("no weights on disk"))
         holder = self._forgets(_holder(loads))
         with self.assertRaises(CommandRefused) as caught:
-            read_command("Stopp", models=_models(backend="vlm"), poses=POSES, weights_present=True, holder=holder)
+            read_command("Stopp", models=_models(), poses=POSES, weights_present=True, holder=holder)
         self.assertEqual(caught.exception.code, "vlm_unavailable")
         self.assertIn("no weights on disk", caught.exception.cause)
         with self.assertRaises(CommandRefused) as again:
-            read_command("Stopp", models=_models(backend="vlm"), poses=POSES, weights_present=True, holder=holder)
+            read_command("Stopp", models=_models(), poses=POSES, weights_present=True, holder=holder)
         self.assertEqual(again.exception.code, "vlm_unavailable")
         self.assertEqual(loads.calls, 1, "the second command did not try the load again")
 

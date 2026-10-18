@@ -702,7 +702,7 @@ def drive_home(console: "Console", run: "Run") -> StopCode:
         # nothing. Not a problem: the arm stands where the person last saw it.
         logger.warning("Home run %s was stopped before its move to %s was sent; nothing moved.", run.id, to)
         return StopCode.CANCELLED
-    held = readiness.part_held(arm, gripper, hand_of(gripper), record=console.recovery)
+    held = readiness.part_held(gripper, hand_of(gripper), record=console.recovery)
     if held:
         run.error = f"{held}: the move to {to} was not sent, and no move outside a task carries a part"
         return StopCode.PART_STILL_HELD
@@ -778,7 +778,7 @@ def drive_wave(console: "Console", run: "Run") -> StopCode:
     if run.stop_requested:
         logger.warning("Wave run %s was stopped before its first swing was sent; nothing moved.", run.id)
         return StopCode.CANCELLED
-    held = readiness.part_held(arm, gripper, hand_of(gripper), record=console.recovery)
+    held = readiness.part_held(gripper, hand_of(gripper), record=console.recovery)
     if held:
         run.error = f"{held}: the wave was not sent, and no move outside a task carries a part"
         return StopCode.PART_STILL_HELD

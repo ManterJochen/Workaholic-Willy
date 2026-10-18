@@ -1,9 +1,9 @@
-"""The task's own places are painted out of the image its detector reads, where the cell says so (the owner, 2026-10-08).
+"""The task's own places are painted out of the image its detector reads, in every cell (the owner, 2026-10-08).
 
 Every look that saw the task's bin had the detector box every part already placed in it, 2 to 4 s a box on the owner's
-cell, each then left out as standing in the bin. Where the cell turns ``robot.grasping.hide_own_places`` on, a pick hands
-its camera source what paints the regions its task keeps out (the bin's footprint, the circles about its drops) over the
-copy of the frame the detector reads (``realsense_source.kept_out_pixels``, ``painted_copy``). What these pin:
+cell, each then left out as standing in the bin. Since then every cell's pick hands its camera source what paints the
+regions its task keeps out (the bin's footprint, the circles about its drops) over the copy of the frame the detector
+reads (``realsense_source.kept_out_pixels``, ``painted_copy``). What these pin:
 
 * a pixel is painted where its own depth places it in such a region, and only there: a part outside every region keeps
   every pixel, and so does a part that reaches into one from outside; flying pixels at a part's edge never make it reach
@@ -14,7 +14,8 @@ copy of the frame the detector reads (``realsense_source.kept_out_pixels``, ``pa
   ``hide`` at all leave the detector the real frame, the backend asked as it always was;
 * the pick loop hands ``hide`` only with the switch on, a region that keeps out every label, a source that says it can
   paint (``hides_places``), a CAMERA to BASE and a declared support; otherwise its acquire is the one it always was,
-  said once where something is missing; the switch is off by default and the service sets it where the cell is built.
+  said once where something is missing; the loop's switch is off by default and the service sets it on in every cell
+  built from a tree.
 
 The scenes are ray cast through the wrist D415 of ``tests/_wrist_views.py``.
 """
@@ -27,9 +28,9 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.camera.setup.image_taking.frames import RGBDFrame
 from src.config.schema.robot import RobotConfig
-from src.config.schema.robot.grasping_schema import GraspingSupportConfig, RobotGraspingConfig
 from src.geometry import Frame, Transform
 from src.models.perception_backend import PerceivedObject
 from src.robot.core import JointPositions
@@ -367,7 +368,7 @@ def _loop(*, camera_type: type = _HidingCamera, region: Any = LAID_DROP, fixed: 
     resolver: Any = (StaticCameraToBaseResolver(transform=Transform.from_matrix(
         camera_looking_at(bearing_deg=0.0), from_frame=Frame.CAMERA, to_frame=Frame.BASE)) if fixed
         else EyeInHandFrameResolver(t_cam_to_tool=camera_to_tool()))
-    wiring.setdefault("support_config", GraspingSupportConfig())
+    wiring.setdefault("declared_support", DeclaredSupport())
     wiring.setdefault("hide_own_places", True)
     orchestrator = BinPickingOrchestrator(
         arm=arm, calculator=LookCalculator(camera), perception=camera,  # type: ignore[arg-type]
@@ -414,7 +415,7 @@ class ThePickLoopHandsItsCameraWhatPaintsTests(unittest.TestCase):
 
     def test_a_camera_that_cannot_paint_or_no_declared_support_is_handed_nothing_and_said_once(self) -> None:
         for wiring, said in (({"camera_type": WristCamera}, "paints nothing for its detector"),
-                             ({"support_config": None}, "no support is declared")):
+                             ({"declared_support": None}, "no support is declared")):
             with self.subTest(said=said):
                 orchestrator, camera = _loop(**wiring)
                 with self.assertLogs("src.robot.grasping.loop.pick_loop", level="WARNING") as logged:
@@ -424,21 +425,14 @@ class ThePickLoopHandsItsCameraWhatPaintsTests(unittest.TestCase):
                 self.assertEqual([], getattr(camera, "hidden", []))
 
 
-class TheCellsKeyTests(unittest.TestCase):
-    def test_the_key_is_off_by_default_and_can_be_switched_on(self) -> None:
-        self.assertIs(False, RobotGraspingConfig().hide_own_places)
-        self.assertIs(True, RobotGraspingConfig.model_validate({"hide_own_places": True}).hide_own_places)
+class EveryCellHidesItsPlacesTests(unittest.TestCase):
+    def test_a_loop_built_by_hand_hides_nothing_and_a_cell_built_from_its_tree_hides_its_places(self) -> None:
         self.assertIs(False, BinPickingOrchestrator.__dataclass_fields__["hide_own_places"].default)
-
-    def test_a_cell_built_from_its_tree_hides_its_places_as_its_key_says(self) -> None:
-        def built(**grasping: object) -> Any:
-            config = RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping=grasping)
-            return AutonomousGraspService.from_robot_config(
-                config, calculator=_ScriptedCalculator([]),  # type: ignore[arg-type]
-                perception=_FakePerception([_perception_frame()])).runtime.orchestrator
-
-        self.assertIs(False, built().hide_own_places)
-        self.assertIs(True, built(hide_own_places=True).hide_own_places)
+        built = AutonomousGraspService.from_robot_config(
+            RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping={}),
+            calculator=_ScriptedCalculator([]),  # type: ignore[arg-type]
+            perception=_FakePerception([_perception_frame()])).runtime.orchestrator
+        self.assertIs(True, built.hide_own_places)
 
 
 if __name__ == "__main__":

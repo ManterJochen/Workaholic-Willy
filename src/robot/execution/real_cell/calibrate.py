@@ -4,9 +4,9 @@
     python -m src.robot.execution.real_cell.calibrate --rig overhead --freedrive
     python -m src.robot.execution.real_cell.calibrate --rig overhead --fixed-poses stations.json
 
-`grasping.fusion.geometry`, the biggest measured lever this stack has (top-1 43.50 % single-view
--> 55.93 % fused on the datagen reference, n=354), states its own precondition: ``cameras`` must be
-populated, each camera individually calibrated. The consuming side is complete: each rig's declared
+The camera fusion, the biggest measured lever this stack has (top-1 43.50 % single-view
+-> 55.93 % fused on the datagen reference, n=354), has one precondition: two or more cameras, each
+individually calibrated, which a cell then fuses by itself. The consuming side is complete: each rig's declared
 calibration, `build_config_frame_resolvers` turning the fused cameras into
 `{camera_id -> FrameResolver}`, the pick loop reading that map, the schema-versioned `Extrinsics`
 artifact keyed by `rig_id`, and `CalibrationRoutine` itself. `real_cell/preflight.py` only checks
@@ -15,8 +15,9 @@ for an artifact and refuses without one; it cannot make one. This command makes 
 It follows the simulated runner's path: the same `CalibrationRoutine`, the same fixed stations, the
 same `save_extrinsics` keyed by camera id, with three real-hardware substitutions:
 
-* the marker comes from `RGBDArucoMarkerSource` on a live RGB-D rig instead of simulated ground
-  truth,
+* the marker comes from `RGBDArucoMarkerSource` on a live camera instead of simulated ground
+  truth: an RGB-D rig's colour image, or a stereo pair's left image rectified, once its stereo
+  calibration is written,
 * the arm is the configured vendor driver, built alone through
   `Robot.from_config(robot_config, gripper=None)`, instead of a simulated one,
 * and the frames come from the rig's `Camera` owner, so this holds exactly one camera and gives it
@@ -51,8 +52,8 @@ hand is written to `<out>/<mode>_<rig>_stations.json`, which `--fixed-poses` rep
 
 `--check` validates everything, reads and checks a stations file and counts its stations, and on a
 cuRobo UR cell that declares its planner margin looks up the committed evidence the sweep's planner
-starts on, so a combination nobody measured (a declared `payload.length_mm` among them) is refused
-at the desk rather than after the arm connects. It touches nothing. `--dry-run` additionally runs
+starts on, so a combination nobody measured is refused at the desk rather than after the arm
+connects. It touches nothing. `--dry-run` additionally runs
 the arm-vendor readiness gate, builds the arm, opens the camera and prints what the arm's safety
 pipeline refuses, but takes no lock and never commands a motion. Run both before the first live
 sweep.
@@ -153,7 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m src.robot.execution.real_cell.calibrate",
         description="Calibrate one camera of a real cell against the robot. This moves the robot.")
     ap.add_argument("--rig", required=True,
-                    help="rig_id of the RGB-D camera to calibrate (must be in camera.cameras.rigs). "
+                    help="rig_id of the camera to calibrate, an RGB-D rig or a stereo pair with its stereo calibration "
+                         "(must be in camera.cameras.rigs). "
                          "The artifact is keyed by this id, and the rig block it prints declares "
                          "it on that rig")
     ap.add_argument("--mode", choices=("eye_to_hand", "eye_in_hand"), default="eye_to_hand",

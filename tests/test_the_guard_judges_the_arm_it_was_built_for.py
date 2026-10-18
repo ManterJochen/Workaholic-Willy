@@ -37,7 +37,7 @@ def _reporting(model: str) -> SimpleNamespace:
 
 def _built_for(model: str | None) -> SafetyPreflight:
     cell = _cell()
-    return SafetyPreflight.from_safety_config(cell.safety, cell.workspace_limits, hand=planner_hand(cell),
+    return SafetyPreflight.from_safety_config(cell.safety, cell.motion.workspace, hand=planner_hand(cell),
                                               arm_model=model)
 
 
@@ -83,7 +83,7 @@ class AnArmThatReportsAnotherUrIsRefusedTests(unittest.TestCase):
     def test_a_pipeline_built_for_no_ur_refuses_an_arm_that_reports_one(self) -> None:
         """The latent gap itself: no arm named at build, a UR reported at the motion."""
         cell = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.1.2.3"}})
-        preflight = SafetyPreflight.from_safety_config(cell.safety, cell.workspace_limits, arm_model=None)
+        preflight = SafetyPreflight.from_safety_config(cell.safety, cell.motion.workspace, arm_model=None)
         decision = _self_collision(preflight, _reporting("ur5e"))
         self.assertIs(decision.reason, SafetyReason.UNAVAILABLE)
         self.assertIn("no arm the arm registry describes as a UR", decision.message)

@@ -103,7 +103,7 @@ COUNTS: tuple[tuple[str, str], ...] = (
     ("not_followed", "looks whose parts were not followed (grounded)"),
     ("over_the_rim", "drops let go over the rim instead of below it"),
     ("sfe_alone", "grasp searches made one build at a time where batched_builds is on"),
-    ("guard_by_sample", "paths judged sample by sample where whole_path_judge is on"),
+    ("guard_by_sample", "paths judged sample by sample, not whole first"),
     ("records", "grasp records written"),
 )
 

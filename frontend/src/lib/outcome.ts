@@ -29,10 +29,10 @@ const REFUSALS = new Set([
   'missing_camera_frame',
   // Red as well, but a person goes to the arm: a recovery stopped where it stands (needs_person).
   'unsafe_recovery_refused',
+  // Retired with the decision, uncertainty and drift/OOD layers on 2026-10-16; a record logged before then still
+  // reads as a refusal. They used to fall through to amber, which drew a rule that fired as a bad grasp.
   'decision_fail_closed',
   'decision_recover_pending',
-  // The fail-closed decisions of the fused-uncertainty, drift and out-of-distribution watchdogs
-  // (`report.py`). They used to fall through to amber, which drew a rule that fired as a bad grasp.
   'uncertainty_fail_closed',
   'drift_blocked_auto',
   'ood_blocked_auto',

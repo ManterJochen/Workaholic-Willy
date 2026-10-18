@@ -18,10 +18,10 @@
 # not be: the measured ur3e cell runs x from 100 to 400 with a table in front of it, and nothing
 # behind. MEASURE YOUR CELL AND SHRINK THIS, in the directions your room actually has.
 #
-# ⛔ WHAT IS DELIBERATELY ABSENT. home_joint_positions, park_joint_positions, the camera poses and the
+# ⛔ WHAT IS DELIBERATELY ABSENT. motion.home_deg, park_joint_positions, the camera poses and the
 # scene layout are NOT set here, because every one of them is a fact about a cell that does not exist
 # yet. They inherit the base tree, which was authored for a UR5e -- see the note on
-# home_joint_positions in robot_schema.py, which measured that default putting a UR3e grasp centre at
+# motion.home_deg in robot_schema.py, which measured that default putting a UR3e grasp centre at
 # 93.4 % of its reach. Set them from your own cell before running a real pick.
 
 robot:
@@ -34,32 +34,20 @@ robot:
     # standalone, derived from robot.gripper.model and robot_model (willy_sim.grippers.sim_mount_for).
     # A hand the sim has no mount for, the Hand-E today, is refused by name before the Isaac boot.
 
-  workspace_limits:
-    x_min: -760.7
-    x_max: 760.7
-    y_min: -760.7
-    y_max: 760.7
-    z_min: 100.0             # table clearance, carried from the base tree: a fact about a room
-    z_max: 748.4
-
-  # Inside the box above by construction: 60 % of the way out and up. Replace it with a pose you have
-  # actually retreated to.
-  safe_pose:
-    x: 0.0
-    y: -456.4
-    z: 489.0
-
   safety:
     payload:
       max_mass_kg: 10.0      # UR10 datasheet
-    # Every joint that turns a full turn stays within half a turn of home_joint_positions (the default if unset),
-    # less margin_deg, so a cable run along the arm is never wound more than half a turn from where it lay at
-    # home, and nobody types a joint range. It costs no reach: each UR joint is 2*pi-periodic, so every angle
-    # has one twin inside the window; what it refuses is the move across the seam behind home, and the margin a
-    # band of 2 * margin_deg at that seam. The elbow is left alone: it is planned within +-180 deg and never turns
-    # a full turn. A Cartesian goal is chosen inside the window before cuRobo plans. Set home_joint_positions to
-    # this cell's own home, facing the work: the seam lies half a turn from it, and belongs behind the cell.
-    # The desk check (python -m src.robot.execution.real_cell --check) prints the PolyScope Joint Limits that
-    # match it: set them on the pendant, and the controller holds the window even against this software.
-    joint_limits:
-      within_half_turn_of_home: true
+    # Every joint that turns a full turn stays within half a turn of motion.home_deg (the arm's described home if
+    # unset), less the guard's 5 deg margin, on every real arm, so a cable run along the arm is never wound more than
+    # half a turn from where it lay at home. Set motion.home_deg to this cell's own home, facing the work: the seam
+    # lies half a turn from it, and belongs behind the cell. The desk check (python -m src.robot.execution.real_cell
+    # --check) prints the PolyScope Joint Limits that match it: set them on the pendant, and the controller holds the
+    # window even against this software.
+  motion:
+    workspace:
+      x_min: -760.7
+      x_max: 760.7
+      y_min: -760.7
+      y_max: 760.7
+      z_min: 100.0             # table clearance, carried from the base tree: a fact about a room
+      z_max: 748.4

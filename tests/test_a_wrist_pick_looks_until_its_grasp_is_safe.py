@@ -26,14 +26,13 @@ from __future__ import annotations
 
 import logging
 import math
-import time
 import unittest
 from typing import Any
 from unittest import mock
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import FusionGeometryConfig, GraspingSupportConfig
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.contracts import UNSET
 from src.geometry import Frame, Pose, Transform
 from src.robot.core import (
@@ -64,7 +63,6 @@ from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver, Sta
 from src.robot.grasping.multiview import scene_geometry
 from src.robot.grasping.multiview.association import HAND_EYE_DRIFT_WARN_MM, nearest_surface_distances_mm
 from src.robot.grasping.multiview.scene_geometry import grazing_pixels, to_base_mm
-from src.robot.grasping.telemetry.latency_tracker import LatencyStage, LatencyTracker
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.perception import CameraObservation, PerceptionFrame
@@ -210,8 +208,7 @@ def _top_camera() -> dict[str, Any]:
     placed = StaticCameraToBaseResolver(transform=Transform.from_matrix(
         above, from_frame=Frame.CAMERA, to_frame=Frame.BASE))
     rig = _Rig(CameraObservation(camera_id="top", frame=seen), CameraObservation(camera_id="wrist", frame=seen))
-    return {"multi_camera_perception": rig, "camera_frame_resolvers": {"top": placed, "wrist": placed},
-            "configured_camera_ids": ("top",), "fusion_geometry_config": FusionGeometryConfig(enabled=True)}
+    return {"multi_camera_perception": rig, "camera_frame_resolvers": {"top": placed, "wrist": placed}}
 
 
 class _ByPart(LookCalculator):
@@ -729,7 +726,7 @@ class ALookThatMissesThePartTests(unittest.TestCase):
         first, second = looked.views
         np.testing.assert_allclose(second.camera_to_base, orchestrator._pending_camera_to_base.to_matrix())
 
-        frame, result, index, _ = orchestrator._adopt(looked.judged)
+        frame, result, index = orchestrator._adopt(looked.judged)
 
         self.assertIs(first.frame, frame)
         self.assertIs(looked.judged.result, result)
@@ -788,28 +785,6 @@ class AFixedCameraPicksAsItDidTests(unittest.TestCase):
         self.assertIs(PickOutcome.EXECUTED, report.outcome)
         self.assertEqual(("wrist", "top"), report.attempts[0].fused_views)
 
-    def test_the_fusion_clock_of_a_fixed_camera_starts_once_its_frames_are_in_hand(self) -> None:
-        """As it always started: placing the other cameras' frames is part of the fusion span, and their capture is
-        not."""
-        from tests.test_pick_loop_fusion_geometry import _IDENTITY, _enabled, _frame, _orchestrator
-        from tests.test_pick_loop_fusion_geometry import _Rig as _FixedRig
-
-        class _SlowPlacement:
-            def camera_to_base_for_frame(self, _frame_in: Any, *, arm: Any = None) -> Transform:
-                time.sleep(0.2)
-                return _IDENTITY
-
-        tracker = LatencyTracker()
-        orchestrator = _orchestrator(
-            multi_camera_perception=_FixedRig((CameraObservation(camera_id="left", frame=_frame()),)),
-            camera_frame_resolvers={"left": _SlowPlacement()}, fusion_geometry_config=_enabled(),
-            latency_tracker=tracker)
-
-        orchestrator._fused_scene(_frame(), _IDENTITY)
-
-        # Well under the 200 ms the placement sleeps: a Windows monotonic clock ticks every 15.6 ms.
-        self.assertGreaterEqual(tracker.get(LatencyStage.FUSION), 150.0)
-
 
 def _behind_camera() -> dict[str, Any]:
     """A second fixed camera, behind the part from the first (the cube's -x side, 45 degrees up), fused."""
@@ -820,8 +795,7 @@ def _behind_camera() -> dict[str, Any]:
     placed = StaticCameraToBaseResolver(transform=Transform.from_matrix(
         behind, from_frame=Frame.CAMERA, to_frame=Frame.BASE))
     return {"multi_camera_perception": _Rig(CameraObservation(camera_id="behind", frame=seen)),
-            "camera_frame_resolvers": {"behind": placed}, "configured_camera_ids": ("behind",),
-            "fusion_geometry_config": FusionGeometryConfig(enabled=True)}
+            "camera_frame_resolvers": {"behind": placed}}
 
 
 class _Rig:
@@ -862,8 +836,8 @@ class WhatTheLooksAddTests(unittest.TestCase):
         """A low block hides the foot of the cube's -x face from the second look, which alone cannot find the bench;
         the first look saw the foot of the +x face, and the two fused put the bench where it is."""
         block = Box((-45.0, -730.0, 0.0), (-28.0, -670.0, 30.0), "block")
-        support = GraspingSupportConfig(height_mm=-50.0, refine_from_target=True)
-        cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), grasps_on=(1,), boxes=(CUBE, block), support_config=support,
+        support = DeclaredSupport(height_mm=-50.0)
+        cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), grasps_on=(1,), boxes=(CUBE, block), declared_support=support,
                      camera_matrix=K)
 
         cell.run()
@@ -982,8 +956,8 @@ class WhatTheLooksAddTests(unittest.TestCase):
         """An 8 mm plate spans less than the 25 mm that says a cloud reached what it stands on, however many looks saw
         it: the declared support stands, the same gate in BASE as for one view."""
         plate = Box((-40.0, -740.0, 0.0), (40.0, -660.0, 8.0), "part")
-        support = GraspingSupportConfig(height_mm=-50.0, refine_from_target=True)
-        cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), grasps_on=(1,), boxes=(plate,), support_config=support,
+        support = DeclaredSupport(height_mm=-50.0)
+        cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), grasps_on=(1,), boxes=(plate,), declared_support=support,
                      camera_matrix=K)
 
         cell.run()
@@ -1010,40 +984,20 @@ class WhatTheLooksAddTests(unittest.TestCase):
         np.testing.assert_allclose(cell.policy.executed[0].position, centres["bolt"])
 
     def test_two_looks_are_associated_at_the_wrist_tolerances(self) -> None:
-        """A score of 0.30 over points 15 mm apart, scored on 3 mm voxels (``association.WRIST_VIEW_*``), and a wider
-        radius the fusion config asks for kept."""
-        cases: dict[str, tuple[dict[str, Any], float]] = {
-            "no fusion config": ({}, 15.0),
-            "a wider radius configured": (
-                {"fusion_geometry_config": FusionGeometryConfig(enabled=False, neighbour_mm=20.0)}, 20.0),
-        }
+        """A score of 0.30 over points 15 mm apart, scored on 3 mm voxels (``association.WRIST_VIEW_*``)."""
         real = scene_geometry.fuse_scene_geometry
-        for name, (wiring, radius) in cases.items():
-            with self.subTest(name):
-                asked: list[dict[str, Any]] = []
+        asked: list[dict[str, Any]] = []
 
-                def spy(*args: Any, asked: list[dict[str, Any]] = asked, **kwargs: Any) -> Any:
-                    asked.append(kwargs)
-                    return real(*args, **kwargs)
+        def spy(*args: Any, **kwargs: Any) -> Any:
+            asked.append(kwargs)
+            return real(*args, **kwargs)
 
-                cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), grasps_on=(1,), **wiring)
-                with mock.patch.object(scene_geometry, "fuse_scene_geometry", spy):
-                    cell.run()
+        cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), grasps_on=(1,))
+        with mock.patch.object(scene_geometry, "fuse_scene_geometry", spy):
+            cell.run()
 
-                (second,) = asked  # the first look had nothing to be fused with
-                self.assertEqual((0.30, radius, 3.0),
-                                 (second["min_score"], second["neighbour_mm"], second["score_voxel_mm"]))
-                self.assertEqual("overlap", str(second["metric"]))
-
-    def test_the_fusion_of_the_looks_is_timed(self) -> None:
-        for looks, timed in (((LOOK_PLUS_X, LOOK_MINUS_X), True), ((LOOK_PLUS_X,), False)):
-            with self.subTest(looks=len(looks)):
-                tracker = LatencyTracker()
-                cell = _Cell(looks=looks, grasps_on=(len(looks) - 1,), latency_tracker=tracker)
-
-                cell.run()
-
-                self.assertEqual(timed, tracker.get(LatencyStage.FUSION) is not None)
+        (second,) = asked  # the first look had nothing to be fused with
+        self.assertEqual((0.30, 15.0, 3.0), (second["min_score"], second["neighbour_mm"], second["score_voxel_mm"]))
 
     def test_a_pick_lets_go_of_its_looks_when_it_ends(self) -> None:
         cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), grasps_on=(1,))
@@ -1406,39 +1360,8 @@ class _TwoGrasps(LookCalculator):
 
 class TheGraspGrippedIsTheOneWhoseFacesWereJudgedTests(unittest.TestCase):
     """Integration of 2026-09-29: ``both_faces`` is judged on the calculator's best grasp at ranking time, so the grasp
-    gripped must be that one. The reranks stand down, and the approach check falls back to no other candidate, whose
-    contact faces nobody judged. Off, both run as they always did."""
-
-    def test_with_both_faces_a_blocked_approach_falls_back_to_no_grasp_whose_faces_nobody_judged(self) -> None:
-        for asked, gripped in ((False, [0.8]), (True, [])):
-            with self.subTest(both_faces=asked):
-                cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), calculator=_TwoGrasps, both_faces=asked,
-                             approach_path_policy=object(), mode_label="dense_clutter",
-                             _approach_path_modes=frozenset({"dense_clutter"}))
-                # The best grasp's approach is blocked, the second's is clear.
-                with mock.patch.object(BinPickingOrchestrator, "_approach_sweep_is_clear",
-                                       side_effect=lambda candidate, _cloud: float(candidate.score) < 0.85):
-                    report = cell.run()
-
-                self.assertEqual(gripped, [float(grasp.score) for grasp in cell.policy.executed])
-                self.assertIs(PickOutcome.APPROACH_PATH_BLOCKED if asked else PickOutcome.EXECUTED, report.outcome)
-
-    def test_with_both_faces_the_reranks_stand_down(self) -> None:
-        from src.robot.grasping.loop import pick_loop
-
-        blend, uncertainty = object(), object()
-        for asked, handed in ((False, (blend, uncertainty)), (True, (None, None))):
-            with self.subTest(both_faces=asked):
-                cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), both_faces=asked, ranking_blend_config=blend,
-                             uncertainty_rerank_config=uncertainty)
-                with mock.patch.object(pick_loop, "maybe_blend_rerank_candidates",
-                                       side_effect=lambda candidates, **_: (candidates, None)) as blended, \
-                        mock.patch.object(pick_loop, "maybe_uncertainty_rerank_candidates",
-                                          side_effect=lambda candidates, **_: (candidates, None)) as reranked:
-                    report = cell.run()
-
-                self.assertIs(PickOutcome.EXECUTED, report.outcome)
-                self.assertEqual(handed, (blended.call_args.kwargs["config"], reranked.call_args.kwargs["config"]))
+    gripped must be that one. The reranks and the approach check that stood down for it left on 2026-10-16 with the
+    success model, the uncertainty layer and approach validation (the owner's cleanup)."""
 
     def test_with_both_faces_a_motion_that_turns_the_grasp_is_refused_before_anything_moves(self) -> None:
         """A policy that yaws every grasp about base Z onto base X (``GraspMotion(align_closing_to_base_x=True)``)

@@ -56,8 +56,7 @@ class RealWeightsSmokeTests(unittest.TestCase):
             self.assertTrue(report.succeeded, report.render())
             self.assertTrue(report.validated)
             self.assertGreater(report.best["map50"], 0.1, report.render())
-            detector = RtDetrObjectDetector(ObjectDetectorConfig(model_path=report.model_dir, threshold=0.2,
-                                                                 local=True))
+            detector = RtDetrObjectDetector(ObjectDetectorConfig(model_id=report.model_dir, threshold=0.2))
             first = run.dataset().val[0]
             image = np.array(Image.open(first.path).convert("RGB"))[:, :, ::-1].copy()
             labels = {d.label for d in detector.detect_all(image)}

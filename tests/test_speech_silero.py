@@ -2,7 +2,8 @@
 
 The owner decided on 2026-09-11 that Silero runs as TorchScript through the shared venv's torch, with no
 new package. The model file is `silero_vad.jit` from the silero-vad 6.2.1 wheel (MIT), pinned by hash in
-`scripts/model_weights/fetch.py`, and `models.stt.vad_model_path` names where it lies. Every test but the
+`src/models/weights.py`, and read from where `fetch.py silero-vad` writes it under `models.weights_root`
+(`speech/silero-vad-6.2.1/silero_vad.jit`; `models.stt.vad_model_path` named it until 2026-10-17). Every test but the
 last runs against a stand-in for what `torch.jit.load` returns; `TheModelOnThisBoxTests` loads the real
 file when it is on disk and says why it skipped when it is not.
 """
@@ -67,18 +68,19 @@ class TheDetectorTests(_WithAModelFile):
         self.assertIsInstance(detector, VoiceActivityDetector)
         self.assertEqual((detector.samplerate, detector.window_samples), (16000, 512))
 
-    def test_from_config_reads_vad_model_path_is_keyword_only_and_loads_nothing(self) -> None:
+    def test_from_config_reads_the_weights_folder_is_keyword_only_and_loads_nothing(self) -> None:
         import torch
 
         from src.models.speech.silero import SileroVoiceActivityDetector
 
-        path = self._file()
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
         with patch.object(torch.jit, "load") as load:
-            detector = SileroVoiceActivityDetector.from_config(config=_config(vad_model_path=str(path)))
+            detector = SileroVoiceActivityDetector.from_config(config=_config(), weights_root=root)
             with self.assertRaises(TypeError):
                 SileroVoiceActivityDetector.from_config(_config())  # type: ignore[misc]
         load.assert_not_called()
-        self.assertEqual(detector.model_path, path)
+        self.assertEqual(detector.model_path, root / "speech" / "silero-vad-6.2.1" / "silero_vad.jit")
 
     def test_the_model_loads_once_on_first_use_and_on_the_cpu(self) -> None:
         import torch
@@ -139,7 +141,7 @@ class TheDetectorTests(_WithAModelFile):
         load.assert_not_called()
         self.assertIsInstance(caught.exception, FileNotFoundError)
         message = str(caught.exception)
-        for fragment in ("no-such-folder-for-willy", "models.stt.vad_model_path", "fetch.py silero-vad"):
+        for fragment in ("no-such-folder-for-willy", "the voice detector (silero-vad)", "fetch.py silero-vad"):
             self.assertIn(fragment, message)
 
     def test_a_machine_that_cannot_import_torch_gets_the_named_refusal(self) -> None:

@@ -1,4 +1,4 @@
-"""Qwen3-VL as a detector: ``detect_all(bgr, prompt) -> [Detection]``, the shape GroundingDINO has.
+"""Qwen3-VL as a detector: ``detect_all(bgr, prompt) -> [Detection]``, the shape every detector here has.
 
 A grounding VLM produces boxes, and boxes are what
 :class:`~src.models.perception_backend.TwoStageBackend` already hands to SAM2. So this is a drop-in
@@ -22,7 +22,9 @@ A prompt of one description is asked with :data:`GROUNDING_INSTRUCTION`, byte fo
 
 No torch, transformers or weights are imported at module import. Everything heavy is loaded inside
 :meth:`Qwen3VLGrounder._load`, so this module imports on CI, on macOS and on a box with no
-GPU, and a cell that never sends a complex prompt never pays for the model.
+GPU, and the weights load at the first prompt that reaches the model. They are read from the
+``model_id`` through the one resolver (:mod:`src.models.weights`): the weights folder's copy, else the
+Hugging Face cache, and never a download.
 
 Measured against the real 4B weights on the dev box's RTX 5080 (2026-10-01): the load takes about
 6.3-6.5 s and holds 8.93 GB, a command's text answer peaks at 9.8-9.9 GB (a retried question is the
@@ -35,21 +37,22 @@ other way round.
 **What a grounding call costs is the answer's length** (measured 2026-10-08 on two of the cell's own
 wrist frames with the 4B on that card). The image and the instruction are read in about 0.23 s; after
 that every token of the answer is one pass of the model, about 32 ms there and about 140 ms on the
-cell's 8B. Three cubes as today's instruction asks for them are 108 tokens. Three switches in the
-``vlm`` block cut passes (:meth:`Qwen3VLGrounder.configure`):
+cell's 8B. Three cubes as today's instruction asks for them are 108 tokens. Three settings cut passes,
+fixed since 2026-10-17 at the values the owner's cell ran (:data:`PROMPT_LOOKUP_TOKENS` and its neighbours;
+:meth:`Qwen3VLGrounder.configure` sets others for a measurement):
 
 * ``stop_at_answer_end`` (on): the answer ends where its JSON array closes, not one pass (the end
   token) or three (after a code fence) later. The tokens before are the ones greedy decoding writes
   anyway, and the parser reads the same boxes from them (:func:`answer_array_closed`). A command's
   reading ends where its JSON object closes, one pass before the end token (:func:`answer_object_closed`).
-* ``prompt_lookup_tokens`` (0, off; 10 measured): the next tokens are proposed from the answer
+* ``prompt_lookup_tokens`` (10, the owner's cell's; 0 is off): the next tokens are proposed from the answer
   itself and checked in one pass (:class:`_AnswerLookup`): three cubes in 47 passes instead of 108,
   1.5 s instead of 3.5 s there. Not byte-identical: a pass that checks several tokens rounds
   differently, so a coordinate's last digit can come out one higher or lower, as on another card;
   over 90 calls on the cell's frames 42 answers came out identical, and in 2 the list held one box
   more or one fewer. Plain greedy decoding with a static KV cache, which only computes in another
   order, did the same: 41 identical, the same two lists.
-* ``text_prompt_lookup_tokens`` (0, off; 10 measured): the same for :meth:`answer_text`, the
+* ``text_prompt_lookup_tokens`` (10, the owner's cell's; 0 is off): the same for :meth:`answer_text`, the
   command reader's answers, whose keys come from the instruction: ten commands in 128 passes
   instead of 617, every answer byte-identical, 3.2 times as fast. With the compact instruction of
   2026-10-08 (2026-10-09, 67 sentences): 1458 passes instead of 2539, and 3 readings came out
@@ -61,7 +64,7 @@ cell's 8B. Three cubes as today's instruction asks for them are 108 tokens. Thre
 CPU busy with other work). A pass over one new token is about 2400 kernel launches, and the card runs
 them faster than the CPU hands them over: it was busy 45 % of a plain pass there, and the cell's 8B
 writes a token in about 140 ms where reading its weights takes about 20. ``decode_graphs`` (``auto``,
-the default) hands each stretch between two layers' attentions to the card as one CUDA graph and leaves
+the owner's cell's) hands each stretch between two layers' attentions to the card as one CUDA graph and leaves
 the attention over the answer so far to the model's own cache and attention function
 (:class:`_DecodeGraphs`), so a pass launches the plain pass's kernels, in its order, on its data. Over
 the 90 calls on the cell's frames and 67 command sentences every answer came out byte-identical, with
@@ -93,7 +96,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Final
 
 from src.models.constants import MODELS_LOG_DIR, VLM_GROUNDER_LOG_FILE
 from src.models.detection.types import Detection
@@ -112,8 +115,9 @@ from .parsing import (
 )
 
 __all__ = [
-    "CLASS_LIST_SEPARATOR", "DECODE_GRAPHS", "GROUNDING_INSTRUCTION", "GROUNDING_MAX_NEW_TOKENS", "Qwen3VLGrounder",
-    "REPEATED_BOXES_TO_STOP", "answer_array_closed", "answer_loops", "answer_object_closed", "class_list_prompt",
+    "CLASS_LIST_SEPARATOR", "DECODE_GRAPHS", "DECODE_GRAPHS_MODE", "GROUNDING_INSTRUCTION", "GROUNDING_MAX_NEW_TOKENS",
+    "PROMPT_LOOKUP_TOKENS", "Qwen3VLGrounder", "REPEATED_BOXES_TO_STOP", "STOP_AT_ANSWER_END",
+    "TEXT_PROMPT_LOOKUP_TOKENS", "answer_array_closed", "answer_loops", "answer_object_closed", "class_list_prompt",
     "classes_of",
 ]
 
@@ -129,6 +133,16 @@ _LOG = create_logger(__name__, log_file=VLM_GROUNDER_LOG_FILE, log_dir=MODELS_LO
 #: tokenizer, 2026-10-06). 2048 holds about 40; greedy decoding stops at the answer's end, so a short answer costs
 #: no more than before.
 GROUNDING_MAX_NEW_TOKENS = 2048
+
+#: How the VLM answers, fixed since 2026-10-17 at the values the owner's cell ran (its tree of 2026-10-14, and its
+#: grounder's log of 2026-10-12: "answers with prompt_lookup_tokens=10, text_prompt_lookup_tokens=10,
+#: stop_at_answer_end=True"): ten tokens proposed a pass from the answer itself, for a grounding and for a command's
+#: reading, the answer ended where its JSON closes, and each pass as CUDA graphs on a card that takes them. The module
+#: docstring says what each one measured. They were keys of the ``vlm`` block; no cell had a reason to set another.
+PROMPT_LOOKUP_TOKENS: Final = 10
+TEXT_PROMPT_LOOKUP_TOKENS: Final = 10
+STOP_AT_ANSWER_END: Final = True
+DECODE_GRAPHS_MODE: Final = "auto"
 
 #: How many boxes in a row, each the same object as a box written before it (``parsing.REPEAT_IOU``), end a grounding
 #: answer: the model has begun to loop. On the cell (2026-10-12) Qwen wrote 3 or 4 boxes of the crate and then the same
@@ -464,7 +478,7 @@ class _AnswerLookup:
 
 # --- the decode pass as CUDA graphs ---------------------------------------------------------------------------------
 
-#: What ``decode_graphs`` may be set to (:meth:`Qwen3VLGrounder.configure`, the ``vlm`` block's key): ``auto`` decodes
+#: What ``decode_graphs`` may be set to (:meth:`Qwen3VLGrounder.configure`): ``auto``, the owner's cell's, decodes
 #: with graphs where this copy's card can take them, ``on`` wherever they can be captured, ``off`` never.
 DECODE_GRAPHS = ("auto", "on", "off")
 
@@ -846,24 +860,23 @@ class Qwen3VLGrounder:
         self,
         *,
         model_id: str,
-        model_path: str | None = None,
-        local: bool = False,
+        weights_root: str | None = None,
         device: str = "cuda",
         max_new_tokens: int = GROUNDING_MAX_NEW_TOKENS,
-        preload: bool = False,
         coordinate_space: CoordinateSpace = CoordinateSpace.GRID_1000,
-        prompt_lookup_tokens: int = 0,
-        text_prompt_lookup_tokens: int = 0,
-        stop_at_answer_end: bool = True,
-        decode_graphs: str = "auto",
+        prompt_lookup_tokens: int = PROMPT_LOOKUP_TOKENS,
+        text_prompt_lookup_tokens: int = TEXT_PROMPT_LOOKUP_TOKENS,
+        stop_at_answer_end: bool = STOP_AT_ANSWER_END,
+        decode_graphs: str = DECODE_GRAPHS_MODE,
     ) -> None:
         #: What this checkpoint's box numbers mean, measured for Qwen3-VL-4B-Instruct. A parameter
         #: because a future checkpoint may differ and the failure is silent: grid values look like
         #: plausible pixels on a large frame. See :class:`CoordinateSpace`.
         self.coordinate_space = coordinate_space
         self.model_id = model_id
-        self._source = model_path or model_id
-        self._local = local
+        #: The folder the weights are read from (``models.weights_root``); ``None`` is the repository's. Resolved at
+        #: the load, so a build never touches the disk for them and a missing checkpoint refuses the first prompt.
+        self._weights_root = weights_root
         self._device = device
         self._max_new_tokens = max_new_tokens
         self._model: Any = None
@@ -898,10 +911,6 @@ class Qwen3VLGrounder:
         self._last_answer_ms: float | None = None
         self.configure(prompt_lookup_tokens=prompt_lookup_tokens, text_prompt_lookup_tokens=text_prompt_lookup_tokens,
                        stop_at_answer_end=stop_at_answer_end, decode_graphs=decode_graphs)
-        if preload:
-            # Predictable latency and VRAM held from cell build, against nothing paid until the
-            # first complex prompt arrives. Config chooses; both suit different cells.
-            self._ensure_loaded()
 
     @property
     def loaded(self) -> bool:
@@ -964,10 +973,10 @@ class Qwen3VLGrounder:
     ) -> None:
         """Set how this copy writes its answers; ``None`` keeps a setting. Loads and reloads nothing.
 
-        The settings are the ``vlm`` block's (``prompt_lookup_tokens``, ``text_prompt_lookup_tokens``,
-        ``stop_at_answer_end``, ``decode_graphs``), not the weights': a build hands them to the process's one copy,
-        whatever a command or an earlier build left there, and the next inference uses them; one in flight keeps what
-        it started with.
+        A copy answers at the owner's cell's values (:data:`PROMPT_LOOKUP_TOKENS`, :data:`TEXT_PROMPT_LOOKUP_TOKENS`,
+        :data:`STOP_AT_ANSWER_END`, :data:`DECODE_GRAPHS_MODE`), and no cell sets others; a measurement that compares
+        them with a plain pass sets its own here. The next inference uses them; one in flight keeps what it started
+        with.
         """
         lookups = {"prompt_lookup_tokens": prompt_lookup_tokens, "text_prompt_lookup_tokens": text_prompt_lookup_tokens}
         for name, value in lookups.items():
@@ -997,8 +1006,8 @@ class Qwen3VLGrounder:
 
         Raises what the load raised, unchanged, and records it in :attr:`load_error`; the next call
         tries again, except one that was already waiting for that load (see :meth:`_ensure_loaded`).
-        Deciding what a failed load means is the caller's: ``GuardedVlmBackend`` for a pick, the
-        holder's text asker for a command.
+        Deciding what a failed load means is the caller's: the perception seam for a pick, which perceives
+        nothing and counts the failure (``TwoStageBackend``), the holder's text asker for a command.
         """
         return self._ensure_loaded()
 
@@ -1012,7 +1021,7 @@ class Qwen3VLGrounder:
         multi-GB attempt right after an out-of-memory or a missing file only repeats it, and a
         command that arrived during a failing Laden must not become the retry. The next caller that
         was not waiting tries again (a pick's next look, Laden). Raises the underlying error
-        unchanged; ``GuardedVlmBackend`` decides what it means.
+        unchanged; the caller decides what it means.
         """
         if self._model is not None:
             return False
@@ -1042,7 +1051,7 @@ class Qwen3VLGrounder:
             # Published last: `loaded` reads True only once the processor and torch are in place, so
             # the unlocked fast path above never meets a half-loaded model.
             self._model = model
-            # The load cost is what `preload` trades against first-prompt latency.
+            # The load cost is what the first prompt that reaches the model waits for.
             _LOG.info("VLM %s ready in %.1f s", self.model_id, self._load_s)
             with self._settings_lock:
                 mode = self._decode_graphs
@@ -1057,8 +1066,15 @@ class Qwen3VLGrounder:
         import torch  # noqa: PLC0415
         from transformers import AutoModelForImageTextToText, AutoProcessor  # noqa: PLC0415
 
-        _LOG.info("loading VLM %s (device=%s)", self._source, self._device)
-        processor = AutoProcessor.from_pretrained(self._source, local_files_only=self._local)
+        from src.models.weights import resolve_weights  # noqa: PLC0415 (stdlib only; kept beside the heavy imports)
+
+        # A missing checkpoint raises FileNotFoundError, an OSError: the shape a missing model takes for every caller
+        # (the holder's text asker, the perception seam), naming the folder looked in and the fetch that fills it.
+        found = resolve_weights(self.model_id, kind="vlm", root=self._weights_root,
+                                key="models.pipeline.zero_shot.vlm.model_id")
+        source = found.source
+        _LOG.info("loading VLM %s from %s (device=%s)", self.model_id, found.describe(), self._device)
+        processor = AutoProcessor.from_pretrained(source, local_files_only=True)
         # Not `device_map=`: that routes through `accelerate`, which is absent from the validated
         # Isaac environment and fails at load with an error naming accelerate rather than the real
         # situation. `.to(device)` needs no extra dependency and is the right call for a single GPU;
@@ -1066,8 +1082,8 @@ class Qwen3VLGrounder:
         # `model` is typed Any because transformers annotates `.to()` as taking a PreTrainedModel
         # rather than a device string, which mypy then rejects.
         model: Any = AutoModelForImageTextToText.from_pretrained(
-            self._source,
-            local_files_only=self._local,
+            source,
+            local_files_only=True,
             dtype="auto",
         )
         model = model.to(self._device)

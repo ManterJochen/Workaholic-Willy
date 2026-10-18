@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
@@ -50,9 +50,6 @@ from datagen.grasps.verdict import (
     check_jaw_grasp,
     check_suction_grasp,
 )
-
-if TYPE_CHECKING:  # the schema import is deferred at runtime (heavy pydantic tree)
-    from src.config.schema.robot.grasping_schema import GraspingSupportConfig
 
 __all__ = ["CONFIGURATIONS", "DEEP_CONFIGURATIONS", "evaluate_dataset", "select_configurations",
            "summarise"]
@@ -104,15 +101,13 @@ MATCH_ACCEPT_COST: float = 1.0
 EVAL_ROW_SCHEMA: int = 3
 
 
-
-
 @dataclass(frozen=True, slots=True)
 class CalculatorConfig:
     """One way of running the calculator: constructor kwargs plus the per-call inputs.
 
     ``build`` may depend on the view: the approach vector is in CAMERA frame, so "straight down in
-    BASE" is a different vector for every camera. ``neighbours`` and ``dense_sampling`` are
-    ``compute()`` arguments rather than constructor ones, which is why they live here separately.
+    BASE" is a different vector for every camera. ``neighbours`` is a ``compute()`` argument rather
+    than a constructor one, which is why it lives here separately.
     """
 
     name: str
@@ -129,7 +124,6 @@ class CalculatorConfig:
     #: has to be checked on its own.
     make: Callable[..., Any] | None = None
     neighbours: bool = False
-    dense_sampling: bool | None = None
     #: Pass the target's cloud fused from every rendered view, in BASE. A single depth view sees one
     #: side of an object and an antipodal grasp needs two, so this rung changes what the calculator
     #: can see rather than how it searches. The calculator already has the seam
@@ -149,75 +143,15 @@ class CalculatorConfig:
     container_walls: bool = False
 
 
-#: The silhouette rungs pin that stage explicitly. The calculator's own default is
-#: ``support_footprint_geometry=True``, so leaving this to the default would turn every rung of the
-#: ladder into the same measurement, and a ladder whose rungs mean the same thing measures nothing.
-_SILHOUETTE = {"support_footprint_geometry": False}
-
-#: Applied to every rung, after its own kwargs, so no rung can forget it.
-#:
-#: The dense sampler carries a wall-clock budget (150 ms in production, where a cell has a cycle
-#: time). On overrun it falls back to silhouette geometry and then cools down, which changes the
-#: calls after it too, so which candidates exist depends on how busy the machine is. That is correct
-#: in a cell and wrong in a reference: a baseline that moves with load is not a baseline. Only the
-#: dense-dependent rungs move between runs, but they are the ones the ladder compares.
-#:
-#: So the reference runs with the budget effectively off. The ladder then measures something
-#: production does not do, which is the right trade here: it answers what this geometry can yield,
-#: not what this box managed today.
-#:
-#: One hour rather than infinity, because ``validate_calculator_args`` refuses a non-finite budget.
-#: An unbounded budget in a cell is a defect, and relaxing a production guard to suit an offline
-#: tool is how guards die. If a single sampling call ever did reach an hour, that is a real failure
-#: and the fallback firing is the correct answer.
-_REFERENCE_ONLY_KWARGS = {"dense_runtime_budget_ms": 3_600_000.0}
-
-
-def _plain(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    return {"camera_matrix": intrinsics, **_SILHOUETTE}
-
-
 def _floor(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
     """A floor takes the camera and the jaw limits and nothing else; it has no config surface."""
     return {"camera_matrix": intrinsics, "seed": 0, "candidates": 12,
             "min_grip_width_mm": 5.0, "max_grip_width_mm": 85.0}
 
 
-def _oblique(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    return {"camera_matrix": intrinsics, "oblique_approach": True, **_SILHOUETTE}
-
-
-def _sfe_voxel8(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    """The 8 mm-voxelised contact cloud instead of the full-resolution one, kept as the control.
-
-    Full resolution is the default, so this rung measures the difference rather than remembering it.
-    ``reconstruct_support_prism`` refuses below 20 points, and how many points an object has is
-    decided by ``geometry_voxel_size_mm``: two numbers with nothing to do with each other. A 32 mm
-    cube is 4x4 = 16 cells at 8 mm and falls off that cliff, losing every candidate while all four
-    rejection counters stay at zero. SFE also re-voxelises at 3 mm itself, so the pre-downsample
-    throws away resolution it was about to thin more finely.
-    """
-    return {"camera_matrix": intrinsics, "support_footprint_geometry": True,
-            "support_footprint_full_resolution": False}
-
-
-def _sfe_fallback(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    """SFE, but an abstention falls back to the silhouette instead of vetoing it.
-
-    ``reconstruct_support_prism`` gives up below 20 surviving cloud points, and the calculator then
-    replaces the silhouette candidates with SFE's empty list, so a small or grazing-angle object
-    produces no candidate at all with every rejection counter still at zero.
-
-    The fallback buys almost nothing and costs precision: where SFE abstains, the silhouette cannot
-    grasp the object either, so the extra candidates it restores are overwhelmingly invalid. The
-    abstention is the right answer and the default stays off.
-    """
-    return {"camera_matrix": intrinsics, "support_footprint_geometry": True,
-            "support_footprint_fallback": True}
-
-
 def _sfe(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    return {"camera_matrix": intrinsics, "support_footprint_geometry": True}
+    """The support-footprint stage, the part's body over its support: the calculator as it ships."""
+    return {"camera_matrix": intrinsics}
 
 
 #: Where the learned generator's artifact lives. An env var and not a rung field, because it is a
@@ -300,65 +234,10 @@ def _make_deep(**kwargs: Any) -> Any:
     return built
 
 
-def _sfe_cone(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    """SFE ranked by the contact angle alone: the first of its five terms, at full weight.
-
-    `cone_slack = 1 - contact_angle/cone` carries 0.35 of the shipped blend and is the term that
-    separates valid from invalid most sharply within a candidate list, so this rung asks what the
-    other four terms contribute.
-
-    The candidate set is unchanged: every legality filter runs first and this only orders what
-    survived. A grasp that grazes the table is still refused by the filter, not by the rank.
-    """
-    return {"camera_matrix": intrinsics, "support_footprint_geometry": True,
-            "support_footprint_score_weights": (1.0, 0.0, 0.0, 0.0, 0.0)}
-
-
-def _sfe_cone70(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    """The milder half of the same question: the angle at 0.70 instead of 0.35, the rest shrunk.
-
-    Two rungs rather than one because "the first term is the only one that works" and "the first term
-    is under-weighted" are different claims, and a single all-or-nothing arm cannot separate them.
-    """
-    return {"camera_matrix": intrinsics, "support_footprint_geometry": True,
-            "support_footprint_score_weights": (0.70, 0.10, 0.10, 0.05, 0.05)}
-
-
-def _sfe_palm(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    """SFE that reasons about the palm, which its own downstream collision filter always has.
-
-    The planner sizes its table clearance from finger points (27 mm wide); the envelope re-checks it
-    with the palm (70 mm wide, 35 mm deep) included. Straight down the palm sits behind the fingers
-    and is irrelevant; as the approach tilts, the binormal swings toward vertical and the palm
-    becomes the lowest part of the gripper. The two height requirements differ by
-    35.0 - 27.0 = 8 mm at 90 degrees.
-
-    This rung changes both halves: the check refuses a candidate whose palm digs in, and the height
-    solve accounts for the palm so SFE relocates the anchor instead of merely losing it. Only the
-    second half can buy anything; the first can only take away. It buys nothing here, and precision
-    does not rise to pay for the grasps it costs, so the default stays off.
-
-    The losses are the open question: this reference calls a grasp valid by matching an analytic
-    label, not by checking a table, so a grasp the palm term rejects still matches ground truth.
-    Either the labels do not model the palm (they are generated for a floating-base 2F-85, which has
-    no collision in Isaac) or the palm term is stricter than the hardware.
-    """
-    return {"camera_matrix": intrinsics, "support_footprint_geometry": True,
-            "support_footprint_palm_aware": True}
-
-
-def _topdown(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
-    # approach_vector_cam is expressed in the CAMERA frame; BASE -Z rotated back into it.
-    rotation = np.asarray(camera_to_base, dtype=np.float64)[:3, :3]
-    return {"camera_matrix": intrinsics, **_SILHOUETTE,
-            "approach_vector_cam": rotation.T @ np.array([0.0, 0.0, -1.0])}
-
-
 #: A ladder: each rung adds exactly one thing to the one above it, so every difference between two
-#: adjacent rows means one thing and not three. ``neighbours`` matters more than it looks: the pick
-#: loop always passes the other masks of the view, and the auto gate turns the dense geometry
-#: sampler on when it sees them, so an evaluation that withholds them is not evaluating the
-#: production path at all.
+#: adjacent rows means one thing and not three. The silhouette rungs, the dense, oblique and top-down
+#: ones, and the rungs that varied the support-footprint stage's own search (its voxel, its fallback,
+#: its ranking weights, its palm) left on 2026-10-16 with what they measured (the owner's cleanup).
 #:
 #: The learned generator is kept out of `CONFIGURATIONS` on purpose. Every rung in the default tuple
 #: runs on every ladder invocation, and this one needs a machine-local artifact, which would make
@@ -376,30 +255,6 @@ def _topdown(intrinsics: np.ndarray, camera_to_base: np.ndarray) -> dict:
 # Named, not lambdas. `--jobs > 1` pickles every CalculatorConfig to its workers, and a lambda
 # cannot be pickled: the child dies unpacking it and the parent reports `WinError 87` from
 # `spawn_main`, which names neither the rung nor the reason.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 DEEP_CONFIGURATIONS: tuple[CalculatorConfig, ...] = (
@@ -427,49 +282,13 @@ CONFIGURATIONS: tuple[CalculatorConfig, ...] = (
                      make=TopDownGraspCalculator),
     CalculatorConfig("floor_normal", _floor, "FLOOR: into the surface along its oriented normal",
                      make=NormalGraspCalculator),
-    CalculatorConfig("default", _plain, "as it ships, no neighbour masks"),
-    CalculatorConfig("neighbours", _plain, "+ other_object_masks, as the pick loop passes them",
-                     neighbours=True),
-    CalculatorConfig("dense", _plain, "+ the geometry sampler forced on, not left to the AUTO gate",
-                     neighbours=True, dense_sampling=True),
-    CalculatorConfig("topdown_dense", _topdown, "+ the approach forced to BASE -Z",
-                     neighbours=True, dense_sampling=True),
-    CalculatorConfig("oblique_dense", _oblique, "+ multi-angle approach generation instead",
-                     neighbours=True, dense_sampling=True),
-    CalculatorConfig("fused", _plain,
-                     "+ the target's FUSED three-view cloud, so both contact faces are visible",
-                     neighbours=True, fused_geometry=True),
-    # The support-footprint geometry stage replacing the silhouette one. Not a knob on the ladder
-    # above but a different answer to the same question, so it gets its own rungs rather than being
-    # folded into one of theirs.
-    CalculatorConfig("sfe", _sfe, "support-footprint enumeration instead of the silhouette",
+    # The support-footprint stage, the only one since 2026-10-16: the part's body over its support.
+    CalculatorConfig("sfe", _sfe, "the part's body over its support, with the other masks of the view",
                      neighbours=True),
     CalculatorConfig("sfe_fused", _sfe, "+ the target's FUSED three-view cloud",
                      neighbours=True, fused_geometry=True),
     CalculatorConfig("sfe_fused_scene", _sfe, "+ the NEIGHBOURS' fused clouds as obstacles",
                      neighbours=True, fused_geometry=True, fused_neighbours=True),
-    # The ranking pair. Same candidates as `sfe_fused`, ordered by a different blend of the same
-    # measured margins, so any difference is ranking and nothing else.
-    CalculatorConfig("sfe_fused_cone", _sfe_cone,
-                     "sfe_fused ranked by the CONTACT ANGLE alone (its first term, full weight)",
-                     neighbours=True, fused_geometry=True),
-    CalculatorConfig("sfe_fused_cone70", _sfe_cone70,
-                     "sfe_fused with the contact angle at 0.70 instead of 0.35",
-                     neighbours=True, fused_geometry=True),
-    CalculatorConfig("sfe_voxel8", _sfe_voxel8,
-                     "the pre-2026-08-15 SFE: fed the 8 mm contact cloud (the control)",
-                     neighbours=True),
-    CalculatorConfig("sfe_fallback", _sfe_fallback,
-                     "SFE, but an abstention keeps the silhouette instead of vetoing it",
-                     neighbours=True),
-    # The palm pair. Each is the rung directly above it plus one thing: the planner reasoning about
-    # the same gripper part its own collision filter already checks. Two rungs because the fused cloud
-    # changes which grasps exist at all, and a fix measured only on the weaker geometry says nothing
-    # about the one that ships.
-    CalculatorConfig("sfe_palm", _sfe_palm, "+ the planner reasons about the PALM, as the filter does",
-                     neighbours=True),
-    CalculatorConfig("sfe_fused_palm", _sfe_palm, "sfe_fused + the planner reasons about the PALM",
-                     neighbours=True, fused_geometry=True),
     CalculatorConfig("sfe_fused_walls", _sfe, "+ the container WALLS as obstacles",
                      neighbours=True, fused_geometry=True, container_walls=True),
     CalculatorConfig("sfe_fused_scene_walls", _sfe, "+ both neighbours AND walls",
@@ -628,9 +447,9 @@ class _NeighbourScene:
 
     This is the ceiling, not the production path. The clouds come from ground-truth instance masks
     fused across every rendered view, so it answers "is there a lever here at all" with perfect
-    segmentation and perfect association. The runtime seam
-    (``grasping.fusion.geometry.neighbour_scene_enabled``) has to earn each of those, and the
-    predicted-mask run is where that shows up.
+    segmentation and perfect association. The runtime seam that fed the other cameras' neighbour
+    clouds to the collision filter (``neighbour_scene_enabled``) left on 2026-10-16 without having
+    earned them on predicted masks.
     """
 
     points_base_mm: np.ndarray
@@ -704,7 +523,6 @@ def _evaluate_view(
     fused_clouds: Mapping[int, np.ndarray] | None = None,
     neighbour_scene: "_NeighbourScene | None" = None,
     wall_points_base_mm: np.ndarray | None = None,
-    support_cfg: "GraspingSupportConfig | None" = None,
     mask_completion: str = "none",
 ) -> list[dict]:
     from src.robot.grasping.generation.calculator import GraspCalculator  # noqa: PLC0415
@@ -747,27 +565,21 @@ def _evaluate_view(
     def _mask_of(instance_id: int) -> np.ndarray:
         return _masks.get(int(instance_id), instances == (int(instance_id) + 1))
 
-    from src.config.schema.robot.grasping_schema import (  # noqa: PLC0415
-        GraspingGripperGeometryConfig,
-        GraspingSupportConfig,
-    )
-    from src.robot.execution.autonomous_grasp.builders import (  # noqa: PLC0415
-        build_gripper_geometry,
-    )
-    from src.robot.grasping.collision import resolve_support_plane  # noqa: PLC0415
+    from src.robot.grasping.collision.gripper_model import jaw_envelope  # noqa: PLC0415
+    from src.robot.grasping.collision.support_resolver import TABLE_CLEARANCE_MM, DeclaredSupport  # noqa: PLC0415
 
     intrinsics = np.asarray(view["intrinsics"], dtype=np.float64)
     camera_to_base = np.asarray(view["camera_to_base_mm"], dtype=np.float64)
     rows: list[dict] = []
     # What the pick loop passes. An evaluation that withholds either the gripper model or the
-    # support config stops being an evaluation of the production path.
-    gripper_model = build_gripper_geometry(GraspingGripperGeometryConfig())
-    support_cfg = support_cfg or GraspingSupportConfig()
+    # support stops being an evaluation of the production path. Every corpus scene stands on z = 0 and declares no
+    # bin; a scene's walls arrive as `wall_points_base_mm`.
+    gripper_model = jaw_envelope()
+    declared = DeclaredSupport()
 
     for config in configs:
         factory = config.make or GraspCalculator
-        calculator = factory(**{**config.build(intrinsics, camera_to_base),
-                                **_REFERENCE_ONLY_KWARGS})
+        calculator = factory(**config.build(intrinsics, camera_to_base))
         for obj in view["objects"] if with_jaw else ():
             instance_id = int(obj["instance_id"])
             target: Solid | None = geometry.objects.get(instance_id)
@@ -801,26 +613,17 @@ def _evaluate_view(
                     if int(other["instance_id"]) != instance_id
                     and int(_mask_of(other["instance_id"]).sum()) > 0
                 ]
-            if config.dense_sampling is not None:
-                extra["dense_sampling"] = config.dense_sampling
             extra["gripper_model"] = gripper_model
             # The support plane, resolved exactly as pick_loop._resolve_support does it: the declared
             # height raised by the target's own lowest point, fused across cameras when a fused cloud
             # is available for this rung and from this view alone otherwise.
             fused_here = (fused_clouds or {}).get(instance_id) if config.fused_geometry else None
             own = unproject_to_base(depth, mask, camera_to_base, intrinsics)
-            resolution = resolve_support_plane(
-                declared_height_mm=support_cfg.height_mm,
-                container_floor_mm=support_cfg.container.floor_height_mm,
-                normal=support_cfg.normal,
-                target_clouds_base_mm=[c for c in (fused_here, own) if c is not None and c.size],
-                refine_from_target=support_cfg.refine_from_target,
-            )
+            resolution = declared.resolve([c for c in (fused_here, own) if c is not None and c.size])
             extra["support_plane"] = resolution.plane
-            # The same clearance the pick loop passes, read from the same config field rather than
-            # left to compute()'s default: an evaluation that hardcodes a threshold the production
-            # path can change is measuring a system nobody runs.
-            extra["min_table_clearance_mm"] = support_cfg.min_clearance_mm
+            # The same clearance the pick loop passes rather than compute()'s default: an evaluation at
+            # another threshold than the production path's is measuring a system nobody runs.
+            extra["min_table_clearance_mm"] = TABLE_CLEARANCE_MM
             base["support_height_mm"] = round(resolution.height_mm, 2)
             if config.fused_geometry and fused_clouds is not None:
                 cloud = fused_clouds.get(instance_id)
@@ -975,8 +778,7 @@ def _evaluate_view(
 def _scene_rows(
     scene_dir: Path, *, ordinal0: int, assets: SceneAssets, label_rows, model: JawModel,
     configs: Sequence[CalculatorConfig], mask_source: str, with_jaw: bool, with_suction: bool,
-    suction_every: int, support_cfg: "GraspingSupportConfig | None",
-    mask_completion: str = "none",
+    suction_every: int, mask_completion: str = "none",
 ) -> "tuple[int, list[dict]]":
     """Every row one scene produces, for every configuration. Returns ``(views, rows)``.
 
@@ -1017,8 +819,7 @@ def _scene_rows(
                               model=model, configs=configs, with_jaw=with_jaw,
                               with_suction=with_suction and ordinal0 % max(1, suction_every) == 0,
                               fused_clouds=fused_clouds, neighbour_scene=neighbour_scene,
-                              wall_points_base_mm=wall_points, support_cfg=support_cfg,
-                              mask_completion=mask_completion)
+                              wall_points_base_mm=wall_points, mask_completion=mask_completion)
         for row in rows:
             row["masks"] = mask_source
             out.append(row)
@@ -1033,14 +834,14 @@ _POOL: dict = {}
 
 
 def _pool_init(root_str: str, mask_source: str, model: JawModel,
-               configs: Sequence[CalculatorConfig], support_cfg, with_jaw: bool,
+               configs: Sequence[CalculatorConfig], with_jaw: bool,
                with_suction: bool, suction_every: int, mask_completion: str = "none") -> None:
     root = Path(root_str)
     _POOL.update(
         root=root, assets=scene_assets(root),
         label_rows=[json.loads(line) for line
                     in (root / "grasps.jsonl").read_text(encoding="utf-8").splitlines()],
-        mask_source=mask_source, model=model, configs=configs, support_cfg=support_cfg,
+        mask_source=mask_source, model=model, configs=configs,
         with_jaw=with_jaw, with_suction=with_suction, suction_every=suction_every,
         mask_completion=mask_completion,
     )
@@ -1053,7 +854,7 @@ def _pool_scene(task: "tuple[str, int]") -> "tuple[int, list[dict]]":
         label_rows=_POOL["label_rows"], model=_POOL["model"], configs=_POOL["configs"],
         mask_source=_POOL["mask_source"], with_jaw=_POOL["with_jaw"],
         with_suction=_POOL["with_suction"], suction_every=_POOL["suction_every"],
-        support_cfg=_POOL["support_cfg"], mask_completion=_POOL["mask_completion"],
+        mask_completion=_POOL["mask_completion"],
     )
 
 
@@ -1122,7 +923,7 @@ def evaluate_dataset(
     model: JawModel | None = None, progress_every: int = 25, suction_every: int = 1,
     out_name: str = "grasp_eval.jsonl", mask_source: str = "gt", scene_step: int = 1,
     with_jaw: bool = True, with_suction: bool = True, files: Sequence[str] | None = None,
-    support_cfg: "GraspingSupportConfig | None" = None, jobs: int = 1,
+    jobs: int = 1,
     mask_completion: str = "none",
 ) -> dict:
     """Run every rung over every rendered view, one row per candidate. Returns a summary.
@@ -1208,7 +1009,7 @@ def evaluate_dataset(
                     root / "scenes" / name, ordinal0=ordinal0, assets=assets,
                     label_rows=label_rows, model=model, configs=configs, mask_source=mask_source,
                     with_jaw=with_jaw, with_suction=with_suction, suction_every=suction_every,
-                    support_cfg=support_cfg, mask_completion=mask_completion))
+                    mask_completion=mask_completion))
         else:
             # One scene per task, results consumed in submission order. ``Executor.map`` yields in
             # input order regardless of completion order, so the rows land in the same order as the
@@ -1227,7 +1028,7 @@ def evaluate_dataset(
             print(f"  parallel: {jobs} workers over {len(tasks)} scenes", flush=True)
             with process_pool(
                 jobs, initializer=_pool_init,
-                initargs=(str(root), mask_source, model, configs, support_cfg,
+                initargs=(str(root), mask_source, model, configs,
                           with_jaw, with_suction, suction_every, mask_completion),
             ) as pool:
                 for result in pool.map(_pool_scene, tasks, chunksize=1):

@@ -285,7 +285,8 @@ def _calibrate(parts: _Parts) -> AbilityRow:
     rigs, why = _sweepable_rigs(parts.camera)
     if not rigs:
         return AbilityRow(Ability.CALIBRATE, AbilityStatus.REFUSED, why,
-                          "switch on an RGB-D rig in camera.cameras.rigs, the one the calibration is for")
+                          "switch on the rig in camera.cameras.rigs the calibration is for: an RGB-D rig, or a stereo "
+                          "pair once its stereo calibration is written")
     return AbilityRow(Ability.CALIBRATE, AbilityStatus.AVAILABLE,
                       f"fixed stations over {', '.join(rigs)}; each sweep's own check reads its rig, target and "
                       "stations")

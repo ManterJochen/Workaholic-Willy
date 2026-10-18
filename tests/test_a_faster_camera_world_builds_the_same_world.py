@@ -14,8 +14,11 @@ pixel, which is all a world built at ``pixel_stride`` 2 reads, in whole millimet
 cloud the pick recorded; and stand-ins for the other parts its detector named: the frame's surface over the mat, the
 target left out, in 60 mm tiles thinned to 5 mm, as the pick loop offers a named part.
 
-Five cases a frame, built the way the cell builds its world (``camera_world_wiring._live_planner_world`` with the cell's
-``planning_world.perceived`` of that day, ``LivePlannerWorld.world_for`` with the arm's own body):
+Five cases a frame, built the way the cell builds its world (``camera_world_wiring._live_planner_world``,
+``LivePlannerWorld.world_for`` with the arm's own body), tuned as the cell's ``planning_world.perceived`` was that day:
+its boxes grown by 8 mm and no distance field, where every cell's camera world grows them by 6 mm and sends a 10 mm
+field since 2026-10-17 (``perceived.CAMERA_*``). The build this golden pins is the same either way; only the numbers
+the wiring hands it moved:
 
 * ``A`` the cell's 128 slots, the target held, the named parts offered, the arm where it took the frame and the motion
   going 100 mm over the target;
@@ -76,34 +79,33 @@ _SHUTTER_S = 1000.0
 _ASKED_S = 1000.05
 
 
-def _robot(slots: int) -> dict[str, Any]:
+#: The cell's ``planning_world.perceived`` of 2026-10-07 where it differs from every cell's camera world since
+#: 2026-10-17: its boxes grown by 8 mm (the fingers coming 3 mm past a named part's surface), and no distance field.
+#: Its other keys were the numbers every cell's world is built with now (``perceived.CAMERA_*``).
+_MARGIN_MM = 8.0
+_FINGER_CONTACT_MM = 3.0
+
+
+def _robot() -> dict[str, Any]:
     """The owner's ``robot`` block as the cell ran it on 2026-10-07 (``robot.yaml`` from 10:27 on), as far as the
     camera world reads it: the UR10 and the Hand-E of ``_cell_2026_10_01``, today's workspace box and 3 mm distances,
-    the bench slab about the base, and every key of ``planning_world.perceived`` written out, so no schema default the
-    world reads can move under the golden."""
+    and the bench slab about the base."""
     from tests import _cell_2026_10_01 as cell
 
     robot = cell.owner_robot(
         support_plane={"height_mm": 0.0, "extent_mm": [900.0, 700.0], "thickness_mm": 50.0, "center_mm": [0.0, 0.0]},
-        perceived={
-            "enabled": True, "max_age_ms": 2000.0, "fresh_frame_attempts": 3, "pixel_stride": 2,
-            "voxel_size_mm": 10.0, "voxel_field_mm": 0.0, "cluster_voxel_mm": 25.0, "min_points": 12,
-            "margin_mm": 8.0, "fingers_touch_parts": True, "finger_contact_mm": 3.0,
-            "fingers_to_the_support_reading": True, "finger_floor_mm": 1.0, "max_boxes": int(slots),
-            "floor_to_plane": True, "plane_clearance_mm": 5.0, "support_surfaces": True, "support_allowance_mm": 2.0,
-        },
     )
-    robot["workspace_limits"] = {"x_min": -470.0, "x_max": 400.0, "y_min": -900.0, "y_max": -200.0, "z_min": 16.0,
-                                 "z_max": 800.0}
+    robot["motion"]["workspace"] = {"x_min": -470.0, "x_max": 400.0, "y_min": -900.0, "y_max": -200.0, "z_min": 16.0,
+                                    "z_max": 800.0}
     robot["safety"]["self_collision"].update(min_distance_mm=3.0, perceived_min_distance_mm=3.0, planner_margin_mm=3.0)
     return robot
 
 
 @lru_cache(maxsize=None)
-def _config(slots: int) -> Any:
+def _config() -> Any:
     from src.config.schema.robot import RobotConfig
 
-    return RobotConfig.model_validate(_robot(slots))
+    return RobotConfig.model_validate(_robot())
 
 
 @lru_cache(maxsize=None)
@@ -145,9 +147,15 @@ def _live_world(recorded: dict[str, Any], slots: int) -> Any:
             return DepthSnapshot(depth_mm=recorded["depth"], intrinsics=recorded["intrinsics"], timestamp=_SHUTTER_S,
                                  tool_to_base_mm=recorded["tool_to_base"])
 
+    from dataclasses import replace
+
     camera_to_tool = np.linalg.inv(recorded["tool_to_base"]) @ recorded["camera_to_base"]
-    return _live_planner_world(_config(slots), [CameraView(name="EIH_Cam", depth_source=_Wrist(),
-                                                           camera_to_tool=camera_to_tool)])
+    world = _live_planner_world(_config(), [CameraView(name="EIH_Cam", depth_source=_Wrist(),
+                                                       camera_to_tool=camera_to_tool)])
+    # The tuning of that day on the cell's own wiring: the case's slots, the 8 mm margin, no field.
+    world.tuning = replace(world.tuning, max_boxes=int(slots), margin_mm=_MARGIN_MM,
+                           part_soft_mm=_MARGIN_MM + _FINGER_CONTACT_MM, voxel_field_mm=0.0)
+    return world
 
 
 def build(name: str, case: str) -> Any:

@@ -2,8 +2,8 @@
 
 Optional and standalone: nothing in the grasp pipeline imports this package, and mediapipe is
 pinned in `requirements.txt`. Importing this module works without mediapipe installed.
-Constructing a detector is what refuses, with a message naming the config key and the model
-download.
+Constructing a detector is what refuses, with a message naming the bundle, where it was looked for
+and the fetch that writes it.
 
 Layout
 ------
@@ -15,7 +15,7 @@ Layout
 `hand_finder`    pixels + depth + calibration -> millimetres in the robot base frame,
                  over a rig catalogue or over one camera a caller already holds open,
                  fixed or on the wrist.
-`factory`        the config readers: `models.handdetect` / `models.gesturedetect`.
+`factory`        the builders: the owner's cell's numbers, the bundles from the weights folder.
 """
 
 from src.models.handdetection.factory import (

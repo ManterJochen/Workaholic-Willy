@@ -13,7 +13,7 @@ validator named more than one of them:
 | where | question it answers |
 |---|---|
 | `robot.gripper.*` | what the driver may command |
-| `robot.grasping.gripper_geometry` | what shape the calculator sweeps |
+| `config/grippers/robotiq_hande.yaml` (the hand `robot.gripper.model` names) | what shape the calculator sweeps |
 | `robot.safety.self_collision` plus the cuRobo descriptor | what the planner and the guard refuse against |
 
 Each was individually valid while the three disagreed. That was reachable and undetectable: set
@@ -147,39 +147,25 @@ it". A Hand-E cell that writes no plate refuses to build: the hand's own arrays 
 face, and no plate written is no measurement rather than zero. `robot.hande.yaml` writes one 20.0 mm
 plate, an assumption to replace with this cell's bench number.
 
-### 6. The planner knows what it carries only once the cell says how long it is
+### 6. How far the parts hang past the fingertips
 
-`robot.safety.planning_world.payload` ships `enabled: true` with `length_mm: null`: the carried part
-is modelled, and no length is implied. Until the cell declares one, `attach_payload` returns `False`,
-every lift, transit and place is planned with an empty hand, and the checklist's `carried part` row
-blocks a real cuRobo UR tree, naming the key. A cell that carries nothing says so with
-`enabled: false`, and the row turns into a warning. A declared length also reserves sixteen attach
-spheres, and the planner then starts only on an evidence file measured with them
-(`scripts/arms/gate.py --attach 16`); every committed evidence file is measured with none.
+No cell models a part in the jaws since 2026-10-17 (the owner's since 2026-10-05: "mehr Griffe"): a closed
+hand is judged as an empty one, by the exact guard at full stroke, and the planner reserves no spheres for a
+part, so every committed evidence file is one a cell plans on. Until then
+`robot.safety.planning_world.payload` modelled the carried part from its `length_mm`, and a part's box fitted
+with spheres reached past it, so a lift close over a surface could be refused; the load refuses that block
+now, naming what replaced it.
 
-What carrying costs, measured on the planner with `scripts/curobo/probe_payload_attach.py`: the
-part's box is fitted with spheres anew on every attach, and the fit reaches past the box. A lift that
-leaves less than 20 mm between the part's end and a surface below it can be refused: every one of ten
-attaches passed from 5 mm under a 3 mm part, 12 mm under a 90 or 120 mm part, and 20 mm under a 30 mm
-part. It refuses near a surface and never passes a part through one. Place heights and bin floors are
-where a cell meets this number.
+What stays is the number a place needs: `robot.motion.place.part_hang_mm`, how far the longest part hangs past the
+fingertips along the approach. A place sets the part's bottom down where the taught fingertips stood, raised
+by it, and keeps it over a box's rim; the pick's looks measure the hang part by part where they read under the
+part. It ships `null`, which hangs the part from the TCP (the owner, 2026-10-14); the owner's cell sets 1. This
+cell handles several parts, so declare the longest as its worst case: too long lets a part drop from higher
+than it needs to, too short sets the longest part down into what it is placed on.
 
-No length ships, and the reason is worth more than the setting. Modelling a part requires
-`length_mm`, how far a part extends beyond the grasp line, and this cell handles several parts, so no
-single length describes it. A wrong single number is worse than none in
-both directions at once: too long refuses grasps that would work, too short lets a part meet a wall
-the planner never modelled. A shipped default would be plausible and measured on nothing.
-
-So a cell handling several parts either declares the longest as its worst case, or states
-`enabled: false` and plans with an empty hand on purpose, until the payload can be described per part
-rather than per cell. The checklist refuses to let it say neither. Expect the first surprise at a bin
-wall, not in the logs.
-
-**The operator console's task needs the length.** A task carries every part it picks, so `POST /v1/task`
-refuses `409 carried_part_not_modelled` on an arm that models no carried part, and the ready bar's carried-part
-light stays red until the length is declared. After every pick the task also reads that the planner carries the
-part, and stops where the arm stands if it does not.
-
+**The operator console's task needs no length.** No task waits on the carried part and the ready bar has no
+light for it; a hand that measures a part where none should be still ends the task `part_still_held` where the
+arm stands.
 
 ---
 

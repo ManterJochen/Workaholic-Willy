@@ -10,12 +10,16 @@ These tests focus on contracts that are *not* covered by
 * eye-in-hand dynamic-composition path (``T_tool_to_base @ T_cam_to_tool``);
 * ambiguous-transform rejection (both ``camera_to_base`` and
   ``T_cam_to_base`` passed simultaneously).
+
+Every call grasps a 40 mm box on the bench, seen straight down (``tests/_calculator_scenes.py``): the calculator plans
+in BASE over the support the part stands on, and with no BASE plane it offers nothing and says why.
 """
 
 from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 
@@ -30,28 +34,34 @@ from src.robot.grasping.planning import (
     IKResult,
     WorkspaceBoxIKService,
 )
+from tests._calculator_scenes import box_on_the_bench
 
-
-def _camera_matrix() -> np.ndarray:
-    return np.array(
-        [[200.0, 0.0, 12.0], [0.0, 200.0, 12.0], [0.0, 0.0, 1.0]],
-        dtype=np.float64,
-    )
+#: The box the calls grasp.
+SCENE = box_on_the_bench()
 
 
 def _calculator() -> GraspCalculator:
     return GraspCalculator(
-        min_grip_width_mm=1.0,
-        max_grip_width_mm=200.0,
+        min_grip_width_mm=5.0,
+        max_grip_width_mm=85.0,
         max_candidates=3,
-        camera_matrix=_camera_matrix(),
+        camera_matrix=SCENE.camera_matrix,
     )
 
 
-def _make_mask(shape: tuple[int, int] = (24, 24)) -> np.ndarray:
-    mask = np.zeros(shape, dtype=np.uint8)
-    mask[7:17, 6:18] = 1
-    return mask
+def _make_mask() -> np.ndarray:
+    return SCENE.mask.astype(np.uint8)
+
+
+def _compute(seg: Any, depth: "np.ndarray | None" = None, *, result: bool = False, **keywords: Any) -> Any:
+    """One call on the bench scene: its depth, where the camera stood and the bench, unless given."""
+    keywords.setdefault("unit", "mm")
+    if "T_cam_to_base" not in keywords:
+        keywords.setdefault("camera_to_base", SCENE.camera_to_base)
+    keywords.setdefault("support_plane", SCENE.support_plane)
+    calculator = _calculator()
+    run = calculator.compute_result if result else calculator.compute
+    return run(seg, SCENE.depth_mm if depth is None else depth, **keywords)
 
 
 def _full_segmentation_result(mask: np.ndarray) -> SimpleNamespace:
@@ -77,9 +87,8 @@ class SegmentationMetadataPropagationTests(unittest.TestCase):
     def test_full_segmentation_result_metadata_is_preserved(self) -> None:
         mask = _make_mask()
         seg = _full_segmentation_result(mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
 
-        grasps = _calculator().compute(seg, depth, pixel_to_mm=5.0, unit="mm")
+        grasps = _compute(seg)
 
         self.assertTrue(grasps)
         for grasp in grasps:
@@ -95,11 +104,7 @@ class SegmentationMetadataPropagationTests(unittest.TestCase):
             self.assertEqual(seg_meta["sam2_metadata"]["device"], "cuda:0")
 
     def test_minimal_segmentation_object_works_without_metadata_key(self) -> None:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-
-        grasps = _calculator().compute(seg, depth, pixel_to_mm=5.0, unit="mm")
+        grasps = _compute(SimpleNamespace(mask=_make_mask()))
 
         self.assertTrue(grasps)
         for grasp in grasps:
@@ -107,11 +112,9 @@ class SegmentationMetadataPropagationTests(unittest.TestCase):
 
     def test_metadata_snapshot_is_isolated_from_segmentation_instance(self) -> None:
         """Mutating GraspPoint metadata must not leak back to the segmenter."""
-        mask = _make_mask()
-        seg = _full_segmentation_result(mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
+        seg = _full_segmentation_result(_make_mask())
 
-        grasps = _calculator().compute(seg, depth, pixel_to_mm=5.0, unit="mm")
+        grasps = _compute(seg)
         snapshot = grasps[0].metadata["segmentation"]["sam2_metadata"]
         snapshot["device"] = "mutated"
 
@@ -122,9 +125,7 @@ class MaskVariantTests(unittest.TestCase):
     """Mask boundary must accept uint8 {0,1}, uint8 {0,255}, and bool."""
 
     def _run_with_mask(self, mask: np.ndarray) -> list:
-        seg = SimpleNamespace(mask=mask, label="box")
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-        return _calculator().compute(seg, depth, pixel_to_mm=5.0, unit="mm")
+        return _compute(SimpleNamespace(mask=mask, label="box"))
 
     def test_uint8_zero_one_mask(self) -> None:
         self.assertTrue(self._run_with_mask(_make_mask().astype(np.uint8)))
@@ -137,39 +138,29 @@ class MaskVariantTests(unittest.TestCase):
         self.assertTrue(self._run_with_mask(_make_mask().astype(bool)))
 
     def test_empty_mask_yields_empty_result(self) -> None:
-        mask = np.zeros((24, 24), dtype=np.uint8)
-        seg = SimpleNamespace(mask=mask, label="missing")
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
+        mask = np.zeros(SCENE.mask.shape, dtype=np.uint8)
 
-        grasps = _calculator().compute(seg, depth, pixel_to_mm=5.0, unit="mm")
-
-        self.assertEqual(grasps, [])
+        self.assertEqual(_compute(SimpleNamespace(mask=mask, label="missing")), [])
 
     def test_mask_under_min_area_yields_empty_result(self) -> None:
-        mask = np.zeros((24, 24), dtype=np.uint8)
+        mask = np.zeros(SCENE.mask.shape, dtype=np.uint8)
         mask[0:2, 0:2] = 1  # 4 px, below default min_area_px (50)
-        seg = SimpleNamespace(mask=mask, label="tiny")
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
 
-        grasps = _calculator().compute(seg, depth, pixel_to_mm=5.0, unit="mm")
-
-        self.assertEqual(grasps, [])
+        self.assertEqual(_compute(SimpleNamespace(mask=mask, label="tiny")), [])
 
 
 class UnitConversionTests(unittest.TestCase):
     """mm / cm / m depth inputs must produce equivalent results."""
 
-    def _grasps_for_unit(self, unit: str, depth_value: float) -> list:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask, label="box")
-        depth = np.full(mask.shape, depth_value, dtype=np.float64)
-        return _calculator().compute(seg, depth, pixel_to_mm=5.0, unit=unit)
+    def _grasps_for_unit(self, unit: str, per_mm: float) -> list:
+        return _compute(SimpleNamespace(mask=_make_mask(), label="box"), SCENE.depth_mm * per_mm, unit=unit)
 
     def test_units_mm_cm_m_yield_equivalent_geometry(self) -> None:
-        grasps_mm = self._grasps_for_unit("mm", 1000.0)
-        grasps_cm = self._grasps_for_unit("cm", 100.0)
-        grasps_m = self._grasps_for_unit("m", 1.0)
+        grasps_mm = self._grasps_for_unit("mm", 1.0)
+        grasps_cm = self._grasps_for_unit("cm", 0.1)
+        grasps_m = self._grasps_for_unit("m", 0.001)
 
+        self.assertTrue(grasps_mm)
         self.assertEqual(len(grasps_mm), len(grasps_cm))
         self.assertEqual(len(grasps_mm), len(grasps_m))
         # Positions are in mm regardless of the input unit; same depth in
@@ -182,12 +173,8 @@ class UnitConversionTests(unittest.TestCase):
         )
 
     def test_invalid_unit_is_rejected(self) -> None:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-
         with self.assertRaises(ValueError):
-            _calculator().compute(seg, depth, pixel_to_mm=5.0, unit="inches")
+            _compute(SimpleNamespace(mask=_make_mask()), unit="inches")
 
 
 class EyeInHandCompositionTests(unittest.TestCase):
@@ -215,32 +202,27 @@ class EyeInHandCompositionTests(unittest.TestCase):
         matrix[:3, 3] = translation_mm
         return matrix
 
+    @staticmethod
+    def _tool_to_base_now(cam_to_tool: np.ndarray) -> np.ndarray:
+        """The tool pose that puts the camera where the scene's camera stood."""
+        return SCENE.camera_to_base @ np.linalg.inv(cam_to_tool)
+
     def test_eye_in_hand_dynamic_composition_returns_base_frame(self) -> None:
         T_cam_to_tool = self._make_rigid(
             translation_mm=np.array([40.0, -10.0, 80.0], dtype=np.float64),
             axis_angle=np.array([0.05, 0.10, 0.02], dtype=np.float64),
         )
-        T_tool_to_base_now = self._make_rigid(
-            translation_mm=np.array([500.0, -200.0, 350.0], dtype=np.float64),
-            axis_angle=np.array([0.20, -0.15, 0.08], dtype=np.float64),
-        )
-        T_cam_to_base_now = T_tool_to_base_now @ T_cam_to_tool
+        T_cam_to_base_now = self._tool_to_base_now(T_cam_to_tool) @ T_cam_to_tool
 
-        mask = _make_mask()
-        seg = _full_segmentation_result(mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
+        seg = _full_segmentation_result(_make_mask())
 
         # Raw-matrix boundary (legacy).
-        grasps_raw = _calculator().compute(
-            seg, depth, T_cam_to_base=T_cam_to_base_now, pixel_to_mm=5.0, unit="mm"
-        )
+        grasps_raw = _compute(seg, T_cam_to_base=T_cam_to_base_now)
         # Typed-Transform boundary.
         transform = Transform.from_matrix(
             T_cam_to_base_now, from_frame=Frame.CAMERA, to_frame=Frame.BASE
         )
-        grasps_typed = _calculator().compute(
-            seg, depth, camera_to_base=transform, pixel_to_mm=5.0, unit="mm"
-        )
+        grasps_typed = _compute(seg, camera_to_base=transform)
 
         self.assertTrue(grasps_raw)
         self.assertTrue(grasps_typed)
@@ -263,33 +245,15 @@ class EyeInHandCompositionTests(unittest.TestCase):
             translation_mm=np.array([40.0, -10.0, 80.0], dtype=np.float64),
             axis_angle=np.array([0.05, 0.10, 0.02], dtype=np.float64),
         )
-        T_tool_to_base_stale = self._make_rigid(
-            translation_mm=np.array([500.0, -200.0, 350.0], dtype=np.float64),
-            axis_angle=np.array([0.20, -0.15, 0.08], dtype=np.float64),
-        )
-        T_tool_to_base_now = self._make_rigid(
-            translation_mm=np.array([520.0, -180.0, 360.0], dtype=np.float64),
-            axis_angle=np.array([0.22, -0.13, 0.09], dtype=np.float64),
-        )
+        T_tool_to_base_now = self._tool_to_base_now(T_cam_to_tool)
+        shift = np.eye(4)
+        shift[:3, 3] = (20.0, -15.0, 0.0)
+        T_tool_to_base_stale = shift @ T_tool_to_base_now
 
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask, label="box")
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
+        seg = SimpleNamespace(mask=_make_mask(), label="box")
 
-        grasps_stale = _calculator().compute(
-            seg,
-            depth,
-            T_cam_to_base=T_tool_to_base_stale @ T_cam_to_tool,
-            pixel_to_mm=5.0,
-            unit="mm",
-        )
-        grasps_now = _calculator().compute(
-            seg,
-            depth,
-            T_cam_to_base=T_tool_to_base_now @ T_cam_to_tool,
-            pixel_to_mm=5.0,
-            unit="mm",
-        )
+        grasps_stale = _compute(seg, T_cam_to_base=T_tool_to_base_stale @ T_cam_to_tool)
+        grasps_now = _compute(seg, T_cam_to_base=T_tool_to_base_now @ T_cam_to_tool)
 
         self.assertTrue(grasps_stale)
         self.assertTrue(grasps_now)
@@ -303,11 +267,7 @@ class GraspResultFeedbackTests(unittest.TestCase):
     """``compute_result`` exposes failure reasons and depth/mask confidence."""
 
     def test_success_path_returns_no_reasons_and_top_score(self) -> None:
-        mask = _make_mask()
-        seg = _full_segmentation_result(mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-
-        result = _calculator().compute_result(seg, depth, pixel_to_mm=5.0, unit="mm")
+        result = _compute(_full_segmentation_result(_make_mask()), result=True)
 
         self.assertIsInstance(result, GraspResult)
         self.assertTrue(result.is_success)
@@ -318,11 +278,9 @@ class GraspResultFeedbackTests(unittest.TestCase):
         self.assertIs(result.best, result.candidates[0])
 
     def test_empty_mask_reports_empty_mask_reason(self) -> None:
-        mask = np.zeros((24, 24), dtype=np.uint8)
-        seg = SimpleNamespace(mask=mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
+        mask = np.zeros(SCENE.mask.shape, dtype=np.uint8)
 
-        result = _calculator().compute_result(seg, depth, pixel_to_mm=5.0, unit="mm")
+        result = _compute(SimpleNamespace(mask=mask), result=True)
 
         self.assertFalse(result.is_success)
         self.assertEqual(result.candidates, ())
@@ -330,24 +288,28 @@ class GraspResultFeedbackTests(unittest.TestCase):
         self.assertIn(GraspFailureReason.RESCAN_RECOMMENDED, result.reasons)
 
     def test_no_valid_depth_reports_no_valid_depth_reason(self) -> None:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask)
         # All depth pixels NaN under the mask.
-        depth = np.full(mask.shape, np.nan, dtype=np.float64)
+        depth = np.where(SCENE.mask, np.nan, SCENE.depth_mm)
 
-        result = _calculator().compute_result(seg, depth, pixel_to_mm=5.0, unit="mm")
+        result = _compute(SimpleNamespace(mask=_make_mask()), depth, result=True)
 
         self.assertFalse(result.is_success)
         self.assertIn(GraspFailureReason.NO_VALID_DEPTH, result.reasons)
 
+    def test_without_a_base_support_plane_nothing_is_offered_and_it_is_said(self) -> None:
+        """The grasps are planned over the support in BASE: with no plane, or no transform to place one, none."""
+        for keywords in ({"support_plane": None}, {"support_plane": None, "camera_to_base": None}):
+            with self.subTest(keywords=sorted(keywords)):
+                result = _compute(SimpleNamespace(mask=_make_mask()), result=True, **keywords)
+                self.assertEqual(result.candidates, ())
+                self.assertEqual((GraspFailureReason.NO_CANDIDATES_GENERATED,), result.reasons)
+                self.assertFalse(result.telemetry["support_footprint_ready"])
+                self.assertIn("plans in BASE over the support", result.telemetry["no_grasp_said"])
+
     def test_to_dict_is_json_friendly(self) -> None:
         import json
 
-        mask = _make_mask()
-        seg = _full_segmentation_result(mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-
-        result = _calculator().compute_result(seg, depth, pixel_to_mm=5.0, unit="mm")
+        result = _compute(_full_segmentation_result(_make_mask()), result=True)
         payload = result.to_dict()
 
         # Round-trip through json.dumps with default=str catches any
@@ -359,35 +321,18 @@ class GraspResultFeedbackTests(unittest.TestCase):
 
 
 class DeterminismTests(unittest.TestCase):
-    """The geometric pipeline must be reproducible for a given seed."""
+    """The geometric pipeline is reproducible: the same frame gives the same grasps."""
 
-    def _grasps(self, seed: int | None) -> list:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask, label="box")
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-        return _calculator().compute(
-            seg, depth, pixel_to_mm=5.0, unit="mm", seed=seed
-        )
-
-    def test_same_seed_yields_identical_candidates(self) -> None:
-        a = self._grasps(seed=42)
-        b = self._grasps(seed=42)
+    def test_the_same_frame_yields_identical_candidates(self) -> None:
+        a = _compute(SimpleNamespace(mask=_make_mask(), label="box"))
+        b = _compute(SimpleNamespace(mask=_make_mask(), label="box"))
+        self.assertTrue(a)
         self.assertEqual(len(a), len(b))
         for ga, gb in zip(a, b):
             np.testing.assert_array_equal(ga.position, gb.position)
             np.testing.assert_array_equal(ga.approach, gb.approach)
             np.testing.assert_array_equal(ga.axis, gb.axis)
             self.assertEqual(ga.score, gb.score)
-
-    def test_none_seed_still_returns_candidates(self) -> None:
-        self.assertTrue(self._grasps(seed=None))
-
-    def test_negative_seed_is_rejected(self) -> None:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-        with self.assertRaises(ValueError):
-            _calculator().compute(seg, depth, pixel_to_mm=5.0, seed=-1)
 
 
 class _RejectAllIKService:
@@ -415,37 +360,24 @@ class IKServiceFilterTests(unittest.TestCase):
     """Phase D — vendor-neutral reachability filtering."""
 
     def test_reject_all_emits_ik_failed_and_empty_result(self) -> None:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
         service = _RejectAllIKService()
-        result = _calculator().compute_result(
-            seg, depth, pixel_to_mm=5.0, ik_service=service
-        )
+        result = _compute(SimpleNamespace(mask=_make_mask()), result=True, ik_service=service)
         self.assertEqual(result.candidates, ())
         self.assertIn(GraspFailureReason.IK_FAILED, result.reasons)
         self.assertGreater(service.queries, 0)
         self.assertGreaterEqual(result.telemetry.get("rejected_ik", 0), 1)
 
     def test_accept_all_preserves_candidates(self) -> None:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
-        baseline = _calculator().compute(seg, depth, pixel_to_mm=5.0)
-        result = _calculator().compute_result(
-            seg, depth, pixel_to_mm=5.0, ik_service=_AcceptAllIKService()
-        )
+        seg = SimpleNamespace(mask=_make_mask())
+        baseline = _compute(seg)
+        result = _compute(seg, result=True, ik_service=_AcceptAllIKService())
+        self.assertTrue(baseline)
         self.assertEqual(len(result.candidates), len(baseline))
         self.assertNotIn(GraspFailureReason.IK_FAILED, result.reasons)
 
     def test_bad_return_raises_typeerror(self) -> None:
-        mask = _make_mask()
-        seg = SimpleNamespace(mask=mask)
-        depth = np.full(mask.shape, 1000.0, dtype=np.float64)
         with self.assertRaises(TypeError):
-            _calculator().compute(
-                seg, depth, pixel_to_mm=5.0, ik_service=_BadReturnIKService()
-            )
+            _compute(SimpleNamespace(mask=_make_mask()), ik_service=_BadReturnIKService())
 
     def test_workspace_box_service_filters_by_position(self) -> None:
         from src.robot.grasping.planning import (

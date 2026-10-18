@@ -41,7 +41,7 @@ _PICK = (("standoff", 300.0), ("descend", 250.0), ("retreat", 300.0))
 class DiversityIsNotOnTheMotionPathTests(unittest.TestCase):
     def test_a_pick_sequence_survives_the_box_check(self) -> None:
         """Twice through, because `accept()` accumulates across runs -- a cell does more than one pick."""
-        guard = WorkspaceGuard(RobotConfig().workspace_limits)
+        guard = WorkspaceGuard(RobotConfig().motion.workspace)
         for run in range(2):
             for label, z in _PICK:
                 with self.subTest(run=run, waypoint=label):
@@ -50,7 +50,7 @@ class DiversityIsNotOnTheMotionPathTests(unittest.TestCase):
     def test_the_diversity_rule_still_rejects_that_same_retreat(self) -> None:
         """Pinning WHAT was removed from the motion path, not just that something was. If this ever
         stops rejecting, the finding above has been silently undone rather than relocated."""
-        guard = WorkspaceGuard(RobotConfig().workspace_limits)
+        guard = WorkspaceGuard(RobotConfig().motion.workspace)
         guard.accept(_pose(300.0, "standoff"))
         guard.accept(_pose(250.0, "descend"))
         self.assertFalse(guard.is_diverse_enough(_pose(300.0, "retreat")))
@@ -79,7 +79,7 @@ class DiversityIsNotOnTheMotionPathTests(unittest.TestCase):
         from src.geometry import Pose
         from src.robot.execution import pose_provider
 
-        box = RobotConfig().workspace_limits
+        box = RobotConfig().motion.workspace
         x, y, z = (float(box.x_min + box.x_max) / 2, float(box.y_min + box.y_max) / 2, float(box.z_min + box.z_max) / 2)
         station, near = Pose.tool_down(x, y, z, label="kept"), Pose.tool_down(x + 10.0, y, z, label="near")
         shared = WorkspaceGuard(box, min_distance_mm=40.0, min_angle_deg=10.0)

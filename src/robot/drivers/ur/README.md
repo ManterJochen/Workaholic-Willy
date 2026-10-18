@@ -49,7 +49,7 @@ series twin and its own rows.
 
 | Refusal | When | What to do |
 |---|---|---|
-| unweighed payload | `safety.payload.enforce: true` with `mass_kg: 0.0`, the shipped value | Weigh the whole wrist assembly and set `mass_kg` and `cog_mm`, or `enforce: false` for a bare flange |
+| unweighed payload | `safety.payload.mass_kg: 0.0`, the shipped value: every connect pushes the payload | Weigh the whole wrist assembly and set `mass_kg` and `cog_mm` |
 | payload as a point mass | `mass_kg` above 0 with `cog_mm: [0, 0, 0]` | Measure the centre of gravity from the flange, in millimetres |
 | undeclared tool frame | `gripper.tool_frame.source: undeclared`, the shipped value | Set `offset_mm` and `rotation_quat_xyzw`, then `source: willy` or `controller` |
 | wrong model | the dashboard reports another size of UR than `robot.ur.model` | Set `robot.ur.model` to the arm that is plugged in |
@@ -70,14 +70,12 @@ check needs the dashboard: a dashboard that does not answer is logged, not refus
 | `CONTROLLER_REJECTED` | `robot.motion.planner: curobo` and the planner is not available | `python -m src.robot.safety.planning --doctor`; nothing falls back to blind IK |
 | `TIMEOUT` | no straight line to the goal is clear and cuRobo found no collision-free plan to any configuration of it | Move the goal or clear the cell; `ur_arm.log` names every configuration tried and why it failed |
 | `IK_FAILED` | on `curobo`, the flange goal is out of the arm's reach | Move the goal |
-| `JOINT_LIMIT_REJECTED`, no configuration in the window | on `curobo`, no configuration of the goal lies inside the planner's and the joint-limit guard's window | Move the goal; with `within_half_turn_of_home`, it lies behind home |
-| `JOINT_LIMIT_REJECTED`, a detour | on `curobo`, every plan cuRobo found swings a joint more than `safety.planned_motion.max_detour_deg` past its span | Clear the way, or raise the bound; the message names the joint |
-| `JOINT_LIMIT_REJECTED`, a joint target in degrees | a joint target holds a value past the range the arm's description rates its joint for (`limit_deg`, a full turn either way on every UR), which reads as degrees; the message names each such joint | Joint targets are radians; a home in degrees goes in `robot.home_joint_positions_deg` |
+| `JOINT_LIMIT_REJECTED`, no configuration in the window | on `curobo`, no configuration of the goal lies inside the planner's and the joint-limit guard's window, half a turn either side of home | Move the goal; it lies behind home |
+| `JOINT_LIMIT_REJECTED`, a detour | on `curobo`, every plan cuRobo found swings a joint more than 45 degrees past its span (`path_samples.MAX_DETOUR_DEG`) | Clear the way; the message names the joint |
+| `JOINT_LIMIT_REJECTED`, a joint target in degrees | a joint target holds a value past the range the arm's description rates its joint for (`limit_deg`, a full turn either way on every UR), which reads as degrees; the message names each such joint | Joint targets are radians; the cell's home is `robot.motion.home_deg`, written in degrees |
 | `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, the start | the planner will not start from where the arm stands, for more than its cushion band or with no escape leg out of it | Jog the arm out of that configuration; the message names the pair, the planner's depth, the distance the exact meshes keep and why no leg was taken |
 | `SELF_COLLISION_REJECTED`, the band's goal | a goal in the planner's cushion band that no approach leg of at most 20 degrees per joint reaches: `no plan reaches it` | Reach it on a straight line, or re-teach it by hand where both authorities clear it and screen it again |
 | `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, a leg | the path gate or the planner refuses a leg of the plan that would run | Read the message; nothing has moved |
-| `SELF_COLLISION_REJECTED`, `it stands: a part is carried` | on `curobo`, only the camera's boxes refuse the planner's world while a part is carried: any attach since the last detach, modelled or not | Open the jaws on it (`Robot.release`, which forgets the part); the arm leaves empty-handed |
-| `SELF_COLLISION_REJECTED`, `the hand is not known to be empty and open` | on `curobo`, only the camera's boxes refuse the planner's world, and the hand reads closed, unvouched or short of open, or none was handed over (`set_hand`) | Open the hand, or answer where the toggle's jaws stand; the sentence says what it read |
 | `INVALID_TARGET`, a waypoint | `ur_rtde` refused a speed or acceleration before sending that waypoint's `moveJ` | The message says which waypoint and what ran before it |
 | `UNSUPPORTED`, camera world MISSING | on `curobo`, a motion with neither a live camera world nor a stated decline | Hand the robot its cameras, or `without_camera_world(reason)` |
 | `CONTROLLER_REJECTED`, hand-guided | any motion verb while a `freedrive()` session is open, free or held | Leave the session; its end holds the arm and gives motion back |
@@ -95,17 +93,17 @@ anything in it.
 On `curobo`, the arm chooses where every move goes and cuRobo never does: it is never handed a pose.
 `move(pose)` takes every closed-form inverse kinematics solution of the flange goal, each joint on its
 full turn nearest the arm inside the planner's and the joint-limit guard's window (the cable window
-about home with `within_half_turn_of_home`), and ranks them: the branch the arm holds first (shoulder,
+about home every real arm keeps), and ranks them: the branch the arm holds first (shoulder,
 wrist 2 and elbow on the same side; a joint within 2 degrees of its branch point, as every one is in a
 candle-straight home, is on both), then the least time a `moveJ` there takes. The planner and the
 endpoint gate screen each. Then, on the arm's branch first:
 
 1. the straight joint line to each goal, judged by the path gate and by the planner against its world,
-   the camera's included, at `safety.planned_motion.line_clearance_mm` (10 mm): the first that passes
-   runs as one leg, and cuRobo plans nothing;
+   the camera's included, at 3 mm (`path_samples.LINE_CLEARANCE_MM`): the first that passes runs as one
+   leg, and cuRobo plans nothing;
 2. only where no line passes, cuRobo plans to the goals in the same order, up to three, from the same
    seed every time and never through its retract. A plan is taken where it ends on the configuration
-   asked for and no joint swings more than `safety.planned_motion.max_detour_deg` (45) past the span
+   asked for and no joint swings more than 45 degrees (`path_samples.MAX_DETOUR_DEG`) past the span
    between its start and its goal; else the next goal is planned to.
 
 A goal on another branch is tried only once every goal on the arm's own failed, and taking one is a
@@ -116,7 +114,7 @@ warning naming both branches. A goal that nothing reaches costs up to three fail
 every Cartesian move keeps the branch the arm holds: the other branches are not screened, lined or
 planned to, a plan swinging a joint more than the block's bound past its span is a detour, and
 `nearest_configuration` answers among the same goals. A move nothing on the branch runs, while another
-branch or a plan within `max_detour_deg` was left untried, is refused before anything is sent,
+branch or a plan within `MAX_DETOUR_DEG` was left untried, is refused before anything is sent,
 `JOINT_LIMIT_REJECTED` ("kept to the branch the arm holds"), and counted on the record the block yields;
 the pick loop leaves such a grasp for after the grasps that keep the branch. A route a grasp judged ahead
 on the arm's branch is judged again by the move to its standoff on that branch alone: a change of branch
@@ -131,34 +129,30 @@ On the arm's own pairs the exact guard decides (the owner, 2026-09-30,
 [`planning/band.py`](../../safety/planning/band.py)): where the planner refuses a sample of a line, a leg or
 a moveL as a self collision, the arm asks it for every refused sample (`judge_joint_path`, which refreshes
 nothing), leaves to the exact guard only the pairs that guard judges, padded by no more than
-`planner_margin_mm`, and has the exact guard judge each of those samples again. The bounds, the carried
-part and the `shoulder_link` stay the planner's, and a report it cannot read whole leaves the refusal
+`planner_margin_mm`, and has the exact guard judge each of those samples again. The bounds and the
+`shoulder_link` stay the planner's, and a report it cannot read whole leaves the refusal
 standing. Such a refusal names the sample and the term it stands on; a bound reads `JOINT_LIMIT_REJECTED`.
 
 **The camera's boxes** (the owner's Option 1). The same spheres reach 25 to 29 mm past the shoulder housing
 into the world. Where the planner refuses samples on its world, the arm asks it again about exactly those
 samples with every box the camera saw set aside (`judge_joint_path(..., ignore_perceived=)`), and admits them
-only where its world and bounds then clear and the robot itself reads as before, no part is carried (any
-`attach_payload` on the arm since the last `detach_payload`, modelled or not, and
-`CuroboPlanner.carries_part`), the hand it carries reads empty and open (`set_hand`, which `connect_cell`
-calls once both are up: a toggle's count open, a gripper measured fully open; no hand, or any other, keeps
-the boxes in), the glue's last confirmed refresh handed the planner exactly the boxes the exact guard holds
+only where its world and bounds then clear and the robot itself reads as before, whatever the hand holds (no
+cell models a part in the jaws since 2026-10-17: jaws closed on one are judged as an empty hand is), the glue's
+last confirmed refresh handed the planner exactly the boxes the exact guard holds
 (`perceived_in_world`), and the exact guard accepts every refused sample with them at
 `perceived_min_distance_mm`. The bench and the declared fixtures and meshes stay the planner's, and so does
 cuRobo's own plan, which routes around the camera's boxes: a planned move into or out of a pose its spheres
-meet them in is refused, and straight lines and moveL run there with a hand known empty and open.
+meet them in is refused, and straight lines and moveL run there.
 
 **A grasp judges its lift before it closes** (the owner, 2026-10-01). `carried_line_refusal(pose,
-grip_width_mm=, camera_world=)` answers what `move(pose, linear=True, camera_world=)` would answer with a part
-in the jaws: the part handed to the planner for the judgement and taken back after, nothing of the camera's
-world set aside, nothing sent; on `ik`, the end's gate, screened, so nothing is remembered.
-`GraspExecutionPolicy` and `Robot.pick` ask it at the part with the jaws still open, at the width the attach
-after the close carries (a hand that does not measure: the width it is told); where the lift would be
+camera_world=)` answers what `move(pose, linear=True, camera_world=)` would answer once the jaws close: no part in
+the jaws is modelled (every cell since 2026-10-17), so a closed hand is judged as an empty one, by the exact guard at
+full stroke; nothing is sent; on `ik`, the end's gate, screened, so nothing is remembered.
+`GraspExecutionPolicy` and `Robot.pick` ask it at the part with the jaws still open; where the lift would be
 refused, the jaws stay open, the arm goes back up the line it came down, and the grasp ends
 `carried_retreat_refused` (`PolicyOutcome`, `HandlingOutcome`; a pick loop attempt reads `execution_failed`).
 Where it would run, the controller is asked last, and the jaws close. The lift is judged again as it starts,
-so a new camera frame, the part's spheres fitted anew by the attach, a part measured wider or a lift in steps
-can still refuse it. An arm that holds a part
+so a new camera frame or a lift in steps can still refuse it. An arm that holds a part
 beside the camera's boxes, after that or after a plain close, is held there: every way out starts at that
 pose, and the refusal names the way out, a person releasing the part (`Robot.release`).
 
@@ -175,8 +169,8 @@ refused the start of this joint move`, a refused goal as `this joint goal`.
 `screen_configuration(joints)` asks both authorities about a pose and moves nothing: `clear`, `band`,
 `seen_boxes`, `guard_refused`, `planner_refused` or `unscreened`, with the nearest pose within 20 degrees
 per joint both clear where one exists (`planning.band.PoseScreen`). It asks what a move asks, the camera's
-boxes set aside included, for a hand known empty and open (it reads no hand), so `seen_boxes` is a pose a line
-and moveL reach with such a hand, and only the two refusals read `ERROR`. Teaching, the desk start and every campaign's start ask it.
+boxes set aside included, so `seen_boxes` is a pose a line and moveL reach, and only the two refusals read
+`ERROR`. Teaching, the desk start and every campaign's start ask it.
 
 A joint target (`move_to_joints`, `move_home`, a joint station) goes the same way: a joint outside the
 window runs as its full turn inside it, the same pose, and the log says so; a joint inside is left as
@@ -187,7 +181,7 @@ around it to the same target under the same detour bound.
 
 A plan then meets the plan-end check and the endpoint gate, is shortened to the fewest of its own
 waypoints whose legs stay within the path gate's step, and runs as one `moveJ` per kept waypoint once
-the path gate and the planner at `line_clearance_mm` have both passed those legs, which are straight
+the path gate and the planner at the line clearance have both passed those legs, which are straight
 lines nobody planned. Where either refuses, the plan as cuRobo returned it is judged by both at no
 contact, as cuRobo validated it, and runs instead. A transport that fails while cuRobo plans, which
 reads the joints again, is `CONNECTION_ERROR` and nothing is sent. Every move logs how its route was chosen (a direct
@@ -197,37 +191,38 @@ joint turns more than half a turn past what its end needs.
 
 ## Judged while the arm waits
 
-Three switches move a judgement to where the arm waits anyway (the owner, 2026-10-09, "solange wir keine Qualität
-verlieren"). Each is off as shipped, and none changes what is judged: the exact guard judges every sample of every
-leg before it is sent.
+Three judgements move to where the arm waits anyway (the owner, 2026-10-09, "solange wir keine Qualität
+verlieren"). All three are fixed since 2026-10-17, as the owner's cell ran them: the steady gate at the send and the
+next leg on every cuRobo arm, the world held on every cell. None changes what is judged: the exact guard judges every
+sample of every leg before it is sent.
 
-- **The steady gate at the send** (`safety.dwell.gate_at: send`). The motion is judged first, while the arm settles
-  from the one before (the controller's `is_steady()` took 0.54 to 0.61 s after every motion on the cell), and the
-  gate waits right before the `moveJ` or `moveL`, in `_drive_curobo`, `_drive_judged_joints`, `_drive_joint_path` and
+- **The steady gate at the send** (every cuRobo arm; `safety.dwell.gate_at: send` until 2026-10-17). The motion
+  is judged first, while the arm settles from the one before (the controller's `is_steady()` took 0.54 to 0.61 s
+  after every motion on the cell), and the gate waits right before the `moveJ` or `moveL`, in `_drive_curobo`, `_drive_judged_joints`, `_drive_joint_path` and
   `_drive_checked_line`. Where the arm then stands more than 0.5 mm from where the motion was judged from, it is
   judged again from there (three times at most, then `TIMEOUT`); a timeout sends nothing, and a halt is refused by
   the send itself. A route's first waypoint, where the gate found the arm, is not sent as a `moveJ` of its own.
-  Without it (`gate_at: verb`, as shipped) the arm waits once at the start of each motion verb, before it judges
-  anything (P0e E9); no verb above the arm waits.
-- **The world held at the standoff** (`safety.planning_world.hold.standoff`, the map's O2). `grasp_refusal_ahead`
+  An arm that does not plan with cuRobo waits once at the start of each motion verb, before it judges anything
+  (P0e E9); no verb above the arm waits.
+- **The world held at the standoff** (the map's O2; every cell's since 2026-10-17, the owner's
+  `safety.planning_world.hold.standoff`). `grasp_refusal_ahead`
   judges the route in the world the line down was judged in, and `holding_the_approach(standoff, reason)` holds that
   world for the move to the standoff and the line down from it, where the route judged ahead stands ready
   (`_why_judged_again`): no frame is taken at the standoff, where a bin frame often held no depth at all. The line
   down is still judged sample by sample, in that world.
-- **The next leg judged ahead** (`robot.motion.judge_next_leg`, with `hold.carry` and `hold.drop`). A task declares
+- **The next leg judged ahead** (every cuRobo arm, the world held at the carry and the drop;
+  `robot.motion.judge_next_leg` and `safety.planning_world.hold` until 2026-10-17). A task declares
   the joint move after a verb (`expecting_next(joints)`: the carry to the bin's look, the return). While the jaws'
   stroke is waited out, a verb asks `judge_the_next_leg(after, junction=)`: the straight joint line from where the
   line to `after` will end (the controller's solution of `after`, seeded where the arm stands) to the declared joints,
   judged in the world held there; `judge_line_ahead(pose)` judges the line out of a place where the arm stands, as it
   will run. `move_to_joints` and `move_to_home` run the move as judged, and `_drive_checked_line` the line, only where
   nothing it was judged on changed: the same planner and refresh, the arm within 0.5 mm of where it was judged from,
-  the carried part, the hand, the camera's boxes and the halt count as they were, at most 10 s since (0.5 s for a
-  route judged ahead), one move. Anything else, and it is judged as it runs. With `in_settles_and_motion` on an arm
-  whose halt brakes the line in flight (`robot.ur.brake_on_halt`), a move no stroke left time for is judged on a
-  second thread while the line before it runs; that thread asks the controller nothing (its start and what it reads
-  are read before the line is sent), and the line's send waits for it once it ended. Without the brake it falls back
-  to the strokes alone and says so once in the log; on a cell that models a carried part while none is carried,
-  whose judgement reads the hand off the controller, the move is judged as it runs.
+  the hand, the camera's boxes and the halt count as they were, at most 10 s since (0.5 s for a
+  route judged ahead), one move. Anything else, and it is judged as it runs. A UR brakes the line in flight when
+  halted, so a move no stroke left time for is judged on a second thread while the line before it runs; that thread
+  asks the controller nothing (its start and what it reads are read before the line is sent), and the line's send
+  waits for it once it ended.
 
 `scripts/ursim/probe_next_leg.py` measured the judgement during motion against URSim CB3 (2026-10-09, both gate modes,
 every check passed): the joint move judged on the second thread before the line's `moveL` returned, the arm 0.0005 mm
@@ -236,14 +231,20 @@ from where it was judged from at the junction, the move run as judged; a halt 0.
 judgement gives up and takes the GIL around every exact-guard query, and at Python's 5 ms switch interval the thread
 that watches the line waited for it up to 451 ms on Windows and 521 ms in WSL. While a judgement runs during a line the
 interval is 0.5 ms (`_WATCHED_SWITCH_S`, put back after it): the stop then went out 0.2 to 15 ms after the halt
-against 0.1 to 7 ms with no thread, and the arm ran at most 3.2 mm further past its brake, five halts each.
+against 0.1 to 7 ms with no thread, and the arm ran at most 3.2 mm further past its brake, five halts each. Measured
+again on 2026-10-18 with every path judged whole, as every cell judges since 2026-10-17: the next leg was judged in 19
+to 22 ms, before the line was sent, so the probe keeps its judging thread busy after the judgement, holding the GIL as
+the judgement of one sample at a time did, until the halt lands; every check passed, the stop went out at most 6.9 ms
+after a halt with that thread and 7.8 ms without it, and the arm ran no further past its brake with it.
 
 ## Solved here, not asked
 
-Three switches answer here what the controller was asked, round trip by round trip (the owner, 2026-10-09). Each is off
-as shipped, and each falls back to asking the controller wherever its answer here cannot be vouched for.
+Three things the controller was asked, round trip by round trip, are answered here (the owner, 2026-10-09). The
+line's samples and the singularity check are every cell's since 2026-10-17 (the owner's cell's `line_ik: local` and
+`singularity_fk: dh`; their keys left that day), and the steady gate reads the joint speeds on every UR since that
+day. Each falls back to asking the controller wherever its answer here cannot be vouched for.
 
-- **The line's samples** (`safety.ik_quality.line_ik: local`). A line judged before a `moveL` had every sample solved by
+- **The line's samples**. A line judged before a `moveL` had every sample solved by
   `getInverseKinematics`, 32.5 ms each: 28 for the line down, 35 for the lift. The controller's own DH rows, the table
   plus the arm's factory calibration, are read once per connection from the kinematics info of its primary interface
   (`URConnection.controller_kinematics`: port 30011, the read-only one, then 30001; nothing is ever sent there), and
@@ -252,18 +253,19 @@ as shipped, and each falls back to asking the controller wherever its answer her
   the first and the last sample solved; both have to agree within 1e-6 rad. Anything else, and the line is walked again
   from its start with the controller solving it, as before: an answer that parts, a sample with another configuration
   about as near the seed, near a singularity or out of the table's reach, rows or a TCP that cannot be read.
-- **The singularity check before a move** (`safety.ik_quality.singularity_fk: dh`). `MotionController` differentiated
-  the controller's FK, 12 round trips before every `moveL`; with `dh` it differentiates the same rows here, times the
-  active TCP, with the same steps and thresholds. Where the rows cannot be read the nominal table stands in only if two
-  FK probes, once per connection, show it is the controller's chain; else the controller is asked, as always.
-- **The steady gate** (`safety.dwell.steady_signal: joint_speeds`). `wait_until_steady` reads the actual joint speeds
-  every 8 ms, locally, and the arm is steady once every joint is under 0.01 rad/s on three reads in a row, each a sample
-  the controller sent since the one before (its timestamp moved on, so a receive stream that stopped never reads as an
-  arm that stands); `isSteady`, a script command of 33 ms polled every 20 ms, decides only where the speeds cannot be
-  read. The timeout and its refusal are the same. The zero-move skip at a look asks the same gate (a wait of 0: three
-  reads, 16 ms). On URSim CB3 the gate answered 16 to 24 ms after a `moveJ` returned, where `isSteady` took 562 to
-  564 ms, and during an asynchronous `moveJ` it said steady first 60 ms after the move's own end, `isSteady` 0.57 s
-  after it: `isSteady` holds about half a second after the arm stopped, and the joint speeds do not.
+- **The singularity check before a move**. `MotionController` differentiated the controller's FK, 12 round trips
+  before every `moveL`; it differentiates the same rows here, times the active TCP, with the same steps and thresholds.
+  Where the rows cannot be read the nominal table stands in only if two FK probes, once per connection, show it is the
+  controller's chain; else the controller is asked, as always.
+- **The steady gate** (every UR; `safety.dwell.steady_signal: joint_speeds` until 2026-10-17). `wait_until_steady`
+  reads the actual joint speeds every 8 ms, locally, and the arm is steady once every joint is under 0.01 rad/s on
+  three reads in a row, each a sample the controller sent since the one before (its timestamp moved on, so a receive
+  stream that stopped never reads as an arm that stands); `isSteady`, a script command of 33 ms polled every 20 ms,
+  decides only where the speeds cannot be read. The timeout, 5 s (`STEADY_TIMEOUT_S`), and its refusal are the same
+  either way. The zero-move skip at a look asks the same gate (a wait of 0: three reads, 16 ms). On URSim CB3 the
+  gate answered 16 to 24 ms after a `moveJ` returned, where `isSteady` took 562 to 564 ms, and during an
+  asynchronous `moveJ` it said steady first 60 ms after the move's own end, `isSteady` 0.57 s after it: `isSteady`
+  holds about half a second after the arm stopped, and the joint speeds do not.
 
 Measured on URSim CB3 3.15.8 (a UR10 with the owner's TCP set on it), against the controller and against the same
 controller given a `calibration.conf` whose rows put the flange 3.2 mm from the table's: the controller's FK and the rows
@@ -284,17 +286,14 @@ is never a stopped controller. The latch lives on the `URConnection`, so it outl
 and `stop()` is a halt too: the stop it used to send from the calling thread was never read by a synchronous move
 in flight.
 
-**`robot.ur.brake_on_halt`** decides what happens to a move in flight.
-
-- **Off, as shipped**: every `moveJ` and `moveL` is the synchronous `ur_rtde` call it always was, byte for byte.
-  A halt lets the move in flight run to its end, and nothing after it is sent.
-- **On**: every move is sent asynchronously and watched by the thread that sent it, every 8 ms (one CB3 cycle),
-  and answers true only once the arm stands at its target: joints within 2e-3 rad, a line's TCP within 1 mm and
-  2e-3 rad. A halt makes that thread brake it, `stopJ` or `stopL` at max(2.0, the move's own acceleration), and
-  the move answers false. A move the controller never shows running within 1 s is stopped and refused.
-  `last_move_end` (`MoveEnd`) says how the last move ended: `arrived`, `braked`, `brake_unconfirmed`,
-  `refused_halted`, `ended_short`, `stopped` (a protective or emergency stop, or the program ended) or
-  `not_started`.
+**Every UR brakes the move in flight** (since 2026-10-17, as the owner's cell ran it; the key
+`robot.ur.brake_on_halt` left then, with the synchronous `ur_rtde` call that let a halted move run to its end).
+Every move is sent asynchronously and watched by the thread that sent it, every 8 ms (one CB3 cycle), and answers
+true only once the arm stands at its target: joints within 2e-3 rad, a line's TCP within 1 mm and 2e-3 rad. A
+halt makes that thread brake it, `stopJ` or `stopL` at max(2.0, the move's own acceleration), and the move answers
+false. A move the controller never shows running within 1 s is stopped and refused. `last_move_end` (`MoveEnd`)
+says how the last move ended: `arrived`, `braked`, `brake_unconfirmed`, `refused_halted`, `ended_short`,
+`stopped` (a protective or emergency stop, or the program ended) or `not_started`.
 
 `HaltState.brake` says what became of the move in flight: `none`, `pending`, `braked` (with `brake_s`),
 `ran_out`, or `unconfirmed`, where the arm was never seen to stand still. A judged cuRobo path counts the halt
@@ -311,8 +310,8 @@ fields and the latch, and `planner_state` (`not_used`, `off`, `starting`, `ready
 wait for the planner's lock. A disconnect retires the planner: it waits for a start in progress (at most 120 s) or
 a planner call a move is inside (at most 30 s), then closes the sidecar, so no sidecar is orphaned. Measured
 against URSim CB3 with `scripts/ursim/probe_halt.py`
-([console_at_the_cell.md](../../../../docs/runbooks/console_at_the_cell.md)); switch the brake on in the cell's
-own profile only after those measurements and a supervised halt at the cell.
+([console_at_the_cell.md](../../../../docs/runbooks/console_at_the_cell.md), which also has the supervised halt at
+the cell).
 
 ## Traps
 
@@ -326,14 +325,15 @@ own profile only after those measurements and a supervised halt at the cell.
   stops the first. What a physical emergency stop does in Remote mode is not verified here; read the
   robot manual before the first powered run.
 - **`robot.ur.model` is a safety key.** It selects the DH chain, the collision meshes and the cuRobo
-  descriptor. The built-in joint limits are factory-wide; site limits go in `robot.safety.joint_limits`.
+  descriptor. The joint limits are the description's factory envelope; site limits go on the pendant, where the
+  desk check prints the ones that hold the window about home.
 - **`rtde_frequency: 0.0`** means the controller chooses its rate. The driver translates it for
   `ur_rtde`, which would read 0.0 as zero hertz.
 - **Force and torque are read-only.** No force control, no compliant or blended motion, no tool changer.
 - **An inverse kinematics the controller cannot solve ends its control program.** On URSim CB3 3.15.8 with ur_rtde
   1.6.5, `getInverseKinematics` of a pose out of reach answered `[]` and the control script stopped ("RTDE control
   script is not running!"): every later call failed until a reconnect. A line with a sample out of reach meets it,
-  `line_ik: local` or not, because such a line is solved by the controller.
+  solved here or not, because such a line is solved by the controller.
 
 ## Status
 
@@ -373,9 +373,9 @@ first pick is [real_cell_first_pick.md](../../../../docs/runbooks/real_cell_firs
 | File | Holds |
 |---|---|
 | `arm.py` | `URRobotArm`, a `PlannedArm` ([planned/](../planned/README.md)) with the UR side: its identity built from the arm description (`capabilities`), the build over the UR transport, its answers to connect's hooks (the address, the controller's size class, the series twin, its own rows; connect and the tool frame check are the planned arm's since P0g slice 15), the home's FK on a fresh program, the controller's own rows, which capability mixins it lists (the I/O, the force readings, the status with `quick_robot_status()`, the fault release and the provenance, each over a verb of the transport since P0g slices 6 and 7, and hand guiding with the payload read-back over `ControllerFreedrive` since port S4) |
-| `connection.py` | `URConnection`, the RTDE boundary: the halt latch, and with `brake_on_halt` the watched move a halt brakes (how it ended: `MoveEnd`, in `robot.core`); the controller's own rows (`controller_kinematics`) and TCP; the steady gate on `isSteady` or the joint speeds |
+| `connection.py` | `URConnection`, the RTDE boundary: the halt latch and the watched move a halt brakes (how it ended: `MoveEnd`, in `robot.core`); the controller's own rows (`controller_kinematics`) and TCP; the steady gate on `isSteady` or the joint speeds |
 | `transport.py` | `URTransport`: RTDE and `MotionController` behind every verb of `robot.core.transport`, the halt latch, the I/O registers, the force readings, the status, the stop release, the provenance (P0e E7, P0g slices 6 and 7) and the hand-guiding verbs, teach mode behind the RTDE watchdog (port S4), among them, with the UR robot- and safety-mode tables and the URSim proof rule (a placeholder serial on a loopback address); the arm's planning half reaches the controller only through it, and `_conn` and `_motion` are properties over it, so a test's injection lands there |
-| `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for the ik path of `move`, and the singularity check before each, on the controller's FK or the arm's own rows (`singularity_fk`) |
+| `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for the ik path of `move`, and the singularity check before each, on the arm's own rows where they can be read and the controller's FK where they cannot |
 | `pose.py`, `pose_adapter.py` | `URPose` in millimetres and axis-angle, and its bridge to `Pose` |
 
 ## Details

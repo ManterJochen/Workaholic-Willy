@@ -12,13 +12,13 @@ impossible for no reason.
     camera_matrix            read by the single-view support-plane refinement      optional, below
     redraw_debug_image(...)  called where a closing axis changed a result          optional, below
     max_candidates           raised for a ranking a closing axis chooses among     optional, below
-    sfe_fine_pass            turned off for a ranking whose fine search may wait   optional, below
     support_footprint_rim_mm read for the rim the looks' footprints lose           optional, below
+    max_grip_mm              read for which parts the hand closes across first     optional, below
 
 The argument list is deliberately untyped. `compute()` takes thirty-odd keyword arguments and the
 orchestrator assembles them conditionally: `camera_to_base`, `scene_points_mm`,
-`rigid_obstacle_points_mm`, `geometry_points_base_mm`, `gripper_model`, `corridor_config`,
-`feasibility_config`, `support_plane`, `min_table_clearance_mm` and more appear only when their
+`rigid_obstacle_points_mm`, `geometry_points_base_mm`, `gripper_model`, `support_plane`,
+`min_table_clearance_mm` and more appear only when their
 config block is enabled. Operator config reaches the calculator as per-call parameters, so that
 list grows: an implementation must accept `**kwargs` and ignore what it does not understand, and
 what it must not do is crash on an argument a future config block adds.
@@ -31,7 +31,7 @@ down", so it is an optional capability and a protocol member would misdescribe i
 Optional in the contract and optional in fact. `GraspCalculator` exposes `camera_matrix` as a
 read-only property returning the calibrated K, never the `focal = width / 2` fallback that
 `intrinsics()` synthesizes, so a cell built without real intrinsics reads `None` here and keeps
-the single-view branch stood down. `support.refine_from_target` defaults to True, so wherever the
+the single-view branch stood down. The support plane is always refined from the target, so wherever the
 K is real that branch runs. What a wrong frame costs is recorded on `_target_surface_base_mm`
 itself: a support plane placed at the wrist-camera standoff instead of at the table rejects every
 candidate.
@@ -49,18 +49,15 @@ returns. Where a program names the closing axis, the pick loop reads it duck-typ
 cap along the axis and gives the cap back. A generator without an integer cap ranks as it always
 did, and the axis chooses among what it returned.
 
-`sfe_fine_pass` is optional the same way (2026-10-08): whether the support-footprint stage runs its fine
-search where its coarse grid finds few grasps. Where the cell lets that search wait
-(`robot.grasping.fine_pass_waits`), the pick loop reads it duck-typed, `pick_loop._fine_search_waiting`,
-turns it off for that one ranking and gives it back; the result then says
-`support_footprint_fine: "deferred"`, and the loop asks again in full before it takes that part. A
-generator without the switch computes every part in full, as it always did.
-
 `support_footprint_rim_mm` is optional the same way (2026-10-09): the rim the support-footprint stage's
 input loses (`robot.grasping.geometry.footprint_rim_mm`). The pick loop reads it duck-typed,
 `pick_loop._footprint_rim_mm`, cuts the same rim off the looks' surfaces it fuses, and hands the result
 beside the fused cloud as `footprint_points_base_mm`, a keyword a generator may ignore. A generator
 without it is handed no footprint, as before.
+
+`max_grip_mm` is optional the same way (2026-10-09): the hand's stroke. The pick loop reads it duck-typed,
+`pick_loop._fits_the_stroke`, to try the parts the hand closes across before the ones wider than its stroke;
+a generator without a number keeps every part in the order it had.
 """
 
 from __future__ import annotations
@@ -103,10 +100,10 @@ class GraspCandidateGenerator(Protocol):
           grasps on every resolver-wired path.
         * Units. Millimetres, XYZW quaternions, every pose frame-tagged, per the repo-wide rule.
         * Metadata. The per-candidate keys downstream consumers read (`total`, `geometric`,
-          `stability`, `reachability`, `feasibility_score`, `pose_confidence`, `score_components`,
-          ...) are a de-facto contract for the success model, the RL candidate rows and the shadow
-          aggregator. A generator that omits them does not crash anything; it silently empties those
-          features, which is worse.
+          `stability`, `reachability`, `pose_confidence`, `score_components`, ...) are a de-facto
+          contract for the records and the replay bank, and `score_components` for the hand's open
+          width. A generator that omits them does not crash anything; it silently empties those
+          readings, which is worse.
         """
         ...
 

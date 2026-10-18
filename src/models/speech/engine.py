@@ -157,17 +157,20 @@ class SpeechStackUnavailable(ImportError):
 class SpeechModelMissing(FileNotFoundError):
     """A model file or directory the config names is not on this machine.
 
-    A capability this host lacks, never a bad request. Nothing downloads on its own (`models.stt.local:
-    true` is the point of the flag), so the refusal names the key, the path and the fetch that fixes it.
+    A capability this host lacks, never a bad request. Nothing downloads on its own (every model reads this machine
+    alone, as the owner's cell did), so the refusal names the key, the path and the fetch that fixes it. ``named`` is
+    what the key holds where the path is read from it rather than written in it: a ``model_id`` read from the weights
+    folder.
     """
 
-    def __init__(self, *, key: str, path: str, kind: str, fetch: str) -> None:
-        from src.config.paths import path_note  # noqa: PLC0415 (this module is stdlib only at import)
+    def __init__(self, *, key: str, path: str, kind: str, fetch: str, named: str | None = None) -> None:
+        from src.models.weights import weights_note  # noqa: PLC0415 (this module is stdlib only at import)
 
         self.key = key
         self.path = path
+        said = f"{key} is {path!r}" if named is None else f"{key} is {named!r}, read from {path!r}"
         super().__init__(
-            f"{key} is {path!r}, but there is no such {kind} (resolved: {Path(path).resolve()}).{path_note(path)} "
+            f"{said}, but there is no such {kind} (resolved: {Path(path).resolve()}).{weights_note(path)} "
             f"Nothing is downloaded on its own; {fetch}."
         )
 
@@ -181,11 +184,13 @@ class SpeechModelIncomplete(SpeechModelMissing):
     ``missing`` names the files that are not there, and is empty when every file is there and disagrees.
     """
 
-    def __init__(self, *, key: str, path: str, missing: "tuple[str, ...]", problem: str, fetch: str) -> None:
+    def __init__(self, *, key: str, path: str, missing: "tuple[str, ...]", problem: str, fetch: str,
+                 named: str | None = None) -> None:
         self.key = key
         self.path = path
         self.missing = missing
-        FileNotFoundError.__init__(self, f"{key} is {path!r}, and {problem}. Nothing is downloaded on its own; {fetch}.")
+        said = f"{key} is {path!r}" if named is None else f"{key} is {named!r}, read from {path!r}"
+        FileNotFoundError.__init__(self, f"{said}, and {problem}. Nothing is downloaded on its own; {fetch}.")
 
 
 class RecordingTooLong(ValueError):

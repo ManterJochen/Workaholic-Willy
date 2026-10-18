@@ -125,7 +125,6 @@ export default function DiagnosticsDrawer({ open, onClose }: DiagnosticsDrawerPr
                     [t('diag.pipeline'), d.perception.kind],
                     [t('diag.backend'), <span key="backend" className="mono">{d.perception.backend}</span>],
                     [t('diag.segmenter'), <span key="segmenter" className="mono">{d.perception.segmenter}</span>],
-                    [t('diag.router'), yes(d.perception.router_enabled)],
                     [t('diag.vlm'), <span key="vlm" className="mono">{d.perception.vlm_model_id ?? t('common.none')}</span>],
                     [t('diag.weights'), yes(d.perception.vlm_weights_present)],
                   ]}

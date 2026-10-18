@@ -42,13 +42,11 @@ def _arm(fixtures: "list[dict] | None" = None) -> Any:
 
     arm: Any = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
-        "workspace_limits": OPEN_WORKSPACE,
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo", "workspace": OPEN_WORKSPACE},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "safety": {"payload": {"enforce": False},
-                   # The 5 mm and 10 mm these cases were built at; the owner ships 3 and 3 since 2026-10-05.
+        "safety": {# The 5 mm and 10 mm these cases were built at; the owner ships 3 and 3 since 2026-10-05.
                    "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
                                       "planner_margin_mm": 4.0, "fixtures": list(fixtures or [])}},
     }))

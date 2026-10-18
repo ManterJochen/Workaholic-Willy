@@ -1,8 +1,9 @@
-"""The matrix gate starts the sidecar a cell's driver starts: its payload spheres and its plates (customer chain lane C3g).
+"""The matrix gate starts the sidecar a cell's driver starts, with its plates (customer chain lane C3g).
 
 A file written with ``--attach N`` measured a sidecar with no attach spheres, so its composed hash could never admit the
-cell it names (finding 12 of the audit of 2026-09-17); and a plate with a cross section, which a cell's planner adds as a
-body, could not be told to the gate at all (finding 20).
+cell it names (finding 12 of the audit of 2026-09-17); the attach spheres left with the carried part on 2026-10-17, and
+neither the gate nor a cell's driver hands the sidecar any. A plate with a cross section, which a cell's planner adds as
+a body, could not be told to the gate at all (finding 20).
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ class _Started(Exception):
 
 
 class TheSidecarGetsWhatACellGivesItTests(unittest.TestCase):
-    def _client_kwargs(self, attach: int) -> dict:
+    def _client_kwargs(self) -> dict:
         seen: dict = {}
 
         class Recording:
@@ -46,16 +47,14 @@ class TheSidecarGetsWhatACellGivesItTests(unittest.TestCase):
         gate = _gate()
         with mock.patch("src.robot.safety.planning.curobo_client.CuroboPlanClient", Recording), \
                 self.assertRaises(_Started):
-            gate.measure(arm="ur5e", hand="robotiq_2f85", coupling_mm=0.0, planner_margin_mm=4.0, attach_spheres=attach,
+            gate.measure(arm="ur5e", hand="robotiq_2f85", coupling_mm=0.0, planner_margin_mm=4.0,
                          guard_margin_mm=10.0, rotation_xyzw=[0.0, 0.0, 0.0, 1.0], random_n=2, seed=0)
         return seen
 
-    def test_the_attach_spheres_it_records_are_the_ones_it_starts_with(self) -> None:
-        self.assertEqual(self._client_kwargs(4)["attach_spheres"], 4)
-
-    def test_no_attach_spheres_is_zero_and_not_left_out(self) -> None:
-        """⭐ THE CONTROL: the default combination hands the sidecar what it always has."""
-        self.assertEqual(self._client_kwargs(0)["attach_spheres"], 0)
+    def test_the_sidecar_is_started_with_the_margin_and_no_attach_spheres(self) -> None:
+        seen = self._client_kwargs()
+        self.assertNotIn("attach_spheres", seen, "no cell's driver hands the sidecar attach spheres")
+        self.assertEqual(4.0, seen["self_collision_margin_mm"])
 
 
 class APlateWithACrossSectionTests(unittest.TestCase):

@@ -306,7 +306,7 @@ class StationScreen:
         if not local_guard.is_inside_workspace(pose):
             box = local_guard.limits
             return "outside_workspace", (
-                f"{what} ({x:.1f}, {y:.1f}, {z:.1f}) mm is outside workspace_limits (x {box.x_min:.1f} to "
+                f"{what} ({x:.1f}, {y:.1f}, {z:.1f}) mm is outside robot.motion.workspace (x {box.x_min:.1f} to "
                 f"{box.x_max:.1f}, y {box.y_min:.1f} to {box.y_max:.1f}, z {box.z_min:.1f} to {box.z_max:.1f} mm), "
                 "so nothing moved")
         if local_guard.validate(pose):

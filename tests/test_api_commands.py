@@ -2,13 +2,13 @@
 
 ``POST /v1/commands/parse`` hands the whole sentence, German or English, to the one VLM copy of the process
 (``read_command`` through ``shared_vlm``), with the taught poses as label -> name pairs, and answers what it understood:
-the object and the place as English phrases with the operator's own words and their route, a pose NAME for a spoken
-label, the scope. What is held here:
+the object and the place as English phrases with the operator's own words, a pose NAME for a spoken label, the
+scope. What is held here:
 
 * reading never creates a run, never sets a prompt and never touches the cell; it is refused during a run
   (``run_active``), before anything is asked, so a teach or a task never shares the card with a parse;
-* the load rule is the library's (Q8 A): a cell whose detector is the VLM loads it at its first command; any other cell
-  refuses (``vlm_not_loaded``) until a person loads it with ``POST /v1/commands/warmup`` ("Laden"); missing weights are
+* the load rule is the library's (Q8 A): a cell whose detector is the VLM loads it at its first command; a closed-set
+  cell refuses (``vlm_not_loaded``) until a person loads it with ``POST /v1/commands/warmup`` ("Laden"); missing weights are
   ``vlm_model_missing``, a load that failed ``vlm_unavailable``, each at the catalog's status;
 * the models section read is the one the cell was BUILT with where the console keeps it, the tree's otherwise;
 * ``GET /v1/commands/status`` says where the reader stands and loads nothing;
@@ -61,20 +61,16 @@ class _CommandCell(LayerCell):
     """The layer cell (``drop_left`` labelled "Ablage links"), its VLM a scripted one through a fresh holder.
 
     The known sentences' table is off here (``runtime.commands.known_sentences: false``) unless a class says
-    ``KNOWN``: :data:`SENTENCE` is one of its sentences, and these tests pin the model's path."""
+    ``KNOWN``: :data:`SENTENCE` is one of its sentences, and these tests pin the model's path. ``KIND`` is the cell's
+    ``models.pipeline.kind``: ``zero_shot`` detects with the VLM, ``closed_set`` with RT-DETR."""
 
-    BACKEND = "vlm"
+    KIND = "zero_shot"
     WEIGHTS = True
     KNOWN = False
 
     def setUp(self) -> None:
         super().setUp()
-        models = self.tmp / "models" / "object.yaml"
-        text = models.read_text(encoding="utf-8")
-        text, hits = re.subn(r"^(\s*)backend: grounded_sam", rf"\g<1>backend: {self.BACKEND}", text, count=1,
-                             flags=re.MULTILINE)
-        assert hits == 1, "the backend line was not found"
-        models.write_text(text, encoding="utf-8")
+        self.pipeline_kind(self.KIND)
         self.known_sentences(self.KNOWN)
         shared_vlm().forget()
         self.addCleanup(shared_vlm().forget)
@@ -82,6 +78,14 @@ class _CommandCell(LayerCell):
         weights = patch("api.routers.diagnostics._vlm_weights_present", side_effect=lambda *_a: self.WEIGHTS)
         weights.start()
         self.addCleanup(weights.stop)
+
+    def pipeline_kind(self, kind: str) -> None:
+        """``models.pipeline.kind`` of the cell's tree, which the console reads where it keeps no built models."""
+        models = self.tmp / "models" / "object.yaml"
+        text, hits = re.subn(r"^(\s*)kind: \w+", rf"\g<1>kind: {kind}", models.read_text(encoding="utf-8"), count=1,
+                             flags=re.MULTILINE)
+        assert hits == 1, "the kind line was not found"
+        models.write_text(text, encoding="utf-8")
 
     def known_sentences(self, on: bool) -> None:
         """``runtime.commands.known_sentences`` of the cell's app config, which the route reads at each parse."""
@@ -106,7 +110,7 @@ class _CommandCell(LayerCell):
 
 
 class AVlmCellReadsItsFirstCommandTests(_CommandCell):
-    def test_the_sentence_becomes_a_card_with_its_routes_and_a_pose_name_for_the_label(self) -> None:
+    def test_the_sentence_becomes_a_card_with_a_pose_name_for_the_label(self) -> None:
         answered = self.parse()
 
         self.assertEqual(200, answered.status_code, answered.text)
@@ -114,8 +118,7 @@ class AVlmCellReadsItsFirstCommandTests(_CommandCell):
         self.assertEqual((True, "task", "once"), (card["understood"], card["intent"], card["scope"]))
         self.assertEqual(("green cube", "den grünen Würfel", True),
                          (card["object"]["phrase"], card["object"]["said"], card["object"]["verified"]))
-        self.assertIsNotNone(card["object"]["route"], "the object's route was not previewed")
-        self.assertEqual(("green cube", "simple"), (card["object"]["route"]["prompt"], card["object"]["route"]["route"]))
+        self.assertNotIn("route", card["object"], "no route to preview since the router left (2026-10-17)")
         self.assertEqual("drop_left", card["place_pose"], "the spoken label did not come back as the pose's name")
         self.assertIsNone(card["place"])
         self.assertTrue(card["model"]["loaded_now"])
@@ -127,12 +130,11 @@ class AVlmCellReadsItsFirstCommandTests(_CommandCell):
         self.assertIsNone(self.cell.active_run_id)
         self.assertEqual("disconnected", self.client.get("/v1/cell").json()["state"])
 
-    def test_a_camera_place_is_previewed_too(self) -> None:
+    def test_a_camera_place_is_read_too(self) -> None:
         self.scripted(_continuation(object="screw", object_said="Schrauben", place="blue bin",
                                     place_said="in die blaue Kiste", scope="until_empty"))
         card = self.parse("Leg alle Schrauben in die blaue Kiste").json()
         self.assertEqual(("blue bin", "until_empty"), (card["place"]["phrase"], card["scope"]))
-        self.assertEqual("blue bin", card["place"]["route"]["prompt"])
 
     def test_a_sentence_read_as_stop_only_shows_where_the_stop_buttons_are(self) -> None:
         self.scripted(_continuation(intent="stop"))
@@ -186,8 +188,8 @@ class MissingWeightsTests(_CommandCell):
         self.assertEqual(0, self.loads.calls)
 
 
-class AGroundingDinoCellLoadsOnlyOnLadenTests(_CommandCell):
-    BACKEND = "grounded_sam"
+class AClosedSetCellLoadsOnlyOnLadenTests(_CommandCell):
+    KIND = "closed_set"
 
     def test_a_command_is_refused_until_a_person_loads_the_reader(self) -> None:
         refused = self.parse()
@@ -213,28 +215,27 @@ class AGroundingDinoCellLoadsOnlyOnLadenTests(_CommandCell):
         self.assertEqual(0, self.loads.calls)
 
     def test_the_models_the_cell_was_built_with_decide_not_a_yaml_edited_since(self) -> None:
-        """A VLM cell built, and its models YAML switched to GroundingDINO since: the first command still loads, as the
+        """A VLM cell built, and its models YAML switched to a closed set since: the first command still loads, as the
         built cell detects with the VLM; and the other way round it does not."""
-        from types import SimpleNamespace
-
         from tests.test_vlm_holder import _models
 
-        self.cell.built_models = _models(backend="vlm")  # type: ignore[attr-defined]
+        self.cell.built_models = _models()  # type: ignore[attr-defined]
         self.assertEqual(200, self.parse().status_code)
         self.assertEqual(1, self.loads.calls)
         shared_vlm().forget()
         loads = self.scripted(ANSWER)
-        self.cell.built_models = SimpleNamespace(pipeline=None)  # type: ignore[attr-defined]
+        self.pipeline_kind("zero_shot")
+        self.cell.built_models = _models(kind="closed_set")  # type: ignore[attr-defined]
         refused = self.parse()
-        self.assertEqual((501, "vlm_unavailable"), (refused.status_code, refused.json()["code"]), refused.text)
-        self.assertEqual("not_configured", self.client.get("/v1/commands/status").json()["state"])
+        self.assertEqual((409, "vlm_not_loaded"), (refused.status_code, refused.json()["code"]), refused.text)
+        self.assertEqual("idle", self.client.get("/v1/commands/status").json()["state"])
         self.assertEqual(0, loads.calls)
 
 
 class AKnownSentenceAsksNoModelTests(_CommandCell):
     """The owner, 2026-10-08 ("speed first"): the cell's everyday sentences are read by the known sentences' table,
-    with no model asked and nothing loaded; the card is the one the model's answer makes, with its routes, and
-    reading still moves nothing."""
+    with no model asked and nothing loaded; the card is the one the model's answer makes, and reading still moves
+    nothing."""
 
     KNOWN = True
 
@@ -247,7 +248,6 @@ class AKnownSentenceAsksNoModelTests(_CommandCell):
                          (card["understood"], card["intent"], card["scope"], card["place_pose"], card["place"]))
         self.assertEqual(("green cube", "den grünen Würfel", True),
                          (card["object"]["phrase"], card["object"]["said"], card["object"]["verified"]))
-        self.assertEqual(("green cube", "simple"), (card["object"]["route"]["prompt"], card["object"]["route"]["route"]))
         self.assertEqual(("known-sentence", 0, False, False),
                          (card["model"]["model_id"], card["model"]["attempts"], card["model"]["loaded_now"],
                           card["model"]["remembered"]))
@@ -256,13 +256,12 @@ class AKnownSentenceAsksNoModelTests(_CommandCell):
     def test_a_clean_known_sentence_may_start_on_enter(self) -> None:
         self.assertTrue(self.parse().json()["startable"])
 
-    def test_a_camera_place_is_previewed_too(self) -> None:
+    def test_a_camera_place_is_read_too(self) -> None:
         card = self.parse("Alle grauen Würfel in die Gelbe Kiste.").json()
         self.assertEqual(("gray cube", "grauen Würfel", "until_empty"),
                          (card["object"]["phrase"], card["object"]["said"], card["scope"]))
-        self.assertEqual(("yellow bin", "in die Gelbe Kiste", True, "yellow bin"),
-                         (card["place"]["phrase"], card["place"]["said"], card["place"]["verified"],
-                          card["place"]["route"]["prompt"]))
+        self.assertEqual(("yellow bin", "in die Gelbe Kiste", True),
+                         (card["place"]["phrase"], card["place"]["said"], card["place"]["verified"]))
         self.assertEqual(0, len(self.loads.model.calls))
 
     def test_a_greeting_is_answered_without_the_model(self) -> None:
@@ -293,10 +292,10 @@ class AKnownSentenceAsksNoModelTests(_CommandCell):
 
 
 class AKnownSentenceIsReadBeforeLadenTests(_CommandCell):
-    """On a GroundingDINO cell the model loads only on "Laden" (Q8 A): a known sentence is read before it, and loads
+    """On a closed-set cell the model loads only on "Laden" (Q8 A): a known sentence is read before it, and loads
     nothing; any other sentence is refused as before."""
 
-    BACKEND = "grounded_sam"
+    KIND = "closed_set"
     KNOWN = True
 
     def test_a_known_sentence_is_read_and_another_is_refused_until_laden(self) -> None:

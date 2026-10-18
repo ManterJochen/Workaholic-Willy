@@ -22,7 +22,9 @@ from tests._fake_transport import silenced
 _READERS: dict[str, int] = {
     "tests.test_calibration_joint_stations": 2,
     "tests.test_a_motion_without_a_camera_world_is_refused": 1,
-    "tests.test_the_arm_holds_its_own_steady_gate": 20,  # aurora 17; Willy's joint lines and the gate at the send
+    # aurora 17; Willy's joint lines and the gate at the send 20; 15 since 2026-10-17, when the gate became every
+    # arm's and the test of a tree that asks for none went with its key.
+    "tests.test_the_arm_holds_its_own_steady_gate": 15,
     "tests.test_a_stopped_control_script_is_a_fault_not_a_motion": 5,
     "tests.test_every_verb_meets_the_camera_world": 7,
     "tests.test_a_checked_line_is_sampled_and_solved": 13,
@@ -35,8 +37,10 @@ _READERS: dict[str, int] = {
     "tests.test_a_planned_arm_hands_the_controller_its_frame": 7,
     # 21 when it moved; 20 once the refusal of a transport with no controller TCP came before the socket (the slice
     # 15 review): that test asserts an empty tape, which no silence can turn red, and its class's control does. 22
-    # with the refused reconnect's two subtests, which read the rollback off the tape.
-    "tests.test_a_planned_arm_connects_through_its_transport": 22,
+    # with the refused reconnect's two subtests, which read the rollback off the tape. 20 since 2026-10-17, when the
+    # owner's cleanup took ``safety.payload.enforce``: the bare flange's connect, whose tape read one ``connect``, left
+    # with it, and the connect of a bare and a weighed flange, two subtests, is the weighed one's alone.
+    "tests.test_a_planned_arm_connects_through_its_transport": 20,
 }
 
 

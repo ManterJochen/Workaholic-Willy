@@ -20,7 +20,7 @@ def main() -> int:
     bin_h = float(sys.argv[2]) if len(sys.argv) > 2 else 146.0  # deep KLT by default
     service, arm, gripper, handles, cfg, target_idx, target_label = build_service(
         headless=True, enable_bin=True, bin_half_width_mm=110.0, bin_half_width_y_mm=130.0,
-        bin_height_mm=bin_h, finger_tool=True,
+        bin_height_mm=bin_h,
         camera_world=CameraWorldDecline("_h39d_binpick_record: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]

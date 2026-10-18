@@ -3,8 +3,8 @@
 * :mod:`ground_truth`: sources built from Isaac's ground-truth instance segmentation, which
   isolate motion from perception because the vision models never run. A single-object source
   and the multi-object dense-clutter source.
-* :mod:`vision`: real-vision sources, GroundingDINO then SAM2 in the loop. A single-object
-  source and the multi-object dense-clutter twin.
+* :mod:`vision`: real-vision sources, the cell's detector (the VLM) then SAM2 in the loop. A
+  single-object source and the multi-object dense-clutter twin.
 
 The camera, detector and segmenter are injected, so neither ``isaacsim`` nor torch is imported at
 module top and both modules import on a machine without Isaac.

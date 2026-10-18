@@ -43,16 +43,20 @@ class ProfileChainTests(unittest.TestCase):
 
 
 class MeasuredValuesSurviveCompositionTests(unittest.TestCase):
-    def test_sim_detector_dtype_reset_survives_every_chain(self) -> None:
-        """THE reason profiles compose instead of duplicating. `models/object.sim.yaml` resets
-        `torch_dtype` to unset, whatever the base says (the base leaves it unset too since 2026-09-29);
-        running the sim detector fp16 was measured to drop the
-        small overhead cube (M2 8/10 -> 0/3). A per-robot profile would need its own copy of that, and
-        the copies would drift. Chained, there is one copy and it holds for every robot."""
+    def test_every_sim_chain_perceives_with_the_cells_models(self) -> None:
+        """THE reason profiles compose instead of duplicating, for the models half. `models/object.sim.yaml` once reset
+        the detector's `torch_dtype` for every sim chain (fp16 was measured to drop the small overhead cube, M2 8/10 ->
+        0/3); the model overlays left on 2026-10-17, and how each model loads is fixed in code at the owner's cell's
+        values, SAM2's fp32 weights under fp16 autocast among them. So every chain, whatever robot it layers, carries
+        the base tree's models: no per-robot copy of a model setting exists to drift."""
+        from src.config import load_config
+        from src.models._inference import SAM2
+
+        base = load_config(profile=None).models
         for model, extra in ((None, None), ("ur3e", None), ("ur3e", ("tiltcam",))):
             with self.subTest(model=model, extra=extra):
-                optim = _load(model, extra).models.objectdetector.optim
-                self.assertIsNone(optim.torch_dtype, "the sim layer's measured dtype reset was lost")
+                self.assertEqual(base, _load(model, extra).models)
+        self.assertIsNone(SAM2.torch_dtype, "the measured recall path: fp32 weights under fp16 autocast")
 
     def test_robot_layer_does_not_disturb_the_ur5e_cell(self) -> None:
         """Adding ur3e/tiltcam files must leave the plain `sim` load exactly as it was."""
@@ -88,8 +92,8 @@ class UR3eLayerTests(unittest.TestCase):
         self.assertIs(sim_mount_for(self.robot.sim.robot_model, self.robot.gripper.model), ROBOTIQ_2F85_MOUNT)
 
     def test_every_configured_position_is_within_the_ur3e_working_sphere(self) -> None:
-        """The whole point of the layer. On the UR5e-tuned scene the UR3e misses `safe_pose` by 95 mm
-        and the workspace corner by 402 mm; re-anchored, nothing is out of reach."""
+        """The whole point of the layer. On the UR5e-tuned scene the UR3e misses the workspace corner by
+        402 mm; re-anchored, nothing is out of reach."""
         out = [f for f in audit_reach(self.robot) if not f.reachable]
         self.assertEqual(out, [], f"unreachable on a UR3e: {[(f.label, f.radius_mm) for f in out]}")
 
@@ -97,7 +101,7 @@ class UR3eLayerTests(unittest.TestCase):
         """At the very edge the arm is near-straight and near-singular, with almost no orientation
         freedom left — which a top-down grasp needs. Bare reachability is not enough."""
         for finding in audit_reach(self.robot):
-            if finding.label.startswith("workspace_limits"):
+            if finding.label.startswith("motion.workspace"):
                 continue  # a box corner is allowed to sit near the edge; a POSE is not
             self.assertLess(
                 finding.radius_mm / finding.max_reach_mm, 0.90,

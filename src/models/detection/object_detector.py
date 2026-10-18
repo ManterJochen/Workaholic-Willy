@@ -16,10 +16,14 @@
 The owner, 2026-10-09: the chess program takes the closed-set detector, always asks it for every class at once, and
 wants the masks from the same call, switched on and off by one flag ("als True oder False ausgeben mit
 Segmentierung"); and every detection model goes under this one roof, "alle unter einem Dach". The backends
-(:data:`BACKENDS`) are the models a cell builds, the names its ``models.pipeline`` uses: ``closed_set``, RT-DETR's
-trained classes; ``grounded_sam``, GroundingDINO; ``vlm``, the vision-language model; ``router``, which sends each
-prompt to one of those two by its text alone, as a cell's router does. The processor and model of a ``Sam2Segmenter``
-cut every box of an image in one pass, the image encoded once, where the cell's perception cuts one box per call.
+(:data:`BACKENDS`) are the models a cell builds, the names its ``models.pipeline.kind`` gives them: ``closed_set``,
+RT-DETR's trained classes; ``vlm``, the vision-language model, which grounds any prompt (``zero_shot``). The
+processor and model of a ``Sam2Segmenter`` cut every box of an image in one pass, the image encoded once, where the
+cell's perception cuts one box per call.
+
+Every model's weights are read from its ``model_id`` through the one resolver (:mod:`src.models.weights`): a tree's
+models from its ``models.weights_root``, a folder or a Hugging Face id handed to :meth:`ObjectDetector.from_weights`
+from the repository's weights folder, else the Hugging Face cache.
 
 Importing this module loads no torch; building a detector does.
 """
@@ -28,7 +32,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import threading
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -40,12 +43,11 @@ from typing import TYPE_CHECKING, Any, Final, Literal, get_args, overload
 import cv2
 import numpy as np
 
-from src.config.paths import path_note
 from src.config.schema.models.models_schema import ObjectDetectorConfig, SegmenterConfig
 from src.models.constants import MODELS_LOG_DIR, RTDETR_LOG_FILE
 from src.models.detection.types import Detection
+from src.models.weights import WeightsKind, fetch_hint, locate_weights, missing_sentence, names_a_folder
 from src.utility import bgr_to_rgb, create_logger
-from src.utility.paths import weights_root
 
 if TYPE_CHECKING:  # pragma: no cover (typing only: both wrappers import torch and transformers)
     from src.models.detection.closed_set.detector import RtDetrObjectDetector
@@ -64,13 +66,16 @@ __all__ = [
     "encode_mask",
 ]
 
-#: Which model answers a detect, by the names a cell's ``models.pipeline`` gives them: ``closed_set`` is RT-DETR's
-#: trained classes (``kind: closed_set``), ``grounded_sam`` GroundingDINO (``zero_shot.backend: grounded_sam``), ``vlm``
-#: the vision-language model (``backend: vlm``), and ``router`` the two of those behind the prompt router
-#: (``router.enabled``), which sends each prompt to one of them by its text alone.
-Backend = Literal["closed_set", "grounded_sam", "vlm", "router"]
+#: Which model answers a detect, by the names a cell's ``models.pipeline.kind`` gives them: ``closed_set`` is RT-DETR's
+#: trained classes (``kind: closed_set``), ``vlm`` the vision-language model, which grounds any prompt
+#: (``kind: zero_shot``).
+Backend = Literal["closed_set", "vlm"]
 #: Every :data:`Backend`, in that order.
 BACKENDS: Final[tuple[str, ...]] = get_args(Backend)
+#: The backends a detection saved before 2026-10-17 may name, read back as they were written: ``grounded_sam``,
+#: GroundingDINO, and ``router``, GroundingDINO and the VLM behind the prompt router. Both left with GroundingDINO,
+#: and no detector answers as either any more.
+RECORDED_BACKENDS: Final[tuple[str, ...]] = ("grounded_sam", "router")
 #: The score a box must clear when :meth:`ObjectDetector.from_weights` is given none.
 DEFAULT_THRESHOLD: Final = 0.5
 #: The SAM2 checkpoint :meth:`ObjectDetector.from_weights` cuts the masks with when it is named none: the one the
@@ -82,10 +87,8 @@ MASK_ENCODING: Final = "coco_rle"
 #: The files ``save_pretrained`` writes a checkpoint's weights to, whole or in shards.
 _WEIGHT_FILES: Final = ("model.safetensors", "model.safetensors.index.json", "pytorch_model.bin",
                         "pytorch_model.bin.index.json")
-#: A Hugging Face id as the Hub spells one: a name, or a namespace and a name.
-_HUB_ID: Final = re.compile(r"[A-Za-z0-9][\w.-]*(/[A-Za-z0-9][\w.-]*)?")
-#: The folder ``scripts/model_weights/fetch.py`` writes each kind of checkpoint to, under the weights root.
-_FETCHED: Final = {"detector": "detection", "segmenter": "segmentation"}
+#: The folder under the weights root each kind of checkpoint is read from (``src.models.weights``).
+_KINDS: Final[dict[str, WeightsKind]] = {"detector": "detection", "segmenter": "segmentation"}
 #: How many masks are scaled up to the image at a time: one mask of a 4K image is 33 MB of float.
 _SCALED_AT_ONCE: Final = 8
 #: How much of its class's colour tints a mask in a drawing, as in the live view (``src/camera/live_view.py``).
@@ -212,13 +215,14 @@ class Detections(Sequence[DetectedObject]):
         threshold (float | None): The score every object cleared; ``None`` where the model gives no score (a VLM).
         image_hw (tuple[int, int]): The image's height and width in pixels.
         segmented (bool): Whether a mask was asked for each object (default: False).
-        backend (str): Which model answered, one of :data:`BACKENDS`; a router's call names the route it took
-            (default: "closed_set").
+        backend (str): Which model answered, one of :data:`BACKENDS`; a detection saved before 2026-10-17 may name
+            one of :data:`RECORDED_BACKENDS`, kept as written (default: "closed_set").
         prompt (str | None): The text the model read: the prompt, or the class list (``"red cube | blue bin"``);
             ``None`` for a closed-set detector, which reads none (default: None).
 
     Raises:
-        ValueError: A mask that is not the image's size, or a backend that is none of :data:`BACKENDS`.
+        ValueError: A mask that is not the image's size, or a backend that is none of :data:`BACKENDS` and
+            :data:`RECORDED_BACKENDS`.
     """
 
     objects: tuple[DetectedObject, ...]
@@ -235,8 +239,9 @@ class Detections(Sequence[DetectedObject]):
         object.__setattr__(self, "classes", tuple(str(name) for name in self.classes))
         object.__setattr__(self, "threshold", None if self.threshold is None else float(self.threshold))
         object.__setattr__(self, "image_hw", (height, width))
-        if self.backend not in BACKENDS:
-            raise ValueError(f"Detections.backend is one of {', '.join(BACKENDS)}, got {self.backend!r}")
+        if self.backend not in BACKENDS and self.backend not in RECORDED_BACKENDS:
+            raise ValueError(f"Detections.backend is one of {', '.join(BACKENDS)} (or, read back from before "
+                             f"2026-10-17, {', '.join(RECORDED_BACKENDS)}), got {self.backend!r}")
         for obj in self.objects:
             if obj.mask is not None and obj.mask.shape != (height, width):
                 raise ValueError(f"a mask of {obj.label!r} is {obj.mask.shape[0]} x {obj.mask.shape[1]}, and the image "
@@ -421,7 +426,8 @@ class Detections(Sequence[DetectedObject]):
 
         Args:
             data (Mapping[str, Any]): What :meth:`to_dict` returned, or the same read back from JSON. Data written
-                before ``backend`` and ``prompt`` existed reads as ``"closed_set"`` and ``None``.
+                before ``backend`` and ``prompt`` existed reads as ``"closed_set"`` and ``None``; a backend that left
+                since (:data:`RECORDED_BACKENDS`) is kept as written.
 
         Returns:
             Detections: The same detections.
@@ -495,54 +501,41 @@ def decode_mask(encoded: Mapping[str, Any]) -> np.ndarray:
 
 class ObjectDetector:
     """One door to every detection model a cell can run, answering with the objects it found and, where asked, each
-    object's mask: RT-DETR, GroundingDINO or the VLM finds the boxes, SAM2 cuts them.
+    object's mask: RT-DETR or the VLM finds the boxes, SAM2 cuts them.
 
     Build it once with :meth:`from_weights` (the closed-set detector of a ``DetectorTraining`` run, any RT-DETR folder,
     a Hugging Face id) or :meth:`from_config` (what a cell's tree names, or the ``backend`` you name), and reuse it:
-    building loads the detector (the VLM loads at its first call unless its block preloads it), and the first
-    ``segment=True`` with a box to cut loads SAM2, which is then kept. Calls on one instance take turns under a lock, so
-    threads may share it; every instance holds its own copy of each model but the VLM, which is the process's one copy
-    (``shared_vlm()``), as a cell's is. You rarely call the constructor yourself.
+    building loads the detector (the VLM loads at its first call), and the first ``segment=True`` with a box to cut
+    loads SAM2, which is then kept. Calls on one instance take turns under a lock, so threads may share it; every
+    instance holds its own copy of each model but the VLM, which is the process's one copy (``shared_vlm()``), as a
+    cell's is. You rarely call the constructor yourself.
 
     Args:
-        detector (Any): The model already built: an ``RtDetrObjectDetector`` for ``closed_set``, a
-            ``GroundingDinoObjectDetector`` for ``grounded_sam`` and ``router``, the VLM's grounder for ``vlm``.
+        detector (Any): The model already built: an ``RtDetrObjectDetector`` for ``closed_set``, the VLM's grounder for
+            ``vlm``.
         backend (str): Which model ``detector`` is, one of :data:`BACKENDS` (default: "closed_set").
         load_segmenter (Callable[[], Sam2Segmenter] | None): Builds SAM2 when the first mask is asked for; without it
             ``segment=True`` is refused (default: None).
         source (str): Where the detector's weights come from, a folder or a Hugging Face id, for :meth:`render`; left
-            empty, the detector's ``model_path`` (default: "").
+            empty, the detector's own ``source`` (default: "").
         segmenter_source (str): Where SAM2's weights come from, for :meth:`render` (default: "").
-        load_vlm (Callable[[], Any] | None): For ``router`` only, and needed there: builds the VLM's grounder when the
-            router first sends it a prompt (default: None).
-        router (Any): For ``router``: the prompt router, anything with ``route(text)`` answering a ``RouteDecision``;
-            ``from_config`` passes the cell's ``RuleBasedRouter`` (default: None).
-        vlm_source (str): Where the VLM's weights come from, for :meth:`render` (default: "").
 
     Raises:
-        ValueError: ``backend`` is none of :data:`BACKENDS`, or a router has no ``load_vlm``.
+        ValueError: ``backend`` is none of :data:`BACKENDS`.
     """
 
     def __init__(self, detector: Any, *, backend: str = "closed_set",
                  load_segmenter: Callable[[], Sam2Segmenter] | None = None, source: str = "",
-                 segmenter_source: str = "", load_vlm: Callable[[], Any] | None = None, router: Any = None,
-                 vlm_source: str = "") -> None:
+                 segmenter_source: str = "") -> None:
         if backend not in BACKENDS:
             raise ValueError(f"backend is one of {', '.join(BACKENDS)}, got {backend!r}")
-        if backend == "router" and load_vlm is None:
-            raise ValueError("a router sends some prompts to the VLM, so it needs load_vlm, which builds the VLM's "
-                             "grounder; from_config gives it one")
         self._backend = str(backend)
         self._detector = detector
         self._load_segmenter = load_segmenter
         self._segmenter: Sam2Segmenter | None = None
-        self._load_vlm = load_vlm
-        self._vlm: Any = None
-        self._router = router
         self._lock = threading.Lock()
-        #: Where the detector's weights come from, a folder or a Hugging Face id, and where the VLM's and SAM2's do.
-        self.source = source or str(getattr(detector, "model_path", "") or "")
-        self.vlm_source = vlm_source
+        #: Where the detector's weights come from, a folder or a Hugging Face id, and where SAM2's do.
+        self.source = source or str(getattr(detector, "source", "") or "")
         self.segmenter_source = segmenter_source
 
     # ------------------------------------------------------------------ construction
@@ -565,8 +558,8 @@ class ObjectDetector:
             segmenter (str | os.PathLike[str] | None): SAM2 as a folder or a Hugging Face id; ``None`` is
                 :data:`DEFAULT_SEGMENTER`, the one the shipped tree names (default: None).
             local (bool | None): ``True`` reads this machine alone and downloads nothing; otherwise an id is read from
-                the folder ``scripts/model_weights/fetch.py`` writes, else the Hugging Face cache, else the Hub
-                (default: None).
+                the folder ``scripts/model_weights/fetch.py`` writes under the repository's weights folder, else the
+                Hugging Face cache, else the Hub (default: None).
 
         Returns:
             ObjectDetector: A ``closed_set`` detector; ``classes`` lists every class the model knows.
@@ -582,10 +575,9 @@ class ObjectDetector:
         source, on_disk = _weights_source(path_or_id, kind="detector", local=local)
         mask_source, mask_on_disk = _weights_source(DEFAULT_SEGMENTER if segmenter is None else segmenter,
                                                     kind="segmenter", local=local)
-        detector = _rtdetr(ObjectDetectorConfig(model_path=source, model_id=source, threshold=cut, local=on_disk),
-                           device=device)
-        sam2 = SegmenterConfig(model_path=mask_source, model_id=mask_source, local=mask_on_disk)
-        return cls(detector, load_segmenter=partial(_sam2, sam2, device=device), source=source,
+        detector = _rtdetr(ObjectDetectorConfig(model_id=source, threshold=cut), device=device, local=on_disk)
+        sam2 = SegmenterConfig(model_id=mask_source)
+        return cls(detector, load_segmenter=partial(_sam2, sam2, device=device, local=mask_on_disk), source=source,
                    segmenter_source=mask_source)
 
     @classmethod
@@ -595,21 +587,19 @@ class ObjectDetector:
         Args:
             config (Any): A loaded tree (``load_tree()``), its ``AppConfig``, or its models block.
             backend (str | None): ``None`` builds what the tree's ``models.pipeline`` builds for a cell: ``closed_set``
-                for ``kind: closed_set``, else ``grounded_sam``, or ``vlm`` / ``router`` where ``zero_shot.backend:
-                vlm`` (``router`` when ``router.enabled``); a tree without the block reads its legacy
-                ``models.detector``. A name builds that backend from its block whatever the pipeline says:
-                ``"closed_set"`` from ``models.rtdetr``, ``"grounded_sam"`` from ``models.objectdetector``, ``"vlm"``
-                from ``models.pipeline.zero_shot.vlm``, ``"router"`` from the last two (default: None).
+                for ``kind: closed_set``, else ``vlm``. A name builds that backend from its block whatever the
+                pipeline says: ``"closed_set"`` from ``models.rtdetr``, ``"vlm"`` from ``models.pipeline.zero_shot.vlm``
+                (default: None).
 
         Returns:
-            ObjectDetector: The detector, its masks from ``models.segmenter`` (SAM2, whatever the pipeline names as the
-                segmenter, since OneFormer takes no batch of boxes). Every model runs where every model here runs.
+            ObjectDetector: The detector, its masks from ``models.segmenter`` (SAM2). Every model reads its weights
+                from the tree's ``models.weights_root`` and runs where every model here runs.
 
         Raises:
             ValueError: ``backend`` is none of :data:`BACKENDS`, or the tree lacks the block the backend needs (it names
                 the key).
-            FileNotFoundError: A ``local`` block's folder holds no checkpoint, naming its key: the detector's at build,
-                SAM2's at the first mask, the VLM's when it loads.
+            FileNotFoundError: A model's weights are not on this machine, naming its key, the folder looked in and the
+                fetch: the detector's at build, SAM2's at the first mask, the VLM's when it loads.
             ConfigError: The tree did not load.
             TypeError: ``config`` is no tree, ``AppConfig`` or models block.
         """
@@ -617,10 +607,11 @@ class ObjectDetector:
         chosen = str(backend) if backend is not None else _tree_backend(models)
         if chosen not in BACKENDS:
             raise ValueError(f"backend is one of {', '.join(BACKENDS)}, got {chosen!r}")
+        root = getattr(models, "weights_root", None)
         sam2 = models.segmenter
         masks: dict[str, Any] = {
-            "load_segmenter": partial(_sam2_of_the_tree, sam2) if sam2 is not None else None,
-            "segmenter_source": _source_of(sam2) if sam2 is not None else "",
+            "load_segmenter": partial(_sam2_of_the_tree, sam2, root) if sam2 is not None else None,
+            "segmenter_source": _source_of(sam2, kind="segmentation", root=root) if sam2 is not None else "",
         }
         if chosen == "closed_set":
             block = models.rtdetr
@@ -628,29 +619,17 @@ class ObjectDetector:
                 raise ValueError("models.rtdetr is not set, and the closed-set detector is RT-DETR: add the block "
                                  "(config/models/object.yaml has one), or load a folder with "
                                  "ObjectDetector.from_weights")
-            _checked_block(block, key="models.rtdetr.model_path", kind="detector", fetch="rtdetr")
-            return cls(_rtdetr(block, device=None), source=_source_of(block), **masks)
-        if chosen == "vlm":
-            vlm_block = _vlm_block(models)
-            return cls(_vlm_grounder(vlm_block), backend="vlm", source=_source_of(vlm_block), **masks)
-        grounder_block = models.objectdetector
-        if grounder_block is None:
-            raise ValueError(f"models.objectdetector is not set, and {chosen!r} grounds "
-                             + ("its plain prompts " if chosen == "router" else "")
-                             + "with GroundingDINO: add the block (config/models/object.yaml has one)")
-        _checked_block(grounder_block, key="models.objectdetector.model_path", kind="grounder", fetch="dino-tiny")
-        if chosen == "grounded_sam":
-            return cls(_grounding_dino(grounder_block), backend="grounded_sam", source=_source_of(grounder_block),
-                       **masks)
-        vlm_block = _vlm_block(models)  # refused before GroundingDINO loads, as a cell's build refuses
-        return cls(_grounding_dino(grounder_block), backend="router", source=_source_of(grounder_block),
-                   load_vlm=partial(_vlm_grounder, vlm_block), vlm_source=_source_of(vlm_block),
-                   router=_rule_based_router(), **masks)
+            _checked_block(block, root, key="models.rtdetr.model_id", kind="detector")
+            return cls(_rtdetr(block, device=None, weights_root=root),
+                       source=_source_of(block, kind="detection", root=root), **masks)
+        vlm_block = _vlm_block(models)
+        return cls(_vlm_grounder(vlm_block, root), backend="vlm", source=_source_of(vlm_block, kind="vlm", root=root),
+                   **masks)
 
     # ------------------------------------------------------------------ what it is
     @property
     def backend(self) -> str:
-        """Which model answers: ``closed_set``, ``grounded_sam``, ``vlm`` or ``router`` (:data:`BACKENDS`)."""
+        """Which model answers: ``closed_set`` or ``vlm`` (:data:`BACKENDS`)."""
         return self._backend
 
     @property
@@ -668,8 +647,7 @@ class ObjectDetector:
 
     @property
     def threshold(self) -> float | None:
-        """The score a box must clear, unless one call names another; ``None`` for the VLM, which gives no score, and a
-        router's simple route's, GroundingDINO's."""
+        """The score a box must clear, unless one call names another; ``None`` for the VLM, which gives no score."""
         if self._backend == "vlm":
             return None
         return float(self._detector.threshold)
@@ -700,18 +678,8 @@ class ObjectDetector:
             lines = [f"  detector   RT-DETR from {_ascii(self.source)}, on {self.device}, "
                      f"threshold {self.threshold:.2f}",
                      f"  classes    {len(classes)}: {_listed(classes)}"]
-        elif self._backend == "grounded_sam":
-            lines = [f"  detector   GroundingDINO from {_ascii(self.source)}, on {self.device}, threshold "
-                     f"{self.threshold:.2f}",
-                     "  classes    any: a prompt, or the classes a call names"]
-        elif self._backend == "vlm":
-            lines = [f"  detector   the VLM from {_ascii(self.source)}, which gives no score",
-                     "  classes    any: a prompt, or the classes a call names"]
         else:
-            vlm = "loaded" if self._vlm is not None else "loaded when the router first sends it a prompt"
-            lines = [f"  detector   a router: GroundingDINO from {_ascii(self.source)}, on {self.device}, threshold "
-                     f"{self.threshold:.2f}, for the plain prompts; the VLM from {_ascii(self.vlm_source)} for the "
-                     f"rest, {vlm}",
+            lines = [f"  detector   the VLM from {_ascii(self.source)}, which gives no score",
                      "  classes    any: a prompt, or the classes a call names"]
         return "\n".join([*lines, f"  masks      {masks}"])
 
@@ -725,8 +693,8 @@ class ObjectDetector:
                segment: bool = False) -> Detections:
         """Find the objects in an image, the highest score first, each with its mask where asked.
 
-        A closed-set detector answers with every class it knows; an open-vocabulary one (GroundingDINO, the VLM, the
-        router) finds what the call names, and takes exactly one of ``prompt`` and ``classes``.
+        A closed-set detector answers with every class it knows; the VLM, open vocabulary, finds what the call names,
+        and takes exactly one of ``prompt`` and ``classes``.
 
         Args:
             image_bgr (np.ndarray | str | os.PathLike[str]): Height x width x 3 ``uint8`` in BGR order, as OpenCV gives
@@ -739,21 +707,21 @@ class ObjectDetector:
                 box under the description the model gave it; a box it gave none, or two, is left out. One string is one
                 name (default: None).
             threshold (float | None): The score from 0 to 1 a box must clear, for this call alone; ``None`` keeps the
-                detector's own. The VLM gives no score, so a VLM detector refuses one and a router applies it only where
-                it sends the prompt to GroundingDINO (default: None).
+                detector's own. The VLM gives no score, so a VLM detector refuses one (default: None).
             segment (bool): Cut every object's mask with SAM2, all the boxes of the image in one pass; an image with no
                 box asks SAM2 nothing (default: False).
 
         Returns:
             Detections: The objects found, the highest score first, and the question they answer: ``classes`` looked
-                for, ``threshold`` (``None`` for the VLM), ``backend`` (the route a router took) and ``prompt``.
+                for, ``threshold`` (``None`` for the VLM), ``backend`` and ``prompt``.
 
         Raises:
             ValueError: A closed-set call with a prompt, or with a class the model does not know (it names every class
                 it knows); an open-vocabulary call with neither or both of ``prompt`` and ``classes``, an empty prompt,
                 or a class ``class_list_prompt`` refuses; a threshold outside 0 to 1, or any threshold on the VLM;
                 ``segment=True`` on a detector built without SAM2; an image that is not height x width x 3 ``uint8``.
-            FileNotFoundError: An image path names no file, or SAM2's folder holds no checkpoint at the first mask.
+            FileNotFoundError: An image path names no file; SAM2's weights are not on this machine, or its folder holds
+                no checkpoint, at the first mask; or the VLM's weights are not on this machine at its first answer.
 
         Each object comes back once: RT-DETR scores each class of each of its queries on its own, so one object can
         clear the threshold under two classes with the same box; it keeps its best class, and ``classes=`` picks from
@@ -772,14 +740,14 @@ class ObjectDetector:
         if threshold is not None:
             if self._backend == "vlm":
                 raise ValueError("the VLM writes boxes without a score, so a threshold has nothing to cut; leave it "
-                                 "out, or build the detector with backend='grounded_sam'")
+                                 "out, or build the closed-set detector (backend='closed_set') for scored boxes")
             _checked_threshold(threshold)
         if segment and self._segmenter is None and self._load_segmenter is None:
             raise ValueError("segment=True needs SAM2, and this ObjectDetector was built without a load_segmenter; "
                              "from_weights and from_config give it one")
         height, width = image.shape[:2]
         with self._lock:
-            finder, answering = self._finder_for(text)
+            finder, answering = self._detector, self._backend
             if answering == "vlm":
                 cut: float | None = None
                 found = finder.detect_all(image, text)
@@ -797,21 +765,6 @@ class ObjectDetector:
                    ", masks cut" if segment else "")
         return Detections(objects=tuple(objects), classes=asked, threshold=cut, image_hw=(height, width),
                           segmented=bool(segment), backend=answering, prompt=text)
-
-    def _finder_for(self, text: str | None) -> tuple[Any, str]:
-        """The model that answers ``text``, and its backend's name; a router's VLM is built at its first prompt."""
-        if self._backend != "router":
-            return self._detector, self._backend
-        assert text is not None  # an open-vocabulary call always has its text
-        decision = self._router.route(text)
-        if str(getattr(decision.route, "value", decision.route)) != "vlm":
-            return self._detector, "grounded_sam"
-        if self._vlm is None:
-            assert self._load_vlm is not None  # the constructor refuses a router without it
-            _LOG.info("loading the VLM for the router's first prompt it sends there (%s)",
-                      getattr(decision, "describe", lambda: "")())
-            self._vlm = self._load_vlm()
-        return self._vlm, "vlm"
 
     # ------------------------------------------------------------------ the masks
     def _segmenter_built(self) -> Sam2Segmenter:
@@ -841,8 +794,8 @@ class ObjectDetector:
         inputs = segmenter.processor(images=bgr_to_rgb(image), input_boxes=[[list(box) for box in boxes]],
                                      return_tensors="pt")
         inputs = move_inputs_to_device(dict(inputs), segmenter.device)
-        optim = getattr(segmenter, "optim", None)
-        if optim is not None and optim.channels_last and segmenter.device.type == "cuda":
+        settings = getattr(segmenter, "settings", None)
+        if settings is not None and settings.channels_last and segmenter.device.type == "cuda":
             pixels = inputs.get("pixel_values")
             if torch.is_tensor(pixels) and pixels.dim() == 4:
                 inputs["pixel_values"] = pixels.to(memory_format=torch.channels_last)
@@ -868,14 +821,16 @@ class ObjectDetector:
 # ---------------------------------------------------------------------------------------------------------------------
 
 
-def _rtdetr(config: ObjectDetectorConfig, *, device: str | None) -> RtDetrObjectDetector:
-    """RT-DETR from ``config``, on ``device`` or where every model here runs."""
+def _rtdetr(config: ObjectDetectorConfig, *, device: str | None, weights_root: str | None = None,
+            local: bool = True) -> RtDetrObjectDetector:
+    """RT-DETR from ``config``, on ``device`` or where every model here runs, its weights read under ``weights_root``."""
     from src.models.detection.closed_set.detector import RtDetrObjectDetector  # noqa: PLC0415 (torch)
 
-    return RtDetrObjectDetector(config, device=device)
+    return RtDetrObjectDetector(config, device=device, weights_root=weights_root, local=local)
 
 
-def _sam2(config: SegmenterConfig, *, device: str | None) -> Sam2Segmenter:
+def _sam2(config: SegmenterConfig, *, device: str | None, weights_root: str | None = None,
+          local: bool = True) -> Sam2Segmenter:
     """SAM2 from ``config``, moved to ``device`` when one is named and it was built elsewhere.
 
     ``Sam2Segmenter`` places itself where every model here runs and takes no device, so a named one is reached by
@@ -884,7 +839,7 @@ def _sam2(config: SegmenterConfig, *, device: str | None) -> Sam2Segmenter:
     from src.models.segmentation.realtime.segmenter import Sam2Segmenter  # noqa: PLC0415 (torch)
     from src.utility.device import get_device  # noqa: PLC0415
 
-    built = Sam2Segmenter(config)
+    built = Sam2Segmenter(config, weights_root=weights_root, local=local)
     if device is not None:
         target = get_device(device)
         if built.device != target:
@@ -893,69 +848,34 @@ def _sam2(config: SegmenterConfig, *, device: str | None) -> Sam2Segmenter:
     return built
 
 
-def _sam2_of_the_tree(block: SegmenterConfig) -> Sam2Segmenter:
-    """The SAM2 ``models.segmenter`` names, refused naming the key when its ``local`` folder holds none."""
-    _checked_block(block, key="models.segmenter.model_path", kind="segmenter", fetch="sam2")
-    return _sam2(block, device=None)
+def _sam2_of_the_tree(block: SegmenterConfig, root: str | None) -> Sam2Segmenter:
+    """The SAM2 ``models.segmenter`` names, refused naming the key when its weights are not on this machine."""
+    _checked_block(block, root, key="models.segmenter.model_id", kind="segmenter")
+    return _sam2(block, device=None, weights_root=root)
 
 
 def _tree_backend(models: Any) -> Backend:
-    """The backend a cell builds from ``models``, read as ``src.models.factory.build_perception`` reads it.
-
-    ``models.pipeline`` decides where it is set: ``kind: closed_set`` is RT-DETR, ``zero_shot.backend: vlm`` the VLM,
-    behind the router where ``router.enabled``, and any other zero-shot backend GroundingDINO. A tree without the block
-    reads the legacy ``models.detector``: ``rtdetr`` is the closed set, anything else GroundingDINO.
-    """
+    """The backend a cell builds from ``models``, read as ``src.models.factory.build_perception`` reads it:
+    ``models.pipeline.kind: closed_set`` is RT-DETR, anything else the VLM."""
     pipeline = getattr(models, "pipeline", None)
-    if pipeline is None:
-        return "closed_set" if str(getattr(models, "detector", "")) == "rtdetr" else "grounded_sam"
-    if pipeline.kind == "closed_set":
-        return "closed_set"
-    if pipeline.zero_shot.backend == "vlm":
-        return "router" if pipeline.router.enabled else "vlm"
-    return "grounded_sam"
+    return "closed_set" if getattr(pipeline, "kind", "zero_shot") == "closed_set" else "vlm"
 
 
 def _vlm_block(models: Any) -> Any:
-    """``models.pipeline.zero_shot.vlm``, or a refusal naming the key when the tree has no pipeline to hold one."""
-    pipeline = getattr(models, "pipeline", None)
-    block = getattr(getattr(pipeline, "zero_shot", None), "vlm", None)
-    if block is None:
-        raise ValueError("models.pipeline.zero_shot.vlm is not set, and the VLM is built from it: add a "
-                         "models.pipeline block (config/models/object.yaml has one)")
-    return block
+    """``models.pipeline.zero_shot.vlm``, the VLM's block, which every tree holds (its default where none is written)."""
+    return models.pipeline.zero_shot.vlm
 
 
-def _vlm_grounder(block: Any) -> Any:
-    """The process's one VLM grounder for ``block``, configured as a cell's build configures it.
+def _vlm_grounder(block: Any, root: str | None) -> Any:
+    """The process's one VLM grounder for ``block``, its weights read under ``root``, as a cell's build takes it.
 
     The copy the console and every cell share (``shared_vlm()``): a block naming other weights replaces the copy held,
-    and the same weights are taken as they are, loaded or not. It loads at its first answer unless ``preload`` asks
-    for it now; how it writes its answers is the block's, set without loading anything.
+    and the same weights are taken as they are, loaded or not. It loads at its first answer, and answers as the owner's
+    cell's did (``src/models/vlm/qwen.py``).
     """
     from src.models.vlm.holder import shared_vlm  # noqa: PLC0415 (torch)
 
-    grounder = shared_vlm().grounder_for(block)
-    grounder.configure(prompt_lookup_tokens=block.prompt_lookup_tokens,
-                       text_prompt_lookup_tokens=block.text_prompt_lookup_tokens,
-                       stop_at_answer_end=block.stop_at_answer_end, decode_graphs=block.decode_graphs)
-    if block.preload:
-        grounder.ensure_loaded()
-    return grounder
-
-
-def _grounding_dino(block: ObjectDetectorConfig) -> Any:
-    """GroundingDINO from ``block``, where every model here runs."""
-    from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector  # noqa: PLC0415 (torch)
-
-    return GroundingDinoObjectDetector(block)
-
-
-def _rule_based_router() -> Any:
-    """The prompt router a cell's routed stack uses: rule based, deterministic, loading no model."""
-    from src.models.routing import RuleBasedRouter  # noqa: PLC0415
-
-    return RuleBasedRouter()
+    return shared_vlm().grounder_for(block, weights_root=root)
 
 
 def _models_block(config: Any) -> Any:
@@ -963,23 +883,25 @@ def _models_block(config: Any) -> Any:
     if hasattr(type(config), "app_config"):  # a loaded tree; one that did not load raises its ConfigError here
         config = config.app_config
     models = getattr(config, "models", config)
-    if not (hasattr(models, "rtdetr") and hasattr(models, "segmenter")):
+    if not (hasattr(models, "rtdetr") and hasattr(models, "segmenter") and hasattr(models, "pipeline")):
         raise TypeError(f"from_config takes a loaded tree, its AppConfig or its models block, not "
                         f"{type(config).__name__}")
     return models
 
 
-def _source_of(block: Any) -> str:
-    """Where a config block's weights are read from: its folder when ``local``, else its Hub id."""
-    return str(block.model_path if block.local else (block.model_id or block.model_path))
+def _source_of(block: Any, *, kind: WeightsKind, root: str | None) -> str:
+    """Where a config block's weights are read from, for :meth:`ObjectDetector.render`: the folder, or the id the
+    Hugging Face cache holds; the folder looked in where they are nowhere here."""
+    return locate_weights(block.model_id, kind=kind, root=root).describe()
 
 
 def _weights_source(value: str | os.PathLike[str] | None, *, kind: str, local: bool | None) -> tuple[str, bool]:
-    """Where a checkpoint of ``kind`` is read from, and whether from this machine alone.
+    """Where a checkpoint of ``kind`` is read from, and whether from this machine alone, through the one resolver.
 
     A folder is read as it is, once it holds a checkpoint of that kind. A Hugging Face id is read from the folder the
-    fetch script writes it to when that is there, as training reads its base model, else from the Hugging Face cache, or
-    the Hub unless ``local`` is ``True``. Anything else is refused, naming the folder it looked for.
+    fetch script writes it to under the repository's weights folder when that is there, as training reads its base
+    model, else from the Hugging Face cache, or the Hub unless ``local`` is ``True``. Anything else is refused, naming
+    the folder it looked for.
     """
     what = "object detector" if kind == "detector" else "SAM2"
     if value is None:
@@ -994,29 +916,30 @@ def _weights_source(value: str | os.PathLike[str] | None, *, kind: str, local: b
         return folder.as_posix(), True
     if folder.exists():
         raise FileNotFoundError(f"{folder.resolve()} is a file; name the folder that holds config.json and the weights")
-    hub_id = text.strip()
-    if isinstance(value, os.PathLike) or not _HUB_ID.fullmatch(hub_id) or ".." in hub_id:
+    if names_a_folder(value):
         raise FileNotFoundError(f"there is no folder at {folder.resolve()}, so there is no {what} to load")
-    fetched = weights_root() / _FETCHED[kind] / hub_id.replace("/", "--")
-    if (fetched / "config.json").is_file():
-        _check_folder(fetched, kind=kind)
-        return fetched.as_posix(), True
-    return hub_id, bool(local)
+    try:
+        found = locate_weights(text, kind=_KINDS[kind], local=local is True)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"there is no folder at {folder.resolve()}, so there is no {what} to load") from None
+    if found.from_the_folder and found.present:
+        _check_folder(found.folder, kind=kind)
+        return found.source, True
+    # Not in the weights folder: the id itself, read from the Hugging Face cache, or the Hub unless `local` is True.
+    return found.model_id, local is True
 
 
-def _checked_block(block: Any, *, key: str, kind: str, fetch: str) -> None:
-    """Refuse a ``local`` config block whose folder holds no checkpoint of ``kind`` (``detector``, ``grounder`` or
-    ``segmenter``), naming the key and the fetch."""
-    if not block.local:
-        return
-    folder = Path(block.model_path)
-    if not folder.is_dir():
-        raise FileNotFoundError(
-            f"{key} is {folder}, and there is no folder there.{path_note(block.model_path)} Fetch it with "
-            f"`python scripts/model_weights/fetch.py {fetch}`"
-            + (", or point the key at a DetectorTraining out_dir" if kind == "detector" else "")
-            + f", or set local: false to read {block.model_id or 'model_id'} from the Hugging Face Hub")
-    _check_folder(folder, kind=kind)
+def _checked_block(block: Any, root: str | None, *, key: str, kind: str) -> None:
+    """Refuse a config block whose weights are not on this machine, naming the key, the folder looked in and the fetch;
+    and a folder that holds no checkpoint of ``kind`` (``detector`` or ``segmenter``), saying what it holds instead."""
+    found = locate_weights(block.model_id, kind=_KINDS[kind], root=root)
+    if not found.present:
+        sentence = missing_sentence(found, key=key)
+        if kind == "detector" and not names_a_folder(block.model_id):
+            sentence = sentence[:-1] + ", or point the key at a DetectorTraining out_dir."
+        raise FileNotFoundError(sentence)
+    if found.from_the_folder:
+        _check_folder(found.folder, kind=kind)
 
 
 def _check_folder(folder: Path, *, kind: str) -> None:
@@ -1027,9 +950,6 @@ def _check_folder(folder: Path, *, kind: str) -> None:
     text, wrong_kind = problem
     if wrong_kind:
         raise ValueError(f"{folder} holds {text}")
-    if kind == "grounder":
-        raise FileNotFoundError(f"{folder} holds {text}, so there is no GroundingDINO to load: "
-                                f"`python scripts/model_weights/fetch.py dino-tiny` writes one")
     if kind == "detector":
         last = folder / "last"
         if last.is_dir() and _checkpoint_problem(last, kind=kind) is None:
@@ -1039,7 +959,7 @@ def _check_folder(folder: Path, *, kind: str) -> None:
                                 f"out_dir holds its best epoch at the top and its last in last/, and any folder "
                                 f"save_pretrained wrote an RT-DETR model and its image processor to loads as well")
     raise FileNotFoundError(f"{folder} holds {text}, so there is no SAM2 to load: "
-                            f"`python scripts/model_weights/fetch.py sam2` writes one, and any folder save_pretrained "
+                            f"{fetch_hint(DEFAULT_SEGMENTER)} as one, and any folder save_pretrained "
                             f"wrote a SAM2 model and its processor to loads as well")
 
 
@@ -1065,7 +985,7 @@ def _checkpoint_problem(folder: Path, *, kind: str) -> tuple[str, bool] | None:
         return "a config.json that is no JSON object", False
     architectures = [str(name) for name in config.get("architectures") or ()]
     model_type = str(config.get("model_type") or "")
-    if kind in ("detector", "grounder"):
+    if kind == "detector":
         if architectures and not any(name.endswith("ForObjectDetection") for name in architectures):
             return f"a {architectures[0]} checkpoint, which is no object detector", True
         if not (folder / "preprocessor_config.json").is_file():

@@ -122,7 +122,7 @@ class SimConfig(StrictModel):
     robot_prim_path: str | None = None
     gripper_prim_path: str | None = None
     home_joint_positions: list[float] | None = None
-    #: The same home in degrees, as ``robot.home_joint_positions_deg`` takes it; exactly one of the two may be given,
+    #: The same home in degrees, as ``robot.motion.home_deg`` takes it; exactly one of the two may be given,
     #: and the loaded config carries it in radians in ``home_joint_positions``.
     home_joint_positions_deg: list[float] | None = None
     cameras: dict[str, SimCameraSchema] = Field(default_factory=dict)

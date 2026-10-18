@@ -26,7 +26,6 @@ from .paths import is_config_path_field, resolve_config_path
 
 __all__ = [
     "SchemaField",
-    "alias_for",
     "field_default",
     "field_doc",
     "model_doc",
@@ -167,24 +166,8 @@ def _model_at(path_parts: list[str]) -> tuple[type, str] | None:
 
     from .schema.app import AppConfig
 
-    def _unwrap(annotation: Any, owner: Any = None) -> Any:
-        """Strip Optional / dict[str, M] / list[M] down to a BaseModel, if one is in there.
-
-        Some annotations arrive as an unresolved ForwardRef string (``"X | None"``): the schema
-        modules use ``from __future__ import annotations`` and pydantic never needed to rebuild them.
-        Resolving that string against the declaring module's namespace is what lets the walk reach
-        blocks such as ``recovery.fixture``, which otherwise read as undocumented for a typing reason.
-        """
-        import sys as _sys
-
-        raw = getattr(annotation, "__forward_arg__", annotation)
-        if isinstance(raw, str) and owner is not None:
-            namespace = vars(_sys.modules.get(getattr(owner, "__module__", ""), object))
-            for candidate in (part.strip().strip("'\"") for part in raw.split("|")):
-                found = namespace.get(candidate)
-                if isinstance(found, type) and issubclass(found, BaseModel):
-                    return found
-            return None
+    def _unwrap(annotation: Any) -> Any:
+        """Strip Optional / dict[str, M] / list[M] down to a BaseModel, if one is in there."""
         for _ in range(4):
             args = typing.get_args(annotation)
             if isinstance(annotation, type) and issubclass(annotation, BaseModel):
@@ -203,7 +186,6 @@ def _model_at(path_parts: list[str]) -> tuple[type, str] | None:
             annotation = model_args[0]
         return None
 
-    reverse = {json: attr.rsplit(".", 1)[-1] for attr, json in _alias_pairs().items()}
     current: Any = AppConfig
     for i, part in enumerate(path_parts):
         # `*` marks a dict-of-models level and is not a field of its own: the descent already happened
@@ -214,15 +196,11 @@ def _model_at(path_parts: list[str]) -> tuple[type, str] | None:
             continue
         name = part[:-2] if part.endswith("[]") else part
         fields = getattr(current, "model_fields", None)
-        if fields and name not in fields:
-            # The path may be spelled with the YAML alias (`uniquenessRatio`); the models are keyed by
-            # the attribute (`uniqueness_ratio`).
-            name = reverse.get(f"{'.'.join(path_parts[:i])}.{name}".lstrip("."), name)
         if not fields or name not in fields:
             return None
         if i == len(path_parts) - 1 and not part.endswith("[]"):
             return current, name
-        current = _unwrap(fields[name].annotation, current)
+        current = _unwrap(fields[name].annotation)
         if current is None:
             return None
     return None
@@ -304,56 +282,6 @@ def same_value(a: Any, b: Any) -> bool:
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
     return bool(a == b)
-
-
-def _alias_pairs() -> dict[str, str]:
-    """``attribute.path -> json.path`` for every field whose YAML key differs from its Python name.
-
-    The stereomatcher block keeps OpenCV's camelCase in YAML (``numDisparities``) behind snake_case
-    attributes (``num_disparities``), the only aliased fields in the tree. The JSON schema knows only
-    the alias, so without this mapping ``explain`` reports an attribute name as an unknown key while
-    printing that key's value.
-    """
-    import typing
-
-    from pydantic import BaseModel
-
-    from .schema.app import AppConfig
-
-    out: dict[str, str] = {}
-
-    def _model(annotation: Any) -> Any:
-        for _ in range(4):
-            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-                return annotation
-            models = [a for a in typing.get_args(annotation)
-                      if isinstance(a, type) and issubclass(a, BaseModel)]
-            if not models:
-                return None
-            annotation = models[0]
-        return None
-
-    def _walk_models(model: type, attr_prefix: str, json_prefix: str, depth: int, seen: frozenset) -> None:
-        if depth > _MAX_DEPTH or model in seen:
-            return
-        seen = seen | {model}
-        for name, field in getattr(model, "model_fields", {}).items():
-            json_name = field.alias or name
-            attr_path = f"{attr_prefix}.{name}" if attr_prefix else name
-            json_path = f"{json_prefix}.{json_name}" if json_prefix else json_name
-            if attr_path != json_path:
-                out[attr_path] = json_path
-            child = _model(field.annotation)
-            if child is not None:
-                _walk_models(child, attr_path, json_path, depth + 1, seen)
-
-    _walk_models(AppConfig, "", "", 0, frozenset())
-    return out
-
-
-def alias_for(path: str) -> str | None:
-    """The JSON/YAML path for an attribute-named ``path``, or ``None`` if it is not aliased."""
-    return _alias_pairs().get(path)
 
 
 def model_doc(path: str) -> str:

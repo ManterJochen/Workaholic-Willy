@@ -1,11 +1,11 @@
 """A leg judged ahead while the arm waited runs as it was judged only where nothing it was judged on changed (map4 C7).
 
-The owner, 2026-10-09: judge the next leg while the jaws travel (``robot.motion.judge_next_leg``), in the world held
-across the jaws' stroke (``safety.planning_world.hold.carry`` and ``.drop``: "altes Bild, weil sich in der Kiste so oder so
-nichts verändert"), and during the line before it on a send a halt brakes (``in_settles_and_motion``). What the UR
-driver keeps of such a judgement follows wave 1's rules for a route judged ahead: it serves one move, it runs only where
-the arm stands within 0.5 mm of where it was judged from, in the world of the very refresh it was judged in, with the
-carried part, the hand, the camera's boxes and the halts as they were; otherwise it is judged again as it runs. Pinned
+The owner, 2026-10-09: judge the next leg while the jaws travel (every cuRobo arm since 2026-10-17), in the world held
+across the jaws' stroke (every cell's since 2026-10-17: "altes Bild, weil sich in der Kiste so oder so nichts
+verändert"), and during the line before it on a send a halt brakes (every UR). What the UR driver keeps
+of such a judgement follows wave 1's rules for a route judged ahead: it serves one move, it runs only where the arm
+stands within 0.5 mm of where it was judged from, in the world of the very refresh it was judged in, with the hand, the
+camera's boxes and the halts as they were; otherwise it is judged again as it runs. Pinned
 here, on the real UR driver, its real guard and planner glue (the fixture of
 ``test_a_grasp_judged_ahead_runs_as_it_was_judged``):
 
@@ -13,7 +13,7 @@ here, on the real UR driver, its real guard and planner glue (the fixture of
   judgement; an arm moved a millimetre, another pose, or no held world has it judged again;
 * the joint move a task declared next (``expecting_next``), judged from where the line before it ends
   (``judge_the_next_leg``), runs as judged on ``move_to_joints`` and ``move_to_home``, stamped with its refresh; a moved
-  arm, a refresh, a halt, more than ten seconds, another target, and every switch off have it judged as it runs;
+  arm, a refresh, a halt, more than ten seconds, another target, and the switch off have it judged as it runs;
 * judged during the line on a second thread, it asks the controller nothing from that thread, and runs as judged; an
   arm whose halt does not brake the line judges nothing during it; a judgement still running when its line ended long
   ago keeps nothing.
@@ -30,7 +30,6 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from src.config.schema.robot.safety_schema import HeldWorldConfig
 from src.robot.core import JointPositions, MotionStatus
 from src.robot.core.arm_capabilities import HaltState
 from src.robot.core.camera_world import CameraWorldUse
@@ -49,10 +48,6 @@ from tests.test_a_grasp_judged_ahead_runs_as_it_was_judged import (
 from tests.test_every_verb_meets_the_camera_world import _mesh_backend_available
 
 
-def _judging(arm: Any, *, mode: str = "in_settles", carry: bool = True, drop: bool = True) -> None:
-    """The arm judges next legs (``robot.motion.judge_next_leg``) and holds its world across the jaws' strokes."""
-    arm._next_leg_mode = mode
-    arm._holds = HeldWorldConfig(carry=carry, drop=drop)
 
 
 def _look(arm: Any) -> JointPositions:
@@ -102,31 +97,15 @@ class TheLineOutJudgedWhileTheJawsOpenTests(unittest.TestCase):
         self.assertIsNone(arm.judge_line_ahead(_STANDOFF))
         self.assertIsNone(arm._lift_judged)
 
-    def test_on_a_cell_that_models_the_part_the_line_out_judged_as_it_runs_runs_too(self) -> None:
-        """Unlike the lift judged before the close, whose part only stood in for the one carried, the line out is judged
-        empty-handed, as it runs."""
-        arm, events, solved = _at_the_part()
-        world = arm.config.safety.planning_world
-        modelled = world.model_copy(update={"payload": world.payload.model_copy(update={"length_mm": 120.0})})
-        arm.config = arm.config.model_copy(update={"safety": arm.config.safety.model_copy(
-            update={"planning_world": modelled})})
-        with arm.held_world("the drop"):
-            self.assertIsNone(arm.judge_line_ahead(_STANDOFF))
-            self.assertIsNotNone(arm._lift_judged)
-            asked = len(solved)
-            self.assertTrue(arm.move(_STANDOFF, linear=True).ok)
-        self.assertEqual(asked, len(solved))
-
 
 class TheJointMoveDeclaredNextTests(unittest.TestCase):
     def setUp(self) -> None:
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
 
-    def _ready(self, **switches: Any) -> "tuple[Any, list[str], JointPositions, Any]":
+    def _ready(self) -> "tuple[Any, list[str], JointPositions, Any]":
         """At the part, the carry to the look judged while the jaws close, and the arm then at the top of the lift."""
         arm, events, _solved = _at_the_part()
-        _judging(arm, **switches)
         look = _look(arm)
         with arm.expecting_next(look), arm.held_world(_HELD):
             said = arm.judge_the_next_leg(_LIFT, junction="carry")
@@ -201,20 +180,9 @@ class TheJointMoveDeclaredNextTests(unittest.TestCase):
         self.assertEqual(0, refresh.call_count)
         self.assertNotIn("gate_planned_path", events)
 
-    def test_nothing_is_judged_ahead_with_any_switch_off(self) -> None:
-        cases = {
-            "judge_next_leg off": {"mode": "off"},
-            "hold.carry off": {"carry": False},
-        }
-        for label, switches in cases.items():
-            with self.subTest(label):
-                arm, _events, _look, said = self._ready(**switches)
-                self.assertTrue(said)
-                self.assertIsNone(arm._next_leg_ahead)
 
     def test_nothing_is_judged_ahead_where_nothing_was_declared_or_no_world_is_held(self) -> None:
         arm, _events, _solved = _at_the_part()
-        _judging(arm)
         with arm.held_world(_HELD):
             self.assertIn("declared", arm.judge_the_next_leg(_LIFT, junction="carry"))
         with arm.expecting_next(_look(arm)):
@@ -229,8 +197,8 @@ class TheJointMoveJudgedDuringTheLineBeforeItTests(unittest.TestCase):
 
     def _lift_judging_the_carry(self, *, brakes: bool = True) -> "tuple[Any, list[str], JointPositions, dict[str, Any]]":
         arm, events, _solved = _at_the_part()
-        _judging(arm, mode="in_settles_and_motion")
-        arm._conn.brake_on_halt = brakes
+        if not brakes:
+            arm.brakes_in_motion = lambda: False  # a line whose halt lets it run to its end
         look = _look(arm)
         seen: dict[str, Any] = {"main": threading.get_ident(), "judged on": None, "controller from": set()}
         judge = arm._judge_the_next_leg_from
@@ -258,8 +226,7 @@ class TheJointMoveJudgedDuringTheLineBeforeItTests(unittest.TestCase):
 
         arm.ik = solved
         with arm.expecting_next(look), arm.held_world(_HELD):
-            self.assertIsNone(arm.carried_line_refusal(_LIFT, grip_width_mm=40.0))
-            arm.attach_payload(40.0)
+            self.assertIsNone(arm.carried_line_refusal(_LIFT))
             arm.judge_the_next_leg(_LIFT, junction="carry", now=False)
             result = arm.move(_LIFT, linear=True)
         self.assertTrue(result.ok, result.message)
@@ -289,8 +256,6 @@ class TheJointMoveJudgedDuringTheLineBeforeItTests(unittest.TestCase):
 
         before = sys.getswitchinterval()
         arm, _events, _solved = _at_the_part()
-        _judging(arm, mode="in_settles_and_motion")
-        arm._conn.brake_on_halt = True
         judge = arm._judge_the_next_leg_from
         seen: list[float] = []
 
@@ -305,21 +270,6 @@ class TheJointMoveJudgedDuringTheLineBeforeItTests(unittest.TestCase):
         self.assertEqual([arm_module._WATCHED_SWITCH_S], seen)
         self.assertEqual(before, sys.getswitchinterval(), "the switch interval was not put back")
 
-    def test_a_cell_that_models_the_part_with_none_carried_judges_nothing_during_the_line(self) -> None:
-        """There the judgement reads the hand off the controller (a toggle's output), which the second thread never
-        asks: the move is judged as it runs."""
-        arm, _events, _solved = _at_the_part()
-        world = arm.config.safety.planning_world
-        modelled = world.model_copy(update={"payload": world.payload.model_copy(update={"length_mm": 120.0})})
-        arm.config = arm.config.model_copy(update={"safety": arm.config.safety.model_copy(
-            update={"planning_world": modelled})})
-        _judging(arm, mode="in_settles_and_motion")
-        arm._conn.brake_on_halt = True
-        with arm.expecting_next(_look(arm)), arm.held_world(_HELD):
-            self.assertEqual("", arm.judge_the_next_leg(_LIFT, junction="drop", now=False))
-            self.assertIsNone(arm._judging_during(_LIFT, arm._next_leg_during))
-        self.assertIsNone(arm._next_leg_ahead)
-
     def test_a_line_whose_halt_does_not_brake_it_judges_nothing_during_it(self) -> None:
         arm, _events, _look, seen = self._lift_judging_the_carry(brakes=False)
         self.assertIsNone(seen["judged on"])
@@ -327,8 +277,6 @@ class TheJointMoveJudgedDuringTheLineBeforeItTests(unittest.TestCase):
 
     def test_a_judgement_still_running_long_after_its_line_ended_keeps_nothing(self) -> None:
         arm, _events, _solved = _at_the_part()
-        _judging(arm, mode="in_settles_and_motion")
-        arm._conn.brake_on_halt = True
         judge = arm._judge_the_next_leg_from
         release = threading.Event()
 
@@ -354,9 +302,9 @@ class ThePicksOwnFlowTests(unittest.TestCase):
             self.skipTest("no exact mesh backend on this box")
 
     def test_one_refresh_from_the_judgement_ahead_to_the_carry_and_one_change_of_do0(self) -> None:
-        """⭐ With every switch the owner set (2026-10-09): the grasp judged ahead in one world, the approach and the
-        line down held in it, the lift run on its judgement at the part, the carry judged while the jaws close and
-        run as judged at the top of the lift; the toggle changes its output once."""
+        """⭐ As the owner set it (2026-10-09), every cell since 2026-10-17: the grasp judged ahead in one world, the
+        approach and the line down held in it, the lift run on its judgement at the part, the carry judged while the
+        jaws close and run as judged at the top of the lift; the toggle changes its output once."""
         import numpy as np
 
         from src.geometry import Frame
@@ -369,8 +317,6 @@ class ThePicksOwnFlowTests(unittest.TestCase):
         from tests.test_jaw_io_gripper import HIGH, CLOSE_PIN, _Timeline, _toggle
 
         arm, events, _solved = _cell()
-        arm._next_leg_mode = "in_settles"
-        arm._holds = HeldWorldConfig(standoff=True, carry=True, drop=True)
 
         def joint_moves(joints: Any, **_said: Any) -> bool:
             _stand(arm, [float(v) for v in joints])
@@ -407,8 +353,8 @@ class ThePicksOwnFlowTests(unittest.TestCase):
         self.assertIs(CameraWorldUse.PLANNED, carry.camera_world.use)
 
     def test_one_refresh_from_the_route_to_the_drop_to_the_way_back_and_one_change_of_do0(self) -> None:
-        """⭐ The place with the owner's switches: the line in held in its route's world, the release's one change, the
-        line out and the way back judged while the jaws open, both run as judged."""
+        """⭐ The place as the owner set it: the line in held in its route's world, the release's one change, the line
+        out and the way back judged while the jaws open, both run as judged."""
         from types import SimpleNamespace
 
         from src.geometry import Frame
@@ -421,8 +367,6 @@ class ThePicksOwnFlowTests(unittest.TestCase):
         from tests.test_jaw_io_gripper import CLOSE_PIN, LOW, _Timeline, _toggle
 
         arm, events, _solved = _cell()
-        arm._next_leg_mode = "in_settles"
-        arm._holds = HeldWorldConfig(standoff=True, carry=True, drop=True)
 
         def joint_moves(joints: Any, **_said: Any) -> bool:
             _stand(arm, [float(v) for v in joints])

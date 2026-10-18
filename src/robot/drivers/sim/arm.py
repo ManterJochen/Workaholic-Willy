@@ -259,6 +259,10 @@ class IsaacRobotArm(RobotArm):
         ``move()`` routes through it before commanding motion.
     """
 
+    #: Its ``wait_until_steady`` steps the physics itself, so nothing waits on it for rest before a motion
+    #: (``core.arm_capabilities.StepsItsOwnPhysics``).
+    steps_its_own_physics = True
+
     def __init__(
         self,
         config: SimRobotConfig,
@@ -1071,7 +1075,7 @@ class IsaacRobotArm(RobotArm):
 
         ``SimRobotConfig`` carries no Cartesian limits. The box belongs to the
         ``WorkspaceGuard`` inside the injected ``SafetyPreflight``, which
-        ``sim_safety_preflight`` builds from ``cfg.robot.workspace_limits``, and it is
+        ``sim_safety_preflight`` builds from ``cfg.robot.motion.workspace``, and it is
         enforced on every Cartesian command in :meth:`move`. The ``RobotArm`` Protocol
         requires a driver with no configured workspace to return ``True`` here, and the
         Frame.BASE check is kept for contract parity with the other drivers.
@@ -1490,11 +1494,9 @@ class IsaacRobotArm(RobotArm):
                 from src.robot.safety.planning.evidence import planner_evidence_refusal
 
                 guard = self._preflight._path_authority(self) if self._preflight is not None else None
-                reservation = self._config.planner_reservation
                 refusal = planner_evidence_refusal(
                     identity, hand, link, arm=str(self._config.robot_model), planner_margin_mm=margin_mm,
                     guard_margin_mm=float(guard.min_distance_mm) if guard is not None else 0.0,
-                    attach_spheres=int(reservation.sphere_slots) if reservation is not None else 0,
                     mesh_dir=guard.mesh_dir if guard is not None else None,
                 )
             if refusal is not None:
@@ -1692,7 +1694,6 @@ class IsaacRobotArm(RobotArm):
                 client=self._get_curobo_client(),
                 self_envelope=self._self_envelope(),
                 near_point_mm=near_point_mm,
-                require_registration=self._live_world.require_registration,
                 goal_keep_out=self._goal_keep_out(goal_tcp_mm),
             )
         except CameraWorldUnavailable as exc:

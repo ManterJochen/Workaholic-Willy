@@ -32,7 +32,7 @@ def _dummy_tree(**gripper: Any) -> RobotConfig:
     return RobotConfig.model_validate({
         "vendor": "dummy",
         "gripper": {"vendor": "dummy", **gripper},
-        "grasping": {"default_mode": "easy", "max_attempts": 1},
+        "grasping": {"default_mode": "easy"},
     })
 
 
@@ -93,7 +93,7 @@ class TheConfigPickOpensTheJawsTests(unittest.TestCase):
         calc, perception = _calc_and_perception()
         service = AutonomousGraspService.from_robot_config(
             _dummy_tree(max_width_mm=85.0), calculator=calc, perception=perception,  # type: ignore[arg-type]
-            arm=arm, gripper=gripper,
+            arm=arm, gripper=gripper, max_attempts=1,
         )
 
         service.pick()

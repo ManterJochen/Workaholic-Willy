@@ -1,10 +1,10 @@
 """Grasps on a point cloud, with no robot, no cell and no configuration.
 
 The smallest useful thing this package does. A caller with a segmented cloud and a support height
-wants ranked grasps, and everything needed is pure already: `generate_support_footprint_grasps`
-takes a bare BASE-frame array, takes a fully defaulted frozen jaw, and returns frozen candidates.
-This module is the name for that question; without it the only way in is a `GraspCalculator` built
-with a camera matrix and a config block for a cell that does not exist.
+wants ranked grasps, and everything needed is pure already: `body_grasps`, the part's own body as the
+cell grasps it, takes a bare BASE-frame array and a frozen jaw, and returns frozen candidates. This
+module is the name for that question; without it the only way in is a `GraspCalculator` built with a
+camera matrix and a config block for a cell that does not exist.
 
 A `Scene` that only called the analytic primitive would be a safety defect. A cell whose config
 says `grasping.calculator: deep` would receive analytic geometry, silently, under the learned
@@ -36,21 +36,24 @@ import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 
-from src.robot.grasping.collision import ParallelJawGripperModel, resolve_support_plane
+from src.robot.grasping.collision import ParallelJawGripperModel
+from src.robot.grasping.collision.gripper_model import jaw_envelope
+from src.robot.grasping.collision.support_resolver import SUPPORT_NORMAL, DeclaredSupport
 from src.robot.grasping.generation.scene_obstacles import (
     SceneObstacleRules,
     envelope_verdicts,
     least_part_height_mm,
     why_no_grasp,
 )
-from src.robot.grasping.generation.support_footprint import (
-    DEFAULT_FLOOR_MARGIN_MM,
+from src.robot.grasping.generation.body_grasps import body_grasps
+from src.robot.grasping.generation.hand import (
     DEFAULT_MAX_CANDIDATES,
+    SIDE_APPROACH_SCORE_WEIGHTS,
     CorridorSeen,
     SupportFootprintCandidate,
     SupportFootprintJaw,
-    generate_support_footprint_grasps,
 )
+from src.robot.grasping.generation.support_prism import DEFAULT_FLOOR_MARGIN_MM
 from src.robot.grasping.geometry.closing_axis import (
     CANDIDATES_THE_AXIS_CHOOSES_AMONG,
     ClosingAxis,
@@ -85,11 +88,11 @@ _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM = 25.0
 #: the floor :meth:`Scene.from_robot_config` plans with.
 #:
 #: A real table reads as high as the camera's hand-eye and depth error, and a table point counted as
-#: part widens the footprint the jaw has to span. Five, the figure the shipped
-#: ``safety.planning_world.perceived.plane_clearance_mm`` gives the bench for the same errors, and a
-#: choice rather than a measurement; above the stage's own ``DEFAULT_FLOOR_MARGIN_MM``, which was
-#: measured in a simulator whose calibration is exact. It is not that key: a cell that sinks its slab
-#: below the bench raises the key by the sink (robot.yaml), and read as a floor over the real table a
+#: part widens the footprint the jaw has to span. Five, the figure every cell's camera world gives the
+#: bench for the same errors (``perceived.CAMERA_BENCH_BAND_MM``), and a choice rather than a
+#: measurement; above the stage's own ``DEFAULT_FLOOR_MARGIN_MM``, which was measured in a simulator
+#: whose calibration is exact. It is not that band: a cell that sank its slab below the bench raised the
+#: band by the sink while it was a key, and read as a floor over the real table a
 #: sink of 50 mm left a 40 mm cube with no grasp (review of 2026-09-23). A cell path that builds its
 #: own calculator passes this number too.
 SUPPORT_READ_ERROR_MM = 5.0
@@ -103,18 +106,14 @@ SUPPORT_READ_ERROR_MM = 5.0
 _PART_BOTTOM_POINTS = 20
 
 
-def _has_seen_the_support(target: np.ndarray, normal: Sequence[float]) -> bool:
-    """Whether a target cloud reaches far enough along the support normal to have seen what it stands on."""
+def _has_seen_the_support(target: np.ndarray) -> bool:
+    """Whether a target cloud reaches far enough up its support's normal to have seen what it stands on."""
     if target.ndim != 2 or target.shape[1] != 3 or target.shape[0] == 0:
-        return False
-    unit = np.asarray(normal, dtype=np.float64).reshape(3)
-    length = float(np.linalg.norm(unit))
-    if length < 1e-12:
         return False
     finite = target[np.isfinite(target).all(axis=1)]
     if finite.shape[0] == 0:
         return False
-    along = finite @ (unit / length)
+    along = finite @ np.asarray(SUPPORT_NORMAL, dtype=np.float64)
     return float(along.max() - along.min()) >= _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM
 
 
@@ -262,8 +261,6 @@ class Scene:
     #: How far above the support a target point still counts as the support, millimetres. Unset leaves
     #: the primitive's own floor, ``DEFAULT_FLOOR_MARGIN_MM``.
     floor_margin_mm: "Maybe[float]" = UNSET
-    #: How far every footprint face is pushed outward, millimetres. Unset leaves the primitive's own.
-    inflate_mm: "Maybe[float]" = UNSET
     #: What :attr:`declared_support_height_mm` reads: set by :meth:`from_robot_config`, ``None`` where the caller's
     #: ``support_height_mm`` is the only support stated.
     _declared_support_mm: "float | None" = field(default=None, repr=False)
@@ -276,36 +273,35 @@ class Scene:
     #: :meth:`grasps` takes when asked for none, and the only axis it takes, so the grasp gripped is the grasp judged.
     #: ``UNSET`` for a scene no look around judged, which takes any axis it is asked for.
     _judged_along: "Maybe[ClosingAxis | None]" = field(default=UNSET, repr=False)
-    #: How the cell's hand and camera naturally stand (``robot.natural_closing_axis``), set by :meth:`from_robot_config`:
+    #: How the cell's hand and camera naturally stand (``robot.motion.natural_closing_axis``), set by :meth:`from_robot_config`:
     #: where no closing axis is asked for, :meth:`grasps` turns every grasp the way round nearer it. ``None``: none is.
     _natural: "ClosingAxis | None" = field(default=None, repr=False)
-    #: Side approaches (``robot.grasping.side_approaches``), set by :meth:`from_robot_config`, and who says a tilted
-    #: approach goes through seen space: the frame the part was located in (``Located.scene``). Without a frame no tilt
-    #: past the first that fits is offered (``generate_support_footprint_grasps``).
+    #: Side approaches, on from :meth:`from_robot_config` as in every cell, which rank a lean by the
+    #: room it keeps; and who says what the frame the part was located in saw (``Located.scene``), which the body asks of
+    #: every lean and of every open finger over the part's outline. Without a frame the hand comes straight down
+    #: (``body_grasps``): only a ray of the frame vouches for the way in of a lean.
     _side_approaches: bool = field(default=False, repr=False)
     _corridor_seen: "CorridorSeen | None" = field(default=None, repr=False)
-    #: The rules the scene's obstacles were read by (``Located.scene`` with ``robot.grasping.scene_obstacles``), and what
+    #: The rules the scene's obstacles were read by (``Located.scene``), and what
     #: the guard holds that the open hand keeps its distance from: the support model's solids. ``None`` and ``()`` for a
     #: scene built from a cloud alone, which plans as before.
     _rules: "SceneObstacleRules | None" = field(default=None, repr=False)
     _held: "tuple[Any, ...]" = field(default=(), repr=False)
-    #: The hand's collision envelope as the cell's tree describes it (``grasping.gripper_geometry``), set by
+    #: The hand's collision envelope as its registry file describes it (``gripper_model.jaw_envelope``), set by
     #: :meth:`from_robot_config`: what keeps the guard's distance from :attr:`_held`.
     _hand: Any = field(default=None, repr=False)
     #: How many obstacle points of its own frame the scene read beside the part, and in how many clusters.
     _seen_points: int = field(default=0, repr=False)
     _seen_clusters: int = field(default=0, repr=False)
-    #: Whether SFE builds each closing line's grasps at once (``robot.grasping.batched_builds``), set by
-    #: :meth:`from_robot_config`: the same grasps, to the bit (``generate_support_footprint_grasps``).
-    _batched: bool = field(default=False, repr=False)
 
     @property
     def declared_support_height_mm(self) -> float:
         """The support the cell DECLARES, in BASE millimetres: a lower bound on what the part stands on.
 
         :attr:`support_height_mm` is what the grasps are planned on. :meth:`from_robot_config` resolves it from the
-        declared height (the container floor where ``grasping.support.container.floor_height_mm`` is given, the table
-        ``grasping.support.height_mm`` otherwise) raised to the target's lowest SEEN point, and never lowers it. That
+        declared height (the container floor where ``grasping.support.container.floor_height_mm`` is given, the cell's
+        bench otherwise, ``support_resolver.bench_height_mm``) raised to the target's lowest SEEN point, and never
+        lowers it. That
         point is the part's base only where the camera saw down to it: an occluder in front, a mask that stops short,
         or a tilted view that misses the foot of the near face leave it above the base by as much as they hid. So the
         planned support is an UPPER bound on the part's base, and this is the LOWER one: no part stands below the
@@ -370,7 +366,6 @@ class Scene:
         rigid_obstacle_points_base_mm: "np.ndarray | Sequence[Sequence[float]] | None" = None,
         jaw: SupportFootprintJaw | None = None,
         floor_margin_mm: "Maybe[float]" = UNSET,
-        inflate_mm: "Maybe[float]" = UNSET,
     ) -> "Scene":
         """A cloud and a support height. No robot, no cell, no configuration.
 
@@ -390,7 +385,6 @@ class Scene:
                                                            dtype=float)),
             jaw=jaw,
             floor_margin_mm=(float(floor_margin_mm) if chosen(floor_margin_mm) else UNSET),
-            inflate_mm=(float(inflate_mm) if chosen(inflate_mm) else UNSET),
         )
 
     @classmethod
@@ -402,45 +396,35 @@ class Scene:
         obstacle_points_base_mm: "np.ndarray | Sequence[Sequence[float]] | None" = None,
         rigid_obstacle_points_base_mm: "np.ndarray | Sequence[Sequence[float]] | None" = None,
     ) -> "Scene":
-        """The same scene, with the support, the jaw, the floor and the inflation taken from a cell's
-        configuration, each the way the cell's pick path takes it.
+        """The same scene, with the support, the jaw and the floor taken from a cell's configuration, each
+        the way the cell's pick path takes it.
 
         The one-builder rule: this resolves config into arguments and calls :meth:`from_cloud`. It
         is not a second construction path, so the two doors cannot drift.
 
         * The jaw is :meth:`SupportFootprintJaw.from_robot_config`: the fingers of
-          ``grasping.gripper_geometry``, the stroke of ``robot.gripper`` and the clearance of
-          ``grasping.support.min_clearance_mm``. Until 2026-09-23 only the stroke was read here, and a
-          Hand-E cell planned 2F-85 fingers; see that method.
-        * The support is ``resolve_support_plane`` over the declared height (or the container floor),
-          raised to the target's own lowest point when the cloud reaches 25 mm along the support
-          normal and ``refine_from_target`` is on. That is the pick loop's rule, so a part standing on
-          another part is planned on what it stands on. It never lowers the declared height, which the scene
-          keeps as :attr:`declared_support_height_mm`, the lower bound a set-down measures a part's hang from.
+          the hand's registry file, the stroke of ``robot.gripper`` and the guard's 1 mm over the
+          support (``support_resolver.TABLE_CLEARANCE_MM``). Until 2026-09-23 only the stroke was read here,
+          and a Hand-E cell planned 2F-85 fingers; see that method.
+        * The support is the cell's (``DeclaredSupport.of``: its bench, or the container floor), raised to
+          the target's own lowest point when the cloud reaches 25 mm up. That is the pick loop's rule, so a
+          part standing on another part is planned on what it stands on. It never lowers the declared height,
+          which the scene keeps as :attr:`declared_support_height_mm`, the lower bound a set-down measures a
+          part's hang from.
         * The floor is :data:`SUPPORT_READ_ERROR_MM` over the support, so a table that reads a few
           millimetres high through hand-eye or depth error is the table here too, and not the start of
-          the part. Not ``safety.planning_world.perceived.plane_clearance_mm``: that is measured from
-          the planner's slab, which a cell may sink below the table, and raised by the sink.
-        * The inflation is ``grasping.geometry.inflate_mm``, which the cell hands its calculator.
-        * The natural orientation is ``robot.natural_closing_axis``: where no closing axis is asked for, :meth:`grasps`
+          the part. Not the camera world's bench band (``perceived.CAMERA_BENCH_BAND_MM``): that is
+          measured from the planner's slab, not from the table.
+        * The natural orientation is ``robot.motion.natural_closing_axis``: where no closing axis is asked for, :meth:`grasps`
           turns every grasp the way round nearer it, as the cell's pick loop turns its own.
 
         It does not yet select the generator. `grasping.calculator: deep` is honoured by
         `build_calculator`, which needs a camera matrix and an artifact and belongs to a cell rather
         than to a bare cloud. Until that is wired here, this door resolves geometry from config and
         the generator stays geometric, which `SceneGrasps.generator` states on every result.
-
-        A hand that is not a parallel jaw is refused with ``ValueError``.
         """
-        support = robot_config.grasping.support
         target = np.asarray(target_points_base_mm, dtype=float)
-        resolution = resolve_support_plane(
-            declared_height_mm=float(support.height_mm),
-            container_floor_mm=support.container.floor_height_mm,
-            normal=support.normal,
-            target_clouds_base_mm=([target] if _has_seen_the_support(target, support.normal) else None),
-            refine_from_target=bool(support.refine_from_target),
-        )
+        resolution = DeclaredSupport.of(robot_config).resolve([target] if _has_seen_the_support(target) else None)
         scene = cls.from_cloud(
             target,
             support_height_mm=resolution.height_mm,
@@ -448,31 +432,28 @@ class Scene:
             rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm,
             jaw=SupportFootprintJaw.from_robot_config(robot_config),
             floor_margin_mm=SUPPORT_READ_ERROR_MM,
-            inflate_mm=float(robot_config.grasping.geometry.inflate_mm),
         )
         return replace(scene, _declared_support_mm=float(resolution.declared_mm),
                        _natural=natural_closing_axis_of(robot_config),
-                       _side_approaches=bool(getattr(robot_config.grasping, "side_approaches", False)),
-                       _hand=_hand_of(robot_config),
-                       _batched=bool(getattr(robot_config.grasping, "batched_builds", False)))
+                       _side_approaches=True,
+                       _hand=jaw_envelope(robot_config))
 
     def grasps(
         self,
         *,
         max_candidates: "Maybe[int]" = UNSET,
-        palm_aware: "Maybe[bool]" = UNSET,
         closing_axis: "Maybe[ClosingAxisLike]" = UNSET,
     ) -> SceneGrasps:
-        """Ranked grasps in BASE millimetres, best first.
+        """Ranked grasps in BASE millimetres, best first: the part's own body, as the cell grasps it (``body_grasps``),
+        planned for a hand that opens fully.
 
         An empty result is an answer, not a failure: the primitive returns nothing when the cloud is
-        too sparse to reconstruct or admits no legal grasp, and refusing beats proposing a grasp that
-        goes under the support surface.
+        too sparse or admits no legal grasp, and refusing beats proposing a grasp that goes under the
+        support surface.
 
-        Neither knob is defaulted here. `generate_support_footprint_grasps` declares
-        ``max_candidates=12`` and ``palm_aware=False``; repeating those numbers in this signature
-        would be a second declaration of one fact, and the drift would be invisible because both
-        sides are valid values of the right type. An omitted knob is not forwarded at all.
+        ``max_candidates`` unset is :data:`~src.robot.grasping.generation.hand.DEFAULT_MAX_CANDIDATES` (12). The palm is
+        kept over the support at every lean, as the body does. Since 2026-10-16 these are the body's grasps, the ones
+        the cell grips; SFE's prism, which planned them before, left with its search (the owner's cleanup).
 
         ``closing_axis`` takes only the grasps that close along the axis named (the owner's "choose, don't twist",
         2026-09-30): within ``CLOSING_AXIS_TOLERANCE_DEG`` (30 degrees) of it either way round, each turned half a turn
@@ -484,7 +465,7 @@ class Scene:
         What it left out is said in :attr:`SceneGrasps.withheld`, and a result it left empty says so.
 
         Asked for no axis, a scene from :meth:`from_robot_config` whose cell names how its hand and camera naturally
-        stand (``robot.natural_closing_axis``) turns every grasp, of its two equivalent wrist turns (half a turn about its
+        stand (``robot.motion.natural_closing_axis``) turns every grasp, of its two equivalent wrist turns (half a turn about its
         approach: the same two contact faces, the jaws swapped), to the one whose closing axis lies nearer that
         direction at its place. None is left out or tilted.
 
@@ -493,32 +474,21 @@ class Scene:
         any axis included, since its grasp is one the looks did not judge: its early stop, its jaw faces.
         """
         wanted = self._closing_axis_asked(closing_axis)
-        chosen_options: dict[str, Any] = {}
-        if chosen(max_candidates):
-            chosen_options["max_candidates"] = max_candidates
-        if chosen(palm_aware):
-            chosen_options["palm_aware"] = palm_aware
-        if chosen(self.floor_margin_mm):
-            chosen_options["floor_margin_mm"] = self.floor_margin_mm
-        if chosen(self.inflate_mm):
-            chosen_options["inflate_mm"] = self.inflate_mm
-        cap = int(chosen_options.get("max_candidates", DEFAULT_MAX_CANDIDATES))
-        if wanted is not None:
-            chosen_options["max_candidates"] = max(CANDIDATES_THE_AXIS_CHOOSES_AMONG, cap)
-        if self._side_approaches:
-            chosen_options["side_approaches"] = True
-            chosen_options["corridor_seen"] = self._corridor_seen
-        if self._batched:
-            chosen_options["batched"] = True
+        cap = int(max_candidates) if chosen(max_candidates) else DEFAULT_MAX_CANDIDATES
         refused: dict[str, int] = {}
-        candidates = generate_support_footprint_grasps(
+        # As the stage takes them: a lean, and an open finger over the part's outline, only where the frame vouches for
+        # the way in; with side approaches a lean ranked by the room it keeps (``SIDE_APPROACH_SCORE_WEIGHTS``).
+        candidates = body_grasps(
             self.target_points_base_mm,
             support_height_mm=self.support_height_mm,
-            jaw=self.jaw,
+            jaw=self.jaw if self.jaw is not None else SupportFootprintJaw.from_model(),
             obstacle_points_base_mm=self.obstacle_points_base_mm,
             rigid_obstacle_points_base_mm=self.rigid_obstacle_points_base_mm,
+            corridor_seen=self._corridor_seen,
+            floor_margin_mm=float(self.floor_margin_mm) if chosen(self.floor_margin_mm) else DEFAULT_FLOOR_MARGIN_MM,
+            max_candidates=max(CANDIDATES_THE_AXIS_CHOOSES_AMONG, cap) if wanted is not None else cap,
             refusals=refused,
-            **chosen_options,
+            score_weights=SIDE_APPROACH_SCORE_WEIGHTS if self._side_approaches else None,
         )
         offered = len(candidates)
         by_support, said = 0, ""
@@ -566,7 +536,7 @@ class Scene:
         if not kept:
             telemetry: dict[str, Any] = {
                 "geometry_stage": "support_footprint", "support_footprint_kept": offered,
-                "support_footprint_refused": refused,
+                "body_refused": refused,
                 "support_footprint_points": int(np.asarray(self.target_points_base_mm).reshape(-1, 3).shape[0]),
                 "rejected_support": by_support,
                 "rejected_declared": sum(1 for v in verdicts if v.refused == "declared"),
@@ -604,20 +574,6 @@ class Scene:
                     "did not judge (its early stop, its jaw faces): name that axis to look_around(..., closing_axis="
                     "...), or ask the scene for none and take the grasp the looks judged")
         return asked
-
-
-def _hand_of(robot_config: Any) -> "ParallelJawGripperModel | None":
-    """The cell's jaw as a collision envelope, field for field as ``SupportFootprintJaw.from_robot_config`` builds it
-    (``grasping.gripper_geometry.parallel_jaw`` and its ``outer_margin_mm``); ``None`` for a hand that is no jaw."""
-    geometry = robot_config.grasping.gripper_geometry
-    if str(geometry.kind) != "parallel_jaw":
-        return None
-    j = geometry.parallel_jaw
-    return ParallelJawGripperModel(
-        finger_length_mm=j.finger_length_mm, finger_thickness_mm=j.finger_thickness_mm,
-        finger_width_mm=j.finger_width_mm, finger_pad_overlap_mm=j.finger_pad_overlap_mm,
-        fingertip_depth_mm=j.fingertip_depth_mm, pad_length_mm=j.pad_length_mm, pad_ahead_mm=j.pad_ahead_mm,
-        palm_depth_mm=j.palm_depth_mm, palm_width_mm=j.palm_width_mm, outer_margin_mm=geometry.outer_margin_mm)
 
 
 def _closing_toward(

@@ -93,9 +93,10 @@ class ATaskOnTheRehearsalCellTests(ConsoleCase):
 
     def test_the_dummy_s_pose_drop_is_planned_and_said(self) -> None:
         """Where the drop stands is pinned on the scripted cell (``test_the_drop_stands_the_hang_above_the_taught_pose``):
-        the dummy's fk answers where the arm stands, not where a pose puts the tool. The rehearsal cell declares no
-        ``payload.length_mm``, so its part hangs from the tool, which goes to the taught pose itself (the owner,
-        2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen")."""
+        the dummy's fk answers where the arm stands, not where a pose puts the tool. The rehearsal cell's dummy arm
+        carries no robot tree, so the task reads no ``robot.motion.place.part_hang_mm`` and its part hangs from the tool, which
+        goes to the taught pose itself (the owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am
+        TCP hängen")."""
         self.build_dummy()
         run = self.task(object="")
         self.finished(run["id"])
@@ -153,7 +154,7 @@ class AScriptedTaskTests(ConsoleCase):
     """The owner's cell in miniature: the task tests' arm double, the real toggle hand on tool DO0, the scripted service."""
 
     def test_the_drop_stands_the_hang_above_the_taught_pose(self) -> None:
-        """Build plan item 7: where the cell declares how far its parts hang (``payload.length_mm``), the taught pose
+        """Build plan item 7: where the cell declares how far its parts hang (``robot.motion.place.part_hang_mm``), the taught pose
         says where the part's bottom is let go, so the tool goes to it raised by the part's reach past the fingertips,
         here its whole hang: the scripted cell names no hand (the scripted arm's fk puts ``drop_left`` at 300, -400,
         150 mm)."""
@@ -345,15 +346,11 @@ class ATaskIsRefusedBeforeAnythingMovesTests(ConsoleCase):
                          409, "jaws_question_pending")
         self.assertNothingStarted(cell)
 
-    def test_a_part_still_held_by_the_count_or_by_the_planner(self) -> None:
+    def test_a_part_still_held_by_the_count(self) -> None:
         cell = self.scripted()
         cell.jaws.set_closed(True)
         del cell.log[:]
         body = {"object": "green cube", "place": {"kind": "pose", "pose": None}}
-        self.refused(self.client.post("/v1/task", json=body), 409, "part_still_held")
-        cell.jaws.set_closed(False)
-        cell.arm.attach_payload(40.0)
-        del cell.log[:]
         self.refused(self.client.post("/v1/task", json=body), 409, "part_still_held")
         self.assertNothingStarted(cell)
 
@@ -371,19 +368,6 @@ class ATaskIsRefusedBeforeAnythingMovesTests(ConsoleCase):
         self.refused(self.client.post("/v1/task", json={"object": "green cube",
                                                         "place": {"kind": "pose", "pose": None}}),
                      409, "route_refused")
-        self.assertNothingStarted(cell)
-
-    def test_a_carried_part_nobody_models(self) -> None:
-        cell = self.scripted()
-        cell.arm.declined = "safety.planning_world.payload.length_mm is not declared"
-        refused = self.refused(self.client.post("/v1/task", json={"object": "green cube",
-                                                                  "place": {"kind": "pose", "pose": None}}),
-                               409, "carried_part_not_modelled")
-        self.assertIn("length_mm", refused["message"])
-        # A camera place alike.
-        self.refused(self.client.post("/v1/task", json={"object": "green cube",
-                                                        "place": {"kind": "camera", "phrase": "blue bin"}}),
-                     409, "carried_part_not_modelled")
         self.assertNothingStarted(cell)
 
     def test_a_camera_place_on_the_rehearsal_cell(self) -> None:
@@ -427,16 +411,15 @@ class ATaskIsRefusedBeforeAnythingMovesTests(ConsoleCase):
         run = self.task(object="")
         self.finished(run["id"])
 
-    def test_phrases_the_detector_would_ground_wrong(self) -> None:
-        cell = self.scripted()
-        self.refused(self.client.post("/v1/task", json={"object": "den grünen Würfel",
-                                                        "place": {"kind": "pose", "pose": None}}),
-                     422, "prompt_not_routable")
-        with patch("src.robot.execution.place_target.locators_for_service", return_value=[object()]):
-            self.refused(self.client.post("/v1/task", json={"object": "green cube",
-                                                            "place": {"kind": "camera", "phrase": "die blaue Kiste"}}),
-                         422, "target_not_routable")
-        self.assertNothingStarted(cell)
+    def test_no_phrase_is_refused_for_its_words(self) -> None:
+        """The route guard that refused a phrase GroundingDINO would ground wrong (``prompt_not_routable``,
+        ``target_not_routable``) left with GroundingDINO on 2026-10-17: the VLM grounds every phrase, German too."""
+        from api.codes import RefusalCode
+
+        self.scripted()
+        run = self.task(object="den grünen Würfel")
+        self.finished(run["id"])
+        self.assertFalse({"prompt_not_routable", "target_not_routable"} & {code.value for code in RefusalCode})
 
     def test_a_push_distance_the_cell_refuses(self) -> None:
         cell = self.scripted()

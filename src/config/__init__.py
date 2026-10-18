@@ -23,6 +23,7 @@ _LOADER_EXPORTS = {
     "load_robot_config",
     "load_robot_section",
     "load_speech_section",
+    "load_weights_root",
     "reload_config",
 }
 
@@ -63,5 +64,6 @@ __all__ = [
     "load_robot_section",
     "load_speech_section",
     "load_tree",
+    "load_weights_root",
     "reload_config",
 ]

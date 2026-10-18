@@ -1,9 +1,8 @@
 /**
  * The Understood card (OD 7, 8, 22; build plan 4.2): what was understood, editable, and Start.
  *
- * **Greifen**: the English phrase the detector is given, the operator's own words under it, how the detector would
- * route it, and "bitte prüfen" where the reader could not check it against the sentence. An empty phrase asks what to
- * pick; on a real cell "alles, was die Kamera sieht, auch Kistenwände" only with the operator's tick (Q7 A+).
+ * **Greifen**: the English phrase the detector is given, the operator's own words under it, and "bitte prüfen" where
+ * the reader could not check it against the sentence. An empty phrase asks what to pick; on a real cell "alles, was die Kamera sieht, auch Kistenwände" only with the operator's tick (Q7 A+).
  * **Welches**: the one part the sentence singled out ("the gray cube on top of the other one"), which the camera then
  * looks for alone; **Woher**: where the parts lie ("on the black mat"). Both English, both editable, both empty where
  * the sentence said nothing of it (2026-10-08).
@@ -30,7 +29,7 @@
 
 import { useId, useRef } from 'react'
 
-import type { ApiError, CellFactsOut, PosesOut, RoutePreviewOut } from '../api/client'
+import type { ApiError, CellFactsOut, PosesOut } from '../api/client'
 import { MAX_FIELD_CHARS, MAX_MORE_RULES, showsCount } from '../api/limits'
 import { ErrorBanner } from '../components/ui'
 import { useT } from '../i18n'
@@ -164,7 +163,6 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
               onChange={(e) => update('object', { object: e.target.value, objectVerified: true })}
             />
             <Count length={draft.object.length} />
-            <RouteBadge route={draft.objectRoute} />
             {!manual && !draft.objectVerified && draft.object.trim() !== '' && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
           </div>
           {draft.objectSaid && <small>{t('ck.pick.said', { said: draft.objectSaid })}</small>}
@@ -244,7 +242,6 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
                   onChange={(e) => update('place', { place: { kind: 'camera', phrase: e.target.value, said: camera.said }, placeVerified: true })}
                 />
                 <Count length={camera.phrase.length} />
-                <RouteBadge route={draft.placeRoute} />
                 {!manual && !draft.placeVerified && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
               </div>
               {camera.said && <small>{t('ck.pick.said', { said: camera.said })}</small>}
@@ -447,7 +444,7 @@ function RuleRow({
   const camera = rule.place.kind === 'camera' ? rule.place : null
   const setPlace = (value: string) => {
     const place = choiceOf(value, camera)
-    if (place) change({ place, placeRoute: null })
+    if (place) change({ place })
   }
   const said =
     rule.objectSaid && camera?.said
@@ -467,10 +464,9 @@ function RuleRow({
             value={rule.object}
             maxLength={MAX_FIELD_CHARS}
             placeholder={t('ck.pick.placeholder')}
-            onChange={(e) => change({ object: e.target.value, objectVerified: true, objectRoute: null })}
+            onChange={(e) => change({ object: e.target.value, objectVerified: true })}
           />
           <Count length={rule.object.length} />
-          <RouteBadge route={rule.objectRoute} />
           {!manual && !rule.objectVerified && rule.object.trim() !== '' && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
         </div>
         <div className="ck-field-row">
@@ -489,10 +485,9 @@ function RuleRow({
                 value={camera.phrase}
                 maxLength={MAX_FIELD_CHARS}
                 placeholder={t('ck.place.phrase')}
-                onChange={(e) => change({ place: { kind: 'camera', phrase: e.target.value, said: camera.said }, placeVerified: true, placeRoute: null })}
+                onChange={(e) => change({ place: { kind: 'camera', phrase: e.target.value, said: camera.said }, placeVerified: true })}
               />
               <Count length={camera.phrase.length} />
-              <RouteBadge route={rule.placeRoute} />
               {!manual && !rule.placeVerified && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
             </>
           )}
@@ -511,18 +506,4 @@ function Count({ length }: { length: number }) {
   const t = useT(COCKPIT)
   if (!showsCount(length, MAX_FIELD_CHARS)) return null
   return <span className="ck-count">{t('ck.field.count', { n: length, max: MAX_FIELD_CHARS })}</span>
-}
-
-/** How the detector would route a phrase: by the phrase grounder, or by the VLM; and whether it can run here. */
-function RouteBadge({ route }: { route: RoutePreviewOut | null }) {
-  const t = useT(COCKPIT)
-  if (!route) return null
-  const vlm = route.route === 'vlm'
-  const blocked = !route.runnable
-  return (
-    <span className={`ck-tag ${blocked ? 'warn' : 'acc'}`} title={route.blocked_reason || route.description}>
-      {t(vlm ? 'ck.route.vlm' : 'ck.route.simple')}
-      {blocked && <span className="ck-tag-note"> · {t(vlm ? 'ck.route.needsVlm' : 'ck.route.blocked')}</span>}
-    </span>
-  )
 }

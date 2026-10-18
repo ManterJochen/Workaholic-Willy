@@ -3,30 +3,33 @@
 Three choices, each a cell's own, every default what a task did before the block existed:
 
 * **Into a box** (``release_in_a_box``). ``over_the_rim``: the jaws open over the rim, the part's bottom the task's rim
-  air above it. ``below_the_rim``: they open ``below_the_rim_mm`` under it ("bei so kleinen Kisten ... 1-5 cm unter dem
+  air above it. ``below_the_rim``: they open 30 mm under it ("bei so kleinen Kisten ... 1-5 cm unter dem
   Kistenrand"), never lower than 10 mm over what the camera reads inside the box (its floor, or the parts already in
   it); where the opening is too narrow for the open hand and the part, or the camera could not read the inside, the
   part is let go over the rim, as before.
 * **On a flat place** (``side_by_side``): a taught pose, or a target the camera found with no inside. Off, every part is
   let go at the one spot. On, the parts lie side by side ("sonst tuermen wir die Bauteile"): a spot the camera reads
   free first, else the next spot of a grid about the taught pose (``grid``), each part's footprint (the open hand's
-  where that is wider) and ``spacing_margin_mm`` apart.
+  where that is wider) and 20 mm apart.
 * **The carry** (``carry``). ``via_the_look``: the part is carried to the look the bin was found from, and the bin is
   looked at there. ``over_the_rim``: where one of the pick's looks was the bin's, the bin is checked on that look's
-  frame and the part goes straight over to it, its bottom kept ``rim_floor_margin_mm`` and the rim air over the rim
+  frame and the part goes straight over to it, its bottom kept 15 mm and the rim air over the rim
   and over everything the pick's looks saw on the way; a carry that cannot be so goes via the look.
 
-``rim_air_mm`` is how far over a box's rim the jaws open (the owner, 2026-10-14: "genau auf Höhe der Kante" is 0, "20 mm
-über der Kante" 20): the part's bottom stands that far over it where the cell declares how far its parts hang
-(``safety.planning_world.payload.length_mm``), the hang measured part by part from what the pick's looks read under
-the part; the tool where it declares none. A task's own air (``PlaceAt.air_mm``) goes before it.
+The jaws open 20 mm over a box's rim (the owner, 2026-10-14: "genau auf Höhe der Kante" is 0, "20 mm über der
+Kante" 20): the part's bottom stands that far over it where the cell declares how far its parts hang
+(``part_hang_mm``), the hang measured part by part from what the pick's looks read under the part; the tool where it
+declares none. A task's own air (``PlaceAt.air_mm``) goes before it.
 
-``relocate`` says what a task does with a bin the check before a drop lost (not seen, moved too far, another size where
-it stood), on as shipped (the owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu
-errechnen"): it looks for the bin again from its looks, the part in the jaws, keeps a bin of the size the survey found
-and the colour it followed, standing in no other place, in place of the old one, and plans the drop anew over it, once
-per part; found nowhere, the part goes back where it was gripped and the task asks. Off, every lost bin puts the part
-back and asks, as before.
+A bin the check before a drop lost (not seen, moved too far, another size where it stood) is looked for again (the
+owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu errechnen"): from its looks,
+the part in the jaws, a bin of the size the survey found and the colour it followed, standing in no other place,
+takes the old one's place, and the drop is planned anew over it, once per part; found nowhere, the part goes back where
+it was gripped and the task asks.
+
+The numbers are the owner's cell's since 2026-10-17, fixed in ``src/robot/execution/place_target.py``: 30 mm under the
+rim, 10 mm inside a box's opening, 20 mm of rim air, 20 mm between parts side by side, 15 mm over the rim on a carry;
+and a lost bin is always looked for again. Their keys and ``relocate`` were refused at load from then on.
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ class PlaceGridConfig(StrictModel):
     #: How many spots along the taught tool's +Y.
     columns: int = Field(default=3, ge=1, le=20)
     #: How far apart two spots stand, mm. ``None``: each part's own footprint, the open hand's where that is wider, and
-    #: ``robot.place.spacing_margin_mm``, so a larger part takes a coarser grid.
+    #: the 20 mm a place keeps between parts, so a larger part takes a coarser grid.
     spacing_mm: float | None = Field(default=None, gt=0.0, le=1000.0)
 
 
@@ -58,25 +61,18 @@ class RobotPlaceConfig(StrictModel):
 
     #: Where the jaws open on a box: ``over_the_rim`` (the task's rim air over it, as before) or ``below_the_rim``.
     release_in_a_box: Literal["over_the_rim", "below_the_rim"] = "over_the_rim"
-    #: How far under the rim the part's bottom stands when the jaws open below it, mm: the owner's 10 to 50 mm.
-    below_the_rim_mm: float = Field(default=30.0, ge=10.0, le=50.0)
-    #: How far inside a box's opening the part and the open hand keep, on every side, before the part goes below the
-    #: rim, mm. The guard judges the hand on the line in; the part is not modelled, so this keeps it off the walls.
-    opening_margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
-    #: How far over a box's rim the jaws open, mm: under the part's bottom where the cell declares
-    #: ``payload.length_mm``, under the tool where it declares none.
-    rim_air_mm: float = Field(default=20.0, ge=0.0, le=50.0)
     #: Whether the parts on a flat place lie side by side rather than at the one spot.
     side_by_side: bool = False
-    #: How far apart two parts lie side by side beyond their footprints, mm.
-    spacing_margin_mm: float = Field(default=20.0, ge=0.0, le=200.0)
     #: The grid about a taught pose where no camera reads its spots.
     grid: PlaceGridConfig = Field(default_factory=PlaceGridConfig)
     #: How a part is carried to a box: ``via_the_look`` (as before) or ``over_the_rim``.
     carry: Literal["via_the_look", "over_the_rim"] = "via_the_look"
-    #: How far over the rim, and over what the pick's looks saw on the way, beyond the rim air, the part's bottom stays
-    #: on a carry over the rim, mm.
-    rim_floor_margin_mm: float = Field(default=15.0, ge=0.0, le=100.0)
-    #: Whether a bin the check before a drop lost is looked for again and the drop planned anew over it (the owner,
-    #: 2026-10-09), or the part goes back where it was gripped and the task asks (off, as before).
-    relocate: bool = True
+    #: How far the longest part this cell carries hangs past the fingertips along the approach, mm: a declared worst
+    #: case rather than a measurement, since the grasp knows the part at the grasp line and nothing about the rest of it.
+    #: A place sets the part's bottom down where the taught fingertips stood, raised by this, and keeps it over a box's
+    #: rim (by the rim air); the pick's looks measure the hang part by part where they read under the part. ``None``:
+    #: the part hangs from the TCP (the owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP
+    #: hängen"), the default; the owner's cell sets 1. It was ``robot.safety.planning_world.payload.length_mm`` until
+    #: 2026-10-17, when the carried part's spheres left the planner (no cell modelled them: a closed hand is judged as an
+    #: empty one), and a person sets it in the console as before.
+    part_hang_mm: float | None = Field(default=None, gt=0.0, le=2000.0)

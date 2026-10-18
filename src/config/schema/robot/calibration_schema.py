@@ -37,8 +37,8 @@ class RobotCalibrationConfig(StrictModel):
       review. No such gate exists anywhere: ``save_extrinsics`` writes whatever it is given,
       judging the RMSE is the operator's job, and :data:`quality_bands_mm` is what labels it.
     * ``speed_scale``, an arm-speed scale for the duration of the routine. There is no speed
-      governor; ``robot.motion_limits`` is what the driver layer enforces, and the routine takes
-      a ``motion_limits=`` argument.
+      governor; ``robot.motion.max_velocity`` and ``max_acceleration`` are what the driver layer enforces, and the
+      routine takes a ``motion_limits=`` argument.
 
     ``quality_bands_mm`` is the opposite case: both calibration runners (``run_eth_calibrate.py``,
     ``run_eih_calibrate.py``) pass it straight into :func:`src.calibration.quality.classify_rmse`.

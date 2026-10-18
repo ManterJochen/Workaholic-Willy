@@ -135,10 +135,10 @@ class TheSurfaceStillResolvesTests(unittest.TestCase):
     def test_the_guard_can_fail(self) -> None:
         """⭐ THE SELF-FAILING CONTROL. Both halves of the check must be able to reject."""
         self.assertIsNone(_module_file("src.robot.this_module_does_not_exist"))
-        real = _module_file("src.robot.grasping.rl.train_ranking")
+        real = _module_file("src.robot.grasping.types.grasp_point")
         assert real is not None
         self.assertNotIn("this_name_does_not_exist", _defined_names(real))
-        self.assertIn("_group_key", _defined_names(real))
+        self.assertIn("GraspPoint", _defined_names(real))
 
 
 class PrivateCrossingsAreWrittenDownTests(unittest.TestCase):
@@ -147,20 +147,13 @@ class PrivateCrossingsAreWrittenDownTests(unittest.TestCase):
     A refactor renaming any of these is doing the correct thing by every convention this repository
     states, and would break a tool it cannot see. The list is the contradiction, in writing.
 
-    ⚠ NOTE THE TWO PRIVATE MODULES. `loop/_shadow_aggregator.py` and `safety/_ur_kinematics.py` are
-    themselves underscore-prefixed, so the whole file reads as internal while another package
-    depends on it.
+    The six crossings measured on 2026-09-04, `loop/_shadow_aggregator.py` and the RL ranker trainer, left on
+    2026-10-16 with the RL tier (the owner's cleanup), so none is on record: a new one is written here on
+    purpose, or the name it crosses for becomes public.
     """
 
-    #: MEASURED 2026-09-04. Change this list only together with the import it describes.
-    EXPECTED = {
-        ("src.robot.grasping.loop._shadow_aggregator", "_candidate_geometry"),
-        ("src.robot.grasping.rl.train_ranking", "_group_key"),
-        ("src.robot.grasping.rl.train_ranking", "_is_success"),
-        ("src.robot.grasping.rl.train_ranking", "_pairwise_accuracy"),
-        ("src.robot.grasping.rl.train_ranking", "_record_features"),
-        ("src.robot.grasping.rl.train_ranking", "_train_pairwise_newton_irls"),
-    }
+    #: Change this list only together with the import it describes.
+    EXPECTED: set[tuple[str, str]] = set()
 
     def test_the_private_crossings_are_exactly_the_ones_on_record(self) -> None:
         found = {(m, n) for _, m, n, _ in _edges() if n.startswith("_")}

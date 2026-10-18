@@ -1,7 +1,7 @@
 """Parts set down on a flat place lie side by side, never on top of each other (the owner, 2026-10-08 night).
 
-"Sonst tuermen wir die Bauteile": with ``robot.place.side_by_side`` on, a place that is no box (a taught pose, or a
-target the camera found with no inside) lays each part at a spot of its own. The spots are a grid (``robot.place.grid``:
+"Sonst tuermen wir die Bauteile": with ``robot.motion.place.side_by_side`` on, a place that is no box (a taught pose, or a
+target the camera found with no inside) lays each part at a spot of its own. The spots are a grid (``robot.motion.place.grid``:
 rows x columns about the taught pose along its heading, or across a target's top about its middle), each part's reach
 (its cloud's, or the open hand's where that is more) and ``spacing_margin_mm`` apart, the nearest the middle first. The
 camera reads the spots first (the pick's own looks for a taught pose, the check before the drop for a target): one it

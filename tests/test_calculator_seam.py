@@ -153,8 +153,7 @@ class TheProductionSitesGoThroughTheFactoryTests(unittest.TestCase):
                      "src/willy_sim/run_attribute_pick.py",
                      "src/willy_sim/run_eih_pick.py",
                      "src/willy_sim/run_multiview_pick.py",
-                     "src/willy_sim/run_dense_pick.py",
-                     "datagen/rl/occupancy.py"):
+                     "src/willy_sim/run_dense_pick.py"):
                 with self.subTest(module=name):
                     self.assertIn("build_calculator", _calls(Path(name)))
 
@@ -193,7 +192,7 @@ class TheSelectorReachesTheCellTests(unittest.TestCase):
     def test_geometric_builds_the_analytic_generator(self) -> None:
         from src.robot.execution.autonomous_grasp.cells import build_rehearsal_components
 
-        calculator, _perception, _resolver, _cams, _lenses = build_rehearsal_components(
+        calculator, _perception, _resolver, _cams = build_rehearsal_components(
             self._cfg("geometric"))
         self.assertEqual(type(calculator).__name__, "GraspCalculator")
 

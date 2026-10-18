@@ -124,11 +124,11 @@ class _URRig:
         self.connection: Any = None
         self._sent: list[list[float]] = []
         self._speeds: list[tuple[Any, Any]] = []
-        self._rtde: Any = None
+        self._sim: Any = None
 
     def build(self, *, trajectory: Any = True, joints: Any = None, connected: bool = True, steady: bool = True,
               fk_mm: Any = None, ik: Any = None, model: Any = None) -> Any:
-        self._sent, self._speeds, self._rtde = [], [], None
+        self._sent, self._speeds, self._sim = [], [], None
         connection = MagicMock()
         connection.is_connected = connected
         connection.get_joint_positions.return_value = list(joints if joints is not None else _LINE[0])
@@ -210,8 +210,8 @@ class _URRig:
         return ("raise", k, error)
 
     def sent(self) -> list[list[float]]:
-        if self._rtde is not None:
-            return [call[2][0] for call in self._rtde.named("moveJ")]
+        if self._sim is not None:
+            return [call[3][0] for call in self._sim.named("moveJ")]
         return list(self._sent)
 
     def speeds(self) -> list[tuple[Any, Any]]:
@@ -224,17 +224,18 @@ class _URRig:
         return [tuple(c.args) for c in self.connection.set_payload.call_args_list]
 
     def latched(self) -> Any:
-        """``URTransport`` over a real connection on the recording ur_rtde double, which keeps the latch."""
+        """``URTransport`` over a real connection on the simulated controller, which keeps the latch and runs the
+        watched move every UR sends to its end."""
         from src.robot.drivers.ur.connection import URConnection
-        from tests._halt_fakes import RecordingRtde
+        from tests._halt_fakes import SimulatedUr
 
-        self._rtde = RecordingRtde()
-        return URTransport(self._rtde.attach(URConnection(ip="127.0.0.1")), MagicMock())
+        self._sim = SimulatedUr()
+        return URTransport(self._sim.attach(URConnection(ip="127.0.0.1")), MagicMock())
 
     def written(self) -> list[tuple[int, bool]]:
-        """Every digital output write that reached the recording ur_rtde double, by pin."""
-        return [(call[2][0], call[2][1]) for call in self._rtde.calls
-                if call[0] == "io" and call[1].endswith("DigitalOut")]
+        """Every digital output write that reached the simulated controller, by pin."""
+        return [(call[3][0], call[3][1]) for call in self._sim.calls
+                if call[1] == "io" and call[2].endswith("DigitalOut")]
 
 
 class _TransportContract:

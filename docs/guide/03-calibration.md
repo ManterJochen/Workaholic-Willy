@@ -94,6 +94,18 @@ T_cam_to_base(t)  =  T_cam_to_tool  o  T_tool_to_base(t)
 Half of an eye-in-hand camera-to-base transform does not exist until the arm is somewhere, so there
 is nothing to serialize.
 
+**A stereo pair is calibrated twice.** A webcam pair or a side by side stereo device gives depth only
+through its own stereo calibration: both lenses, where the right camera stands from the left, and the
+rectification that puts a point on one row of both images, solved from pairs of a ChArUco board
+(`StereoCalibration`, [`examples/real_robot/19`](../../examples/real_robot/19_calibrate_a_stereo_pair.py)).
+That one says nothing of the robot. Then the pair is calibrated against the robot exactly as an RGB-D
+camera is, the same command and the same routine, fixed or on the wrist: its owner hands out the left
+image rectified and the rectified left lens with no distortion, the board is posed on that image, and
+the transform solved is the rectified left camera's, the frame the pair's depth lies in (the owner,
+2026-10-17; [`src/camera/README.md`](../../src/camera/README.md#a-stereo-pair-as-the-cells-camera)).
+A stereo pair calibrated again after its hand-eye calibration moves its rectified frame, so the
+hand-eye calibration is swept again after it.
+
 **The chain, end to end.** `CalibrationRoutine` collects samples and hands them to
 `EyeToHandCalibrator` or `EyeInHandCalibrator`, which build the `A` and `B` pairs and call
 `HandEyeAXXB`. The result is saved, the camera's rig in the config points at that file, a resolver
@@ -334,14 +346,14 @@ string by hand to get past it.
 A camera's calibration is declared on its rig, in the camera section, and one loader opens every
 artifact: `RigCalibration.from_config` in
 [`src/calibration/rig_calibration.py`](../../src/calibration/rig_calibration.py). Which cameras are
-fused is a second key, in the robot section. Both resolver builders live in
+fused follows from the rigs: every enabled RGB-D rig that declares its calibration, where two or more
+do and the primary is one of them (`camera_fusion.fused_cameras`). Both resolver builders live in
 [`src/robot/execution/autonomous_grasp/builders.py`](../../src/robot/execution/autonomous_grasp/builders.py)
 and load through that one loader.
 
 | Key | Holds | Read by |
 |---|---|---|
 | `camera.cameras.rigs[<id>].extrinsics` | the rig's `mounting_mode` and `artifact_path`, and the tolerances below | `build_config_frame_resolver` (the primary rig) and `build_config_frame_resolvers` |
-| `robot.grasping.fusion.cameras.<id>` | which rigs are fused, keyed by rig id: `enabled` only | `build_config_frame_resolvers` |
 
 The tolerances on a rig's `extrinsics`:
 
@@ -352,37 +364,36 @@ The tolerances on a rig's `extrinsics`:
 
 The mounting picks the resolver: `eye_to_hand` gives a `StaticCameraToBaseResolver` holding the
 `CAMERA -> BASE` artifact, and `eye_in_hand` an `EyeInHandFrameResolver` that composes the
-`CAMERA -> TOOL` artifact with the tool pose. The robot section carries no calibration:
-`robot.grasping.fusion.extrinsics_artifact_path`, and a `fusion.cameras` entry's `mounting_mode` or
-`extrinsics_artifact_path`, are refused at load with a sentence naming the rig key. So is a
-`fusion.cameras` id that names no rig (`camera_calibration_conflict`).
+`CAMERA -> TOOL` artifact with the tool pose. The robot section carries no calibration and names no
+camera: a tree that still writes the fusion block, `robot.grasping.fusion`, is refused at load, and
+`python -m src.config explain` answers each of its old calibration keys with the rig key that took its
+place.
 
-**The two builders gate differently.** The singular one ignores `robot.grasping.fusion.enabled`: it
-returns `None` only when no camera section was handed in or the primary rig declares no `extrinsics`.
-The plural one returns `{}` when `robot.grasping.fusion.enabled` is false, before reading anything and
-without a warning. Silence in a YAML file means the schema default is in force, so check any key you
-rely on under the chain you run:
+**The two builders gate differently.** The singular one returns `None` only when no camera section was
+handed in or the primary rig declares no `extrinsics`. The plural one returns `{}` where the cell fuses
+no camera, before opening anything. Which cameras a tree fuses, a program asks without opening one:
 
-```bash
-python -m src.config explain robot.grasping.fusion.enabled
+```python
+from src.config.tree import load_tree
+from src.robot.execution.camera_fusion import CameraFusionPlan
+
+print(CameraFusionPlan.from_tree(load_tree("ur5e,eth2")))   # fusing 'cam_left' (primary) and 'cam_right' ...
 ```
 
-On the shipped base tree it prints `set in (no YAML sets this: the schema default is in force)`.
-Other layers write it.
+On the shipped base tree it prints `no camera fusion:` and what the rigs lack.
 
 ### 4.3 What is wired
 
 `AutonomousGraspService.from_robot_config()` is the config-driven boot path. `build_real_cell` and
 `build_rehearsal_cell` call it, and they are what `Cell`, `python -m src.robot.execution.real_cell`,
 the operator console and the [examples](../../examples/README.md) reach. The Isaac runner
-`run_multiview_pick` takes it by default, through `run_eih_pick.build_service`, and so does
-`datagen/rl/occupancy.py`.
+`run_multiview_pick` takes it by default, through `run_eih_pick.build_service`.
 
 On that path, `from_robot_config` builds the singular resolver from the primary rig's `extrinsics`
 when the caller passed none, reading the camera section it is handed as `camera=` (`build_real_cell`
 passes it). It then fails closed on a real vendor that still has no resolver (section 4.4), and
-applies the orchestrator overlays, which reach the plural builder. That one needs two flags:
-`fusion.geometry.enabled` for the call to happen, and `fusion.enabled` for it to return anything.
+applies the orchestrator overlays, which reach the plural builder. That one builds a resolver for
+every camera the cell fuses, and none where it fuses none.
 
 Two things to carry away:
 
@@ -390,10 +401,10 @@ Two things to carry away:
   refused at build until one is declared. The `ur5e,eth2` example declares both of its rigs', at
   artifact paths a sweep writes and the repository does not ship; until both sweeps have run, its
   build is refused naming the file that does not load.
-- **The default pick is open-loop** whatever the calibration says. The decision gate,
-  recovery, multi-camera fusion, the learned ranker and the learned success model all ship
-  `enabled: false` in [`config/robot/robot.yaml`](../../config/robot/robot.yaml).
-  See [05](05-pick-loop.md).
+- **The default pick perceives once and grasps** whatever the calibration says. The recovery every
+  cell runs rescans and pushes after a miss, a second fixed camera is fused where the camera section
+  declares one with its calibration, and the learned ranker ships `enabled: false` in
+  [`config/robot/robot.yaml`](../../config/robot/robot.yaml). See [05](05-pick-loop.md).
 
 ### 4.4 Where it fails closed
 
@@ -404,18 +415,13 @@ Two things to carry away:
   section, or pass `frame_resolver=`.
 - `RuntimeError: camera.cameras.rigs['x'].extrinsics names <path> (<mode>), which does not load: ...`
 
-  A declared artifact is missing, stale or invalid, on the primary rig or on an enabled fused
-  camera. The cell is refused at construction rather than run with a camera it cannot place.
-- `RuntimeError: grasping.fusion.cameras names 'x' and camera.cameras.rigs['x'].extrinsics is not declared ...`
-
-  An enabled fused camera whose rig declares no calibration. An incomplete resolver map must not
-  run as a smaller rig than was asked for. `build_real_cell` refuses the same camera earlier, before a
-  device is opened.
+  A declared artifact is missing, stale or invalid, on the primary rig or on a fused camera. The
+  cell is refused at construction rather than run with a camera it cannot place.
 - `CellBuildRefused: this cell plans with cuRobo and calibrates '<rig>', and no live camera world comes of it: ...`
 
   A cuRobo cell declares a rig's calibration and gets no live camera world from it. Once a rig is
-  calibrated its world is mandatory: enable `safety.planning_world` with a `support_plane` and
-  `perceived.enabled`, with the primary rig among the calibrated ones, or remove the rig's
+  calibrated its world is mandatory: declare `safety.planning_world.support_plane`, which turns the camera world
+  on, with the primary rig among the calibrated ones, or remove the rig's
   `extrinsics` while it is not used. `build_real_cell` refuses before a camera opens, and
   `real_cell --check` blocks on its `camera world` row ([04](04-robot-and-safety.md)).
 - `[config] REFUSED: this eye_to_hand sweep of '<rig>' moves the arm that carries wrist camera '<wrist rig>', whose declared body cannot be placed yet. For THIS sweep (--rig <rig>), say why the arm may move without that body: --unmodelled-wrist-body "<reason>". Why the body of '<wrist rig>' cannot be placed: ...`
@@ -444,10 +450,9 @@ Two things to carry away:
   A valid candidate existed, but in the camera frame, while `require_base_frame_grasp` was on. The
   calibration is not reaching the pick path ([05](05-pick-loop.md)).
 
-One case is **not** fail-closed: `fusion.enabled: false` with second cameras named in
-`fusion.cameras` and calibrated on their rigs. The primary's resolver loads and the others never do,
-so the pick runs single-view. Nothing refuses. With `fusion.geometry.enabled` on, the loop warns on
-every pick that each other camera's view was dropped; with it off, nothing asks for the map.
+One case is said, not refused: two or more enabled rigs, RGB-D or stereo, of which fewer than two
+declare their calibration, or the primary not among the ones that do. The cell grasps from one view,
+and its build says so in one WARNING naming what is missing (`CameraFusionPlan`).
 
 ### 4.5 A pixel of your own, in BASE
 
@@ -480,7 +485,7 @@ above = tcp_above(point.base_mm, point.normal, 20.0) # the TCP 20 mm over it, sq
   detector (`Locator.capture()`): the warm-ups, the median of a burst of grabs as the depth, the rig's
   mixed pixels taken out, and on the wrist the TCP read before and after the burst, held to the rig's
   `shutter_motion_tolerance_*`. Before the burst the arm's steady gate is asked whether it stands still
-  (`wait_until_steady` waiting for nothing: on a UR whose `safety.dwell.steady_signal` is `joint_speeds`,
+  (`wait_until_steady` waiting for nothing: on a UR, which reads steady off its joint speeds since 2026-10-17,
   every joint under 0.01 rad/s on three reads in a row), and a moving arm is refused (`LocatorRefused`)
   with nothing grabbed. The frame keeps the colour image (BGR), the depth aligned to it, the lens, the TCP
   the arm read at the shutter (`frame.tcp_pose`), and three transforms, each a 4 x 4 that maps
@@ -539,7 +544,7 @@ above = tcp_above(point.base_mm, point.normal, 20.0) # the TCP 20 mm over it, sq
 | Eye-to-hand expected, a `CAMERA -> TOOL` result arrived | settings with no `mode` make `CalibrationRoutine` default to eye-in-hand; pass `calibration_mode=` |
 | Grasps went bad after a **gripper change**, camera untouched | eye-in-hand only: the TCP moved, so `CAMERA` to `TOOL` is stale, and it looks like no camera fault |
 | A wrist pick WARNs that its looks measure the part's shared surface more than 6 mm apart | eye-in-hand only: the hand-eye has drifted, the camera or the tool moved on the flange; run the physical check (3.4) |
-| Fused cameras calibrated, the pick stays single-view, no refusal | `fusion.enabled` is false (section 4.2) |
+| Two cameras calibrated, the pick stays single-view | a rig is switched off, or the primary is not among the calibrated ones: the build's WARNING names it (section 4.4); a stereo pair whose stereo calibration is gone is refused as its camera opens, naming the file |
 
 Random misses are not calibration. Three notes on the rows above:
 
@@ -554,8 +559,9 @@ Random misses are not calibration. Three notes on the rows above:
 **One physical spec is written in more than one place.** `marker_length_mm` and `aruco_dict_name`
 exist under `camera.hand_eye.eye_to_hand`, under `camera.hand_eye.eye_in_hand`, and under
 `camera.cameras.stereo_calibration`. The third belongs to stereo intrinsics through ChArUco and
-describes a different board, but carries the same key names and the same shipped values. If the stereo
-marker path is in use, both must describe the board you actually have.
+describes a different board, but carries the same key names and the same shipped values. A stereo pair
+is solved against that board (`StereoCalibration`) and then swept against the robot with the hand-eye
+target, so both must describe the boards you actually have.
 
 **When to recalibrate:** any collision involving the camera, the mount or the tool; a tool or gripper
 change, eye-in-hand especially; the camera moved, refocused or remounted; the robot base moved; a drift
@@ -573,6 +579,7 @@ torch-free): the solver, the frame contracts, the artifact round trips and the r
 |---|---|
 | Eye-to-hand and eye-in-hand through `CalibrationRoutine` | measured in simulation: both run end to end, and the eye-in-hand wrist-camera pick lands on target |
 | The real-cell sweep through `HandEyeCalibration` | run on a physical cell: a wrist D415 on a UR10 (CB3), against one printed ArUco marker; a fixed camera and a ChArUco board have not, and the mock suite covers the flow |
+| The same sweep on a stereo pair | never run on a webcam pair or a stereo device; pinned on a rendered pair whose right camera is turned three degrees: the marker is posed on the left image rectified within 6 mm and 4 degrees of where it lies, where the raw lens puts it 48 mm off ([test](../../tests/test_a_stereo_rig_is_calibrated_against_the_robot.py)) |
 
 **Two kinds of simulated run.** The ground-truth marker source is derived from the same oracle the
 result is compared against, so its near-zero residual is **circular**. It validates collection, the
@@ -580,8 +587,8 @@ diversity filters, the AX=XB solve, the frame tags and the save-load round trip,
 about perception accuracy. The ArUco runs are the ones that test perception.
 
 **Calibrating in simulation** is [`run_eth_calibrate.py`](../../src/willy_sim/run_eth_calibrate.py) and
-[`run_eih_calibrate.py`](../../src/willy_sim/run_eih_calibrate.py). Both add `--robot-model`, `--profile`
-and `--radial-closing` to their own flags, and write artifacts per robot model under
+[`run_eih_calibrate.py`](../../src/willy_sim/run_eih_calibrate.py). Both add `--robot-model` and `--profile`
+to their own flags, and write artifacts per robot model under
 `logs/calibration/`, which is not committed. Their `-h` is the procedure. They run declared stations,
 not generated ones: `src/willy_sim/calibration/stations/eth_<model>.json` and `eih_<model>.json` for
 the three models the sim cell drives, or `--stations PATH`. Those files were frozen from the generators

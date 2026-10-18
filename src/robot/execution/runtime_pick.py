@@ -48,8 +48,8 @@ from src.robot.grasping.motion.execution_policy import (
 from src.robot.grasping.geometry.closing_axis import natural_closing_axis_of
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.generation.calculator import GraspCalculator
-from src.robot.grasping.types.modes import GraspSamplingMode
 from src.robot.grasping.loop.pick_loop import (
+    GOOD_PART_SCORE,
     BinPickingOrchestrator,
     PerceptionSource,
     PickAttempt,
@@ -59,18 +59,6 @@ from src.robot.grasping.loop.pick_loop import (
 
 if TYPE_CHECKING:  # pragma: no cover (import only for typing)
     from src.geometry import Pose
-
-    # Telemetry carriers, referenced only from string-form field
-    # annotations (PEP 563 ``from __future__ import annotations`` is in
-    # effect at module top). Keeping the import behind ``TYPE_CHECKING``
-    # means ``runtime_pick`` never grows a runtime dependency on the
-    # predictor module: the wiring surface stays ``pick_loop``
-    # (consumer) and ``autonomous_grasp`` (loader).
-    from src.robot.grasping.scoring.success_probability import (
-        RankingBlendTelemetry,
-        ShadowSuccessTelemetry,
-        UncertaintyRerankTelemetry,
-    )
 
 
 __all__ = [
@@ -147,10 +135,10 @@ class PickSessionReport:
     attempts
         Full attempt history forwarded from the orchestrator, so
         debugging tools can see every rescan without re-running the
-        loop. The loop never switches target on its own: a
-        ``next_target`` is a recovery action, which lives on the
-        service's recovery trail where the mode's profile lists it
-        (``auto`` and ``dense_clutter`` do).
+        loop. The loop never switches target on its own: a rescan
+        is a recovery action, which lives on the service's recovery
+        trail where the mode's profile lists it (``auto`` and
+        ``dense_clutter`` do).
     executed_grasp
         The :class:`GraspResult` that was actually executed, or
         :data:`None` when execution did not happen.
@@ -210,19 +198,6 @@ class PickSessionReport:
     executed_grasp: Optional[GraspResult] = None
     timings: PickTimings = field(default_factory=PickTimings)
     error: Optional[BaseException] = None
-    # Shadow-mode success-probability telemetry, forwarded verbatim
-    # from :class:`PickReport`. ``None`` whenever the orchestrator was
-    # built without a :class:`ShadowSuccessContext` or no candidate was
-    # scored.
-    shadow_success_telemetry: "ShadowSuccessTelemetry | None" = None
-    # Bounded probability-blend reranker audit telemetry, forwarded
-    # verbatim from :class:`PickReport`. ``None`` whenever the
-    # orchestrator was built without a ``RankingBlendConfig`` (or
-    # ``ranking_blend_config.enabled is False``); a non-``None`` record
-    # describes either the applied rerank or the reason it was skipped.
-    ranking_blend_telemetry: "RankingBlendTelemetry | None" = None
-    # Per-candidate uncertainty re-rank telemetry, forwarded verbatim from the PickReport.
-    uncertainty_rerank_telemetry: "UncertaintyRerankTelemetry | None" = None
     object_centre_mm: Optional[tuple[float, float, float]] = None
     grasp_pose: "Pose | None" = None
     target_label: str = ""
@@ -276,8 +251,6 @@ class RuntimePickService:
         perception: PerceptionSource,
         gripper: Gripper | None = None,
         max_attempts: int = 5,
-        dense_sampling: bool = True,
-        grasp_sampling_mode: GraspSamplingMode | bool | str | None = None,
         standoff_mm: float = 80.0,
         retreat_mm: float = 100.0,
         policy: GraspExecutionPolicy | None = None,
@@ -288,9 +261,7 @@ class RuntimePickService:
         callers do not need to import the orchestrator class directly
         once they have a facade in hand. The optional ``policy``
         argument is honoured if supplied; otherwise the orchestrator
-        builds its own default. ``grasp_sampling_mode`` is the
-        production-preferred knob; when omitted the ``dense_sampling``
-        bool still drives behavior.
+        builds its own default.
         """
 
         orchestrator = BinPickingOrchestrator(
@@ -298,8 +269,6 @@ class RuntimePickService:
             calculator=calculator,
             perception=perception,
             max_attempts=max_attempts,
-            dense_sampling=dense_sampling,
-            grasp_sampling_mode=grasp_sampling_mode,
             standoff_mm=standoff_mm,
             retreat_mm=retreat_mm,
             gripper=gripper,
@@ -317,10 +286,8 @@ class RuntimePickService:
         robot_cfg,
         *,
         calculator: GraspCalculator,
-        grasp_sampling_mode: GraspSamplingMode | bool | str | None = None,
         perception: PerceptionSource,
         max_attempts: int = 5,
-        dense_sampling: bool = True,
         standoff_mm: float = 80.0,
         retreat_mm: float = 100.0,
         policy: GraspExecutionPolicy | None = None,
@@ -373,7 +340,7 @@ class RuntimePickService:
             Already-constructed :class:`GraspCalculator`.
         perception
             Already-constructed :class:`PerceptionSource`.
-        max_attempts, dense_sampling, standoff_mm, retreat_mm, policy
+        max_attempts, standoff_mm, retreat_mm, policy
             Forwarded verbatim to
             :class:`BinPickingOrchestrator` (see
             :meth:`from_components`).
@@ -399,22 +366,17 @@ class RuntimePickService:
             perception=perception,
             gripper=gripper,
             max_attempts=max_attempts,
-            grasp_sampling_mode=grasp_sampling_mode,
-            dense_sampling=dense_sampling,
             standoff_mm=standoff_mm,
             retreat_mm=retreat_mm,
             policy=policy,
         )
-        # How the hand and camera naturally stand (robot.natural_closing_axis): every grasp the pick loop ranks is turned
+        # How the hand and camera naturally stand (robot.motion.natural_closing_axis): every grasp the pick loop ranks is turned
         # the way round nearer it. Unset turns none.
         runtime.orchestrator.natural_closing_axis = natural_closing_axis_of(robot_cfg)
-        # How a ranking spends its time (the owner's "speed first", 2026-10-08): the first good part taken without
-        # computing the rest (robot.grasping.first_good_part, good_part_score), and SFE's fine search waiting while
-        # another part may have a full result (fine_pass_waits). A config that carries no such keys ranks as before.
-        grasping = getattr(robot_cfg, "grasping", None)
-        runtime.orchestrator.lazy_objects = bool(getattr(grasping, "first_good_part", False))
-        runtime.orchestrator.accept_score = float(getattr(grasping, "good_part_score", 0.6))
-        runtime.orchestrator.fine_search_waits = bool(getattr(grasping, "fine_pass_waits", False))
+        # How a ranking spends its time (the owner's "speed first", 2026-10-08; every cell's since 2026-10-17): the
+        # first part whose grasp scores GOOD_PART_SCORE is taken without computing the rest.
+        runtime.orchestrator.lazy_objects = True
+        runtime.orchestrator.accept_score = GOOD_PART_SCORE
         return runtime
 
     # ------------------------------------------------------------------
@@ -479,9 +441,6 @@ class RuntimePickService:
                 orchestrator_s=orchestrator_s,
             ),
             error=error,
-            shadow_success_telemetry=pick_report.shadow_success_telemetry,
-            ranking_blend_telemetry=pick_report.ranking_blend_telemetry,
-            uncertainty_rerank_telemetry=pick_report.uncertainty_rerank_telemetry,
             object_centre_mm=getattr(pick_report, "target_centre_mm", None),
             grasp_pose=_closed_at(policy_report) if pick_report.outcome is PickOutcome.EXECUTED else None,
             # Which kind of part the pick went for, and what no rule claimed: a sort's (the owner, 2026-10-09).

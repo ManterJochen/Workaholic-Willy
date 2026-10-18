@@ -601,7 +601,7 @@ class TheBudgetMergesBeforeItRefusesTests(unittest.TestCase):
         self.assertEqual(refresh.dropped_obstacles, 1)
         self.assertEqual(refresh.guard_boxes, ())
         self.assertIn("one box per object", refresh.reason)
-        self.assertIn("safety.planning_world.perceived.max_boxes", refresh.reason)
+        self.assertIn("perceived.CAMERA_MAX_BOXES", refresh.reason)
         self.assertIn(DropReason.NO_SLOT, world.world_for(self_envelope=body, now=100.1).perceived.dropped_clusters)  # type: ignore[union-attr]
 
 

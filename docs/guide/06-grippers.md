@@ -321,8 +321,8 @@ From there every change flips the count, whatever verb sent it:
 | a pick, at the part | exactly one, then `close_settle_s` |
 | a place or a release | one where the count says closed, then `close_settle_s`; none where it says open, and the report says `already open` |
 | a look of a wrist camera, the view it generates, the move back | **none**: a look is a motion of the arm, and the jaws stay as the last command left them |
-| a push (the `dense_clutter` recovery of a wrist camera's pick, [05](05-pick-loop.md)) | **none**: it pushes with the open jaws, and only where the count says open and knows it (`why_jaws_unknown()` empty, the hand connected). A count that says closed means no push; one that cannot say when the push reads it, once its plan and budgets passed (DO0 switched at the pendant mid-pick, the count lost, the output unreadable), ends the pick as a gripper fault, as the pick-start refusal does. The count is read again before each contact leg and once the arm is up: one nobody can vouch for there **stops the push where the arm stands**, and a person decides. The push asks nobody either way |
-| `next_target`, before it drives a wrist pick's looks again | **none**: the count is read first, and one nobody can vouch for (a push refused before it read the jaws, then DO0 switched) ends the pick as a gripper fault before any look is driven again. `PickRun` and the console stop on it. A re-pick that drives no look, a fixed camera's or a look-less wrist pick's rescan, is a pick like any other: it asks before the arm moves (first row) |
+| a push (the `dense_clutter` recovery of a wrist camera's pick, [05](05-pick-loop.md)) | **two**: one closes the jaws in the air over the part before the line down, the closed fingers push, and one more opens them at the look after the push (2026-10-16). It runs only where the count says open and knows it (`why_jaws_unknown()` empty, the hand connected). A count that says closed means no push; one that cannot say when the push reads it, once its plan and budgets passed (DO0 switched at the pendant mid-pick, the count lost, the output unreadable), ends the pick as a gripper fault, as the pick-start refusal does. The count is read again before each contact leg and once the arm is up: one nobody can vouch for there **stops the push where the arm stands**, and a person decides. The push asks nobody either way |
+| a rescan, a fixed camera's or a look-less wrist pick's | a pick like any other: it asks before the arm moves (first row). No recovery drives a wrist pick's looks again |
 
 At a pick start the question takes a word, not Enter:
 
@@ -388,9 +388,8 @@ asking at their own terminal, as above.
   right before the change: no run holds the cell, the arm is not halted, the controller's own fields say it can
   move, and no stop waits for "Zelle ist frei" (at Connect too). **A stopped controller gets no "open now"**,
   with nothing sent.
-- **Open jaws hold nothing.** An answer that leaves the jaws open stamps the console and tells the planner the
-  hand is empty (`arm.detach_payload()`), so its part model is gone. After "open now" a person's hands were
-  at the jaws, and the next motion the robot makes by itself counts down 3 s.
+- **Open jaws hold nothing.** An answer that leaves the jaws open stamps the console. After "open now" a person's
+  hands were at the jaws, and the next motion the robot makes by itself counts down 3 s.
 - **A hand that measures nothing else** is emptied by a person, who says so on the stop card: "Backen leer"
   (`jaws_empty`), refused for a toggle whose count is not open and for a hand that measures a part.
 
@@ -446,11 +445,9 @@ substituted is refused at `connected()` with `NoRealGripper`, as the cell refuse
 - `report.hold` is `HELD` or `EMPTY` where the gripper measured it (the Robotiq's gOBJ, the OnRobot status
   word, a vacuum switch, a part sensor or reed switches), and `UNMEASURED` where nothing could.
 - `report.width_measured` says whether the width was read back from a position sensor.
-- A held or unmeasured grasp is modelled as a carried part on an arm that models one. `report.payload` reads
-  `ATTACHED` on a cuRobo UR that declares `safety.planning_world.payload.length_mm`, `FILTER_ONLY` when the
-  planner declined it, and `NOT_MODELLED` with the reason otherwise. A measured empty close attaches
-  nothing.
-- A release that still measures a part reads `RELEASE_NOT_CONFIRMED` and keeps the model.
+- No grasp is modelled as a carried part since 2026-10-17 (the owner's cell since 2026-10-05): a closed hand is
+  judged as an empty one, by the exact guard at full stroke, so a report carries no payload model.
+- A release that still measures a part reads `RELEASE_NOT_CONFIRMED`.
 - No force is commanded. A gripper that raises is stopped once and reported as `GRIPPER_FAULT`, and
   `robot.is_holding()` reads the hold without commanding anything.
 
@@ -473,7 +470,7 @@ with robot.connected():
 ```
 
 The pose's own +Z is the approach. `robot.tool_down` points it straight down, the fingers closing along
-the cell's `robot.natural_closing_axis`, along base x where it names none; `yaw_deg` counts from that
+the cell's `robot.motion.natural_closing_axis`, along base x where it names none; `yaw_deg` counts from that
 direction, so on a cell that names `"-y"`, `yaw_deg=90.0` closes along base x. `pick` opens the jaws to the
 hand's width, makes a planned move to a standoff `standoff_mm` (80) back along the approach, drives a
 straight line to the pose, closes to `width_mm` less `squeeze_mm` (1), and drives the line back out.

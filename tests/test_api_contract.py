@@ -277,7 +277,7 @@ class EveryContractRouteExistsTests(unittest.TestCase):
     def test_the_brake_says_it_is_not_an_emergency_stop_and_the_red_button_is(self) -> None:
         brake = self.spec["paths"]["/v1/cell/brake"]["post"]
         said = (brake.get("summary", "") + " " + brake.get("description", "")).lower()
-        # What it does as shipped (robot.ur.brake_on_halt off): it latches; a brake is claimed only where enabled.
+        # What it does: it latches; a brake is claimed only where the arm brakes (every UR).
         self.assertIn("stops the run and latches the arm", said)
         self.assertIn("brakes a move in flight where enabled", said)
         self.assertNotIn("brakes the arm under control", said)
@@ -417,24 +417,6 @@ class TheCodesAreOneVocabularyTests(_ScratchConsole):
         assert table is not None
         classes = dict(re.findall(r"^\s+([a-z_]+): '([a-z_]+)',?$", table.group(1), flags=re.M))
         self.assertEqual({c.value: codes.STOP_CLASS[c].value for c in codes.StopCode}, classes)
-
-    def test_no_part_modelled_is_one_rule_for_the_server_and_the_browser(self) -> None:
-        """The stop card's "no part held, now" gate (build plan 1.3.5) reads ``CellOut.payload_model`` through one set.
-
-        ``none`` and ``not_applicable`` (an arm that models no part at all: the dummy, sim) both model none, so the
-        gate opens on the rehearsal cell as on a UR; ``unknown`` (a read that failed) is not in it, so a part nobody
-        can rule out keeps the gate shut. ``codes.ts`` lists the same set for the cockpit.
-        """
-        from api.schemas import NO_PART_MODELLED, PayloadModelName
-
-        self.assertEqual(frozenset({"none", "not_applicable"}), NO_PART_MODELLED)
-        self.assertLessEqual(NO_PART_MODELLED, set(typing.get_args(PayloadModelName)))
-        self.assertIn("unknown", typing.get_args(PayloadModelName))
-        listed = re.search(r"export const NO_PART_MODELLED[^=]*=\s*\[(.*?)\]", _CODES_TS.read_text(encoding="utf-8"),
-                           flags=re.S)
-        self.assertIsNotNone(listed, "codes.ts does not list NO_PART_MODELLED")
-        assert listed is not None
-        self.assertEqual(sorted(NO_PART_MODELLED), sorted(re.findall(r"'([a-z_]+)'", listed.group(1))))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -662,7 +644,7 @@ class TheConsoleStampsAndTheCellTests(_ScratchConsole):
         self.assertEqual("", body["needs_person"])
         self.assertIsNone(body["halted"])
         self.assertEqual("not_used", body["planner"]["state"])
-        self.assertEqual("not_applicable", body["payload_model"])
+        self.assertNotIn("payload_model", body, "no cell models a carried part")
         self.assertIsNone(body["recovery"])
         self.assertIsNone(body["jaws_confirmed_at"])
         self.assertFalse(body["countdown_due"])
@@ -747,18 +729,6 @@ class TheConsoleStampsAndTheCellTests(_ScratchConsole):
         self.assertIsNotNone(rendered.recovery)
         assert rendered.recovery is not None
         self.assertEqual("run-stopped", rendered.recovery.run_id)
-
-    def test_on_the_rehearsal_cell_no_part_is_modelled(self) -> None:
-        """The stop card's "no part held, now" gate on the dummy cell, where the smoke test restarts after a stop: the
-        dummy arm models no part at all (``not_applicable``), which is no part modelled, and its hand holds nothing."""
-        from api.schemas import NO_PART_MODELLED
-
-        client = self._client()
-        self.assertEqual(200, client.post("/v1/cell/build", params={"rehearse": True}).status_code)
-        body = client.get("/v1/cell").json()
-        self.assertEqual("not_applicable", body["payload_model"])
-        self.assertIn(body["payload_model"], NO_PART_MODELLED)
-        self.assertNotEqual("closed", body["hand"]["jaws"])
 
     def test_a_panel_read_that_raises_never_fails_the_cell_answer(self) -> None:
         """``GET /v1/cell`` reads the arm and the hand on every poll, and build, connect and disconnect answer with the
@@ -940,40 +910,6 @@ class ThePanelReadsNeverRaiseTests(unittest.TestCase):
         # An arm that has a planner and cannot say its state is not ready: never "not_used", which reads as nothing
         # to wait for.
         self.assertEqual("off", _planner(Raises()).state)
-
-    def test_the_carried_part(self) -> None:
-        from api.routers.cell import _payload_model
-        from api.schemas import NO_PART_MODELLED
-        from src.robot.core.arm_capabilities import PayloadModel
-
-        class Carries:
-            def __init__(self, answer: Any) -> None:
-                self.answer = answer
-
-            def attach_payload(self, grip_width_mm: float) -> bool:
-                return False
-
-            def detach_payload(self) -> bool:
-                return True
-
-            def payload_declined_reason(self) -> str | None:
-                return None
-
-            def payload_model(self) -> Any:
-                if isinstance(self.answer, BaseException):
-                    raise self.answer
-                return self.answer
-
-        for answer, expected in ((PayloadModel.NONE, "none"), (PayloadModel.FILTER_ONLY, "filter_only"),
-                                 (PayloadModel.PLANNER_AND_FILTER, "planner_and_filter"),
-                                 (RuntimeError("the planner client dropped"), "unknown"),
-                                 ("carried_by_a_new_model", "unknown")):
-            with self.subTest(answer=str(answer)):
-                self.assertEqual(expected, _payload_model(Carries(answer)))
-        for models_none in (None, object()):
-            with self.subTest(arm=type(models_none).__name__):
-                self.assertEqual("not_applicable", _payload_model(models_none))
-        self.assertNotIn("unknown", NO_PART_MODELLED, "a part nobody could rule out would open 'no part held'")
 
     def test_the_service_s_latch(self) -> None:
         from api.routers.cell import _needs_person

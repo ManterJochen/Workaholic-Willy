@@ -1,6 +1,7 @@
 """Unusable weights say WHICH model, in every way weights are actually unusable.
 
-The four vision wrappers here, and the speech engine in ``tests/test_speech_engine.py``, each wrap
+The two vision wrappers here (RT-DETR and SAM2; GroundingDINO and OneFormer, rows here until 2026-10-17, left with
+the owner's cleanup), and the speech engine in ``tests/test_speech_engine.py``, each wrap
 their ``from_pretrained`` pair in a handler whose only job is to name the model before re-raising:
 it is the one log line that connects a transformers traceback to the config key that pointed there.
 It caught ``RuntimeError``.
@@ -18,7 +19,8 @@ Not one of the three is a RuntimeError, so the handler was dead in exactly the s
 written for: the operator got a traceback naming a cache path and never the config key.
 
 These tests do not need the weights. They raise the three measured types out of a patched
-``from_pretrained`` and check the handler still names the source. The AttributeError case is the
+``from_pretrained`` and check the handler still names the source; each wrapper is built with ``local=False``, so the
+resolver hands ``from_pretrained`` the id rather than refusing weights this machine does not hold. The AttributeError case is the
 other half of the contract: widening to ``except Exception`` would label a defect in our own code
 "failed to load weights", which is a worse lie than the silence it replaces, so a defect must pass
 through UNLABELLED.
@@ -33,15 +35,8 @@ from unittest.mock import MagicMock, patch
 
 def _vision_config() -> MagicMock:
     cfg = MagicMock()
-    cfg.local = False
-    cfg.model_path = ""
     cfg.model_id = "org/model"
     cfg.threshold = 0.4
-    cfg.task = "panoptic"
-    cfg.optim = MagicMock(
-        torch_dtype="auto", attn_implementation="eager", channels_last=True,
-        compile=False, compile_mode="reduce-overhead",
-    )
     return cfg
 
 
@@ -53,12 +48,6 @@ def _vision_config() -> MagicMock:
 #: unlabelled) is pinned against it in `tests/test_speech_engine.py::TheEngineNamesUnusableWeightsTests`.
 _LOADERS = (
     (
-        "src.models.detection.zero_shot.detector",
-        "GroundingDinoObjectDetector",
-        ("AutoProcessor", "AutoModelForZeroShotObjectDetection"),
-        _vision_config,
-    ),
-    (
         "src.models.detection.closed_set.detector",
         "RtDetrObjectDetector",
         ("AutoImageProcessor", "AutoModelForObjectDetection"),
@@ -68,12 +57,6 @@ _LOADERS = (
         "src.models.segmentation.realtime.segmenter",
         "Sam2Segmenter",
         ("Sam2Processor", "Sam2Model"),
-        _vision_config,
-    ),
-    (
-        "src.models.segmentation.research.segmenter",
-        "OneFormerSegmenter",
-        ("OneFormerProcessor", "OneFormerForUniversalSegmentation"),
         _vision_config,
     ),
 )
@@ -99,7 +82,7 @@ def _build_with_load_failure(
             patch.object(module, model) as model_mock:
         processor_mock.from_pretrained.side_effect = failure
         model_mock.from_pretrained.side_effect = failure
-        getattr(module, class_name)(config)
+        getattr(module, class_name)(config, local=False)
     return logger
 
 
@@ -107,7 +90,7 @@ class UnusableWeightsAreNamedTests(unittest.TestCase):
 
     def _failures(self) -> tuple[tuple[str, BaseException], ...]:
         return (
-            # README-only directory, GroundingDINO half of the pair.
+            # README-only directory, as GroundingDINO's half of the measured pair raised it.
             ("readme-only", ValueError("Unrecognized model in ...")),
             # README-only directory (SAM2) and half-downloaded snapshot (both), same type.
             ("no weights file", OSError("Error no file named model.safetensors, ... found in directory")),
@@ -139,7 +122,7 @@ class UnusableWeightsAreNamedTests(unittest.TestCase):
                         processor_mock.from_pretrained.side_effect = failure
                         model_mock.from_pretrained.side_effect = failure
                         with self.assertRaises(type(failure)):
-                            getattr(module, class_name)(config)
+                            getattr(module, class_name)(config, local=False)
                     self.assertTrue(logger.error.called, "no line named the failing model")
                     spoken = " ".join(str(arg) for call in logger.error.call_args_list for arg in call.args)
                     self.assertIn("org/model", spoken)
@@ -160,7 +143,7 @@ class UnusableWeightsAreNamedTests(unittest.TestCase):
                     processor_mock.from_pretrained.side_effect = defect
                     model_mock.from_pretrained.side_effect = defect
                     with self.assertRaises(AttributeError):
-                        getattr(module, class_name)(config)
+                        getattr(module, class_name)(config, local=False)
                 self.assertFalse(
                     logger.error.called,
                     "a defect in our own code was reported as a weights-loading failure",

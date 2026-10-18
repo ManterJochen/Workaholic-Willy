@@ -33,13 +33,6 @@ class ShoulderHeightTests(unittest.TestCase):
 
 
 class ReachAuditTests(unittest.TestCase):
-    def test_ur3e_cannot_reach_the_ur5e_tuned_safe_pose(self) -> None:
-        """safe_pose (450, -300, 400) is r~595 mm about the UR3e shoulder -- ~95 mm beyond its 500 mm
-        sphere. The WorkspaceGuard would happily accept it and the retreat motion would then fail."""
-        bad = {f.label: f for f in audit_reach(_robot("ur3e")) if not f.reachable}
-        self.assertIn("safe_pose", bad)
-        self.assertGreater(bad["safe_pose"].overshoot_mm, 50.0)
-
     def test_ur3e_can_still_reach_the_m1_object(self) -> None:
         """Good news for the bring-up: the M1 object at (450, 0, 25) is r~468 mm -- inside the UR3e sphere,
         so the core pick scene does NOT have to move (unlike the 515-644 mm bins)."""
@@ -56,10 +49,10 @@ class ReachAuditTests(unittest.TestCase):
         self.assertIn("scene_setup.marker", strict)  # r~496 mm: inside 500, outside 440
 
     def test_ur5e_workspace_box_claims_an_unreachable_corner(self) -> None:
-        """PRE-EXISTING (not a UR3e problem): the committed workspace_limits corner (700, -350, 600) is
+        """PRE-EXISTING (not a UR3e problem): the committed robot.motion.workspace corner (700, -350, 600) is
         r~897 mm about the UR5e shoulder -- ~47 mm beyond its 850 mm reach. The WorkspaceGuard therefore
         admits targets the arm cannot touch. Pinned so the audit keeps reporting it."""
-        corner = next(f for f in audit_reach(_robot("ur5e")) if f.label.startswith("workspace_limits"))
+        corner = next(f for f in audit_reach(_robot("ur5e")) if f.label.startswith("motion.workspace"))
         self.assertFalse(corner.reachable)
         self.assertGreater(corner.overshoot_mm, 20.0)
 

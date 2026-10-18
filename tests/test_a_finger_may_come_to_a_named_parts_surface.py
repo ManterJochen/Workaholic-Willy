@@ -22,6 +22,7 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.grasping.collision.support_resolver import TABLE_CLEARANCE_MM
 from src.robot.safety._capsule import AxisAlignedBox
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
 from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import AWAY, _arm, _backend
@@ -185,18 +186,18 @@ def _compute(calc: Any, frame: Any, others: "list[np.ndarray]") -> Any:
     from types import SimpleNamespace
 
     from src.geometry import Frame, Transform
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
     from src.robot.grasping.collision import SupportPlane
     from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import MAT_MM, _hande
 
     cfg = _hande()
     seg = SimpleNamespace(mask=frame.mask, label="part", score=1.0)
     return calc.compute_result(
-        seg, frame.depth, pixel_to_mm=None, dense_sampling=False, other_object_masks=list(others),
+        seg, frame.depth, other_object_masks=list(others),
         camera_to_base=Transform.from_matrix(frame.camera_to_base, from_frame=Frame.CAMERA, to_frame=Frame.BASE),
         support_plane=SupportPlane(normal=np.array([0.0, 0.0, 1.0]), offset_mm=float(MAT_MM), frame=Frame.BASE),
-        min_table_clearance_mm=float(cfg.grasping.support.min_clearance_mm),
-        gripper_model=build_gripper_geometry(cfg.grasping.gripper_geometry))
+        min_table_clearance_mm=TABLE_CLEARANCE_MM,
+        gripper_model=jaw_envelope(cfg))
 
 
 class TheCalculatorOffersTheGraspsTheGuardAdmitsTests(unittest.TestCase):

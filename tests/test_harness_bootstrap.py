@@ -34,7 +34,7 @@ def test_bootstrap_module_imports_without_isaac() -> None:
     # frozen value object with the documented field set
     assert SimCell.__dataclass_params__.frozen is True
     assert set(SimCell.__dataclass_fields__) == {
-        "arm", "gripper", "handles", "cfg", "robot", "sim", "dwell",
+        "arm", "gripper", "handles", "cfg", "robot", "sim",
         # Which engines the cell routes through but does NOT have installed. Empty on a normal run;
         # non-empty only when the operator explicitly opted into a degraded one, so a runner can stamp
         # it onto its results rather than letting those numbers pass as the configured system's.

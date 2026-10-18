@@ -44,7 +44,7 @@ _TOOL = {
     "source": "willy", "offset_mm": (0.0, 132.0, 0.0),
     "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476),
 }
-_SIM_FILE = "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm_a0.json"
+_SIM_FILE = "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm.json"
 
 
 def _cell(**over: object) -> RobotConfig:
@@ -109,7 +109,7 @@ class TheFileHalfRunsAtTheDesk(unittest.TestCase):
         """The matrix measured this combination against a 10 mm guard: a guard asking 11 mm was never proven. The seen
         boxes' distance is raised with it, so the cell still loads (its sum with the box margin reaches the step)."""
         said, _ = desk_evidence_refusal(_cell(safety__self_collision__min_distance_mm=11.0,
-                                              safety__self_collision__perceived_min_distance_mm=3.0))
+                                              safety__self_collision__perceived_min_distance_mm=5.0))
         assert said is not None
         self.assertIn("guard", said)
 
@@ -123,7 +123,7 @@ class TheFileHalfRunsAtTheDesk(unittest.TestCase):
     def test_a_cell_whose_plate_became_a_body_is_another_robot(self) -> None:
         """UM8's coupling body moves the guard geometry, and that is exactly what the guard hash sees."""
         with TemporaryDirectory() as folder:
-            shutil.copy(EVIDENCE_DIR / "ur5e_robotiq_hande_c20mm_+Y+X_m4mm_a0.json", folder)
+            shutil.copy(EVIDENCE_DIR / "ur5e_robotiq_hande_c20mm_+Y+X_m4mm.json", folder)
             plain = _cell(gripper__model="robotiq_hande",
                           gripper__coupling_plates=[{"name": "adapter", "thickness_mm": 20.0}])
             bodied = _cell(gripper__model="robotiq_hande",
@@ -145,8 +145,7 @@ class TheSidecarHalfRunsWhenItStarts(unittest.TestCase):
         sc = cfg.safety.self_collision
         return planner_evidence_refusal(
             identity, hand, HandLink.from_hand(hand, arm="ur5e"), arm="ur5e",
-            planner_margin_mm=float(sc.planner_margin_mm), guard_margin_mm=float(sc.min_distance_mm),
-            attach_spheres=0, mesh_dir=sc.mesh_dir,
+            planner_margin_mm=float(sc.planner_margin_mm), guard_margin_mm=float(sc.min_distance_mm), mesh_dir=sc.mesh_dir,
         )
 
     def test_a_sidecar_that_loaded_the_measured_robot_is_kept(self) -> None:

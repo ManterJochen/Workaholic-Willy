@@ -24,7 +24,6 @@ CLIS = (
     "src.config",
     "src.robot.grasping.deep",
     "src.robot.grasping.replay",
-    "src.robot.grasping.rl",
 )
 
 

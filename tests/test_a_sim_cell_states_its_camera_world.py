@@ -63,7 +63,7 @@ class ASimCameraWorldIsRefusedWhereItCannotBeHonouredTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             _boot(camera_world=SimCameraWorld("overhead"))
         self.assertIn("sim_camera_world", str(caught.exception))
-        self.assertIn("planning_world.enabled is false", str(caught.exception))
+        self.assertIn("declares no support_plane", str(caught.exception))
         self.assertEqual(0, _boot.built)  # type: ignore[attr-defined]
 
     def test_a_camera_the_boot_does_not_author_is_refused(self) -> None:
@@ -121,7 +121,6 @@ class TheSimCameraWorldLayerTests(unittest.TestCase):
         robot = require_robot(load_sim_config(None, extra_profiles=["sim_camera_world"]))
         world = robot.safety.planning_world
         table = robot.sim.scene_setup.table
-        self.assertTrue(world.enabled)
         plane = world.support_plane
         self.assertIsNotNone(plane)
         top = float(table.position_mm[2]) + float(table.size_mm[2]) / 2.0
@@ -129,19 +128,16 @@ class TheSimCameraWorldLayerTests(unittest.TestCase):
         self.assertEqual([float(v) for v in table.size_mm[:2]], [float(v) for v in plane.extent_mm])
         self.assertEqual([float(v) for v in table.position_mm[:2]], [float(v) for v in plane.center_mm])
 
-    def test_perceived_is_on_the_plane_is_within_its_clearance_and_no_payload_slots_are_reserved(self) -> None:
+    def test_the_plane_is_within_the_bench_band(self) -> None:
         from src.config.loader import load_config
-        from src.robot.safety.planning.reservation import PlannerReservation
+        from src.robot.safety.planning.perceived import CAMERA_BENCH_BAND_MM
 
         robot = load_config(profile="sim,sim_camera_world").robot
         assert robot is not None
         world = robot.safety.planning_world
-        self.assertTrue(world.perceived.enabled)
         table = robot.sim.scene_setup.table
         top = float(table.position_mm[2]) + float(table.size_mm[2]) / 2.0
-        self.assertLessEqual(abs(top - float(world.support_plane.height_mm)), world.perceived.plane_clearance_mm)
-        # Every committed ur5e evidence file was measured without attach slots, so a start with slots finds no file.
-        self.assertEqual(0, PlannerReservation.from_config(robot_cfg=robot).sphere_slots)
+        self.assertLessEqual(abs(top - float(world.support_plane.height_mm)), CAMERA_BENCH_BAND_MM)
 
     def test_the_layer_gives_the_overhead_camera_a_world_and_plain_sim_gives_none(self) -> None:
         from src.robot.execution.camera_world_wiring import CameraWorldPlan

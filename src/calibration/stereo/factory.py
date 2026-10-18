@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
 
 from .config import CalibrationResult, StereoRigConfig
 
@@ -10,17 +9,14 @@ from .repository import StereoRigRepository
 from .runtime import StereoRigRunTime
 
 from .sub_modules.calibrator import StereoCalibrator
-from .sub_modules.rectifier import StereoRectifier
-from .sub_modules.disparity import DisparityComputer
+from .sub_modules.depth import rectified_focal_and_baseline, working_depth_range_mm
+from .sub_modules.disparity import DisparityComputer, disparity_search
 from .sub_modules.pointcloud import PointCloudReconstructor
-from .sub_modules.extrinsics import ExtrinsicsTransformer
+from .sub_modules.rectifier import StereoRectifier
 
 from src.calibration.constants import CALIBRATION_LOG_DIR, STEREO_FACTORY_LOG_FILE
 from src.calibration.exceptions import StereoCalibrationError
 from src.utility.log_cfg import create_logger
-
-if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from src.config.schema.camera import StereoMatcherConfig
 
 __all__ = ["StereoRigFactory"]
 
@@ -32,9 +28,10 @@ logger = create_logger("StereoRigFactory", STEREO_FACTORY_LOG_FILE, log_dir=CALI
 class StereoRigFactory:
     """Builds one `StereoRigRunTime` per rig configuration.
 
-    The ChArUco board geometry and the stereo matcher configuration are fixed per
-    factory and shared by every rig it builds; only the stereomap path and the
-    image globs come from the individual `StereoRigConfig`.
+    The ChArUco board geometry is fixed per factory and shared by every rig it builds; only the
+    stereomap path and the image globs come from the individual `StereoRigConfig`. Each rig's
+    matcher searches the depths a rig searches where no robot section is at hand
+    (`working_depth_range_mm`), in disparities its own calibration gives (`disparity_search`).
     """
 
     def __init__(
@@ -45,39 +42,30 @@ class StereoRigFactory:
         marker_length_mm,
         aruco_dict_name,
         rectify_alpha,
-        stereo_matcher_cfg: StereoMatcherConfig,
         logger,
     ):
         self.logger = logger
-        self.stereo_matcher_cfg = stereo_matcher_cfg
         self.calibrator = StereoCalibrator(
             squares_x, squares_y, square_length_mm, marker_length_mm, aruco_dict_name, rectify_alpha
         )
         self.repository = StereoRigRepository()
 
     def create(self, config: StereoRigConfig, frame_size) -> StereoRigRunTime:
-        """Assembles rectifier, disparity, reconstruction and extrinsics for one rig.
-
-        The extrinsics transformer is only filled when the stereomap carried a
-        CAMERA -> BASE matrix; otherwise it stays empty and
-        `StereoRigRunTime.transform_cam_to_base` raises until `set_extrinsics` is
-        called.
-        """
-        calib_result, extrinsics = self._load_or_calibrate(config, frame_size)
-
-        extrinsics_transformer = ExtrinsicsTransformer()
-        if extrinsics is not None:
-            extrinsics_transformer.set_matrix(extrinsics)
+        """Assembles rectifier, disparity and reconstruction for one rig."""
+        calib_result = self._load_or_calibrate(config, frame_size)
+        focal_px, baseline_mm = rectified_focal_and_baseline(calib_result)
+        search = disparity_search(focal_px, baseline_mm, *working_depth_range_mm())
 
         rectifier = StereoRectifier(calib_result)
-        disparity = DisparityComputer(self.stereo_matcher_cfg)
+        disparity = DisparityComputer(search)
         pointcloud = PointCloudReconstructor(calib_result.Q)
 
         logger.info(
-            "Stereo rig runtime built: frame_size=%s, stereomap=%s, extrinsics=%s.",
+            "Stereo rig runtime built: frame_size=%s, stereomap=%s, disparities %d to %d.",
             frame_size,
             config.stereomap_file,
-            "loaded" if extrinsics is not None else "absent",
+            search.min_disparity,
+            search.max_disparity - 1,
         )
         return StereoRigRunTime(
             config=config,
@@ -85,34 +73,31 @@ class StereoRigFactory:
             rectifier=rectifier,
             disparity=disparity,
             pointcloud=pointcloud,
-            extrinsics=extrinsics_transformer,
         )
 
-    def _load_or_calibrate(self, config: StereoRigConfig, frame_size) -> tuple[CalibrationResult, Optional[object]]:
+    def _load_or_calibrate(self, config: StereoRigConfig, frame_size) -> CalibrationResult:
         """Loads the stereomap when it exists, calibrating from the image globs otherwise.
 
-        A calibration computed here is written back to the stereomap path without
-        extrinsics, so hand-eye still owes that rig a CAMERA -> BASE matrix. A
-        stereomap that exists but cannot be read is an error, never a recalibration.
+        A calibration computed here is written back to the stereomap path. A stereomap that
+        exists but cannot be read is an error, never a recalibration.
         """
         stereomap_file = Path(config.stereomap_file)
 
         if stereomap_file.exists():
             try:
-                calib_result, T_cam_to_base = self.repository.load(stereomap_file)
+                calib_result = self.repository.load(stereomap_file)
             except (OSError, RuntimeError, ValueError, StereoCalibrationError) as exc:
                 raise StereoCalibrationError(
                     f"failed to load stereo map {stereomap_file!s}"
                 ) from exc
             self.logger.info("[Rig] Loaded stereomap: %s", stereomap_file)
             logger.info(
-                "Stereomap loaded: %s (%d bytes, frame_size=%s, extrinsics=%s).",
+                "Stereomap loaded: %s (%d bytes, frame_size=%s).",
                 stereomap_file,
                 stereomap_file.stat().st_size,
                 calib_result.frame_size,
-                "present" if T_cam_to_base is not None else "absent",
             )
-            return calib_result, T_cam_to_base
+            return calib_result
 
         self.logger.info(
             "[Rig] Start stereo calibration using images: %s | %s",
@@ -132,11 +117,12 @@ class StereoRigFactory:
             calib_result.frame_size,
         )
 
-        self.repository.save(stereomap_file, calib_result, None)
+        self.repository.save(stereomap_file, calib_result)
         self.logger.info("[Rig] Calibration saved -> %s", stereomap_file)
         logger.info(
-            "Stereomap written: %s (%d bytes, no extrinsics, hand-eye still owes a CAMERA->BASE).",
+            "Stereomap written: %s (%d bytes); its pose in the cell is the rig's own extrinsics, from a hand-eye "
+            "calibration.",
             stereomap_file,
             stereomap_file.stat().st_size,
         )
-        return calib_result, None
+        return calib_result

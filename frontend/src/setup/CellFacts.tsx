@@ -1,10 +1,10 @@
 /**
  * What this cell is, as it was built (`GET /v1/cell/facts`, read once after a build and once after a connect): the
- * arm, the hand and its output, the cameras and the looks, the planner, whether it can push, how "halt now" acts on
- * it, and whether the carried part is modelled (a task refuses to run until it is: build plan item 9).
+ * arm, the hand and its output, the cameras and the looks, the planner, whether it can push and how "halt now" acts
+ * on it.
  *
  * Read only. Each fact says what the cell will do, in words; the server's own sentences behind them (why a push is
- * not possible, why the part is not modelled, the detector's precision) are details of the tech view.
+ * not possible, the detector's precision) are details of the tech view.
  */
 
 import { useId, type ReactNode } from 'react'
@@ -46,17 +46,8 @@ function pushWords(t: SetupT, facts: CellFactsOut): string {
   return t('fx.push.yes', { mm: push.default_mm ?? '—', max: push.ceiling_mm ?? '—' })
 }
 
-function payloadWords(t: SetupT, facts: CellFactsOut): string {
-  const payload = facts.payload
-  if (payload?.modelled) {
-    return payload.length_mm != null ? t('fx.payload.modelled', { mm: payload.length_mm }) : t('fx.payload.modelledBare')
-  }
-  return payload?.declined_reason ? t('fx.payload.not') : t('fx.payload.na')
-}
-
 /** The detector backends the server names (`PerceptionStackOut.backend`), each by the name a person knows it by. */
 const DETECTORS = {
-  grounded_sam: 'fx.detector.grounded_sam',
   vlm: 'fx.detector.vlm',
   rtdetr: 'fx.detector.rtdetr',
 } as const
@@ -93,7 +84,6 @@ export default function CellFacts() {
     ])
     rows.push([t('fx.planner'), plannerWords(t, facts, cell), tech ? facts.route.sentence : undefined])
     rows.push([t('fx.push'), pushWords(t, facts), tech && !facts.push?.can_push ? facts.push?.why_not : undefined])
-    rows.push([t('fx.payload'), payloadWords(t, facts), tech ? (facts.payload?.declined_reason ?? undefined) : undefined])
     rows.push([t('fx.brake'), brakeWords(t, facts)])
     const detector = facts.detector
     if (detector) {
@@ -102,7 +92,7 @@ export default function CellFacts() {
         t('fx.detector'),
         [detector.backend ? detectorWords(t, detector.backend) : null, detector.vlm_model_id].filter(Boolean).join(' · ') || '—',
         tech
-          ? [detector.backend, detector.precision, detector.router_enabled ? 'router' : null].filter(Boolean).join(' · ')
+          ? [detector.backend, detector.precision].filter(Boolean).join(' · ')
           : undefined,
       ])
     }

@@ -1,4 +1,4 @@
-"""Tests for the MotionContinuityGuard."""
+"""Tests for the MotionContinuityGuard, at the arm's guard numbers (``GuardNumbers``)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import unittest
 import numpy as np
 
 from src.config.schema.robot import (
-    MotionContinuitySafetyConfig,
     RobotSafetyConfig,
     WorkspaceLimitsConfig,
 )
@@ -21,6 +20,7 @@ from src.robot.safety import (
     SafetyPreflight,
     SafetyReason,
 )
+from src.robot.safety.guard_numbers import CELL, GuardNumbers
 
 
 def _pose(x_mm: float, *, quat=None, label: str = "p") -> Pose:
@@ -34,8 +34,11 @@ def _pose(x_mm: float, *, quat=None, label: str = "p") -> Pose:
 
 class MotionContinuityGuardTests(unittest.TestCase):
     def _guard(self, **overrides) -> MotionContinuityGuard:
-        cfg = MotionContinuitySafetyConfig(**overrides)
-        return MotionContinuityGuard(cfg)
+        return MotionContinuityGuard(GuardNumbers(**overrides))
+
+    def test_every_real_arm_runs_the_cell_s_numbers(self) -> None:
+        self.assertEqual((45.0, 30.0, 250.0),
+                         (CELL.max_joint_step_deg, CELL.max_orientation_step_deg, CELL.max_tcp_step_mm))
 
     def test_no_previous_target_accepts(self) -> None:
         guard = self._guard()
@@ -115,19 +118,16 @@ class MotionContinuityGuardTests(unittest.TestCase):
 
 
 class MotionContinuityWiringTests(unittest.TestCase):
-    def test_enforce_true_registers_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate(
-            {"motion_continuity": {"enforce": True}}
-        )
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
+    def test_every_cell_wires_the_guard(self) -> None:
+        pf = SafetyPreflight.from_safety_config(RobotSafetyConfig(), WorkspaceLimitsConfig(), arm_model=None)
         self.assertIn("motion_continuity", pf.guard_names)
 
-    def test_enforce_false_omits_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate(
-            {"motion_continuity": {"enforce": False}}
-        )
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
-        self.assertNotIn("motion_continuity", pf.guard_names)
+    def test_the_switch_that_left_it_out_is_refused(self) -> None:
+        """No cell switches a guard off since 2026-10-17 (the owner's cleanup)."""
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            RobotSafetyConfig.model_validate({"motion_continuity": {"enforce": False}})
 
 
 if __name__ == "__main__":

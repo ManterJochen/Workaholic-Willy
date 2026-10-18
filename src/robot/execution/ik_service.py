@@ -8,11 +8,9 @@ behalf of grasp filtering.
 Three adapters are provided:
 
 * :class:`RobotArmIKService` wraps any object that satisfies the
-  :class:`src.robot.core.RobotArm` protocol. UR, KUKA, the sim arm
-  and the dummy driver qualify: those are the four registered in
-  ``src.robot.drivers``. The Franka and ROS 2 packages are empty
-  slots, and qualify the day a driver is registered in them. No
-  vendor-specific code lives in this file.
+  :class:`src.robot.core.RobotArm` protocol. The UR, the sim arm
+  and the dummy driver qualify: those are the three registered in
+  ``src.robot.drivers``. No vendor-specific code lives in this file.
 * :class:`CachedIKService` is an LRU front-end that quantises the
   query pose so repeated IK queries do not hammer the controller
   with near-duplicate poses.

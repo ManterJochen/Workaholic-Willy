@@ -10,6 +10,7 @@ check of the UR's own stance.
 
 from __future__ import annotations
 
+import math
 import unittest
 from unittest.mock import MagicMock
 
@@ -35,12 +36,13 @@ class TheConstructorStatesItsHomeTests(unittest.TestCase):
         """The real path had NO field for this; the sim has had one all along."""
         measured_ur3e_home = (3.14, -1.0, 1.0, -1.7, -1.57, 0.0)
         cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"},
-                                          "home_joint_positions": measured_ur3e_home,
+                                          "motion": {"home_deg": [math.degrees(v) for v in measured_ur3e_home]},
                                           "gripper": {"model": "robotiq_2f85"}})
-        self.assertEqual(tuple(URRobotArm(cfg)._home_joints), measured_ur3e_home)
+        for stated, measured in zip(URRobotArm(cfg)._home_joints, measured_ur3e_home, strict=True):
+            self.assertAlmostEqual(stated, measured, places=12)
 
     def test_an_explicit_argument_still_wins_over_config(self) -> None:
-        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "home_joint_positions": (1.0,) * 6, "gripper": {"model": "robotiq_2f85"}})
+        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"home_deg": (60.0,) * 6}, "gripper": {"model": "robotiq_2f85"}})
         arm = URRobotArm(cfg, home_joints=[0.5] * 6)
         self.assertEqual(list(arm._home_joints), [0.5] * 6)
 
@@ -60,12 +62,12 @@ class AHomeOnAnEndedControlProgramTests(unittest.TestCase):
         from tests._arm_kit import RecordingPlanner
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "curobo"},
-            "safety": {"payload": {"enforce": False}},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1"},
+            "motion": {"planner": "curobo", "home_deg": [math.degrees(v) for v in (0.2, -1.5, 1.5, 0.0, 0.0, 0.0)]},
+            "safety": {},
             "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": "willy", "offset_mm": (0.0, 132.0, 0.0),
                 "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)}},
-            "home_joint_positions": (0.2, -1.5, 1.5, 0.0, 0.0, 0.0),
         })
         arm = URRobotArm(cfg)
         arm._conn = MagicMock()

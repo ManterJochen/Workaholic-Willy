@@ -41,7 +41,7 @@ python scripts/ursim/probe_our_driver.py --profile ursim  # this repository's dr
 | 6 | [`probe_pickloop_stop.py`](probe_pickloop_stop.py) | the same stop against the pick loop's verdict | the arm |
 | 7 | [`probe_halt.py`](probe_halt.py) | "halt now", M0 to M9 and M3b: the latch, the brake's latency and stop point, 200 watched moves with no early return, a braked path that sends no later waypoint, no DO0 change after a halt, a protective stop (M7) and the latch across a reconnect | the arm; tool DO0 |
 | 8 | [`probe_console_task.py`](probe_console_task.py) | the console's task, C1 to C5: three cycles with exactly 2 DO0 edges each, halt in the approach and in the carry, a protective stop, Disconnect during the planner start, and the way back through "the cell is clear", the jaws question and Restart | the arm; tool DO0 |
-| 9 | [`probe_next_leg.py`](probe_next_leg.py) | the next leg judged on a second thread while the line before it runs (`robot.motion.judge_next_leg: in_settles_and_motion`), A to C: run as judged at the junction within 0.5 mm, a halt mid-line braked and the leg judged again, the brake with and without the judging thread | the arm (UR10, CB3) |
+| 9 | [`probe_next_leg.py`](probe_next_leg.py) | the next leg judged on a second thread while the line before it runs (every cuRobo UR since 2026-10-17; `robot.motion.judge_next_leg: in_settles_and_motion` until then), A to C: run as judged at the junction within 0.5 mm, a halt mid-line braked and the leg judged again, the brake with and without the judging thread | the arm (UR10, CB3) |
 | | [`watch_stop.py`](watch_stop.py) | what the stack sees when a person presses the stop at the pendant | three small joint moves after the stop |
 | | [`probe_base_frame.py`](probe_base_frame.py) | whether the controller reports poses in the DH base frame or the one turned half a turn | nothing |
 | | [`probe_curobo_bed.py`](probe_curobo_bed.py) | the checked motions with the cuRobo planner on, and what each check costs | the arm |
@@ -80,8 +80,8 @@ stack or in the SDK.
 
 Both probes run on 127.0.0.1 only and refuse a profile whose `ur.ip` is not the loopback: they move the arm
 and switch tool DO0 without asking. Each writes its own scratch profile layer into a temporary copy of
-`config/` (`brake_on_halt: true`, the Hand-E as `jaw_io` `single_toggle` on tool DO0, a declared
-`payload.length_mm`), so no shipped profile changes.
+`config/` (the Hand-E as `jaw_io` `single_toggle` on tool DO0, a declared `part_hang_mm`), so no shipped
+profile changes.
 
 ```bash
 python scripts/ursim/probe_halt.py                        # M0-M6 (M3b included) and M9
@@ -116,9 +116,10 @@ python scripts/ursim/probe_console_task.py --json c.json  # C5, then C1-C4; need
   WSL, where `ur_rtde` loads, on 127.0.0.1 or on a URSim container named with `--container` (its address read from
   `docker inspect`, its image checked): a container of its own on the docker bridge publishes no port and leaves the
   standard one to whoever uses it. The arm, guard, planner glue and connection are real (a UR10 with a Hand-E 157 mm
-  out, `brake_on_halt` on); the camera and the planning sidecar are the unit tests' stand-ins, so it needs no GPU.
+  out, braking the line in flight as every UR does); the camera and the planning sidecar are the unit tests'
+  stand-ins, so it needs no GPU.
   Exit 0 every check passed, 1 one failed, 2 no controller or an address that is no simulator's. Measured
-  2026-10-09: every check passed (the numbers are in the UR driver's README).
+  2026-10-09 and 2026-10-18: every check passed (the numbers are in the UR driver's README).
 
 **A CB3 comes up differently** from the e-Series image:
 `URSIM_IMAGE=universalrobots/ursim_cb3:latest URSIM_NAME=ursim_cb3 URSIM_FRESH=1 bash ursim.sh up UR10`. It

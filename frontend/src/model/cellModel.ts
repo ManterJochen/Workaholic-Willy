@@ -43,7 +43,6 @@ export interface CellStreamView {
     readonly id: string
     readonly outcome: 'open' | 'refused' | 'no_answer' | 'cancelled'
     readonly refusal: string
-    readonly detached: boolean
     readonly at: number
   } | null
   /** A brake pressed while no run was active. */
@@ -176,7 +175,7 @@ export function reduceCell(view: CellStreamView, action: CellAction): CellStream
         ...base,
         // Any question still showing ends with it: an ended exchange leaves nothing to answer.
         question: null,
-        lastEnded: { id, outcome, refusal: str(data.refusal), detached: data.detached === true, at: event.ts },
+        lastEnded: { id, outcome, refusal: str(data.refusal), at: event.ts },
       }
       return line(next, event, m(`event.cell.jaws_ended.${outcome}`), outcome === 'open' ? 'ok' : 'warn', 'demo')
     }

@@ -168,10 +168,14 @@ def evidence_path(
     approach: str,
     closing: str,
     planner_margin_mm: float,
-    attach_spheres: int,
     evidence_dir: "Path | None" = None,
 ) -> Path:
-    """Where the file for one combination lives. The name is the combination, so no table maps one to the other."""
+    """Where the file for one combination lives. The name is the combination, so no table maps one to the other.
+
+    It counted the attach slots a carried part reserved too (``_a0``, ``_a16``) until 2026-10-17, when no cell modelled
+    a carried part any more: the files measured without slots lost the suffix and the field, their measurements and
+    hashes as they were, and the ones measured with slots went.
+    """
     if not approach or not closing:
         raise ValueError(
             f"{arm} with {hand} has no evidence path, because its declared tool frame places the hand nowhere "
@@ -179,8 +183,7 @@ def evidence_path(
             f"measured, and a placement nobody can derive cannot be."
         )
     folder = EVIDENCE_DIR if evidence_dir is None else Path(evidence_dir)
-    return folder / (f"{arm}_{hand}_c{float(coupling_mm):g}mm_{approach}{closing}"
-                     f"_m{float(planner_margin_mm):g}mm_a{int(attach_spheres)}.json")
+    return folder / f"{arm}_{hand}_c{float(coupling_mm):g}mm_{approach}{closing}_m{float(planner_margin_mm):g}mm.json"
 
 
 @dataclass(frozen=True)
@@ -188,7 +191,7 @@ class CombinationEvidence:
     """One measured combination: what was measured, what it was measured on, and what it proved.
 
     The hashes are what tie the file to a robot rather than to a name. ``composed_sha256`` covers the whole config
-    the planner loaded, so the hand's link, the coupling bodies, the margin and the attach slots are all inside it: a
+    the planner loaded, so the hand's link, the coupling bodies and the margin are all inside it: a
     cell that bolts a tool changer on changes this and needs its own file. ``guard_sha256`` covers the arrays the
     exact-mesh guard composed, for the same reason on the other side.
     """
@@ -199,7 +202,6 @@ class CombinationEvidence:
     approach: str
     closing: str
     planner_margin_mm: float
-    attach_spheres: int
     #: What the exact-mesh guard kept clear while this was measured. A cell at another one measured something else.
     guard_margin_mm: float
     composed_sha256: str
@@ -221,8 +223,7 @@ class CombinationEvidence:
     def path(self) -> Path:
         """The file this record belongs in, derived from the record, so a copy into another name is detectable."""
         return evidence_path(arm=self.arm, hand=self.hand, coupling_mm=self.coupling_mm, approach=self.approach,
-                             closing=self.closing, planner_margin_mm=self.planner_margin_mm,
-                             attach_spheres=self.attach_spheres)
+                             closing=self.closing, planner_margin_mm=self.planner_margin_mm)
 
     def render(self) -> str:
         return (f"{self.arm} with {self.hand} at {self.coupling_mm:g} mm, {self.approach}{self.closing}, planner "
@@ -233,7 +234,7 @@ class CombinationEvidence:
         return {
             "arm": self.arm, "hand": self.hand, "coupling_mm": float(self.coupling_mm),
             "approach": self.approach, "closing": self.closing,
-            "planner_margin_mm": float(self.planner_margin_mm), "attach_spheres": int(self.attach_spheres),
+            "planner_margin_mm": float(self.planner_margin_mm),
             "guard_margin_mm": float(self.guard_margin_mm),
             "composed_sha256": self.composed_sha256, "urdf_sha256": self.urdf_sha256,
             "arm_descriptor_sha256": self.arm_descriptor_sha256, "hand_map_sha256": self.hand_map_sha256,
@@ -248,7 +249,7 @@ class CombinationEvidence:
         return cls(
             arm=str(held["arm"]), hand=str(held["hand"]), coupling_mm=float(held["coupling_mm"]),
             approach=str(held["approach"]), closing=str(held["closing"]),
-            planner_margin_mm=float(held["planner_margin_mm"]), attach_spheres=int(held["attach_spheres"]),
+            planner_margin_mm=float(held["planner_margin_mm"]),
             guard_margin_mm=float(held["guard_margin_mm"]),
             composed_sha256=str(held["composed_sha256"]), urdf_sha256=str(held["urdf_sha256"]),
             arm_descriptor_sha256=str(held["arm_descriptor_sha256"]),
@@ -278,7 +279,6 @@ def gate_command(
     closing: str,
     planner_margin_mm: float,
     guard_margin_mm: float,
-    attach_spheres: int,
     plates: "Maybe[tuple]" = UNSET,
 ) -> str:
     """The whole ``scripts/arms/gate.py`` command that measures exactly this combination.
@@ -300,7 +300,7 @@ def gate_command(
         parts += ["--coupling-mm", f"{float(coupling_mm):g}"]
     rotation = placement_quaternion_xyzw(approach, closing)
     parts += ["--planner-margin-mm", f"{float(planner_margin_mm):g}", "--guard-margin-mm", f"{float(guard_margin_mm):g}",
-              "--attach", str(int(attach_spheres)), "--tool-rotation-xyzw", *(repr(v) for v in rotation), "--write"]
+              "--tool-rotation-xyzw", *(repr(v) for v in rotation), "--write"]
     return " ".join(parts)
 
 
@@ -324,23 +324,20 @@ def _read(
     approach: str,
     closing: str,
     planner_margin_mm: float,
-    attach_spheres: int,
     evidence_dir: "Path | None",
     command: str,
 ) -> "tuple[CombinationEvidence | None, str | None]":
     """The file for one combination, or why there is none to read. Shared by the desk and the start."""
     try:
         path = evidence_path(arm=arm, hand=hand, coupling_mm=coupling_mm, approach=approach, closing=closing,
-                             planner_margin_mm=planner_margin_mm, attach_spheres=attach_spheres,
-                             evidence_dir=evidence_dir)
+                             planner_margin_mm=planner_margin_mm, evidence_dir=evidence_dir)
     except ValueError as refused:
         return None, str(refused)
 
     if not path.is_file():
         return None, (f"nothing has measured {arm} with {hand} at a {float(coupling_mm):g} mm plate, "
-                      f"{approach}{closing}, a {float(planner_margin_mm):g} mm planner margin and "
-                      f"{int(attach_spheres)} attach slots: {path.name} is not there.{_attach_note(path, int(attach_spheres))}"
-                      f" Measure it and commit the file it writes: {command}")
+                      f"{approach}{closing} and a {float(planner_margin_mm):g} mm planner margin: {path.name} is not "
+                      f"there. Measure it and commit the file it writes: {command}")
     try:
         evidence = CombinationEvidence.from_dict(json.loads(path.read_text(encoding="utf-8")))
     except Exception as unreadable:  # noqa: BLE001 (a file nobody can read admits nothing, whatever broke it)
@@ -350,23 +347,6 @@ def _read(
         return None, (f"{path.name} holds a record that names {evidence.path.name}, so it was copied rather than "
                       f"measured for this combination. Measure this one: {command}")
     return evidence, None
-
-
-def _attach_note(path: Path, attach_spheres: int) -> str:
-    """Where attach slots come from, said before the command of a refusal that names them; empty where there are none.
-
-    The slots are the one part of the combination a cell declares without meaning to measure anything: a carried
-    part's length reserves them, and a measured arm and hand at zero slots is a different file. It measures in about a
-    minute on a cell's GPU (2026-09-23, ur10 with the Hand-E: 65 s).
-    """
-    if attach_spheres <= 0:
-        return ""
-    without = path.with_name(path.name.replace(f"_a{attach_spheres}.json", "_a0.json"))
-    measured = (f" {without.name} measured this combination without them, and the planner starts on it only for a "
-                "cell that declares no carried part, which then plans every carry as an empty hand."
-                if without.is_file() else "")
-    return (f" The {attach_spheres} attach slots are reserved because safety.planning_world.payload declares a "
-            f"carried part's length_mm, so the planner can carry the part it holds.{measured}")
 
 
 def _file_refusal(
@@ -403,7 +383,6 @@ def evidence_refusal(
     approach: str,
     closing: str,
     planner_margin_mm: float,
-    attach_spheres: int,
     guard_margin_mm: float,
     composed_sha256: "Maybe[str]",
     urdf_sha256: "Maybe[str]",
@@ -420,11 +399,9 @@ def evidence_refusal(
     holding a cell that will not come up and needs the next command, not a verdict.
     """
     command = gate_command(arm=arm, hand=hand, coupling_mm=coupling_mm, approach=approach, closing=closing,
-                           planner_margin_mm=planner_margin_mm, guard_margin_mm=guard_margin_mm,
-                           attach_spheres=attach_spheres, plates=plates)
+                           planner_margin_mm=planner_margin_mm, guard_margin_mm=guard_margin_mm, plates=plates)
     evidence, refused = _read(arm=arm, hand=hand, coupling_mm=coupling_mm, approach=approach, closing=closing,
-                              planner_margin_mm=planner_margin_mm, attach_spheres=attach_spheres,
-                              evidence_dir=evidence_dir, command=command)
+                              planner_margin_mm=planner_margin_mm, evidence_dir=evidence_dir, command=command)
     if evidence is None:
         return refused
     for name, wanted, recorded in (
@@ -470,7 +447,6 @@ def planner_evidence_refusal(
     arm: str,
     planner_margin_mm: float,
     guard_margin_mm: float,
-    attach_spheres: int,
     mesh_dir: "str | None" = None,
     evidence_dir: "Path | None" = None,
 ) -> "str | None":
@@ -490,7 +466,7 @@ def planner_evidence_refusal(
                 f"({geometry['hand_map_sha256'][:12]}...), so no file can speak for the pair.")
     return evidence_refusal(
         arm=arm, hand=geometry["hand"], coupling_mm=geometry["coupling_mm"], approach=geometry["approach"],
-        closing=geometry["closing"], planner_margin_mm=float(planner_margin_mm), attach_spheres=int(attach_spheres),
+        closing=geometry["closing"], planner_margin_mm=float(planner_margin_mm),
         guard_margin_mm=float(guard_margin_mm),
         composed_sha256=identity.composed_sha256, urdf_sha256=identity.urdf_sha256,
         arm_descriptor_sha256=identity.arm_descriptor_sha256,
@@ -516,7 +492,6 @@ def desk_evidence_refusal(
 
     from .hand import planner_hand
     from .margin import declared_planner_margin
-    from .reservation import PlannerReservation
 
     self_collision = robot_cfg.safety.self_collision
     selected = robot_cfg.arm
@@ -534,15 +509,12 @@ def desk_evidence_refusal(
     geometry, refused = _geometry(hand, arm=arm, mesh_dir=getattr(self_collision, "mesh_dir", None))
     if geometry is None:
         return refused, None
-    attach = PlannerReservation.from_config(robot_cfg=robot_cfg).sphere_slots
     command = gate_command(arm=arm, hand=geometry["hand"], coupling_mm=geometry["coupling_mm"],
                            approach=geometry["approach"], closing=geometry["closing"], planner_margin_mm=float(declared),
-                           guard_margin_mm=float(self_collision.min_distance_mm), attach_spheres=int(attach),
-                           plates=tuple(hand.plates))
+                           guard_margin_mm=float(self_collision.min_distance_mm), plates=tuple(hand.plates))
     evidence, refused = _read(arm=arm, hand=geometry["hand"], coupling_mm=geometry["coupling_mm"],
                               approach=geometry["approach"], closing=geometry["closing"],
-                              planner_margin_mm=float(declared), attach_spheres=int(attach),
-                              evidence_dir=evidence_dir, command=command)
+                              planner_margin_mm=float(declared), evidence_dir=evidence_dir, command=command)
     if evidence is None:
         return refused, None
     said = _file_refusal(evidence, hand_map_sha256=geometry["hand_map_sha256"],

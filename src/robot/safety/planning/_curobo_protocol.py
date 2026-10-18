@@ -73,9 +73,9 @@ PERCEIVED_NEAR_FIELD = PERCEIVED_FIELD + "_near"
 
 #: A check_js request key: the names of the boxes the camera saw, every one the sidecar holds, to set aside for this one
 #: judgement and put back exactly before the reply (``_curobo_perceived.SetAside``). The reply then says which under
-#: ``PERCEIVED_IGNORED_KEY``. Refused, as a failed call, wherever the sidecar holds other camera boxes than those named, a
-#: name is no box it holds, or it may hold a carried part. A request without it, and its reply, are the ones check_js
-#: always had. The UR driver asks it where only the camera's boxes refuse the planner's world and the exact guard
-#: judges them (the owner's Option 1, after the guard fixes of 2026-09-30).
+#: ``PERCEIVED_IGNORED_KEY``. Refused, as a failed call, wherever the sidecar holds other camera boxes than those named, or
+#: a name is no box it holds. A request without it, and its reply, are the ones check_js always had. The UR driver asks
+#: it where only the camera's boxes refuse the planner's world and the exact guard judges them (the owner's Option 1,
+#: after the guard fixes of 2026-09-30).
 IGNORE_PERCEIVED_KEY = "ignore_perceived"
 PERCEIVED_IGNORED_KEY = "perceived_ignored"

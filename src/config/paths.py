@@ -11,8 +11,8 @@ THE RULE
 * **``${WILLY_PROJECT_ROOT}`` at the start of a path is the repository** (or the directory the
   ``WILLY_PROJECT_ROOT`` environment variable names, the same override
   :func:`src.utility.paths.project_root` honours). It is how a tree names what the repository holds
-  rather than the cell: model weights under ``assets/models/hf``, the committed success model and
-  ranker, the RL baselines under ``docs/baselines``. The shipped tree writes those with it, so a copy
+  rather than the cell: model weights under ``assets/models/hf``, the committed ranker, the baselines
+  under ``docs/baselines``. The shipped tree writes those with it, so a copy
   of ``config/`` moved out of the repository still finds them. **Only a path field reads it**: any
   other key that holds it is refused by :class:`~src.config.schema._base.StrictModel`, naming the key,
   because the loader leaves the anchor in the text for this rule and nothing else would expand it.

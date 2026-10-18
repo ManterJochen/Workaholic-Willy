@@ -44,7 +44,6 @@ function cellOf(over: Record<string, unknown> = {}) {
     needs_person: '',
     halted: null,
     planner: { state: 'not_used' },
-    payload_model: 'none',
     recovery: null,
     jaws_confirmed_at: null,
     countdown_due: false,
@@ -61,7 +60,6 @@ const LIGHTS_READY = [
   { id: 'cameras', state: 'ok', code: 'live', message: 'live', blocks: true },
   { id: 'planner', state: 'ok', code: 'ready', message: 'ready', blocks: true },
   { id: 'gripper', state: 'ok', code: 'open_confirmed', message: 'open', blocks: true },
-  { id: 'carried_part', state: 'ok', code: 'modelled', message: 'modelled', blocks: true },
   { id: 'commands', state: 'info', code: 'ready', message: 'ready', blocks: false },
 ]
 
@@ -728,7 +726,7 @@ describe('the teach dialog', () => {
 })
 
 describe('the cell facts', () => {
-  it('say what the cell is: the camera, the push, the brake and the carried part', async () => {
+  it('say what the cell is: the camera, the push and the brake', async () => {
     serve({
       '/v1/cell': cellOf({ state: 'connected', arm: 'URRobotArm', gripper: 'JawIOGripper', hand: HAND_TOGGLE, planner: { state: 'ready' } }),
       '/v1/cell/facts': {
@@ -737,10 +735,9 @@ describe('the cell facts', () => {
         looks: ['look_1', 'look_2', 'look_3'],
         natural_closing_axis: '-y',
         push: { can_push: true, why_not: '', default_mm: 30, ceiling_mm: 50 },
-        detector: { backend: 'vlm', router_enabled: false, vlm_model_id: 'Qwen/Qwen3-VL-4B-Instruct', precision: 'auto' },
+        detector: { backend: 'vlm', vlm_model_id: 'Qwen/Qwen3-VL-4B-Instruct', precision: 'auto' },
         hand_eye_warn_mm: 6,
         brake: { latches: true, brakes_in_motion: false },
-        payload: { modelled: true, declined_reason: null, length_mm: 40 },
         route: { route: 'planned', sentence: 'cuRobo plans every move' },
         rehearsal: false,
       },
@@ -750,7 +747,6 @@ describe('the cell facts', () => {
     await waitFor(() => expect(facts.textContent).toMatch(/EIH_Cam/))
     expect(facts.textContent).toMatch(/Handgelenk/)
     expect(facts.textContent).toMatch(/30 mm, höchstens 50 mm/)
-    expect(facts.textContent).toMatch(/modelliert \(40 mm\)/)
     expect(facts.textContent).toMatch(/Tool-DO0/)
   })
 
@@ -761,7 +757,7 @@ describe('the cell facts', () => {
         wrist_camera: true,
         cameras: [{ rig_id: 'EIH_Cam', mounting: 'wrist', primary: true }],
         looks: ['look_1'],
-        detector: { backend: 'grounded_sam', router_enabled: false, vlm_model_id: null, precision: 'fp32 weights, fp16 autocast' },
+        detector: { backend: 'rtdetr', vlm_model_id: null, precision: 'auto' },
         hand_eye_warn_mm: 6,
         route: { route: 'planned', sentence: '' },
         rehearsal: false,
@@ -770,15 +766,15 @@ describe('the cell facts', () => {
     serve(routes)
     renderWith(<CellFacts />)
     const facts = await screen.findByRole('region', { name: 'Zelle' })
-    await waitFor(() => expect(facts.textContent).toMatch(/GroundingDINO \+ SAM/))
-    expect(facts.textContent).not.toMatch(/grounded_sam/)
+    await waitFor(() => expect(facts.textContent).toMatch(/RT-DETR/))
+    expect(facts.textContent).not.toMatch(/rtdetr/)
     cleanup()
 
     localStorage.setItem('willy.view', 'tech')
     serve(routes)
     renderWith(<CellFacts />)
     const tech = await screen.findByRole('region', { name: 'Zelle' })
-    await waitFor(() => expect(tech.textContent).toMatch(/GroundingDINO \+ SAM/))
-    expect(tech.textContent).toMatch(/grounded_sam/)
+    await waitFor(() => expect(tech.textContent).toMatch(/RT-DETR/))
+    expect(tech.textContent).toMatch(/rtdetr/)
   })
 })

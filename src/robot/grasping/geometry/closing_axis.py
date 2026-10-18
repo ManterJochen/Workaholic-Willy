@@ -20,7 +20,7 @@ round: a parallel jaw closes on the same two faces both ways. A closing axis wit
 chooses along a named axis asks its generator for :data:`CANDIDATES_THE_AXIS_CHOOSES_AMONG` and keeps as many of those
 that close along it as it keeps without one, so the pick loop and ``Scene.grasps`` choose among the same candidates.
 
-A cell also names how its hand and camera naturally stand, ``robot.natural_closing_axis`` (the owner's decision,
+A cell also names how its hand and camera naturally stand, ``robot.motion.natural_closing_axis`` (the owner's decision,
 2026-09-30), read the same way (:func:`natural_closing_axis_of`). Its camera grasps stay free, any closing direction and
 any tilt: of a grasp's two equivalent wrist turns, half a turn about its approach apart, the one whose tool +X lies nearer
 the natural direction at the grasp's place is taken (:func:`grasps_closing_toward`). None is left out and none tilted,

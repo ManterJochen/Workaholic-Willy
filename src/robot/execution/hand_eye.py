@@ -21,7 +21,8 @@ of it.
 
 What happens, in order:
 
-1. ``check()`` reads the config only: the rig (configured, switched on, RGB-D), for an eye in hand sweep the
+1. ``check()`` reads the config only: the rig (configured, switched on, giving depth: an RGB-D rig, or a stereo
+   pair whose stereo calibration is written, posed on its left image rectified), for an eye in hand sweep the
    camera's body, for either mounting the body of every other wrist camera the tree declares (the arm carries it
    whichever camera is swept; a tree that declares none reads nothing, and a wrist rig declared without a body is
    named on one warning line and refuses nothing), where the stations come from (a file or a list of the caller's
@@ -1053,9 +1054,8 @@ class HandEyeCalibration:
 
         Only for an arm this noun builds on a cell that plans with cuRobo and declares its planner margin:
         there the planner starts on the committed evidence file for this cell's combination (arm, hand, coupling,
-        margin and the carried part's attach slots) and refuses without one, after the arm is connected. The check
-        makes the same lookup (``desk_evidence_refusal``, the one ``real_cell --check`` reads), so a combination
-        nobody measured, a declared ``payload.length_mm`` whose attach slots have no file among them, is refused
+        placement and margin) and refuses without one, after the arm is connected. The check makes the same lookup
+        (``desk_evidence_refusal``, the one ``real_cell --check`` reads), so a combination nobody measured is refused
         here instead. An undeclared margin is left to ``real_cell --check``, which blocks on it with its own fix.
         """
         robot_cfg = self.sections.robot
@@ -1188,7 +1188,8 @@ class HandEyeCalibration:
                 camera = self.camera
                 owned = not camera.is_open
             else:
-                camera = Camera.from_config(self.sections.camera, rig_id=rig.rig_id)
+                camera = Camera.from_config(self.sections.camera, rig_id=rig.rig_id,
+                                            workspace=self.sections.robot.motion.workspace)
                 owned = True
             handle = camera.handle()
             camera.open()
@@ -1205,7 +1206,7 @@ class HandEyeCalibration:
             # routine hands it and passes keys back; neither calls the arm.
             routine = CalibrationRoutine(
                 arm=robot.arm, marker_source=marker_source, eth_calibrator=self._calibrator(),
-                workspace_limits=self.sections.robot.workspace_limits, eth_settings=self.settings,
+                workspace_limits=self.sections.robot.motion.workspace, eth_settings=self.settings,
                 rig_id=rig.rig_id, marker_id=int(target.marker_id) if target.kind == "aruco" else -1,
                 settle_time_s=self.sections.robot.calibration.settle_time_s,
                 calibration_mode=self.mode, on_event=_fan_out(preview, self.on_event),
@@ -1654,13 +1655,16 @@ def _rows(matrix: Any) -> tuple[tuple[float, ...], ...]:
 
 
 def _select_rig(camera_cfg: Any, rig_id: str) -> "tuple[Any, str | None]":
-    """``(rig, None)``, or ``(None, why)`` for a rig that is not configured, switched off, or has no depth.
+    """``(rig, None)``, or ``(None, why)`` for a rig that is not configured, switched off, or a stereo pair whose
+    stereo calibration is not written yet.
 
     The refusals are the camera noun's (``select_rig``), so a sweep and the cell say one thing about a rig. A stereo
-    pair calibrates through the routine's own stereo path, not this one, and letting a webcam rig through would fail
-    much later about ArUco rather than about the rig. A rig switched off is refused, because a check that called it
-    usable would be followed by a sweep of every pose in front of a camera the cell will not open. The sentence about
-    the artifact is added to that refusal, because it is the case an operator is most likely to meet here.
+    pair is swept as an RGB-D rig is, through its owner: the board is posed on its left image rectified, with the
+    rectified lens, which is the frame its depth lies on, so its calibration places that depth. Before its stereo
+    calibration it has no such image, and letting it through would fail much later about ArUco rather than about the
+    rig. A rig switched off is refused, because a check that called it usable would be followed by a sweep of every
+    pose in front of a camera the cell will not open. The sentence about the artifact is added to that refusal,
+    because it is the case an operator is most likely to meet here.
     """
     from src.camera.orchestration.camera import CameraRefused, select_rig
 

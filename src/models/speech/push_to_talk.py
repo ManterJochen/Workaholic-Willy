@@ -306,7 +306,8 @@ class PushToTalkSource:
         switch: Maybe[TalkSwitch] = UNSET,
         device: Maybe[int | str] = UNSET,
     ) -> PushToTalkSource:
-        """The cell PC's microphone from the keys of ``models.stt``, behind a talk switch. Opens nothing.
+        """The cell PC's microphone at the owner's cell's numbers (``capture.MICROPHONE_*``), behind a talk switch.
+        Opens nothing.
 
         Args:
             config (SpeechToTextConfig): The speech section, ``load_speech_section()``.

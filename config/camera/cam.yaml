@@ -28,8 +28,10 @@ cameras:
   # size.
   #
   # This profile names the webcam pair, because it is the only rig here that is enabled. A grasp
-  # cell needs an RGB-D primary, so building one on this profile is refused with a message that
-  # says so and names the RGB-D rigs there are. Switch `realsense_d435` on and name it here instead.
+  # cell needs a primary that gives depth: an RGB-D rig, or a stereo pair through its stereo
+  # calibration. The webcam pair has none written yet, so building a cell on this profile is
+  # refused with a message that says how to write it (examples/real_robot/19) and names the rigs
+  # that give depth. Calibrate the pair, or switch `realsense_d435` on and name it here instead.
   primary_rig_id: webcam_main
 
 
@@ -61,7 +63,12 @@ cameras:
   rigs:
     # --- Webcam pair ---
     # Two independent USB cameras driven as a stereo pair. Both are configured identically and a
-    # pair whose resolution disagrees is refused.
+    # pair whose resolution disagrees is refused. Once its stereo calibration is written to
+    # `calibration_paths.stereo_map_file` (examples/real_robot/19) the pair is a depth camera like
+    # the RealSense below: its colour is the left image rectified, its depth is matched on it, and
+    # it declares its hand-eye calibration under `extrinsics` (examples 07 to 10), fixed or on the
+    # wrist, where it declares its `body` too. Its matcher has no keys: the depths it searches come
+    # from its calibration and the robot's workspace box, and the rest is fixed in code.
     - rig_id: webcam_main
       enabled: true
       source: webcam_pair
@@ -109,6 +116,8 @@ cameras:
       calibration_paths:
         # Root of this rig's calibration artefacts. `stereo_map_file`, the left and right image
         # directories and their globs derive from it, and each can be written out to override.
+        # `stereo_map_file` is the pair's stereo calibration (JSON, whatever its name says), which
+        # the rig's camera reads as it opens and refuses to open without.
         # Relative to this config folder, like every path in the tree: `..` is the repository root,
         # where this tree's cell data lives.
         base_dir: ../calibration/webcam_main
@@ -203,13 +212,12 @@ cameras:
     # One camera: `serial_number: null` opens the first RealSense the SDK offers, and
     # `RealSenseRGBDStreamer` reads only the serial, never `device_index`. A two-camera
     # eye-to-hand cell needs two rigs here, each with its own serial, so each opens the right
-    # physical device; `cam.eth2.yaml` with `robot.eth2.yaml` ships that cell as a worked example.
+    # physical device; `cam.eth2.yaml` ships that cell as a worked example.
     # Serials are a bench fact of the specific cameras, so a second rig is filled in at bring-up
     # rather than shipped with a placeholder. Each rig declares its own calibration under
-    # `extrinsics` (see the end of this rig); `robot.grasping.fusion.cameras` only names which of
-    # these rigs are fused, by `rig_id`. A fusion entry that names no rig is refused at load, and a
-    # fused rig that is not RGB-D or declares no calibration stops the cell at build time. A real
-    # cell needs at least one RGB-D rig in this list, and `primary_rig_id` names its primary camera.
+    # `extrinsics` (see the end of this rig), and a cell fuses by itself every enabled rig that
+    # declares one, where two or more do, a calibrated stereo pair among them. A real cell needs at
+    # least one rig in this list that gives depth, and `primary_rig_id` names its primary camera.
     - rig_id: realsense_d435
       enabled: false
       source: rgbd

@@ -5,29 +5,29 @@ The scene is a 2x2 factorial:
     red cube   |   blue cube   |   red cylinder   |   blue cylinder
 
 "red" matches two objects and "cube" matches two objects, so only the conjunction picks one. That is
-the attribute-binding problem, and it is the first thing that separates a phrase grounder from a VLM.
-The four objects are otherwise identical: same 30 mm footprint, same 50 mm height, same mass, friction
-and material. The grasp mechanics are therefore constant, and what differs between two runs is the
-grounding and nothing else.
+the attribute-binding problem. It is what separated GroundingDINO, a phrase grounder, from the VLM
+(2026-08-11, picks: the VLM 10/10 on "the red cube" and on "der rote Wuerfel", the phrase grounder 0/10
+on both), and the VLM is the cell's only zero-shot detector since 2026-10-17. The four objects are
+otherwise identical: same 30 mm footprint, same 50 mm height, same mass, friction and material. The
+grasp mechanics are therefore constant, and what differs between two runs is the grounding and
+nothing else.
 
 Two measurements, deliberately separate:
 
-* ``--mode grounding`` (cheap, no motion) asks each route to ground each prompt and scores the answer
-  against projected ground truth. It is the number that compares routes, because a slipped grasp or an
-  IK failure cannot contaminate it.
+* ``--mode grounding`` (cheap, no motion) asks the cell's detector to ground each prompt and scores the
+  answer against projected ground truth. It is the number that measures the grounding, because a
+  slipped grasp or an IK failure cannot contaminate it.
 * ``--mode pick`` runs the full pick and scores the lift of the intended object, not any lift. A run
-  that confidently lifts the blue cylinder when the prompt said "der rote Wuerfel" is the failure this
-  route exists to prevent, so it is counted as its own outcome rather than as a pass.
+  that confidently lifts the blue cylinder when the prompt said "der rote Wuerfel" is the failure the
+  grounding must prevent, so it is counted as its own outcome rather than as a pass.
 
-The prompt table is half German on purpose. GroundingDINO is English-only in practice, the operator
-language in this cell is German, and the router sends any German prompt to the VLM for that reason
-(``RouteReason.NON_ENGLISH``). To measure the rule, force ``--route simple`` and ``--route vlm`` over
-the same eight prompts and compare the two numbers.
+The prompt table is half German on purpose: the operator language in this cell is German, and a
+grounding that holds in English only would not serve it. The two halves are scored apart.
 
-On-box only (needs Isaac plus the GroundingDINO and SAM2 weights, and Qwen for the VLM route):
+On-box only (needs Isaac plus the VLM and SAM2 weights under ``models.weights_root``):
 
-    <isaac-sim>\\python.bat -m src.willy_sim.run_attribute_pick --mode grounding --route vlm
-    <isaac-sim>\\python.bat -m src.willy_sim.run_attribute_pick --mode pick --route vlm \\
+    <isaac-sim>\\python.bat -m src.willy_sim.run_attribute_pick --mode grounding
+    <isaac-sim>\\python.bat -m src.willy_sim.run_attribute_pick --mode pick \\
         --prompt "der rote Wuerfel" --runs 10
 """
 
@@ -53,8 +53,8 @@ __all__ = [
     "ATTRIBUTE_OBJECTS",
     "PROMPTS",
     "attribute_specs",
+    "detector_of",
     "grounded_index",
-    "models_for_route",
     "project_base_points_to_image",
     "target_for_prompt",
 ]
@@ -77,8 +77,7 @@ OBJECT_SIZE_MM = (30.0, 30.0, 50.0)   # cylinder reads this as (diameter, diamet
 
 #: The measurement set: every object addressed once in English and once in German. Each prompt names
 #: exactly one object and needs both attributes to do it; no prompt here can be answered by a single
-#: word. The German half is the decisive axis: it is the language the cell is operated in, and it is
-#: what the router's NON_ENGLISH rule sends to the VLM.
+#: word. The German half is the decisive axis: it is the language the cell is operated in.
 PROMPTS: tuple[tuple[str, int, str], ...] = (
     ("the red cube", 0, "en"),
     ("the blue cube", 1, "en"),
@@ -137,33 +136,15 @@ def attribute_specs() -> list[SimObjectConfig]:
     ]
 
 
-def models_for_route(models: ModelsConfig, route: str) -> ModelsConfig:
-    """The models config with ``pipeline`` forced onto one route, without editing the config tree.
+def detector_of(models: ModelsConfig) -> str:
+    """The detector a run grounded with, for its printed lines and its records: the VLM's id, or RT-DETR's.
 
-    ``simple`` and ``vlm`` pin the route so the same prompt can be sent down both and the two answers
-    compared. ``auto`` turns the router on and lets it choose, which is the shipping configuration;
-    under ``auto`` a German prompt never reaches the phrase grounder, so the two routes cannot be
-    compared on it.
+    The tree's ``models.pipeline`` decides it, as on a cell; a run measures a checkpoint by naming another
+    ``model_id`` in its tree, never by a flag here.
     """
-    pipeline = getattr(models, "pipeline", None)
-    if pipeline is None:
-        raise ValueError(
-            "this runner needs a models.pipeline block (it selects the perception route). The sim "
-            "config inherits one from config/models/object.yaml."
-        )
-    if route == "simple":
-        zero_shot, router_enabled = pipeline.zero_shot.model_copy(update={"backend": "grounded_sam"}), False
-    elif route == "vlm":
-        zero_shot, router_enabled = pipeline.zero_shot.model_copy(update={"backend": "vlm"}), False
-    elif route == "auto":
-        zero_shot, router_enabled = pipeline.zero_shot.model_copy(update={"backend": "vlm"}), True
-    else:
-        raise ValueError(f"unknown route {route!r} (expected 'simple', 'vlm' or 'auto')")
-    updated = pipeline.model_copy(update={
-        "zero_shot": zero_shot,
-        "router": pipeline.router.model_copy(update={"enabled": router_enabled}),
-    })
-    return models.model_copy(update={"pipeline": updated})
+    if models.pipeline.kind == "closed_set" and models.rtdetr is not None:
+        return models.rtdetr.model_id
+    return models.pipeline.zero_shot.vlm.model_id
 
 
 def project_base_points_to_image(
@@ -302,15 +283,15 @@ def _object_pixels(cell: Any, camera_to_base: Any) -> np.ndarray:
 
 
 def run_grounding(
-    *, route: str = "vlm", headless: bool = True, data_dir: str | None = None,
+    *, headless: bool = True, data_dir: str | None = None,
     prompts: Sequence[tuple[str, int, str]] = PROMPTS,
     cell_kwargs: Mapping[str, Any] | None = None, save_frame: str | None = None,
 ) -> dict[str, Any]:
-    """Ask one route to ground every prompt on one scene, scored against projected ground truth.
+    """Ask the cell's detector to ground every prompt on one scene, scored against projected ground truth.
 
     No motion: the arm parks once, the scene is rendered once, and every prompt is answered on the
     same image. That keeps the grasp, the IK and the physics out of a number that is about perception,
-    and it makes two routes comparable because they saw the same pixels.
+    and it makes two checkpoints comparable because they saw the same pixels.
     """
     from src.models.factory import build_perception
     from src.robot.core import JointPositions
@@ -326,7 +307,8 @@ def run_grounding(
     for (name, _shape, _color, _y), pixel in zip(ATTRIBUTE_OBJECTS, pixels):
         print(f"  ground truth: {name:15} -> pixel ({pixel[0]:6.1f}, {pixel[1]:6.1f})", flush=True)
 
-    backend = build_perception(models_for_route(cell.cfg.models, route))
+    backend = build_perception(cell.cfg.models)
+    detector = detector_of(cell.cfg.models)
     bgr = _acquire_bgr(camera, arm.session, warmup_steps=warmup)
     if save_frame:
         # The frame is the evidence: any claim about what a grounder can tell apart is a claim about
@@ -359,22 +341,18 @@ def run_grounding(
         elapsed_s = time.perf_counter() - started
         best = max(perceived, key=lambda o: o.detection.score, default=None)
         got = None if best is None else grounded_index(best.detection.box, pixels)
-        decision = getattr(backend, "last_decision", None)
         row = {
             "prompt": prompt, "language": language, "target": target,
             "target_name": ATTRIBUTE_OBJECTS[target][0],
             "grounded": got, "grounded_name": None if got is None else ATTRIBUTE_OBJECTS[got][0],
             "correct": got == target, "detections": len(perceived),
             "seconds": round(elapsed_s, 3),
-            "route": None if decision is None else str(decision.route),
-            "route_reason": None if decision is None else str(decision.reason),
             "error": error,
         }
         rows.append(row)
         verdict = "OK  " if row["correct"] else "WRONG" if got is not None else "NONE "
         print(f"{verdict} [{language}] {_ascii(prompt)!r:28} -> {row['grounded_name']}"
-              f"  (want {row['target_name']}, {elapsed_s:.2f}s"
-              f"{'' if row['route'] is None else ', ' + str(row['route_reason'])})", flush=True)
+              f"  (want {row['target_name']}, {elapsed_s:.2f}s)", flush=True)
 
     correct = sum(1 for r in rows if r["correct"])
     by_language = {
@@ -385,10 +363,10 @@ def run_grounding(
         lang: sum(1 for r in rows if r["language"] == lang)
         for lang in sorted({r["language"] for r in rows})
     }
-    print(f"\nGROUNDING [{route}]: {correct}/{len(rows)} correct "
+    print(f"\nGROUNDING [{detector}]: {correct}/{len(rows)} correct "
           + " ".join(f"({lang} {by_language[lang]}/{totals[lang]})" for lang in by_language), flush=True)
     return {
-        "route": route, "correct": correct, "prompts": len(rows),
+        "detector": detector, "correct": correct, "prompts": len(rows),
         "by_language": {lang: [by_language[lang], totals[lang]] for lang in by_language},
         "results": rows, **cell_identity(cell),
     }
@@ -412,7 +390,7 @@ def _service_for(
     from src.robot.grasping.calculator_factory import build_calculator
     from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
     from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
-    from src.willy_sim.harness.modes import mode_service_kwargs, resolve_demo_mode
+    from src.willy_sim.harness.modes import resolve_demo_mode
     from src.willy_sim.perception import IsaacVisionPerceptionSource
 
     perception = IsaacVisionPerceptionSource(
@@ -427,9 +405,6 @@ def _service_for(
         camera_matrix=np.asarray(cell.handles.camera.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,
-        # Analytic-only. The learned generator decodes its own closing axis; the factory logs that
-        # it is ignoring this rather than dropping it in silence.
-        isotropic_radial_closing=bool(getattr(cell.robot.grasping, "isotropic_radial_closing", False)),
     )
     policy = GraspExecutionPolicy(
         arm=cell.arm, gripper=cell.gripper, standoff_mm=standoff_mm, retreat_mm=100.0,
@@ -439,7 +414,7 @@ def _service_for(
     return AutonomousGraspService.from_components(
         arm=cell.arm, calculator=calculator, perception=perception, gripper=cell.gripper,
         mode=mode, frame_resolver=StaticCameraToBaseResolver(transform=extrinsic),
-        policy=policy, max_attempts=2, **mode_service_kwargs(mode),
+        policy=policy, max_attempts=2,
     )
 
 
@@ -458,7 +433,7 @@ def _declared_planner(arm: object) -> str | None:
 
 
 def run_picks(
-    runs: int = 10, *, prompt: str = "der rote Würfel", route: str = "vlm", headless: bool = True,
+    runs: int = 10, *, prompt: str = "der rote Würfel", headless: bool = True,
     data_dir: str | None = None, cell_kwargs: Mapping[str, Any] | None = None,
     standoff_mm: float = 150.0, close_width_mm: float = 25.0, record_log: str | None = None,
 ) -> GateResult:
@@ -490,7 +465,8 @@ def run_picks(
 
     arm.move_to_joints(JointPositions(park_q))
     extrinsic = _true_overhead_extrinsic(cell.handles.camera, arm.session, warmup_steps=warmup)
-    backend = build_perception(models_for_route(cell.cfg.models, route))
+    backend = build_perception(cell.cfg.models)
+    detector = detector_of(cell.cfg.models)
     service = _service_for(cell, backend, prompt, extrinsic=extrinsic,
                            standoff_mm=standoff_mm, close_width_mm=close_width_mm, data_dir=data_dir)
 
@@ -498,7 +474,7 @@ def run_picks(
 
     prims = [SingleRigidPrim(path) for path, _label in cell.handles.object_specs]
     homes = [(np.asarray(p.get_world_pose()[0]), np.asarray(p.get_world_pose()[1])) for p in prims]
-    print(f"=== ATTRIBUTE pick: route={route} prompt={_ascii(prompt)!r} -> "
+    print(f"=== ATTRIBUTE pick: detector={detector} prompt={_ascii(prompt)!r} -> "
           f"'{ATTRIBUTE_OBJECTS[target][0]}' among {len(prims)} objects ===", flush=True)
 
     run_id = f"attr-{int(time.time())}"
@@ -524,7 +500,6 @@ def run_picks(
         passed = lifted == [target]
         wrong = bool(lifted) and target not in lifted
         outcome = getattr(getattr(report, "outcome", None), "value", getattr(report, "outcome", None))
-        route_taken = getattr(backend, "last_decision", None)
         results.append({
             "run": i, "outcome": outcome, "passed": passed, "wrong_object": wrong,
             "lift_mm": [round(mm, 1) for mm in lifts],
@@ -532,19 +507,18 @@ def run_picks(
         })
         print(f"RUN {i}: outcome={outcome} lifted={results[-1]['lifted']} "
               f"passed={passed}{' WRONG-OBJECT' if wrong else ''} "
-              f"lift_mm={results[-1]['lift_mm']}"
-              f"{'' if route_taken is None else ' route=' + route_taken.describe()}", flush=True)
+              f"lift_mm={results[-1]['lift_mm']}", flush=True)
         write_pick_artifacts(
             report, attempt_id=f"{run_id}-{i:04d}", record_log=record_log,
             extra={**cell_identity(cell), "sim_runner": "attribute", "sim_prompt": prompt,
-                   "sim_route": route, "sim_target": ATTRIBUTE_OBJECTS[target][0],
+                   "sim_detector": detector, "sim_target": ATTRIBUTE_OBJECTS[target][0],
                    "sim_lift_mm": round(lifts[target], 2), "sim_lifted": bool(passed),
                    "sim_wrong_object": wrong, "sim_gate_passed": passed},
         )
 
     n_pass = sum(1 for r in results if r["passed"])
     n_wrong = sum(1 for r in results if r["wrong_object"])
-    print(f"ATTRIBUTE GATE [{route}]: {n_pass}/{runs} picked the intended object "
+    print(f"ATTRIBUTE GATE [{detector}]: {n_pass}/{runs} picked the intended object "
           f"({n_wrong} wrong-object grasps)", flush=True)
     reason = _declared_planner(arm)
     return GateResult(
@@ -558,9 +532,6 @@ def main() -> None:
     ap.add_argument("--mode", type=str, default="grounding", choices=["grounding", "pick"],
                     help="grounding: score every prompt on one rendered frame, no motion. "
                          "pick: run the full pick and score the INTENDED object's lift.")
-    ap.add_argument("--route", type=str, default="vlm", choices=["simple", "vlm", "auto"],
-                    help="force the perception route (simple=GroundingDINO, vlm=Qwen) or let the "
-                         "router choose (auto). Forcing is what makes the two comparable.")
     ap.add_argument("--runs", type=int, default=10)
     ap.add_argument("--prompt", type=str, default="der rote Würfel",
                     help="pick mode: which of the measured prompts to run")
@@ -572,22 +543,22 @@ def main() -> None:
                     help="append one GraspAttemptRecord JSONL line per pick (default off)")
     ap.add_argument("--result-json", type=str, default=None)
     ap.add_argument("--save-frame", type=str, default=None,
-                    help="grounding mode: write the overhead frame the routes were scored on "
+                    help="grounding mode: write the overhead frame the prompts were scored on "
                          "(annotated with the projected ground truth) plus the raw frame")
     add_cell_arguments(ap)
     args = ap.parse_args()
 
     if args.mode == "grounding":
-        result = run_grounding(route=args.route, headless=not args.gui, data_dir=args.data_dir,
+        result = run_grounding(headless=not args.gui, data_dir=args.data_dir,
                                cell_kwargs=cell_profile_kwargs(args), save_frame=args.save_frame)
         write_run_result(args.result_json, result, scene="attribute", mode="grounding")
         return
-    gate = run_picks(runs=args.runs, prompt=args.prompt, route=args.route, headless=not args.gui,
+    gate = run_picks(runs=args.runs, prompt=args.prompt, headless=not args.gui,
                      data_dir=args.data_dir, cell_kwargs=cell_profile_kwargs(args),
                      standoff_mm=args.standoff_mm, close_width_mm=args.close_width_mm,
                      record_log=args.record_log)
     write_run_result(args.result_json, gate.to_dict(), scene="attribute", mode="pick",
-                     prompt=args.prompt, route=args.route)
+                     prompt=args.prompt)
 
 
 if __name__ == "__main__":

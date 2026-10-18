@@ -352,14 +352,15 @@ class ARobotTakesItsCamerasTests(unittest.TestCase):
         untouched = Robot.from_parts(arm=planned_arm(_world_cell()), gripper=None, lock_key=None)
         self.assertEqual(untouched.camera_world_line(),
                          "camera world  not handed any camera: every planned motion needs a decline")
-        # By owner decision a calibrated camera on a cuRobo arm with the block off is refused, not built without a world.
+        # By owner decision a calibrated camera on a cuRobo arm with no bench declared is refused, not built without a
+        # world.
         from src.robot.execution.camera_world_wiring import CameraWorldRequired
 
         off = _world_cell(world=False)
         with self.assertRaises(CameraWorldRequired) as caught:
             Robot.from_parts(arm=planned_arm(off), gripper=None, lock_key=None, cameras=[_RigOwner("overhead")],
                              robot_config=off)
-        self.assertIn("safety.planning_world.enabled is false", str(caught.exception))
+        self.assertIn("declares no support_plane", str(caught.exception))
         # An uncalibrated camera builds with no world, and every planned motion needs a decline.
         none = Robot.from_parts(arm=planned_arm(_world_cell()), gripper=None, lock_key=None,
                                 cameras=[_RigOwner("overhead", calibrated=False)], robot_config=_world_cell())

@@ -3,7 +3,7 @@
 ``GroundTruthPerceptionSource`` satisfies the grasping stack's ``PerceptionSource`` Protocol
 (``acquire() -> PerceptionFrame``) by reading the Isaac camera's ground-truth instance
 segmentation for a known object prim, plus the rendered depth and intrinsics. The vision models,
-GroundingDINO and SAM2, never run, so a failure here is a motion failure and not a perception
+the detector and SAM2, never run, so a failure here is a motion failure and not a perception
 one; the geometry pipeline from depth and mask to a grasp still runs end to end.
 
 This module imports no ``isaacsim``. The camera, an ``isaacsim.sensors.camera.Camera``, is

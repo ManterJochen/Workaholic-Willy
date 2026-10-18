@@ -19,8 +19,9 @@ from typing import Any
 
 import numpy as np
 
-from src.robot.grasping.generation.support_footprint import generate_support_footprint_grasps
-from tests.test_sfe_says_why_it_refused import (
+from src.robot.grasping.generation.body_grasps import body_grasps
+from src.robot.grasping.generation.hand import SIDE_APPROACH_SCORE_WEIGHTS
+from tests._part_scenes import (
     box_cloud,
     cylinder_beside_a_wall,
     hande_jaw,
@@ -165,7 +166,7 @@ def tilt_deg(candidate: Any) -> float:
 
 def open_corridor(candidate: Any, *, support_mm: float = 0.0) -> np.ndarray:
     """The samples SFE judges a candidate's way in by: both open fingers, from the fingertip back along the approach."""
-    from src.robot.grasping.generation.support_footprint import _finger_points
+    from src.robot.grasping.generation.hand import _finger_points
 
     jaw = hande_jaw()
     approach = np.asarray(candidate.approach, dtype=np.float64)
@@ -186,9 +187,10 @@ def run(seen: Any, *, max_candidates: int = 12, side: bool = True,
     assert wall is not None
     obstacles = np.vstack([wall, box_cloud(NEIGHBOUR.lo, NEIGHBOUR.hi, step_mm=4.0)]) if neighbour else wall
     counts: dict[str, int] = {}
-    found = generate_support_footprint_grasps(cloud, support_height_mm=0.0, jaw=hande_jaw(),
-                                              obstacle_points_base_mm=obstacles, max_candidates=max_candidates,
-                                              refusals=counts, side_approaches=side, corridor_seen=seen)
+    # Side approaches as the stage takes them: leans through the seen space, ranked by the room they keep.
+    found = body_grasps(cloud, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=obstacles,
+                        max_candidates=max_candidates, refusals=counts, corridor_seen=seen if side else None,
+                        score_weights=SIDE_APPROACH_SCORE_WEIGHTS if side else None)
     return found, counts
 
 
@@ -244,29 +246,13 @@ class NoSideGraspThroughTheShadowTests(unittest.TestCase):
         self.assertLess(tilt_deg(found[0]), 1.0, [round(tilt_deg(c)) for c in found])
 
 
-class WithoutASeenTestNoNewTiltTests(unittest.TestCase):
-    def test_without_corridor_seen_the_candidates_are_the_ones_offered_with_the_switch_off(self) -> None:
-        """No seen test, no new tilt: every candidate offered is one the generator offers with side approaches off.
-        Only their order may differ."""
-        on, _ = run(None, max_candidates=500, neighbour=False)
-        off, _ = run(None, max_candidates=500, side=False, neighbour=False)
-
-        def same(a: Any, b: Any) -> bool:
-            """One grasp, as the generator's own de-duplication reads one: within 4 mm, axes and approach aligned."""
-            return (float(np.linalg.norm(a.position_mm - b.position_mm)) < 4.0
-                    and abs(float(a.closing_axis @ b.closing_axis)) > 0.995 and float(a.approach @ b.approach) > 0.995)
-
-        self.assertTrue(on)
-        self.assertTrue(any(tilt_deg(c) >= 15.0 - 1e-6 for c in off), "the scene offers tilts with the switch off")
-        for candidate in on:
-            self.assertTrue(any(same(candidate, other) for other in off),
-                            f"a {tilt_deg(candidate):.0f} deg candidate the switch off never offers")
-        for candidate in off:
-            self.assertTrue(any(same(candidate, other) for other in on))
-
-    def test_a_seen_test_that_answers_for_the_wrong_number_of_points_is_refused(self) -> None:
-        with self.assertRaises(ValueError):
-            run(lambda points: np.ones(len(points) + 1, dtype=bool))
+class WithoutASeenTestNoLeanTests(unittest.TestCase):
+    def test_without_a_seen_test_no_grasp_leans_on_the_ladder(self) -> None:
+        """No seen test, no lean: only a ray of the frame vouches for a lean's way in, so without one the body offers
+        no grasp leaning on its ladder (15 degrees or more off vertical) beside a wall it would lean away from."""
+        found, _ = run(None, max_candidates=500, neighbour=False)
+        self.assertTrue(found)
+        self.assertFalse(any(tilt_deg(c) >= 15.0 - 1e-6 for c in found), [round(tilt_deg(c)) for c in found])
 
 
 if __name__ == "__main__":  # pragma: no cover

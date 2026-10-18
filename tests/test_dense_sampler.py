@@ -1,24 +1,24 @@
 """Tests for the dense surface sampler and cluttered-bin scene context.
 
-These cover three contracts the calculator needs:
+These cover two contracts of the library and one the calculator needs:
 
 * boundary pixels and depth discontinuities must be excluded so
   occlusion edges do not anchor antipodal pairs;
 * dense sampling returns a ``SurfaceSamples`` carrying normals,
   graspability, and pixel coordinates aligned 1:1;
 * sibling SAM2 masks fed through ``other_object_masks=...`` are
-  rasterised into the collision cloud and rejected by the existing
-  collision filter.
+  rasterised into the collision cloud (``scene_collision_cloud``), which the
+  calculator's stage and its post-hoc filter keep the hand off.
+
+(The calculator sampled densely until its dense stage left with the silhouette on 2026-10-16.)
 """
 
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 
 import numpy as np
 
-from src.robot.grasping import GraspCalculator
 from src.robot.grasping.contacts import (
     dense_surface_samples,
     scene_collision_cloud,
@@ -164,43 +164,6 @@ class SceneCollisionCloudTests(unittest.TestCase):
             target_index=0,
         )
         self.assertEqual(cloud.shape, (0, 3))
-
-
-class CalculatorClutterIntegrationTests(unittest.TestCase):
-    """End-to-end smoke test: ``compute(dense_sampling=True, other_object_masks=...)``."""
-
-    def _calculator(self) -> GraspCalculator:
-        return GraspCalculator(
-            min_grip_width_mm=1.0,
-            max_grip_width_mm=200.0,
-            max_candidates=3,
-        )
-
-    def test_compute_accepts_dense_sampling_and_neighbour_masks(self) -> None:
-        target_mask, depth = _planar_object()
-        neighbour_mask = np.zeros_like(target_mask)
-        neighbour_mask[50:62, 50:62] = 1  # disjoint, far from target
-        seg = SimpleNamespace(mask=target_mask)
-        candidates = self._calculator().compute(
-            seg,
-            depth,
-            pixel_to_mm=1.0,
-            dense_sampling=True,
-            other_object_masks=[neighbour_mask],
-        )
-        # We accept whatever count the calculator finds (0 or more) but
-        # the call must not raise and telemetry must record both flags.
-        calc = self._calculator()
-        calc.compute(
-            seg,
-            depth,
-            pixel_to_mm=1.0,
-            dense_sampling=True,
-            other_object_masks=[neighbour_mask],
-        )
-        self.assertIn("dense_sampling_points", calc.last_telemetry)
-        self.assertIn("scene_neighbour_points", calc.last_telemetry)
-        self.assertIsInstance(candidates, list)
 
 
 if __name__ == "__main__":

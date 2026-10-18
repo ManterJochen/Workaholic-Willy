@@ -47,7 +47,7 @@ from src.willy_sim.harness.instrumentation import (
     write_pick_artifacts,
     write_run_result,
 )
-from src.willy_sim.harness.modes import mode_service_kwargs, resolve_demo_mode
+from src.willy_sim.harness.modes import resolve_demo_mode
 from src.willy_sim.perception import (
     GroundTruthPerceptionSource,
     MultiObjectGroundTruthPerceptionSource,
@@ -209,33 +209,14 @@ def build_service(
     #                                      created (so extra prims are in the GT instance-id map, e.g. GSO clutter)
     cell_kwargs: "dict | None" = None,   # bootstrap kwargs (robot_model / extra_profiles) for the cell
     service_from_config: bool = False,   # boot through from_robot_config (the path a real cell takes)
-    # Let the config own the sub-policies instead of this runner. Default False leaves every run
-    # byte-identical. It covers a measurement trap: `mode_service_kwargs` hands `from_robot_config`
-    # a hand-built DecisionEngine in auto mode, and `build_decision_layer` takes the constructor
-    # argument in preference to the config block (`resolved_decision_engine is None and ...
-    # decision.enabled`). So `--boot config --grasp-mode auto` runs a decision engine that came
-    # from this file, and toggling `grasping.decision.enabled` changes nothing: a null result that
-    # reads as "the block is harmless" when it means "the block was never consulted". With this
-    # True the runner passes nothing and the config block (`decision`) is the only source. The
-    # `verification` block it also covered left on 2026-09-29.
-    config_subpolicies: bool = False,
     # Opt-in reachability filter. Default False is byte-identical: no IK service reaches the
-    # calculator, `rejected_ik` stays 0, and `grasping.feasibility`, which re-ranks on
-    # per-candidate IK quality, cannot act even when its config arrives, because the re-rank sits
-    # behind `if ik_service is not None`.
-    #
-    # It does two things at once, so measure them apart. Switching it on (a) adds a reachability
-    # filter that discards candidates, and (b) makes the feasibility re-rank possible. A single run
-    # that moves both attributes nothing to either. Run IK alone first and read `rejected_ik`, then
-    # run IK together with the feasibility layer.
+    # calculator and `rejected_ik` stays 0. On, it discards the candidates the arm cannot reach.
     ik_service: bool = False,
     # What the grasp path sees: the target's mask alone, or every authored object's mask.
     #
     # The single-object source emits one segmentation, so on a scene with neighbours the stack is
     # structurally blind to them: ``other_object_masks`` is empty, and that is the input the
-    # DENSE_CLUTTER sampler, the corridor-risk analyzer and the approach validator all consume. The
-    # corridor analyzer then scores the target's own body against nothing, so its blockage numbers
-    # cannot be calibrated against a real obstacle.
+    # DENSE_CLUTTER sampler consumes.
     #
     # True, the default, gives every object its own labelled segmentation and tells the orchestrator
     # which label is the target. On a single-object scene both sources emit exactly one mask.
@@ -251,12 +232,8 @@ def build_service(
     # This is the only configuration in which an unlabelled multi-object frame is correct, and the
     # distinction is the task, not a tuning. With a prompt ("pick the green cube") an unlabelled
     # frame is a bug: the loop ranks across all segmentations and may lift a distractor while
-    # reporting success. With "empty this bin" there is no distractor, whichever object the policy
-    # takes first is a legitimate answer, and choosing which one is the job of `grasping.ordering`.
-    #
-    # It is therefore also the only setting in which ordering can be measured. With a target label
-    # exactly one segmentation is executable, `select_target` is handed a single candidate, and the
-    # block is inert: when the operator names the object there is no ordering decision left.
+    # reporting success. With "empty this bin" there is no distractor, and whichever object the policy
+    # takes first is a legitimate answer.
     #
     # Default False: every prompt-driven runner keeps the label and the distractor guarantee.
     clear_any_object: bool = False,
@@ -265,23 +242,20 @@ def build_service(
 
     Returns (service, arm, gripper, handles, cfg, view_pose, cell).
 
-    ``mode`` selects the grasp mode: "easy" is the deterministic open-loop path, and "auto" wires the
-    real ``DecisionEngine`` (perceive, rank, decide, grasp). "closed_loop", which added the two-scan
-    refiner and the verifier, was removed on 2026-09-29: it was never viable on the moving wrist
-    camera, which lost the target between the two scans.
+    ``mode`` selects the grasp mode: "easy" is the deterministic open-loop path, and "auto" the automatic
+    sampler. "closed_loop", which added the two-scan refiner and the verifier, was removed on 2026-09-29:
+    it was never viable on the moving wrist camera, which lost the target between the two scans.
     """
     from src.robot.execution.autonomous_grasp import AutonomousGraspService
-    from src.robot.execution.autonomous_grasp.config import GraspMode
     from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
     from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
     # Through the factory, not by name, so `robot.grasping.calculator: deep` reaches this runner
     # and the six modules that share its `build_service`. Default-off byte-identical: the selector
     # defaults to `geometric` and that branch is `GraspCalculator(**kwargs)` verbatim.
     #
-    # The deep calculator cannot honour two of the kwargs below, and the factory refuses them when
-    # they are switched on: `ik_service` is the reachability filter that discards unreachable
-    # candidates, and `corridor_risk_per_candidate` produces the per-candidate corridor risk. At
-    # their off positions, which is what every default run passes, the build proceeds unchanged.
+    # The deep calculator cannot honour `ik_service`, the reachability filter that discards unreachable
+    # candidates, and the factory refuses it when it is switched on. At its off position, which is what
+    # every default run passes, the build proceeds unchanged.
     from src.robot.grasping.calculator_factory import build_calculator
 
     # The byte-identical boot prefix is shared; eih passes its single/clutter object override, plus (opt-in)
@@ -311,12 +285,14 @@ def build_service(
         # Make the bin "really real" for the whole stack: (1) inject the walls into the SafetyPreflight so a
         # static approach into a wall is self-collision-rejected, and (2) register them in cuRobo's collision
         # world so a "curobo" plan routes around them (mirrors run_dense_pick). BASE frame, metres, WXYZ.
+        from src.willy_sim.guard_numbers import ISAAC
         from src.robot.safety.preflight import SafetyPreflight
 
         _bin_sc = cell.robot.safety.self_collision.model_copy(update={"fixtures": _fixtures})
         _safety = cell.robot.safety.model_copy(update={"self_collision": _bin_sc})
         arm._preflight = SafetyPreflight.from_safety_config(
-            _safety, cell.robot.workspace_limits, hand=_guard_hand, arm_model=cell.robot.arm.model or None,
+            _safety, cell.robot.motion.workspace, hand=_guard_hand, arm_model=cell.robot.arm.model or None,
+            numbers=ISAAC,
         )
         if curobo_bin_world:
             _cuboids = [
@@ -448,12 +424,6 @@ def build_service(
             ground_truth_depth=ground_truth_depth,
             grasp_lift_mm=grasp_lift_mm,
         )
-    # The calculator's owner turns the per-candidate corridor-risk producer on from config
-    # (uncertainty.rerank_enabled) at construction: no post-build mutation, and the camera_matrix
-    # lives here rather than in from_robot_config. The producer is dense-only, so it is inert in the
-    # easy and auto runners, where rerank_enabled defaults to False and the mode skips the re-rank.
-    # A dense-clutter runner sets rerank_enabled=true to make it fire.
-    _unc_cfg = getattr(getattr(cell.robot, "grasping", None), "uncertainty", None)
     _ik = None
     _ik_banner = ""
     if ik_service:
@@ -466,7 +436,7 @@ def build_service(
         # active `ik_service`, so announcing the filter here would be a line claiming a filter that
         # the very next statement declines to install.
         _ik_banner = ("[ik] reachability filter ON (RobotArmIKService on the live sim arm): "
-                      "candidates that fail IK are now discarded, and feasibility can re-rank")
+                      "candidates that fail IK are now discarded")
     calculator = build_calculator(
         cell.robot,
         data_dir=data_dir,
@@ -475,7 +445,6 @@ def build_service(
         camera_matrix=np.asarray(wrist_cam.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,
-        corridor_risk_per_candidate=bool(getattr(_unc_cfg, "rerank_enabled", False)),
         ik_service=_ik,
     )
     if _ik_banner:
@@ -488,25 +457,11 @@ def build_service(
     )
     # One mode knob, resolved through harness/modes.py. Easy is the deterministic open-loop path.
     # Auto must be built in auto mode, because the per-call override guard refuses
-    # easy_service.pick(mode='auto') when the sampling_mode differs; it wires the real
-    # DecisionEngine as a single perceive-then-decide tick, which never moves the camera, so the
-    # grasp and motion path after GRASP_NOW is identical to easy.
+    # easy_service.pick(mode='auto') when the sampling_mode differs.
     # CLOSED_LOOP, the two-scan refine, left on 2026-09-29 with its WILLY_C1_* knobs. It was never
     # viable here: the wrist camera moves between the two scans, and at the refine standoff the
     # object left the wrist camera's view, so no tracker had anything to match.
     grasp_mode = resolve_demo_mode(mode)
-    is_auto = grasp_mode is GraspMode.AUTO
-    _mode_kwargs = mode_service_kwargs(grasp_mode)
-    if config_subpolicies:
-        if not service_from_config:
-            raise SystemExit(
-                "config_subpolicies needs service_from_config=True (--boot config): from_components has "
-                "no config to read the sub-policies from, so suppressing the runner's would leave none."
-            )
-        if _mode_kwargs:
-            print(f"[config-subpolicies] runner sub-policies suppressed ({sorted(_mode_kwargs)}): "
-                  f"grasping.decision is the only source", flush=True)
-        _mode_kwargs = {}
     if service_from_config:
         # A sim measurement is only a statement about a real cell if the sim boots the way a real
         # cell boots. The arm and the gripper must be passed in: `SimulationApp` is a process
@@ -518,20 +473,18 @@ def build_service(
         service = AutonomousGraspService.from_robot_config(
             cell.robot, calculator=calculator, perception=perception,
             mode=grasp_mode, frame_resolver=resolver, policy=policy, max_attempts=3,
-            arm=arm, gripper=gripper, **_mode_kwargs,
+            arm=arm, gripper=gripper,
         )
     else:
         service = AutonomousGraspService.from_components(
             arm=arm, calculator=calculator, perception=perception, gripper=gripper,
             mode=grasp_mode, frame_resolver=resolver, policy=policy, max_attempts=3,
-            **_mode_kwargs,
         )
 
-    # A bare from_components leaves effective_config=None, which silences the uncertainty, watchdog
-    # and latency-SLO telemetry and the orchestrator overlays. Wire them on the executed pick
-    # exactly as from_robot_config does, so that autonomy is active and reported rather than
-    # bypassed. Guarded and lazy: it must never break the deterministic easy grasp or a mock-mode
-    # boot.
+    # A bare from_components leaves effective_config=None, which leaves the recovery off and the
+    # orchestrator overlays (the hand's geometry, the support, the learned ranker in shadow) unset. Wire
+    # them on the executed pick exactly as from_robot_config does. Guarded and lazy: it must never break
+    # the deterministic easy grasp or a mock-mode boot.
     try:
         from src.robot.execution.autonomous_grasp.builders import (
             apply_orchestrator_overlays,
@@ -541,32 +494,22 @@ def build_service(
         grasping_cfg = getattr(cell.robot, "grasping", None)
         if service_from_config:
             # from_robot_config already did both, unconditionally. Re-running them here would apply
-            # the overlays twice and drag the auto special case below along with it.
+            # the overlays twice.
             pass
         elif grasping_cfg is not None:
             service.effective_config = build_effective_config(
                 grasping_cfg, resolved_mode=grasp_mode, resolved_max_attempts=3,
             )
-            # The orchestrator overlays wire multi-view fusion, whose BASE-frame voxel occupancy
-            # accumulates across pick() calls on the shared orchestrator. That is correct for
-            # multiple views of one scene and wrong across the independent reset-picks this runner
-            # makes: in auto mode the grid fills up over successive picks and starves candidate
-            # generation, which reports no_candidates. So apply the overlays only outside auto; the
-            # auto decision gate does not need them, because it is wired through decision_engine.
-            if not is_auto:
-                apply_orchestrator_overlays(service.runtime, grasping_cfg, resolved_mode=grasp_mode)
-            print(f"autonomy showcase: effective_config wired (mode={grasp_mode.value}); "
-                  f"orchestrator overlays {'wired (U2/U4/U5/U6)' if not is_auto else 'SKIPPED in AUTO (fusion accumulates across reset-picks)'} "
-                  "+ U8/U9/U10 telemetry",
-                  flush=True)
-    except Exception as exc:  # noqa: BLE001 (the showcase must never break the executed pick)
-        print(f"autonomy showcase skipped ({exc})", flush=True)
+            apply_orchestrator_overlays(service.runtime, grasping_cfg, resolved_mode=grasp_mode, robot_cfg=cell.robot)
+            print(f"effective_config and orchestrator overlays wired (mode={grasp_mode.value})", flush=True)
+    except Exception as exc:  # noqa: BLE001 (the wiring must never break the executed pick)
+        print(f"effective_config wiring skipped ({exc})", flush=True)
 
     # The half that makes the multi-object frame safe. N segmentations with no label are N
     # executable targets; the loop would rank across all of them and could lift a distractor while
     # reporting a successful pick. With the label set, exactly one segmentation is executable and
-    # the rest become ``other_object_masks``: neighbour clutter for the dense sampler, the corridor
-    # analyzer and the approach validator. This is part of the switch above, not an addition to it.
+    # the rest become ``other_object_masks``: neighbour clutter for the dense sampler. This is part of
+    # the switch above, not an addition to it.
     if _target_label is not None:
         _orch = getattr(getattr(service, "runtime", None), "orchestrator", None)
         if _orch is None:
@@ -578,21 +521,21 @@ def build_service(
         _orch.target_label = _target_label
         print(f"perception: MULTI-OBJECT ({len(handles.object_specs)} labelled masks) -> "
               f"target_label={_target_label!r}; the other {len(handles.object_specs) - 1} feed "
-              "other_object_masks (clutter/corridor/approach)", flush=True)
+              "other_object_masks (clutter)", flush=True)
     elif clear_any_object:
         print(f"perception: MULTI-OBJECT ({len(handles.object_specs)} labelled masks) -> NO "
-              "target_label (bin-clearing: every object is a legitimate target, so the loop; and "
-              "grasping.ordering; chooses which one goes first)", flush=True)
+              "target_label (bin-clearing: every object is a legitimate target, and the loop "
+              "chooses which one goes first)", flush=True)
     else:
-        print(f"perception: SINGLE-MASK ({_target_prim}) -> other_object_masks is empty; the corridor "
-              "analyzer and the approach validator have no neighbour to see", flush=True)
+        print(f"perception: SINGLE-MASK ({_target_prim}) -> other_object_masks is empty; the dense "
+              "sampler has no neighbour to see", flush=True)
 
     _print_boot_path(service, arm=arm, gripper=gripper, from_config=service_from_config)
     return service, arm, gripper, handles, cfg, view_pose, cell
 
 
 def _print_boot_path(service, *, arm, gripper, from_config: bool) -> None:  # noqa: ANN001
-    """State which path built this service and check the four ways it can look right and be wrong.
+    """State which path built this service and check the three ways it can look right and be wrong.
 
     Each of these produces a cell that runs, reports success and measures nothing:
 
@@ -601,20 +544,15 @@ def _print_boot_path(service, *, arm, gripper, from_config: bool) -> None:  # no
     * a substituted gripper: ``gripper.vendor: robotiq`` on a ``sim`` arm becomes a NullGripper
       whose jaws close on nothing while every pick reports success;
     * an arm that is not the one holding the live session: a second ``SimulationApp`` drives prims
-      no camera is looking at, and nothing crashes;
-    * ``mode_label`` outside ``_approach_path_modes``: the swept-volume validator reads as enabled
-      and never runs, because the config default is ``(dense_clutter,)`` while this runner is
-      ``easy``.
+      no camera is looking at, and nothing crashes.
     """
 
     orch = getattr(getattr(service, "runtime", None), "orchestrator", None)
     substitution = getattr(gripper, "substitution", None)
-    approach_modes = getattr(orch, "_approach_path_modes", None)
-    mode_label = getattr(orch, "mode_label", None)
     print(
         f"boot path: {'from_robot_config (CONFIG)' if from_config else 'from_components (RUNNER)'} | "
         f"effective_config={'set' if getattr(service, 'effective_config', None) is not None else 'NONE'} | "
-        f"mode_label={mode_label!r} | gripper={type(gripper).__name__}"
+        f"gripper={type(gripper).__name__}"
         f"{' SUBSTITUTED=' + str(substitution.reason) if substitution is not None else ''} | "
         f"arm_is_live_handle={getattr(orch, 'arm', None) is arm}",
         flush=True,
@@ -625,31 +563,18 @@ def _print_boot_path(service, *, arm, gripper, from_config: bool) -> None:  # no
     if from_config and getattr(service, "effective_config", None) is None:
         print("  WARN: booted from config but effective_config is None: the grasping block is "
               "absent from the tree, so the overlays did not run.", flush=True)
-    if approach_modes and mode_label is not None and mode_label not in approach_modes:
-        print(f"  WARN: approach validation is wired for {sorted(approach_modes)} but this run is "
-              f"{mode_label!r}: it reads as ON and will never fire.", flush=True)
 
 
 def _print_autonomy_telemetry(report: object) -> None:
-    """Labelled dump of the AutonomousGrasp decision, uncertainty and latency-SLO telemetry."""
+    """Labelled dump of the AutonomousGrasp report's mode, profile, outcome and telemetry keys."""
     mode = getattr(report, "mode", None)
     profile = getattr(report, "profile", None)
     prof_name = getattr(profile, "sampling_mode", getattr(profile, "name", profile))
     print(f"  [autonomy] mode={getattr(mode, 'value', mode)} profile={prof_name} outcome={getattr(report, 'outcome', None)}", flush=True)
-    unc = getattr(report, "uncertainty", None)
-    if unc is not None:
-        print(f"  [autonomy] uncertainty={unc}", flush=True)
-    decision = getattr(report, "decision", None)
-    if decision is not None:
-        to_dict = getattr(decision, "to_dict", None)
-        print(f"  [autonomy] decision={to_dict() if callable(to_dict) else decision}", flush=True)
     tele = getattr(report, "telemetry", None)
     if isinstance(tele, dict) and tele:
         keys = sorted(tele)[:12]
         print(f"  [autonomy] telemetry keys={keys}", flush=True)
-        for k in ("latency", "latency_spans", "slo", "stage_latency_ms"):
-            if k in tele:
-                print(f"  [autonomy] {k}={tele[k]}", flush=True)
 
 
 def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = None,
@@ -662,8 +587,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
 
     Each pick perceives from the view pose, resolves CAMERA->BASE, then grasps.
 
-    ``mode`` is "easy" or "auto" (the real ``DecisionEngine``, with the typed ``DecisionReport``
-    printed per run).
+    ``mode`` is "easy" or "auto" (the automatic sampler).
 
     Both instruments are opt-in and default off: ``record_log`` appends one ``GraspAttemptRecord``
     JSONL line per pick, stamped with the ground-truth ``sim_lift_mm`` and ``sim_lifted``, and
@@ -672,11 +596,6 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
     """
     _m = str(mode).lower().replace("-", "_")
     is_auto = _m == "auto"
-    if is_auto:
-        print("=== EIH AUTO decision-gate showcase (perceive -> rank -> DecisionEngine -> grasp) ===", flush=True)
-        print("    NOTE: the Isaac arm reports is_simulated=True, so the gate is PERMISSIVE: it "
-              "exercises the\n    decide control flow + typed DecisionReport, not a hardware fail-closure "
-              "(that needs real hw).", flush=True)
     service, arm, gripper, handles, cfg, view_pose, cell = build_service(
         headless=headless, data_dir=data_dir, mode=mode, marker=marker, cell_kwargs=cell_kwargs,
         ground_truth_depth=ground_truth_depth,
@@ -698,16 +617,6 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
         arm.move(view_pose)
         z0 = reset_object_to_home_z0(obj, home_pos, home_quat, arm.session, settle_steps=30)
         report = service.pick()
-        if is_auto:  # surface the real DecisionEngine verdict for this pick
-            decision = getattr(report, "decision", None)
-            if decision is not None and hasattr(decision, "to_dict"):
-                d = decision.to_dict()
-                print(f"  [AUTO] action={d.get('decision_action')} reason={d.get('decision_reason_code')} "
-                      f"uncertainty={d.get('uncertainty_score')} top_score={d.get('top_score')} "
-                      f"threshold={d.get('threshold_used')} "
-                      f"src={d.get('uncertainty_source')}", flush=True)
-            else:
-                print(f"  [AUTO] no DecisionReport on report (outcome={getattr(report, 'outcome', None)})", flush=True)
         if i == 0:  # first run only: report where the resolved grasp landed vs the true position
             pr = getattr(report, "pick_report", None)
             eg = getattr(pr, "executed_grasp", None)
@@ -747,14 +656,14 @@ def main() -> None:
     ap.add_argument("--no-headless", action="store_true", help="alias for --gui")
     ap.add_argument("--data-dir", type=str, default=None)
     ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto"],
-                    help="P1: grasp mode (easy=10/10 trust path; auto=real DecisionEngine)")
+                    help="P1: grasp mode (easy=10/10 trust path; auto=the automatic sampler)")
     ap.add_argument("--demo-auto", action="store_true", help="deprecated alias for --mode auto")
     ap.add_argument("--marker", type=str, default="ground_truth", choices=["ground_truth", "aruco"],
                     help="which CALIBRATED EIH artifact to drive the resolver (logs/calibration/eih_wrist_cam_<marker>.json); "
                          "falls back to the GT oracle if missing/poor")
     ap.add_argument("--record-log", type=str, default=None,
                     help="P0: append one GraspAttemptRecord JSONL line per pick to this path "
-                         "(the soak/KPI/RL data source; default off -> byte-identical)")
+                         "(the soak/KPI data source; default off -> byte-identical)")
     ap.add_argument("--debug-frames", type=str, default=None,
                     help="P0: dump the grasp-point overlay PNG per pick into this dir")
     ap.add_argument("--result-json", type=str, default=None,

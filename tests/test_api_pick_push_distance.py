@@ -2,13 +2,12 @@
 
 On a connected dummy cell, 51 mm is refused because the hard cap is 50 mm and 9 mm because it cannot open the 10 mm a
 finger needs: each a 422 ``push_distance_refused`` with the planner's sentence, and no run started. 40 mm is taken,
-since the cell allows it (the shipped config declares no fixture, so the hard cap of 50 mm is its ceiling), and the
-run's campaign carries it. The push itself, inside the pick and through the console's run body, is pinned end to end in
+under the hard cap of 50 mm, and the run's campaign carries it. The push itself, inside the pick and through the console's run body, is pinned end to end in
 ``tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py``; this half needs the web framework's test client, which
 only a ``test_api_*`` file may import (``tests/test_no_web_framework_import.py``).
 
-A cell that arms the push and declares no fixture (owner, 2026-10-01: the push needs none) builds, connects and takes
-the same answers: 30 mm when nobody asks, up to 50 mm as asked, above 50 or under 10 mm refused.
+A dense_clutter cell, whose picks push (the owner's recovery, every cell's since 2026-10-16), builds, connects and
+takes the same answers: 30 mm when nobody asks, up to 50 mm as asked, above 50 or under 10 mm refused.
 """
 
 from __future__ import annotations
@@ -101,34 +100,27 @@ class TheConsoleTakesAPushDistanceTests(_OnAConnectedDummyCell, unittest.TestCas
 
 
 def _pushing_tree(target: Path) -> None:
-    """The dummy tree with the owner's push armed (``dense_clutter``, ``nudge_target``) and no fixture declared."""
+    """The dummy tree, in ``dense_clutter`` as the shipped tree is since 2026-10-17 (the owner's cell's): its picks
+    push."""
     from tests.test_api_pick import _dummy_tree
 
     _dummy_tree(target)
-    robot = target / "robot" / "robot.yaml"
-    text = robot.read_text(encoding="utf-8")
-    text, hits = re.subn(
-        r'^(\s*)default_mode:\s*"auto"$',
-        r'\g<1>default_mode: "dense_clutter"\n\g<1>recovery:\n\g<1>  enabled: true\n'
-        r'\g<1>  allowed_actions: [rescan, next_target, nudge_target]',
-        text, count=1, flags=re.MULTILINE,
-    )
-    assert hits == 1, "the push substitution found nothing"
-    robot.write_text(text, encoding="utf-8")
+    text = (target / "robot" / "robot.yaml").read_text(encoding="utf-8")
+    assert re.search(r'^\s*default_mode:\s*"dense_clutter"$', text, flags=re.MULTILINE), "the tree does not push"
 
 
 @unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
-class ACellThatPushesWithoutAFixtureTests(_OnAConnectedDummyCell, unittest.TestCase):
-    """The owner's push config with no ``recovery.fixture``: it builds, a push is 30 mm unless asked, 50 mm at most."""
+class ADenseClutterCellPushesTests(_OnAConnectedDummyCell, unittest.TestCase):
+    """A dense_clutter cell builds with the push armed, a push is 30 mm unless asked, 50 mm at most."""
 
     def _tree(self, target: Path) -> None:
         _pushing_tree(target)
 
-    def test_it_builds_with_the_push_armed_and_no_fixture(self) -> None:
+    def test_it_builds_with_the_push_armed(self) -> None:
         recovery = self.cell.session.service.effective_config.recovery_orchestrator
-        self.assertIsNone(recovery.fixture)
+        self.assertTrue(recovery.enabled)
         self.assertIn("nudge_target", recovery.allowed_actions)
-        self.assertEqual(30.0, recovery.push_distance_mm)
+        self.assertEqual(30.0, self.cell.session.service.push_distance())
 
     def test_51_and_9_are_refused_50_is_taken_and_30_when_nobody_asks(self) -> None:
         for asked, said in ((51.0, "the hard cap is 50 mm"), (9.0, "cannot open the 10 mm")):

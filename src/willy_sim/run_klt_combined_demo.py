@@ -103,7 +103,7 @@ def record_jaw(out: str, *, deep: bool, hold_steps: int = HOLD) -> int:
     klt = (450.0, 0.0, KLT_Z_MM) if deep else (450.0, 0.0, KLT_Z_SHALLOW_MM, KLT_ZSCALE_SHALLOW)
     service, arm, gripper, handles, cfg, target_idx, target_label = build_service(
         headless=True, prompt=GREEN, enable_bin=True,
-        bin_half_width_mm=146.5, bin_half_width_y_mm=94.7, bin_height_mm=bin_h, finger_tool=True,
+        bin_half_width_mm=146.5, bin_half_width_y_mm=94.7, bin_height_mm=bin_h,
         motion_planner="curobo", real_klt_bin=klt,
         camera_world=CameraWorldDecline("run_klt_combined_demo: this runner plans without a live camera world"),
     )

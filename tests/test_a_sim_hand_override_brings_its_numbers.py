@@ -12,6 +12,7 @@ import unittest
 import unittest.mock as mock
 from typing import Any
 
+from src.robot.grasping.collision.gripper_model import jaw_envelope
 from src.config import reload_config
 
 
@@ -42,7 +43,7 @@ def _read(robot: Any, dotted: str) -> Any:
     node = robot
     for part in dotted.split("."):
         node = getattr(node, part)
-    return str(node) if dotted.endswith(".kind") else node
+    return node
 
 
 class TheOverrideDerivesTests(unittest.TestCase):
@@ -50,12 +51,12 @@ class TheOverrideDerivesTests(unittest.TestCase):
         robot = _booted_robot("schunk_egu50")
         self.assertEqual(
             (robot.gripper.max_width_mm, robot.gripper.closed_width_mm,
-             robot.grasping.gripper_geometry.parallel_jaw.fingertip_depth_mm),
+             jaw_envelope(robot).fingertip_depth_mm),
             (84.1, 4.1, 7.5),
         )
 
     def test_every_hand_key_is_the_one_the_loader_derives(self) -> None:
-        """Both doors, one answer: all thirteen keys, not the three the red test names."""
+        """Both doors, one answer: every key the hand determines."""
         from src.config.hand_numbers import HandNumbers
 
         robot = _booted_robot("schunk_egu50")
@@ -68,7 +69,7 @@ class TheOverrideDerivesTests(unittest.TestCase):
         robot = _booted_robot("robotiq_2f85")
         self.assertEqual(
             (robot.gripper.max_width_mm, robot.gripper.closed_width_mm,
-             robot.grasping.gripper_geometry.parallel_jaw.fingertip_depth_mm),
+             jaw_envelope(robot).fingertip_depth_mm),
             (85.0, 0.0, 28.72),
         )
 

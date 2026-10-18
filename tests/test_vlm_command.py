@@ -6,8 +6,8 @@ answer, which is where every mistake would turn into a wrong card.
 
 Three things matter most:
 
-1. **A phrase the detector gets is English, with no quantifier.** A German object phrase (one the router knows,
-   one of the cell's German words, or the German command's own words copied), or "all screws", gets exactly one
+1. **A phrase the detector gets is English, with no quantifier.** A German object phrase (one the phrase reading
+   knows, one of the cell's German words, or the German command's own words copied), or "all screws", gets exactly one
    corrective retry, and a second bad answer is "not understood", never a half-read card.
 2. **A pose field holds only an offered NAME.** The reader is handed the taught poses as label -> name pairs, so a
    spoken "Ablage links" comes back as `ablage_links`; anything else is dropped and noted. A place whose own words
@@ -366,10 +366,10 @@ class OneCorrectiveRetryTests(_ForgetsTheSharedHolder):
 
 
 class GermanWordsAreAskedAgainTests(_ForgetsTheSharedHolder):
-    """German nouns with no umlaut and no word the router knows ("schrauben", "mutter") pass the router's analysis
-    as English, and GroundingDINO grounds German badly. Two checks of the reader's own catch them: a phrase made only
-    of the German command's own words was copied, not translated; and the cell's German part, colour and material
-    words are never English."""
+    """German nouns with no umlaut and no word the phrase reading knows ("schrauben", "mutter") pass its analysis as
+    English (``src.models.routing.analyse``), and the detector is asked in English. Two checks of the reader's own catch
+    them: a phrase made only of the German command's own words was copied, not translated; and the cell's German part,
+    colour and material words are never English."""
 
     def test_a_german_noun_copied_from_the_sentence_is_asked_again(self) -> None:
         cases = (
@@ -436,7 +436,7 @@ class GermanWordsAreAskedAgainTests(_ForgetsTheSharedHolder):
         self.assertEqual((reading.understood, len(ask.calls)), (True, 1))
 
     def test_a_german_pose_label_does_not_make_an_english_command_german(self) -> None:
-        """ "Ablage links" carries words the router counts as German; the command around it is still English."""
+        """ "Ablage links" carries words the phrase reading counts as German; the command around it is still English."""
         ask = _Canned(_answer(object="red cylinder", object_said="the red cylinder", place_pose="ablage_links",
                               return_to="wartepose"))
         reading = understand("Put the red cylinder on Ablage links and go back to the Wartepose", ask=ask,
@@ -968,7 +968,7 @@ class TheKnownSentencesTests(_ForgetsTheSharedHolder):
                          known_answer("Alle Schrauben in die Kiste", offered))
 
     def test_the_door_asks_the_table_first_and_loads_nothing(self) -> None:
-        """Before the load rule: a GroundingDINO cell whose model is not loaded reads a known sentence, and refuses
+        """Before the load rule: a closed-set cell whose model is not loaded reads a known sentence, and refuses
         any other as before."""
         from src.models.vlm import CommandRefused
         from tests.test_vlm_holder import _holder, _Loads, _models
@@ -976,14 +976,14 @@ class TheKnownSentencesTests(_ForgetsTheSharedHolder):
         loads = _Loads()
         holder = _holder(loads)
         self.addCleanup(holder.forget)
-        reading = read_command("Leg den Würfel in die Box", models=_models(backend="grounded_sam"), poses=POSES,
+        reading = read_command("Leg den Würfel in die Box", models=_models(kind="closed_set"), poses=POSES,
                                weights_present=True, holder=holder, known=True)
         self.assertEqual(("cube", "box", KNOWN_SENTENCE_MODEL), (reading.object.phrase if reading.object else None,
                                                                  reading.place.phrase if reading.place else None,
                                                                  reading.model_id))
         self.assertEqual(0, loads.calls)
         with self.assertRaises(CommandRefused) as refused:
-            read_command("Leg den Würfel in die Box", models=_models(backend="grounded_sam"), poses=POSES,
+            read_command("Leg den Würfel in die Box", models=_models(kind="closed_set"), poses=POSES,
                          weights_present=True, holder=holder)
         self.assertEqual("vlm_not_loaded", refused.exception.code, "without the switch the table is not asked")
 
@@ -1012,7 +1012,7 @@ class RememberedAnswersTests(_ForgetsTheSharedHolder):
     def _read(self, holder: Any, sentence: str | None = None, poses: dict[str, str] | None = None) -> CommandReading:
         from tests.test_vlm_holder import _models
 
-        return read_command(sentence or self.SENTENCE, models=_models(backend="vlm"), poses=poses or POSES,
+        return read_command(sentence or self.SENTENCE, models=_models(), poses=poses or POSES,
                             weights_present=True, holder=holder)
 
     def test_the_same_question_asks_the_model_once(self) -> None:
@@ -1564,7 +1564,7 @@ class TheReadingTests(_ForgetsTheSharedHolder):
         self.assertEqual(payload["object"], {"phrase": "green cube", "said": "den grünen Würfel", "verified": True})
 
     def test_to_dict_is_the_consoles_command_card(self) -> None:
-        """The console builds `CommandOut` from this dict (adding route previews): the shapes must not drift."""
+        """The console builds `CommandOut` from this dict: the shapes must not drift."""
         from api.schemas import CommandOut
 
         for reading in (self._reading(), understand("Hallo", ask=_Canned("x", "y"), poses=POSES),

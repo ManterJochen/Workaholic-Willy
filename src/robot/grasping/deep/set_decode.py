@@ -156,10 +156,8 @@ def as_metadata(grasp: DecodedGrasp) -> dict[str, Any]:
     """The set family's own per-candidate keys, on a helper nothing calls.
 
     These are not the protocol's de-facto contract. That contract is the score breakdown
-    `protocol.py` names (`total`, `geometric`, `stability`, `reachability`, `feasibility_score`,
-    `pose_confidence`, `score_components`), which the success model, the RL candidate rows and the
-    shadow aggregator read, and which a generator that omits them silently empties rather than
-    crashing. The keys here are the set family's additions: `slot` and `confidence` trace its
+    `protocol.py` names (`total`, `geometric`, `stability`, `reachability`, `pose_confidence`,
+    `score_components`), which a generator that omits them silently empties rather than crashing. The keys here are the set family's additions: `slot` and `confidence` trace its
     output back to which of its K answers a cell took, and `DeepGraspCalculator` builds its own
     metadata inline.
     """

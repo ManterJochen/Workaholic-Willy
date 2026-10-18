@@ -36,7 +36,7 @@ from src.calibration.extrinsics import Extrinsics
 from src.calibration.rig_calibration import RigArtifactMissing, RigCalibration
 from src.calibration.serialization import save_extrinsics
 from src.config import ConfigError, load_config, load_tree, reload_config
-from src.config.loader import load_camera_section, load_robot_section, load_speech_section
+from src.config.loader import load_camera_section, load_robot_section, load_speech_section, load_weights_root
 from src.config.paths import (
     PROJECT_ROOT_ANCHOR,
     is_config_path_field,
@@ -66,6 +66,15 @@ def _edit(path: Path, old: str, new: str) -> None:
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
     assert text.count(old) == 1, f"{old!r} is not written once in {path}"
     _write(path, text.replace(old, new))
+
+
+#: The one line of `models/weights.yaml` that holds the key, as shipped.
+_WEIGHTS_LINE = 'weights_root: "${WILLY_PROJECT_ROOT}/assets/models/hf"'
+
+
+def _weights_root_written(root: Path, written: str) -> None:
+    """`models.weights_root` of the tree at ``root``, written as ``written`` in its own file."""
+    _edit(root / "models" / "weights.yaml", _WEIGHTS_LINE, f"weights_root: {written}")
 
 
 def _artifact(path: Path) -> Path:
@@ -139,9 +148,14 @@ class ARelativePathIsReadAgainstTheConfigFolderTests(_TreeOutsideTheRepository):
         self.assertEqual(rig.extrinsics, whole)
 
     def test_a_value_given_in_memory_is_read_against_the_same_folder(self) -> None:
-        tree = load_tree(None, root=self.root).with_values({"models.stt.vad_model_path": "weights/vad.jit"})
+        tree = load_tree(None, root=self.root).with_values({"models.weights_root": "weights"})
         self.assertTrue(tree.ok, tree.error)
-        self.assertEqual(tree.app_config.models.stt.vad_model_path, _posix(self.root / "weights" / "vad.jit"))
+        self.assertEqual(tree.app_config.models.weights_root, _posix(self.root / "weights"))
+
+    def test_the_weights_folder_written_relatively_is_read_against_the_config_folder(self) -> None:
+        _weights_root_written(self.root, "weights")
+        self.assertEqual(load_weights_root(self.root, profile=None), _posix(self.root / "weights"))
+        self.assertEqual(load_config(self.root, profile=None).models.weights_root, _posix(self.root / "weights"))
 
     def test_the_stereo_paths_derived_from_a_relative_base_follow_it(self) -> None:
         _edit(self.root / "camera" / "cam.yaml", "base_dir: ../calibration/webcam_main", "base_dir: stereo/main")
@@ -167,37 +181,31 @@ class AnAbsolutePathAndTheAnchorTests(_TreeOutsideTheRepository):
         assert rig.extrinsics is not None
         self.assertEqual(rig.extrinsics.artifact_path, _posix(Path("~/cell/eth.json").expanduser()))
 
-    def test_the_shipped_model_paths_still_name_the_repositorys_weights_from_a_copied_tree(self) -> None:
-        """They are written with the anchor, so a copy of config/ outside the repository keeps them."""
+    def test_the_shipped_weights_folder_still_names_the_repositorys_from_a_copied_tree(self) -> None:
+        """It is written with the anchor, so a copy of config/ outside the repository keeps it."""
         from src.utility.paths import weights_root
 
-        models = load_config(self.root, profile=None).models
-        for name, path in (("objectdetector", models.objectdetector.model_path),
-                           ("segmenter", models.segmenter.model_path),
-                           ("stt", models.stt.model_path), ("vad", models.stt.vad_model_path)):
-            with self.subTest(model=name):
-                self.assertTrue(path.startswith(weights_root().as_posix() + "/"), path)
+        self.assertEqual(load_config(self.root, profile=None).models.weights_root, weights_root().as_posix())
+        self.assertEqual(load_weights_root(self.root, profile=None), weights_root().as_posix())
 
     def test_the_anchor_follows_the_environment_variable_and_survives_a_windows_value(self) -> None:
         """Left in place by the substitution: a backslashed value inside the shipped double-quoted
         YAML string would otherwise be read as escapes and stop the file from parsing."""
         other = self.outside / "other checkout"
         with mock.patch.dict(os.environ, {"WILLY_PROJECT_ROOT": str(other)}):  # backslashed on Windows
-            stt = load_speech_section(self.root, profile=None)
-        self.assertEqual(stt.vad_model_path,
-                         _posix(other.resolve() / "assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit"))
+            root = load_weights_root(self.root, profile=None)
+        self.assertEqual(root, _posix(other.resolve() / "assets/models/hf"))
 
     def test_the_anchor_takes_no_default_and_no_place_but_the_start(self) -> None:
-        stt = self.root / "models" / "stt.yaml"
-        original = stt.read_text(encoding="utf-8").replace("\r\n", "\n")
-        line = next(ln for ln in original.splitlines() if ln.strip().startswith("vad_model_path:"))
-        for written in ('"${WILLY_PROJECT_ROOT:-/opt/willy}/x.jit"', '"weights/${WILLY_PROJECT_ROOT}/x.jit"',
-                        '"${WILLY_PROJECT_ROOT}x.jit"'):
+        weights = self.root / "models" / "weights.yaml"
+        original = weights.read_text(encoding="utf-8").replace("\r\n", "\n")
+        for written in ('"${WILLY_PROJECT_ROOT:-/opt/willy}/hf"', '"weights/${WILLY_PROJECT_ROOT}/hf"',
+                        '"${WILLY_PROJECT_ROOT}hf"'):
             with self.subTest(written=written):
-                _write(stt, original.replace(line, f"  vad_model_path: {written}"))
+                _write(weights, original.replace(_WEIGHTS_LINE, f"weights_root: {written}"))
                 with self.assertRaises(ConfigError) as caught:
-                    load_speech_section(self.root, profile=None)
-                self.assertIn("models.stt.vad_model_path", str(caught.exception))
+                    load_weights_root(self.root, profile=None)
+                self.assertIn("models.weights_root", str(caught.exception))
                 self.assertIn(PROJECT_ROOT_ANCHOR, str(caught.exception))
 
 
@@ -237,8 +245,7 @@ class TheAnchorIsRefusedOutsideAPathFieldTests(_TreeOutsideTheRepository):
         """The control: the refusal is about the key, not about the anchor."""
         loaded = load_config(self.root, profile="sim")
         self.assertIsNone(loaded.robot.sim.assets_root)
-        self.assertEqual(loaded.models.stt.vad_model_path,
-                         _posix(repository_root() / "assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit"))
+        self.assertEqual(loaded.models.weights_root, _posix(repository_root() / "assets/models/hf"))
 
     def test_a_model_built_in_code_refuses_it_in_a_string_and_in_a_list_and_reads_it_in_a_path(self) -> None:
         """The rule sits on the schema's base, so no door around the loader lets the text through either."""
@@ -279,14 +286,8 @@ class TheAnchorIsWrittenInAnyYamlStyleTests(_TreeOutsideTheRepository):
         return _posix(self.other.resolve() / rest)
 
     def test_unquoted_in_a_flow_mapping_it_loads_and_resolves(self) -> None:
-        _write(self.root / "models" / "stt.yaml",
-               "stt: {model_id: openai/whisper-large-v3-turbo, model_path: ${WILLY_PROJECT_ROOT}/weights/whisper,\n"
-               "      vad_model_path: ${WILLY_PROJECT_ROOT}/weights/silero_vad.jit, samplerate: 16000,\n"
-               "      blocksize: 8000, channels: 1, dtype: int16, language: auto, task: transcribe, local: true}\n")
-        stt = load_speech_section(self.root, profile=None)
-        self.assertEqual((stt.model_path, stt.vad_model_path),
-                         (self._in_the_other_checkout("weights/whisper"),
-                          self._in_the_other_checkout("weights/silero_vad.jit")))
+        _write(self.root / "models" / "weights.yaml", "{weights_root: ${WILLY_PROJECT_ROOT}/weights}\n")
+        self.assertEqual(load_weights_root(self.root, profile=None), self._in_the_other_checkout("weights"))
 
     def test_unquoted_in_a_flow_mapping_inside_a_block_it_loads_and_resolves(self) -> None:
         _edit(self.root / "camera" / "cam.yaml", _RIG_MARKER, _RIG_MARKER + (
@@ -309,30 +310,28 @@ class TheAnchorIsWrittenInAnyYamlStyleTests(_TreeOutsideTheRepository):
         self.assertEqual(resolve_config_path(data["paths"][0], None), self._in_the_other_checkout("a.jit"))
 
     def test_the_block_and_quoted_forms_still_load_and_resolve(self) -> None:
-        stt = self.root / "models" / "stt.yaml"
-        original = stt.read_text(encoding="utf-8").replace("\r\n", "\n")
-        line = next(ln for ln in original.splitlines() if ln.strip().startswith("vad_model_path:"))
-        for written in ("${WILLY_PROJECT_ROOT}/x.jit", '"${WILLY_PROJECT_ROOT}/x.jit"',
-                        "'${WILLY_PROJECT_ROOT}/x.jit'", "${WILLY_PROJECT_ROOT}/x.jit  # a comment"):
+        weights = self.root / "models" / "weights.yaml"
+        original = weights.read_text(encoding="utf-8").replace("\r\n", "\n")
+        for written in ("${WILLY_PROJECT_ROOT}/hf", '"${WILLY_PROJECT_ROOT}/hf"',
+                        "'${WILLY_PROJECT_ROOT}/hf'", "${WILLY_PROJECT_ROOT}/hf  # a comment"):
             with self.subTest(written=written):
-                _write(stt, original.replace(line, f"  vad_model_path: {written}"))
-                self.assertEqual(load_speech_section(self.root, profile=None).vad_model_path,
-                                 self._in_the_other_checkout("x.jit"))
+                _write(weights, original.replace(_WEIGHTS_LINE, f"weights_root: {written}"))
+                self.assertEqual(load_weights_root(self.root, profile=None), self._in_the_other_checkout("hf"))
 
     def test_a_yaml_error_quotes_the_anchor_as_written(self) -> None:
         """Whatever the loader parses in its place stays out of the refusal the operator reads, in the
-        quoted line too, which the parser cuts short: ``stt: {vad_model_path: ${WILLY_PROJECT ...``."""
-        _write(self.root / "models" / "stt.yaml", "stt: {vad_model_path: ${WILLY_PROJECT_ROOT}/x.jit\n")
+        quoted line too, which the parser cuts short: ``{weights_root: ${WILLY_PROJECT ...``."""
+        _write(self.root / "models" / "weights.yaml", "{weights_root: ${WILLY_PROJECT_ROOT}/hf\n")
         with self.assertRaises(ConfigError) as caught:
-            load_speech_section(self.root, profile=None)
-        self.assertIn("{vad_model_path: ${WILLY_PROJECT", str(caught.exception))
+            load_weights_root(self.root, profile=None)
+        self.assertIn("{weights_root: ${WILLY_PROJECT", str(caught.exception))
         self.assertNotIn("__WILLY", str(caught.exception))
 
     def test_the_text_the_loader_parses_in_the_anchors_place_cannot_be_written(self) -> None:
         """It is turned back into the anchor after parsing, so a file that wrote it would gain an anchor."""
         from src.config.loader import _ANCHOR_STAND_IN
 
-        _edit(self.root / "models" / "stt.yaml", 'dtype: "int16"', f'dtype: "{_ANCHOR_STAND_IN}"')
+        _edit(self.root / "models" / "stt.yaml", 'language: "auto"', f'language: "{_ANCHOR_STAND_IN}"')
         with self.assertRaises(ConfigError) as caught:
             load_speech_section(self.root, profile=None)
         self.assertIn(_ANCHOR_STAND_IN, str(caught.exception))
@@ -342,10 +341,10 @@ class TheAnchorIsWrittenInAnyYamlStyleTests(_TreeOutsideTheRepository):
 class ADefaultNamesTheRepositorysFileTests(_TreeOutsideTheRepository):
 
     def test_an_unwritten_default_names_the_committed_artifact_in_the_repository(self) -> None:
-        """Nobody wrote it, so the tree's folder plays no part: the committed v1 success model is found."""
-        artifact = load_config(self.root, profile=None).robot.grasping.success_model.artifact_dir
-        self.assertEqual(artifact, _posix(repository_root() / "assets/models/success_probability/v1"))
-        self.assertTrue((Path(artifact) / "model.json").is_file(), artifact)
+        """Nobody wrote it, so the tree's folder plays no part: the committed cards of the v1 ranker are found."""
+        artifact = load_config(self.root, profile=None).robot.grasping.deep_ranker.artifact_dir
+        self.assertEqual(artifact, _posix(repository_root() / "assets/models/grasp_ranker/v1"))
+        self.assertTrue((Path(artifact) / "valid_jaw_v1.card.json").is_file(), artifact)
 
     def test_a_rig_that_names_no_calibration_folder_gets_the_repositorys(self) -> None:
         cam = self.root / "camera" / "cam.yaml"
@@ -402,7 +401,8 @@ class EveryPathKeyIsReadByTheRuleTests(unittest.TestCase):
                     continue
                 self.assertTrue(str(default).startswith(PROJECT_ROOT_ANCHOR + "/"))
                 self.assertTrue(field.validate_default, "an anchored default must set validate_default=True")
-        self.assertGreaterEqual(checked, 20, "a guard over no path field passes loudest")
+        # 15 on 2026-10-17, when every model's path became the one weights folder (models.weights_root).
+        self.assertGreaterEqual(checked, 10, "a guard over no path field passes loudest")
 
     def test_no_default_outside_a_path_field_writes_the_anchor(self) -> None:
         """StrictModel refuses the anchor in a field that is not a path, but only in a value it validates,
@@ -431,48 +431,46 @@ class AMissingFileSaysHowThePathWasReadTests(_TreeOutsideTheRepository):
                       message)
         self.assertNotIn("working directory", message)
 
-    def _missing_model(self, key: str, written: str) -> str:
-        """The model path as a tree gives it, written relatively and pointing at nothing."""
-        stt = self.root / "models" / "stt.yaml"
-        original = stt.read_text(encoding="utf-8").replace("\r\n", "\n")
-        line = next(ln for ln in original.splitlines() if ln.strip().startswith(f"{key}:"))
-        _write(stt, original.replace(line, f"  {key}: {written}"))
-        return getattr(load_speech_section(self.root, profile=None), key)
+    def _weights_folder(self) -> str:
+        """The weights folder as a tree gives it, written relatively and holding nothing."""
+        _weights_root_written(self.root, "weights")
+        return load_weights_root(self.root, profile=None)
 
-    def test_a_missing_speech_model_says_how_its_path_was_read(self) -> None:
+    def _rule(self) -> str:
+        return (f"The config gives it as weights, and a relative path in a config is read against the config folder, "
+                f"{self.root.as_posix()}")
+
+    def test_a_missing_speech_model_says_how_its_folder_was_read(self) -> None:
         from src.models.speech.engine import SpeechModelMissing
 
-        path = self._missing_model("model_path", "weights/whisper")
-        message = str(SpeechModelMissing(key="models.stt.model_path", path=path, kind="directory",
-                                          fetch="fetch it"))
-        self.assertIn(f"The config gives it as weights/whisper, and a relative path in a config is read against "
-                      f"the config folder, {self.root.as_posix()}", message)
+        root = self._weights_folder()
+        path = f"{root}/speech/openai--whisper-large-v3-turbo"
+        message = str(SpeechModelMissing(key="models.stt.model_id", named="openai/whisper-large-v3-turbo", path=path,
+                                          kind="directory", fetch="fetch it"))
+        self.assertIn(f"The weights folder is {root}.", message)
+        self.assertIn(self._rule(), message)
 
-    def test_a_missing_mediapipe_bundle_says_how_its_path_was_read(self) -> None:
+    def test_a_missing_mediapipe_bundle_says_how_its_folder_was_read(self) -> None:
+        from src.models.handdetection.constants import HAND_BUNDLE
         from src.models.handdetection.model_files import resolve_model_file
+        from src.models.weights import fixed_file
 
-        hand = self.root / "models" / "hand.yaml"
-        text = hand.read_text(encoding="utf-8").replace("\r\n", "\n")
-        line = next(ln for ln in text.splitlines() if ln.strip().startswith("model_path:"))
-        _write(hand, text.replace(line, "  model_path: weights/hand.task", 1))
-        path = load_config(self.root, profile=None).models.handdetect.model_path
+        path = fixed_file(HAND_BUNDLE, root=self._weights_folder())
         with self.assertRaises(FileNotFoundError) as caught:
-            resolve_model_file(path, config_key="models.handdetect.model_path", download_url="https://x")
-        self.assertIn("The config gives it as weights/hand.task", str(caught.exception))
+            resolve_model_file(str(path), config_key="the hand-landmark bundle", download_url="https://x")
+        self.assertIn(self._rule(), str(caught.exception))
 
-    def test_a_missing_local_detector_says_how_its_path_was_read(self) -> None:
-        from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector
+    def test_a_missing_detector_says_how_its_folder_was_read(self) -> None:
+        from src.models.weights import resolve_weights, weights_note
 
-        obj = self.root / "models" / "object.yaml"
-        text = obj.read_text(encoding="utf-8").replace("\r\n", "\n")
-        line = next(ln for ln in text.splitlines() if ln.startswith("  model_path:"))
-        _write(obj, text.replace(line, "  model_path: weights/dino", 1))
-        detector = load_config(self.root, profile=None).models.objectdetector
-        self.assertTrue(detector.local, "the premise: the shipped detector loads its weights offline")
-        config = mock.MagicMock(local=True, model_path=detector.model_path, model_id="", threshold=0.4)
-        with self.assertRaises(FileNotFoundError) as caught:
-            GroundingDinoObjectDetector(config)
-        self.assertIn("The config gives it as weights/dino", str(caught.exception))
+        root = self._weights_folder()
+        with mock.patch("src.models.weights._in_the_cache", return_value=False), \
+             self.assertRaises(FileNotFoundError) as caught:
+            resolve_weights("PekingU/rtdetr_r50vd", kind="detection", root=root, key="models.rtdetr.model_id")
+        message = str(caught.exception)
+        self.assertIn(f"no folder at {root}/detection/PekingU--rtdetr_r50vd", message)
+        self.assertIn(self._rule(), message)
+        self.assertEqual("", weights_note((self.outside / "nowhere" / "x").as_posix()), "a path no tree read says nothing")
 
 
 class APathNoteSaysHowThePathWasReadTests(unittest.TestCase):

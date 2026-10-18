@@ -164,23 +164,16 @@ _CARRIED: Final[frozenset[str]] = frozenset({
 
 #: Analytic-only construction knobs the learned generator has no equivalent for, and does not need.
 #:
-#: Listed so the drop is stated rather than silent. The deep decoder predicts its own approach and
-#: its own closing axis, so an oblique-approach sweep or a radial-closing flag has nothing to act
-#: on. `robot.ur3e.yaml` sets `isotropic_radial_closing: true` on a cell measured at 5/10 -> 10/10,
-#: so a deep run there says the lever is not in play instead of printing `True` and changing
-#: nothing.
+#: Listed so the drop is stated rather than silent. `scene_obstacles` and `side_approaches` (the cell fixes,
+#: 2026-10-01) are the analytic stage's view of the parts beside the one it grasps and its tilted approaches. Every cell
+#: passes both from its tree, so without them here every deep cell would refuse to build; the deep decoder plans its own
+#: approach, and the guard judges its grasps either way.
 #:
-#: `scene_obstacles` and `side_approaches` (the cell fixes, 2026-10-01) are the analytic stage's view of the parts beside
-#: the one it grasps and its tilted approaches. Every cell passes both from its tree, so without them here every deep
-#: cell would refuse to build; the deep decoder plans its own approach, and the guard judges its grasps either way.
-#:
-#: `support_footprint_rim_mm` (2026-10-09) is the rim the support-footprint stage's input loses: a deep cell runs no
-#: such stage, so the rim has nothing to cut there, and says so.
+#: `support_footprint_rim_mm` (2026-10-09) is the rim the support-footprint stage's input loses, which this factory
+#: hands every analytic calculator: a deep cell runs no such stage, so a rim a site passes has nothing to cut there,
+#: and says so.
 _IGNORED_BY_DEEP: Final[frozenset[str]] = frozenset({
-    "isotropic_radial_closing",
-    "oblique_approach", "oblique_tilt_deg", "oblique_azimuths",
-    "support_footprint_geometry", "support_footprint_inflate_mm", "support_footprint_rim_mm",
-    "scene_obstacles", "side_approaches",
+    "support_footprint_rim_mm", "scene_obstacles", "side_approaches",
 })
 
 
@@ -188,9 +181,8 @@ def _is_active(value: Any) -> bool:
     """Would dropping this kwarg change anything?
 
     The answer is keyed on the value, not on the key. A construction site passes its switches
-    unconditionally, at whatever position they sit in: `ik_service=None` and
-    `corridor_risk_per_candidate=False` are the off positions of two optional features, and refusing
-    on the key alone would refuse a deep run that loses nothing.
+    unconditionally, at whatever position they sit in: `ik_service=None` is the off position of an optional
+    feature, and refusing on the key alone would refuse a deep run that loses nothing.
 
     `0` and `0.0` count as off. Every kwarg reaching this path is a switch, a live handle or a
     millimetre threshold, and a zero threshold means "do not apply it" in all of them. A future
@@ -279,72 +271,13 @@ def preflight_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | No
     return choice
 
 
-#: The depth levers on `grasping.geometry`, with the value that means "do nothing". Only a value
-#: that differs from these is forwarded, for two reasons. A cell that configures none of them builds
-#: the calculator with exactly the arguments it built before, so the default path is unchanged. And
-#: the deep branch below refuses any active kwarg it cannot honour: forwarding the do-nothing value
-#: unconditionally would refuse every deep cell over settings that ask for nothing.
-_DEPTH_LEVERS: Final[dict[str, Any]] = {
-    "grasp_depth_reference": "centre",
-    "grasp_top_penetration_mm": 0.0,
-    "grasp_top_quantile": 10.0,
-    "depth_band_mm": None,
-    "depth_band_near_pct": 10.0,
-}
+def _stage_kwargs(supplied: "dict[str, Any]") -> "dict[str, Any]":
+    """The rim a cell's calculator cuts off the support-footprint stage's input (``footprint_rim.FOOTPRINT_RIM_MM``,
+    2026-10-09), where the construction site passed none: every site that goes through this factory, the rehearsal,
+    the real cell and each camera's calculator, cuts the cell's rim. An argument the construction site passed wins."""
+    from src.robot.grasping.generation.footprint_rim import FOOTPRINT_RIM_MM  # noqa: PLC0415
 
-
-def _depth_kwargs(robot_cfg: "RobotConfig", supplied: "dict[str, Any]") -> "dict[str, Any]":
-    """What `grasping.geometry` asks the calculator to do with the depth under a mask.
-
-    An argument the construction site passed already wins: an explicit value at the call site is a
-    deliberate choice by a runner, and config is the default for cells that do not make one.
-
-    `footprint_rim_mm` (2026-10-09), the rim a mask loses for the support-footprint stage's input,
-    reaches the calculator here as `support_footprint_rim_mm`, by the same rule: only where it is not
-    0.0, so every construction site that goes through this factory, the rehearsal, the real cell and
-    each camera's calculator, gets it from the tree, and one that sets none builds as before.
-    """
-    geometry = getattr(getattr(robot_cfg, "grasping", None), "geometry", None)
-    if geometry is None:
-        return {}
-    out: dict[str, Any] = {}
-    for name, inert in _DEPTH_LEVERS.items():
-        if name in supplied:
-            continue
-        value = getattr(geometry, name, inert)
-        if value != inert:
-            out[name] = value
-    rim = float(getattr(geometry, "footprint_rim_mm", 0.0) or 0.0)
-    if rim != 0.0 and "support_footprint_rim_mm" not in supplied:
-        out["support_footprint_rim_mm"] = rim
-    return out
-
-
-def _batched_builds_here(robot_cfg: "RobotConfig", calculator: Any) -> bool:
-    """Whether SFE builds each closing line's grasps at once on this machine, where the cell asks for it
-    (``robot.grasping.batched_builds``): numpy's stacked products are asked once, on the shapes the cell's
-    hand stacks (``support_footprint.batched_builds_hold``), and the answer is said in the calculator's log.
-    Where they would round otherwise every build is made one at a time, as with the key off: the same grasps,
-    only slower. A hand SFE does not plan for is asked with the library's jaw; it builds no SFE grasp at all.
-    """
-    from src.robot.grasping.generation.support_footprint import (  # noqa: PLC0415
-        SupportFootprintJaw,
-        batched_builds_hold,
-    )
-
-    try:
-        jaw: "SupportFootprintJaw | None" = SupportFootprintJaw.from_robot_config(robot_cfg)
-    except Exception:  # noqa: BLE001 (a suction hand, or a tree without the jaw's numbers)
-        jaw = None
-    why = batched_builds_hold(jaw)
-    log = getattr(calculator, "logger", None) or logger
-    if why:
-        log.warning("robot.grasping.batched_builds is on, but %s: SFE builds its grasps one at a time, "
-                    "the same grasps, only slower", why)
-        return False
-    log.info("SFE builds each closing line's grasps at once (robot.grasping.batched_builds): numpy's "
-             "stacked products answer to the bit on this machine")
-    return True
+    return {} if "support_footprint_rim_mm" in supplied else {"support_footprint_rim_mm": FOOTPRINT_RIM_MM}
 
 
 def opens_as_needed(robot_cfg: "RobotConfig") -> bool:
@@ -359,18 +292,19 @@ def opens_as_needed(robot_cfg: "RobotConfig") -> bool:
 
 
 def inner_grasps(robot_cfg: "RobotConfig") -> bool:
-    """Whether the calculator searches the part's bores for grasps from inside (``robot.grasping.inner_grasps``, on as
-    shipped): where the cell asks for it and its hand is a Robotiq, which is told a width to come down at, opens onto the
-    bore's wall at its force and says it stopped there (``core.gripper.GripsFromInside``). A toggle would need two
-    changes of its output more a pick, and no other hand says how it holds.
+    """Whether the calculator searches the part's bores for grasps from inside: where the cell's hand is a Robotiq, which
+    is told a width to come down at, opens onto the bore's wall at its force and says it stopped there
+    (``core.gripper.GripsFromInside``). Every such cell's since 2026-10-17, as the owner's cell ran it
+    (``robot.grasping.inner_grasps`` until then). A toggle would need two changes of its output more a pick, and no other
+    hand says how it holds.
 
     Args:
         robot_cfg: The cell's robot tree.
 
     Returns:
-        bool: ``True`` where the cell asks for inner grasps and its hand can grip so.
+        bool: ``True`` where the cell's hand can grip so.
     """
-    return getattr(getattr(robot_cfg, "grasping", None), "inner_grasps", False) is True and opens_as_needed(robot_cfg)
+    return opens_as_needed(robot_cfg)
 
 
 def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
@@ -378,7 +312,7 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
     """The generator this cell's config asks for, built from ``kwargs`` common to both.
 
     ``kwargs`` are whatever the construction site already passes to `GraspCalculator`: camera
-    matrix, grip limits, geometry stage. The deep implementation ignores what it does not
+    matrix, grip limits, the scene it reads. The deep implementation ignores what it does not
     understand, which is the protocol's rule and the reason a new analytic config block cannot
     break it.
 
@@ -390,29 +324,23 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
     cell builder passes by passing nothing, refuses a deep artifact whose proof has not passed.
     ``"evaluate"`` is for a run that measures one, the ladder and the simulation runners, and skips
     that check alone (:func:`_refuse_unless_promoted`). The analytic generator needs no proof.
-
-    ``robot.grasping.batched_builds`` reaches the analytic calculator here (``sfe_batched``), where
-    this machine's numpy answers to the bit (:func:`_batched_builds_here`).
     """
     _checked_purpose(purpose)
-    kwargs.update(_depth_kwargs(robot_cfg, kwargs))
     choice = str(getattr(robot_cfg.grasping, "calculator", "geometric"))
     if choice == "geometric":
         from src.robot.grasping.generation.calculator import GraspCalculator  # noqa: PLC0415
 
-        calculator = GraspCalculator(**kwargs)
-        if bool(getattr(robot_cfg.grasping, "batched_builds", False)):
-            calculator.sfe_batched = _batched_builds_here(robot_cfg, calculator)
+        calculator = GraspCalculator(**{**_stage_kwargs(kwargs), **kwargs})
         # A Robotiq hand is told a width: it opens only as wide as a grasp needs (lever G, the owner, 2026-10-13: "aber
         # nur wenn Robotiq genutzt wird"). Every other hand opens fully, as before.
         calculator.opens_as_needed = opens_as_needed(robot_cfg)
-        # The part's bores are searched for grasps from inside where the cell asks for it (on as shipped) and its hand
-        # grips so.
+        # The part's bores are searched for grasps from inside where the cell's hand grips so.
         calculator.inner_grasps = inner_grasps(robot_cfg)
         return calculator
     if choice != "deep":
         raise ValueError(f"unknown grasping.calculator {choice!r}: expected 'geometric' or 'deep'")
 
+    from src.robot.grasping.collision.support_resolver import bench_height_mm  # noqa: PLC0415
     from src.robot.grasping.deep.calculator import (  # noqa: PLC0415
         DeepCalculatorConfig,
         DeepGraspCalculator,
@@ -447,15 +375,9 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
     # `GraspCalculator(**kwargs)` verbatim; this one maps an explicit list, so anything a
     # construction site passes and this list omits vanishes without a word.
     #
-    # Two of the droppable ones change outcomes rather than style, so they are refused by name:
-    #   ik_service                    the reachability filter that discards unreachable candidates,
-    #                                 and the source of `joint_margin_deg` for telemetry and for the
-    #                                 success model. Without it nothing filters and `rejected_ik`
-    #                                 stays 0, which reads as "nothing was unreachable".
-    #   corridor_risk_per_candidate   the producer for the per-candidate uncertainty re-rank.
-    #                                 Without it `grasping.uncertainty.rerank_enabled` reorders
-    #                                 nothing and reports `missing_uncertainty`, which the schema
-    #                                 already warns about at that key.
+    # One of the droppable ones changes outcomes rather than style, so it is refused by name:
+    #   ik_service   the reachability filter that discards unreachable candidates. Without it nothing filters and
+    #                `rejected_ik` stays 0, which reads as "nothing was unreachable".
     # The refusal reads the value, never the key alone: see `_is_active`.
     unknown = sorted(k for k, v in kwargs.items()
                      if k not in _CARRIED and k not in _IGNORED_BY_DEEP and _is_active(v))
@@ -480,7 +402,7 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
         max_candidates=int(kwargs.get("max_candidates", 12)),
         device=getattr(block, "device", None) or None,
         minimum_score=float(getattr(block, "minimum_score", 0.5)),
-        support_height_mm=float(robot_cfg.grasping.support.height_mm),
+        support_height_mm=bench_height_mm(robot_cfg),
         # The jaw, carried across. `DeepGraspCalculator._fits_the_jaw` reads both bounds and treats
         # 0.0 as "not told", so without them a deep cell can command a width its gripper cannot
         # open to; the analytic generator filters that at generation instead.

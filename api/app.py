@@ -63,7 +63,7 @@ open tab and an awake laptop; offering one would invite someone to rely on it in
 mushroom button.
 
 "Halt now" is ``POST /v1/cell/brake``: it stops the run and latches the arm, so nothing after the move in
-flight is sent; only where ``robot.ur.brake_on_halt`` is on (off as shipped) does it brake that move under
+flight is sent; where the arm brakes (every UR) it brakes that move under
 control. It is **not an emergency stop**; the red button stays the safety halt. Nothing moves without a
 person's click, and nothing moves on its own after a stop: a person confirms the cell is clear, then chooses
 Restart or Home. ``python -m api`` keeps the stop in a file, so it outlives a restart of the server too.

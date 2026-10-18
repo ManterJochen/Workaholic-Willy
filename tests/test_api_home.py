@@ -128,7 +128,7 @@ class HomeRefusesTests(ConsoleCase):
         def publish(stream: str, event_type: str, /, **keywords: object) -> object:
             event = original(stream, event_type, **keywords)
             if event_type == "run_countdown" and event.data.get("seconds_left") == 1:  # type: ignore[attr-defined]
-                cell.arm.attach_payload(40.0)  # the planner models a part in the hand again
+                cell.jaws.set_closed(True)  # the count says closed: a part may be in the jaws again
             return event
 
         self.cell.hub.publish = publish  # type: ignore[method-assign]
@@ -136,7 +136,7 @@ class HomeRefusesTests(ConsoleCase):
         self.assertEqual(202, home.status_code, home.text)
         body = self.finished(home.json()["id"])
         self.assertEqual(("failed", "part_still_held"), (body["state"], body["stop_code"]), body)
-        self.assertIn("planner still models a part", body["error"])
+        self.assertIn("count says the toggle's jaws stand CLOSED", body["error"])
         self.assertEqual([], cell.motions())
         self.assertNotIn("home.started", event_types(self.cell, body["id"]))
 

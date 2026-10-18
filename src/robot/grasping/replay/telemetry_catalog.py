@@ -16,9 +16,8 @@ Universally required fields (``timestamp``, ``attempt_id``, ``mode``,
 enumerates the additional fields required per outcome.
 
 The extra-telemetry extension layer adds a frozen catalog of optional
-telemetry fields that runtime capabilities (success probability, multi-view
-fusion, uncertainty, drift/OOD, runtime SLOs, failure taxonomy,
-adaptation, model lifecycle) populate in ``record.extra``. They are
+telemetry fields that runtime capabilities (multi-view fusion, the failure
+taxonomy, the attempt's wall time, the camera world) populate in ``record.extra``. They are
 intentionally not required by the strict :func:`audit_record` gate; a
 field is promoted to "required" incrementally, one capability at a time.
 The :func:`audit_extra_record` helper performs a type-only validation
@@ -28,7 +27,7 @@ content lands.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Sequence
 
 from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
 from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
@@ -64,22 +63,23 @@ TELEMETRY_CATALOG: dict[str, frozenset[str]] = {
     "target_lost_during_refine": frozenset({"refinement"}),
     "refinement_diverged": frozenset({"refinement"}),
     _O.MODE_NOT_AVAILABLE.value: frozenset(),
-    # The decision entries require their keys, never a value: a record logged before
-    # 2026-09-29 whose action or reason code is retired audits as it did. Retired then: the
-    # camera re-observation's ``move_camera`` with the ``low_confidence`` it carried and
-    # ``reobserve_budget_exhausted``, and ``reobserve_planner_unavailable``, which a grasp less
-    # confident than the threshold carried until it was renamed ``low_confidence``.
-    _O.DECISION_FAIL_CLOSED.value: frozenset(
+    # Retired: the decision and uncertainty layers that ended a pick these three ways left on 2026-10-16 (the
+    # owner's cleanup), and no pick reports them since. Kept by their strings, each requiring what it did, so a
+    # record logged before then still audits; without them that record would read as an unknown outcome. The
+    # decision entries require their keys, never a value: a record whose action or reason code was retired on
+    # 2026-09-29 (the camera re-observation's ``move_camera`` with its ``low_confidence``,
+    # ``reobserve_budget_exhausted`` and ``reobserve_planner_unavailable``) audits as it did.
+    "decision_fail_closed": frozenset(
         {
             "extra.decision_reason_code",
             "extra.uncertainty_score",
             "extra.threshold_used",
         }
     ),
-    _O.DECISION_RECOVER_PENDING.value: frozenset(
+    "decision_recover_pending": frozenset(
         {"extra.decision_reason_code"}
     ),
-    _O.UNCERTAINTY_FAIL_CLOSED.value: frozenset(
+    "uncertainty_fail_closed": frozenset(
         {
             "extra.decision_reason_code",
             "extra.uncertainty_score",
@@ -90,17 +90,16 @@ TELEMETRY_CATALOG: dict[str, frozenset[str]] = {
     # no pick reports it since. Kept by its string so a record logged before then still audits, and
     # requires nothing, exactly as it did; without it that record would read as an unknown outcome.
     "no_commit_insufficient_fusion": frozenset(),
-    # Drift / OOD watchdog terminal outcomes. Both require the
-    # watchdog telemetry triple so a replay can attribute the
-    # fail-closure cleanly.
-    _O.DRIFT_BLOCKED_AUTO.value: frozenset(
+    # Retired with the drift / OOD watchdog on 2026-10-16. Kept by their strings, each requiring the watchdog
+    # telemetry it did, so a record logged before then still audits.
+    "drift_blocked_auto": frozenset(
         {
             "extra.decision_reason_code",
             "extra.drift_severity",
             "extra.degraded_mode_active",
         }
     ),
-    _O.OOD_BLOCKED_AUTO.value: frozenset(
+    "ood_blocked_auto": frozenset(
         {
             "extra.decision_reason_code",
             "extra.ood_flagged",
@@ -158,7 +157,11 @@ def audit_records(
 #: field already published here is a breaking change and requires a
 #: deliberate, documented schema-version bump on
 #: :class:`GraspAttemptRecord` itself.
-EXTRA_TELEMETRY_VERSION: int = 2
+#:
+#: 3 (2026-10-16): the success-probability, uncertainty, drift/OOD, stage-latency, adaptation and RL fields left
+#: with the capabilities that wrote them (the owner's cleanup). A record that still carries one is no longer
+#: type-checked on it; nothing reads them.
+EXTRA_TELEMETRY_VERSION: int = 3
 
 
 def _is_str_or_none(v: Any) -> bool:
@@ -209,120 +212,11 @@ def _is_non_negative_number_or_none(v: Any) -> bool:
     return v is None or float(v) >= 0.0
 
 
-def _is_string_float_map_or_none(v: Any) -> bool:
-    if v is None:
-        return True
-    if not isinstance(v, Mapping):
-        return False
-    for key, value in v.items():
-        if not isinstance(key, str):
-            return False
-        if not _is_finite_number_or_none(value) or value is None:
-            return False
-    return True
-
-
-def _is_list_of_dicts_or_none(v: Any) -> bool:
-    if v is None:
-        return True
-    if not isinstance(v, (list, tuple)):
-        return False
-    return all(isinstance(item, Mapping) for item in v)
-
-
-def _is_kendall_tau_or_none(v: Any) -> bool:
-    """float in ``[-1.0, 1.0]`` or ``None``."""
-
-    if v is None:
-        return True
-    if not _is_finite_number_or_none(v):
-        return False
-    return -1.0 <= float(v) <= 1.0
-
-
-_DRIFT_SEVERITY_VALUES: frozenset[str] = frozenset(
-    {"none", "low", "moderate", "high", "severe"}
-)
-_ADAPTATION_MODE_VALUES: frozenset[str] = frozenset(
-    {"off", "recommend_only", "apply_with_guardrails"}
-)
-_MODEL_LIFECYCLE_VALUES: frozenset[str] = frozenset(
-    {"shadow", "canary", "active"}
-)
-
-# RL optimisation extension layer (telemetry contract). RL telemetry
-# fields are required immediately on every RL-influenced outcome.
-# "RL-influenced" means ``record.extra['rl_mode']`` is one of the
-# RL-active modes (``rl_shadow``/``rl_active``/``rl_experimental``).
-# The runtime admits ``rl_shadow`` and rejects ``rl_active`` and
-# ``rl_experimental`` (see
-# :func:`src.robot.grasping.rl.assert_rl_mode_supported`), so the
-# conditional gate below is reachable: the shadow router stamps
-# ``rl_mode='rl_shadow'`` plus every field in
-# :data:`RL_REQUIRED_TELEMETRY_FIELDS` on each routed record.
-
-_RL_MODE_VALUES: frozenset[str] = frozenset(
-    {
-        "geometry_only",
-        "hybrid_ml",
-        "rl_shadow",
-        "rl_active",
-        "rl_experimental",
-    }
-)
-_RL_ACTIVE_MODE_VALUES: frozenset[str] = frozenset(
-    {"rl_shadow", "rl_active", "rl_experimental"}
-)
-_RL_ACTION_TOKENS: frozenset[str] = frozenset(
-    {"grasp", "retry", "reobserve", "recover", "skip", "accept", "noop"}
-)
-_RL_ROUTER_PATH_VALUES: frozenset[str] = frozenset(
-    {
-        "geometry_only",
-        "hybrid_ml",
-        "rl_shadow",
-        "rl_active",
-        "rl_experimental",
-        "deformable_specialist",
-        "fallback_baseline",
-    }
-)
-
-
-def _is_rl_mode_or_none(v: Any) -> bool:
-    return v is None or (isinstance(v, str) and v in _RL_MODE_VALUES)
-
-
-def _is_rl_action_or_none(v: Any) -> bool:
-    return v is None or (isinstance(v, str) and v in _RL_ACTION_TOKENS)
-
-
-def _is_rl_router_path_or_none(v: Any) -> bool:
-    return v is None or (isinstance(v, str) and v in _RL_ROUTER_PATH_VALUES)
-
-
-def _is_drift_severity_or_none(v: Any) -> bool:
-    return v is None or (isinstance(v, str) and v in _DRIFT_SEVERITY_VALUES)
-
-
-def _is_adaptation_mode_or_none(v: Any) -> bool:
-    return v is None or (isinstance(v, str) and v in _ADAPTATION_MODE_VALUES)
-
-
-def _is_model_lifecycle_or_none(v: Any) -> bool:
-    return v is None or (isinstance(v, str) and v in _MODEL_LIFECYCLE_VALUES)
-
-
 #: Per-field validator + capability-group tag. The tag is informational
 #: today; a future strict gate may reference it when promoting a field
 #: to required. Keep insertion order stable: the catalog is treated as
 #: an immutable, ordered contract by :func:`audit_extra_record`.
 EXTRA_TELEMETRY_FIELDS: tuple[tuple[str, str, Any], ...] = (
-    # success probability + calibration
-    ("predicted_success_probability", "success_probability", _is_unit_interval_or_none),
-    ("success_probability_model_version", "success_probability", _is_str_or_none),
-    ("success_probability_calibration_bin", "success_probability", _is_non_negative_int_or_none),
-    ("model_lifecycle_phase", "success_probability", _is_model_lifecycle_or_none),
     # multi-view fusion
     # `_fusion_geometry_extras` joins the geometry fusion telemetry stamped on
     # `orchestrator._fusion_geometry_telemetry` to these catalog names, which
@@ -336,74 +230,8 @@ EXTRA_TELEMETRY_FIELDS: tuple[tuple[str, str, Any], ...] = (
     # failure taxonomy + recommendations
     ("failure_taxonomy_class", "failure_taxonomy", _is_str_or_none),
     ("failure_recommendation_id", "failure_taxonomy", _is_str_or_none),
-    # uncertainty as runtime driver. ``uncertainty_score`` is already
-    # required for ``DECISION_FAIL_CLOSED`` by the strict catalog above;
-    # this entry only adds the type constraint for all other outcomes
-    # when the field happens to be present.
-    ("uncertainty_score", "uncertainty", _is_unit_interval_or_none),
-    ("uncertainty_channels", "uncertainty", _is_string_float_map_or_none),
-    # Alias: nothing writes this name. The quantity is emitted under other
-    # spellings: the decision engine writes it as `channel_disagreement`, and
-    # `UncertaintySnapshot` carries it as `.disagreement`.
-    # `project_candidate_feature_row` resolves all three, catalog name first.
-    # The number is not duplicated into every record under a second name; the
-    # entry stays so the type is checked if a producer ever does emit it.
-    ("uncertainty_disagreement", "uncertainty", _is_unit_interval_or_none),
-    # drift / OOD watchdog
-    ("drift_severity", "drift_ood", _is_drift_severity_or_none),
-    ("ood_flagged", "drift_ood", _is_bool_or_none),
-    ("degraded_mode_active", "drift_ood", _is_bool_or_none),
-    # runtime SLOs
-    ("decision_latency_ms", "latency", _is_non_negative_number_or_none),
-    ("ranking_latency_ms", "latency", _is_non_negative_number_or_none),
-    ("fusion_latency_ms", "latency", _is_non_negative_number_or_none),
+    # the attempt's wall time
     ("attempt_wall_time_s", "latency", _is_non_negative_number_or_none),
-    # guarded adaptation
-    ("adaptation_mode", "guarded_adaptation", _is_adaptation_mode_or_none),
-    ("adaptation_applied_changes", "guarded_adaptation", _is_list_of_dicts_or_none),
-    # RL optimisation extension layer. Type-only here (the conditional
-    # "required when ``rl_mode`` is RL-active" gate lives in
-    # :func:`audit_rl_required_record`).
-    ("rl_mode", "rl_core", _is_rl_mode_or_none),
-    ("rl_policy_id", "rl_core", _is_str_or_none),
-    ("rl_artifact_version", "rl_core", _is_str_or_none),
-    ("rl_action_proposed", "rl_core", _is_rl_action_or_none),
-    ("rl_action_applied", "rl_core", _is_rl_action_or_none),
-    ("rl_action_blocked_by_mask", "rl_core", _is_bool_or_none),
-    ("rl_reason_features", "rl_core", _is_string_float_map_or_none),
-    ("rl_confidence", "rl_core", _is_unit_interval_or_none),
-    ("rl_baseline_action", "rl_core", _is_rl_action_or_none),
-    ("rl_override", "rl_core", _is_bool_or_none),
-    ("rl_fallback_triggered", "rl_core", _is_bool_or_none),
-    ("rl_router_path", "rl_core", _is_rl_router_path_or_none),
-    ("rl_fallback_reason_code", "rl_core", _is_str_or_none),
-    # candidate-selection shadow router. Type-only at the catalog layer.
-    # Conditional requirement (must be non-null when
-    # ``rl_mode == "rl_shadow"``) is enforced by the ShadowRouter
-    # producer, not by the catalog.
-    ("rl_candidate_breakdown", "rl_candidate", _is_list_of_dicts_or_none),
-    ("rl_candidate_agreement_top1", "rl_candidate", _is_bool_or_none),
-    ("rl_candidate_agreement_kendall_tau", "rl_candidate", _is_kendall_tau_or_none),
-    ("rl_candidate_mask_total", "rl_candidate", _is_non_negative_int_or_none),
-    ("rl_candidate_pruned_count", "rl_candidate", _is_non_negative_int_or_none),
-    # ranking shadow router. Type-only at the catalog layer; conditional
-    # requirement is enforced by the ranking ShadowRouter producer.
-    # ``rl_ranking_*`` fields appear iff the ranking policy was wired and
-    # the pick reached the ranking blend seam.
-    ("rl_ranking_policy_id", "rl_ranking", _is_str_or_none),
-    ("rl_ranking_artifact_version", "rl_ranking", _is_str_or_none),
-    ("rl_ranking_regret_top1", "rl_ranking", _is_bool_or_none),
-    ("rl_ranking_kendall_tau", "rl_ranking", _is_kendall_tau_or_none),
-    # sequencing shadow router. Type-only at the catalog layer;
-    # conditional requirement is enforced by the sequencing ShadowRouter
-    # producer. ``rl_sequencing_*`` fields appear iff a sequencing policy
-    # is wired and the pick produced at least one failure attempt
-    # (success outcomes never invoke the seam).
-    ("rl_sequencing_policy_id", "rl_sequencing", _is_str_or_none),
-    ("rl_sequencing_artifact_version", "rl_sequencing", _is_str_or_none),
-    ("rl_sequencing_action_proposed", "rl_sequencing", _is_str_or_none),
-    ("rl_sequencing_action_baseline", "rl_sequencing", _is_str_or_none),
-    ("rl_sequencing_action_agree", "rl_sequencing", _is_bool_or_none),
     # camera world. The weakest camera world behind the attempt's typed
     # motions, read by the record serializer from the pick report's stamps.
     # Absent when no typed motion was commanded or every stamp is UNSTATED.
@@ -473,52 +301,3 @@ def extra_field_coverage(
     return coverage
 
 
-#: Names of every RL core extra field. Order matches
-#: :data:`EXTRA_TELEMETRY_FIELDS` insertion order.
-RL_REQUIRED_TELEMETRY_FIELDS: tuple[str, ...] = (
-    "rl_mode",
-    "rl_policy_id",
-    "rl_artifact_version",
-    "rl_action_proposed",
-    "rl_action_applied",
-    "rl_action_blocked_by_mask",
-    "rl_reason_features",
-    "rl_confidence",
-    "rl_baseline_action",
-    "rl_override",
-    "rl_fallback_triggered",
-    "rl_router_path",
-    "rl_fallback_reason_code",
-)
-
-
-def audit_rl_required_record(record: GraspAttemptRecord) -> tuple[str, ...]:
-    """Missing RL fields when the record is RL-influenced (``rl_mode`` an RL-active mode), else empty tuple.
-
-    All RL extras must be present and non-null for an RL-active mode; for non-RL-active or an absent
-    ``rl_mode`` this is a no-op. Type validation lives in :func:`audit_extra_record`; this gate only
-    adds the presence requirement.
-    """
-
-    extra = record.extra or {}
-    mode_value = extra.get("rl_mode")
-    if mode_value not in _RL_ACTIVE_MODE_VALUES:
-        return ()
-    missing: list[str] = []
-    for name in RL_REQUIRED_TELEMETRY_FIELDS:
-        if name not in extra or extra[name] is None:
-            missing.append(name)
-    return tuple(missing)
-
-
-def audit_rl_required_records(
-    records: Iterable[GraspAttemptRecord] | Sequence[GraspAttemptRecord],
-) -> list[tuple[str, tuple[str, ...]]]:
-    """Return ``(attempt_id, missing_fields)`` for every RL presence violation."""
-
-    offenders: list[tuple[str, tuple[str, ...]]] = []
-    for r in records:
-        missing = audit_rl_required_record(r)
-        if missing:
-            offenders.append((r.attempt_id, missing))
-    return offenders

@@ -12,7 +12,7 @@ gOBJ register there.
 
 What must hold after the removal, and is pinned here:
 
-* a tree, a preset or ``explain`` that still names the block or one of its keys is answered with the sentence that
+* a tree or ``explain`` that still names the block or one of its keys is answered with the sentence that
   says what to do, and the unwired-switch list keeps its one other entry;
 * a pick on Robotiq-like hold evidence still reports held and empty through the execution policy, up to the
   service's outcome and the record it logs;
@@ -26,11 +26,9 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import inspect
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 import yaml
 
@@ -89,21 +87,6 @@ class TheSentenceSaysWhatToDoTests(unittest.TestCase):
                 self.assertTrue(said.endswith("."))
                 self.assertEqual(said.rstrip(".").count(". "), 0, said)
 
-    def test_a_preset_that_still_writes_it_is_refused_with_the_sentence(self) -> None:
-        from pydantic import ValidationError
-
-        from src.robot.grasping.replay import presets
-
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "old.yaml").write_text(
-                yaml.safe_dump({"grasping": {"verification": {"enabled": True}}}), encoding="utf-8")
-            with mock.patch.object(presets, "_PRESETS_DIR", Path(tmp)):
-                with self.assertRaises(ValidationError) as caught:
-                    presets.validate_preset("old", base={"vendor": "dummy", "gripper": {"vendor": "none"}})
-        said = " ".join(str(caught.exception).split())
-        self.assertEqual(said.count("removed on purpose"), 1)
-        self.assertIn(REMOVED_KEYS[_BLOCK], said)
-
     def test_explain_answers_each_key_with_the_sentence(self) -> None:
         from src.config.explain import explain
 
@@ -114,14 +97,6 @@ class TheSentenceSaysWhatToDoTests(unittest.TestCase):
                 self.assertFalse(answer.known)
                 self.assertEqual(answer.removed, REMOVED_KEYS[dotted])
                 self.assertEqual(answer.suggestions, ())
-
-    def test_the_unwired_list_keeps_its_other_entry_and_refuses_it_as_before(self) -> None:
-        self.assertEqual(RobotGraspingConfig.UNWIRED_SWITCHES, {"occlusion.hard_reject_enabled": "occlusion"})
-        self.assertEqual(set(RobotGraspingConfig.UNWIRED_REASONS), {"occlusion"})
-        with self.assertRaises(ValueError) as caught:
-            RobotGraspingConfig.model_validate({"occlusion": {"hard_reject_enabled": True}})
-        self.assertIn("occlusion.hard_reject_enabled is set", str(caught.exception))
-        self.assertNotIn("verification", str(caught.exception))
 
 
 # ---------------------------------------------------------------------------------------------------

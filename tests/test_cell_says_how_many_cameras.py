@@ -1,15 +1,19 @@
-"""A cell says at BOOT how many calibrated cameras it has, and warns when that is fewer than two.
+"""A cell says at BOOT which cameras it fuses, and warns when it was meant to fuse and cannot.
 
-⛔ THE GAP THIS CLOSES. `on_camera_unavailable` answers "a camera I asked for did not deliver". It
-cannot answer "I never asked for a second one", because a one-camera cell is a legitimate cell and
-refusing it would be wrong. So the case that was said nowhere at all is the one an operator is most
-likely to get wrong: believing they built a multi-camera cell and having built a single-view one.
+⛔ THE GAP THIS CLOSES. A missing camera at a pick is warned of where it fails to deliver. Nothing there can answer "I
+never got a second one", so the case said nowhere at all would be the one an operator is most likely to get wrong:
+believing they built a multi-camera cell and having built a single-view one. Since 2026-10-16 a cell fuses by itself
+wherever its camera section declares two or more enabled rigs with their calibration (the owner's cleanup), so the
+boot line is the fusion plan: what it fuses, or, where two or more enabled rigs that give depth are declared and they
+do not fuse, a WARNING that names what is missing. A stereo pair gives depth once its stereo calibration is written
+(2026-10-17), and the shipped base profile's webcam pair has none, so it warns of nothing.
 
-⚠ SINGLE-VIEW IS A MEASURED COST, not a neutral choice. On the datagen reference, top-1 goes 43.50 %
-single-view against 55.93 % fused. That is the number in the warning, so the operator can weigh it.
+⚠ SINGLE-VIEW IS A MEASURED COST, not a neutral choice. On the datagen reference, top-1 goes 43.50 % single-view
+against 55.93 % fused. That is the number in the warning, so the operator can weigh it.
 
-⚠ ONE LINE AT CONSTRUCTION, and INFO when the count is fine. A warning on every pick trains an
-operator to stop reading warnings, which is how the one that mattered gets missed.
+⚠ ONE LINE AT CONSTRUCTION, and INFO when the cell is what it says. A warning on every pick, or on every one-camera
+cell, trains an operator to stop reading warnings, which is how the one that mattered gets missed: a cell of one
+camera is a legitimate cell, and a wrist camera fuses its own looks.
 
 ⚠ NEVER RUN ON HARDWARE. Bucket 3 with the rest of WS3.
 """
@@ -19,37 +23,19 @@ from __future__ import annotations
 import logging
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from src.config import load_config
 from src.config.schema.robot import RobotConfig
 from src.robot.execution.autonomous_grasp import builders
 from src.robot.execution.autonomous_grasp.config import GraspMode
 
-
-def _grasping(cameras: dict[str, str | None], *, fusion_enabled: bool = False):  # noqa: ANN202
-    """A REAL validated grasping config, because a namespace would not prove the keys exist.
-
-    A map entry carries `enabled` only: the map names who takes part, and the calibration is
-    declared on the rig.
-    """
-    return RobotConfig.model_validate({
-        "vendor": "dummy",
-        "grasping": {
-            "fusion": {
-                "enabled": fusion_enabled,
-                "cameras": {name: {"enabled": True} for name in cameras},
-            },
-        },
-    }).grasping
+_PLAN_LINES = ("fusing ", "no camera fusion", "this cell cannot fuse")
 
 
 def _camera(cameras: dict[str, str | None]):  # noqa: ANN202
-    """The shipped camera section with one RGB-D rig per camera, each declaring its calibration
-    where the count reads it, `camera.cameras.rigs[<id>].extrinsics`. A mounting of None leaves that
-    rig uncalibrated.
-
-    The artifacts are never opened: the count reads what each rig declares, and the resolvers that
-    load an artifact are built only under `fusion.geometry.enabled`, which stays off here.
+    """The shipped camera section with one RGB-D rig per camera, the first the primary, each declaring its
+    calibration on its rig, `camera.cameras.rigs[<id>].extrinsics`. A mounting of None leaves that rig uncalibrated.
     """
     shipped = load_config().camera
     data = shipped.model_dump(mode="json")
@@ -63,99 +49,59 @@ def _camera(cameras: dict[str, str | None]):  # noqa: ANN202
         # Enabled with a serial each, as a real cell of several RGB-D cameras has to be.
         data["cameras"]["rigs"].append({**template, "rig_id": name, "enabled": True,
                                         "serial_number": f"serial_{name}", "extrinsics": extrinsics})
+    if cameras:
+        data["cameras"]["primary_rig_id"] = next(iter(cameras))
     return type(shipped).model_validate(data)
 
 
-def _lines(cameras: dict[str, str | None], **kwargs) -> list[tuple[str, str]]:  # noqa: ANN003
-    # A bare orchestrator stand-in: this test is about the CAMERA COUNT line, and the overlays only
-    # set attributes on it.
+def _lines(cameras: dict[str, str | None]) -> list[tuple[str, str]]:
+    # A bare orchestrator stand-in: the overlays only set attributes on it. The artifacts are never opened: a fused
+    # cell's resolvers stand in for the calibrations they would load.
     runtime = SimpleNamespace(orchestrator=SimpleNamespace())
-    grasping, camera = _grasping(cameras, **kwargs), _camera(cameras)
+    grasping = RobotConfig.model_validate({"vendor": "dummy", "grasping": {}}).grasping
     captured: list[tuple[str, str]] = []
 
     handler = logging.Handler()
-    handler.emit = lambda record: captured.append((record.levelname, record.getMessage()))
+    handler.emit = lambda record: captured.append((record.levelname, record.getMessage()))  # type: ignore[method-assign]
     builders.logger.addHandler(handler)
     try:
-        builders.apply_orchestrator_overlays(
-            runtime, grasping, resolved_mode=GraspMode.EASY, camera=camera)
+        with mock.patch.object(builders, "_resolver_for_rig", lambda _rig_id, _extrinsics: object()):
+            builders.apply_orchestrator_overlays(runtime, grasping, resolved_mode=GraspMode.EASY,  # type: ignore[arg-type]
+                                                 camera=_camera(cameras))
     finally:
         builders.logger.removeHandler(handler)
-    return [(level, message) for level, message in captured if "calibrated camera" in message]
+    return [(level, message) for level, message in captured if message.startswith(_PLAN_LINES)]
 
 
-class ItWarnsBelowTwoTests(unittest.TestCase):
+class ItWarnsWhereTheCellWasMeantToFuseTests(unittest.TestCase):
 
-    def test_one_camera_WARNS(self) -> None:
-        """⭐ The case the per-pick policy structurally cannot see."""
-        lines = _lines({"overhead": "eye_to_hand"})
+    def test_two_rgbd_rigs_of_which_one_declares_no_calibration_WARN(self) -> None:
+        """⭐ The cell an operator believes is multi-camera: two RGB-D rigs, and one of them cannot be placed."""
+        ((level, message),) = _lines({"overhead": "eye_to_hand", "side": None})
 
-        self.assertTrue(lines, "a single-camera cell said nothing about being single-view")
-        level, message = lines[0]
-        self.assertEqual(level, "WARNING")
-        self.assertIn("SINGLE-VIEW", message)
-        self.assertIn("overhead", message, "the warning does not name what it did find")
-
-    def test_the_warning_carries_the_MEASUREMENT(self) -> None:
-        """An operator deciding whether to add a camera needs the size of the prize, not an
-        instruction. 43.50 against 55.93 is what a second view was worth on the reference."""
-        _level, message = _lines({"overhead": "eye_to_hand"})[0]
-
+        self.assertEqual("WARNING", level)
+        self.assertIn("rig 'side' declares no calibration", message, "the warning does not name what is missing")
         self.assertIn("43.50", message)
         self.assertIn("55.93", message)
 
-    def test_no_cameras_at_all_still_warns(self) -> None:
-        """The commonest shape of all: a cell whose fusion block was never filled in."""
-        lines = _lines({})
 
-        self.assertTrue(lines)
-        self.assertEqual(lines[0][0], "WARNING")
-        self.assertIn("0 calibrated camera", lines[0][1])
-
-    def test_a_listed_camera_whose_rig_declares_no_calibration_is_not_counted(self) -> None:
-        """The count reads the rig key, not the map: a camera listed for fusion whose rig declares no
-        `extrinsics` is not calibrated, so this cell is still single-view."""
-        level, message = _lines({"overhead": "eye_to_hand", "wrist": None})[0]
-
-        self.assertEqual(level, "WARNING")
-        self.assertIn("1 calibrated camera", message)
-
-
-class ItIsQuietWhenTheCellIsFineTests(unittest.TestCase):
+class ItIsQuietWhenTheCellIsWhatItSaysTests(unittest.TestCase):
 
     def test_two_cameras_report_at_INFO(self) -> None:
-        """⚠ Not silence and not a warning. A boot line that says what the cell has is how an
-        operator confirms the config they meant; a warning here would be noise that teaches them to
-        skip the one above."""
-        lines = _lines({"overhead": "eye_to_hand", "wrist": "eye_in_hand"})
+        """⚠ Not silence and not a warning. A boot line that says what the cell fuses is how an operator confirms the
+        config they meant; a warning here would be noise that teaches them to skip the one above."""
+        ((level, message),) = _lines({"overhead": "eye_to_hand", "wrist": "eye_in_hand"})
 
-        self.assertTrue(lines)
-        self.assertEqual(lines[0][0], "INFO")
-        self.assertIn("2 calibrated camera", lines[0][1])
+        self.assertEqual("INFO", level)
+        self.assertIn("fusing 'overhead' (primary) and 'wrist' (on the wrist)", message)
 
-    def test_an_eye_in_hand_rig_COUNTS_and_is_named(self) -> None:
-        """A wrist camera is a second VIEWPOINT from one device: it sees the far side of a part the
-        fixed camera cannot, which is the whole reason fusing helps."""
-        _level, message = _lines({"overhead": "eye_to_hand", "wrist": "eye_in_hand"})[0]
+    def test_one_camera_reports_at_INFO(self) -> None:
+        """A cell of one camera is a legitimate cell, the owner's among them: it is said, not warned of."""
+        ((level, message),) = _lines({"overhead": "eye_to_hand"})
 
-        self.assertIn("1 eye-in-hand", message)
-
-
-class ItDoesNotDependOnTheFusionSWITCHTests(unittest.TestCase):
-    """⛔ THE TRAP THIS AVOIDS, and it is the same one WS3.4 was about. Every other camera check in
-    this file sits inside `if geometry_cfg.enabled`, so a cell with `fusion.enabled: false` gets no
-    camera reporting at all. That is exactly the cell most likely to be single-view by accident."""
-
-    def test_it_fires_with_fusion_DISABLED(self) -> None:
-        lines = _lines({"overhead": "eye_to_hand"}, fusion_enabled=False)
-
-        self.assertTrue(lines, "the boot line is gated behind the fusion switch again")
-
-    def test_it_fires_with_fusion_ENABLED_too(self) -> None:
-        lines = _lines({"overhead": "eye_to_hand"}, fusion_enabled=True)
-
-        self.assertTrue(lines)
-        self.assertEqual(lines[0][0], "WARNING")
+        self.assertEqual("INFO", level)
+        self.assertIn("no camera fusion", message)
+        self.assertIn("one enabled, calibrated rig, 'overhead'", message)
 
 
 if __name__ == "__main__":

@@ -755,7 +755,7 @@ class JawIOGripper:
         ``wait`` false leaves the stroke to the caller where its wait is the travel time alone: the
         change goes out exactly as it would, once, and the moment the stroke is over is returned,
         ``time.monotonic()`` seconds, for :meth:`wait_settled`, so the caller may judge its next
-        leg meanwhile and sends nothing until then (``robot.motion.judge_next_leg``, the owner,
+        leg meanwhile and sends nothing until then (every cuRobo arm, the owner,
         2026-10-09). ``None`` where nothing moved, the jaws already standing there, and where the
         wait reads a switch (a closing solenoid with feedback): that wait runs here, as ever. The
         next command waits out a stroke left so before it changes anything, as it waited inside

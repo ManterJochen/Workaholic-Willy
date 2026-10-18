@@ -1,8 +1,8 @@
-"""The process's one speech engine and voice gate, keyed on the `models.stt` section.
+"""The process's one speech engine and voice gate, keyed on the `models.stt` section and the weights folder.
 
-`SpeechHolder` builds a speech engine and a `SpeechGate` for a section, hands the same pair back while
-the section is unchanged, and builds a new pair when it changes, so an edited config takes effect without
-a restart. Neither model loads until it is first used. The slot lives in the library rather than inside
+`SpeechHolder` builds a speech engine and a `SpeechGate` for a section, their weights read from the tree's
+`models.weights_root`, hands the same pair back while both are unchanged, and builds a new pair when either
+changes, so an edited config takes effect without a restart. Neither model loads until it is first used. The slot lives in the library rather than inside
 the console's router, so a cell verb reaches the same pair; loading Whisper from disk per request would
 put a whole model load inside the 2 s budget from the end of speaking.
 
@@ -31,19 +31,21 @@ if TYPE_CHECKING:  # pragma: no cover, typing only
 
 __all__ = ["EngineBuilder", "GateBuilder", "HeldSpeech", "SpeechHolder", "shared_speech"]
 
-#: Builds the engine for a section.
-EngineBuilder = Callable[[SpeechToTextConfig], SpeechEngine]
-#: Builds the gate for a section.
-GateBuilder = Callable[[SpeechToTextConfig], SpeechGate]
+#: Builds the engine for a section, its weights read from the folder given (``None``: the repository's).
+EngineBuilder = Callable[[SpeechToTextConfig, "str | None"], SpeechEngine]
+#: Builds the gate for a section, Silero read from the folder given (``None``: the repository's).
+GateBuilder = Callable[[SpeechToTextConfig, "str | None"], SpeechGate]
 
 
 @dataclass(frozen=True, slots=True)
 class HeldSpeech:
-    """One section's engine and gate, as the holder keeps them."""
+    """One section's engine and gate, as the holder keeps them, and the weights folder they read from."""
 
     config: SpeechToTextConfig
     engine: SpeechEngine
     gate: SpeechGate
+    #: The tree's ``models.weights_root``; ``None`` is the repository's folder. A ``Listener`` of its own takes it.
+    weights_root: str | None = None
 
     def propose(self, samples: np.ndarray, *, samplerate: int) -> Proposal:
         """What one recording proposes for the prompt box. Loads each model on its first use.
@@ -78,14 +80,14 @@ class HeldSpeech:
         return Proposal(text=transcript.text, reason=reason, speech=speech, transcript=transcript)
 
 
-def _whisper(config: SpeechToTextConfig) -> SpeechEngine:
+def _whisper(config: SpeechToTextConfig, weights_root: str | None) -> SpeechEngine:
     from src.models.speech.whisper_transformers import WhisperTransformersEngine
 
-    return WhisperTransformersEngine.from_config(config=config)
+    return WhisperTransformersEngine.from_config(config=config, weights_root=weights_root)
 
 
-def _silero_gate(config: SpeechToTextConfig) -> SpeechGate:
-    return SpeechGate.from_config(config=config)
+def _silero_gate(config: SpeechToTextConfig, weights_root: str | None) -> SpeechGate:
+    return SpeechGate.from_config(config=config, weights_root=weights_root)
 
 
 class SpeechHolder:
@@ -112,23 +114,28 @@ class SpeechHolder:
             build_gate=resolve("build_gate", build_gate, _silero_gate),
         )
 
-    def for_config(self, *, config: SpeechToTextConfig) -> HeldSpeech:
-        """The engine and gate for ``config``: the pair already built while the section is unchanged."""
+    def for_config(self, *, config: SpeechToTextConfig, weights_root: str | None = None) -> HeldSpeech:
+        """The engine and gate for ``config``, their weights read from ``weights_root`` (the tree's
+        ``models.weights_root``; ``None`` is the repository's folder): the pair already built while both are
+        unchanged. A tree that keeps its weights elsewhere is read with :meth:`for_tree`, which passes its folder."""
         with self._lock:
             held = self._held
-            if held is None or held.config != config:
-                held = HeldSpeech(config=config, engine=self._build_engine(config), gate=self._build_gate(config))
+            if held is None or held.config != config or held.weights_root != weights_root:
+                held = HeldSpeech(config=config, engine=self._build_engine(config, weights_root),
+                                  gate=self._build_gate(config, weights_root), weights_root=weights_root)
                 self._held = held
             return held
 
     def for_tree(
         self, data_dir: str | Path | None = None, *, profile: Maybe[str | None] = UNSET
     ) -> HeldSpeech:
-        """`models.stt` read alone from ``data_dir`` under ``profile`` (`load_speech_section`), then
-        `for_config`. A camera or detector file that does not load cannot refuse a recording."""
-        from src.config.loader import load_speech_section
+        """`models.stt` and `models.weights_root` read alone from ``data_dir`` under ``profile``
+        (`load_speech_section`, `load_weights_root`), then `for_config`. A camera or detector file that does not
+        load cannot refuse a recording."""
+        from src.config.loader import load_speech_section, load_weights_root
 
-        return self.for_config(config=load_speech_section(data_dir, profile=profile))
+        return self.for_config(config=load_speech_section(data_dir, profile=profile),
+                               weights_root=load_weights_root(data_dir, profile=profile))
 
     def forget(self) -> None:
         """Drop what it holds, so the next call builds a new engine and gate."""
@@ -145,12 +152,13 @@ def shared_speech() -> SpeechHolder:
     program.
 
     ```python
-    proposal = shared_speech().for_config(config=load_speech_section()).propose(samples, samplerate=16000)
+    proposal = shared_speech().for_tree().propose(samples, samplerate=16000)   # the tree WILLY_PROFILE names
     ```
 
     Returns:
-        SpeechHolder: The holder; ``for_config(config=...)`` gives the voice gate and the transcriber that section
-            names, loaded once and kept.
+        SpeechHolder: The holder; ``for_tree()`` gives the voice gate and the transcriber the tree's section names,
+            read from its weights folder, and ``for_config(config=..., weights_root=...)`` the same for a section in
+            hand; both loaded once and kept.
     """
     global _SHARED
     with _SHARED_LOCK:

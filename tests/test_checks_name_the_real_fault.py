@@ -1,4 +1,4 @@
-"""The four `scripts/checks/` files must name the fault that is actually there, and the fix that exists.
+"""The `scripts/checks/` files must name the fault that is actually there, and the fix that exists.
 
 ⭐ **A CHECK IS THE ONE FILE IN THIS REPOSITORY WHOSE OUTPUT IS AN INSTRUCTION.** An example prints
 what happened and a test prints a verdict; a check prints "NOT READY" plus a `fix:` line, and an
@@ -18,9 +18,10 @@ Three ways that can be wrong, measured on 2026-09-10, one test each:
   configurations before it opens a socket, and `cell_bringup.py` reported all three as "the
   controller did not answer", sending the reader to a cable when the fault was in their YAML.
 * **A sweep printing "no change" about a switch that changes the built cell.** `grasping_switches.py`
-  diffs the effective-config snapshot, `grasping.deep_ranker` reaches the ORCHESTRATOR instead, and a
+  diffed the effective-config snapshot, `grasping.deep_ranker` reaches the ORCHESTRATOR instead, and a
   block the instrument cannot see is indistinguishable from an inert one. That is the general shape
-  of the thing: a mechanism that does not fire looks exactly like one with no work to do.
+  of the thing: a mechanism that does not fire looks exactly like one with no work to do. The sweep
+  left on 2026-10-16 with the blocks it swept (the owner's cleanup).
 """
 
 from __future__ import annotations
@@ -98,7 +99,7 @@ class TheFaultIsNamedWhereItIsTests(unittest.TestCase):
     """⛔ **THREE PRE-SOCKET CONFIG REFUSALS WERE REPORTED AS A CONTROLLER THAT DID NOT ANSWER.**
 
     `URRobotArm.connect()` refuses before `self._conn.connect()` on three configurations, each of
-    them a value in the operator's own YAML: `safety.payload.enforce` with `mass_kg: 0.0`, a declared
+    them a value in the operator's own YAML: `safety.payload.mass_kg: 0.0`, a declared
     mass still carrying the `[0, 0, 0]` CoG marker, and `gripper.tool_frame.source: undeclared`. All
     three raise `RobotConnectionError`, which `cell_bringup.py` caught in one handler and rendered as
 
@@ -122,8 +123,8 @@ class TheFaultIsNamedWhereItIsTests(unittest.TestCase):
         robot = load_robot_config(profile=None)
         payload, tool = robot.safety.payload, robot.gripper.tool_frame
         early = (
-            (payload.enforce and payload.mass_kg == 0.0)
-            or (payload.enforce and payload.mass_kg > 0.0 and all(v == 0.0 for v in payload.cog_mm))
+            payload.mass_kg == 0.0
+            or (payload.mass_kg > 0.0 and all(v == 0.0 for v in payload.cog_mm))
             or tool.source == "undeclared"
             or robot.gripper.model is None
         )
@@ -143,44 +144,6 @@ class TheFaultIsNamedWhereItIsTests(unittest.TestCase):
             any(key in output for key in ("safety.payload", "gripper.tool_frame", "gripper.model")),
             f"the refusal does not name the YAML key that caused it:\n{output[-1200:]}",
         )
-
-
-class TheSweepMeasuresEverySwitchTests(unittest.TestCase):
-    """⛔ **`deep_ranker` READ "no change" IN ALL FIVE MODES, AND IT CHANGES THE BUILT CELL.**
-
-    `grasping_switches.py` switches each `grasping.*` block on and diffs `EffectiveGraspingConfig`.
-    That snapshot is one of TWO places a block reaches: `apply_orchestrator_overlays` is the other,
-    and `grasping.deep_ranker` reaches only the second one, as `orchestrator.deep_ranker_context`.
-    Measured with the fitted ranker on disk, switching it on loads it (400 trees) and every pick then
-    scores every candidate and stamps `deep_ranker_*` telemetry.
-
-    So the sweep printed the same word for "measured, and nothing moved" as for "outside the only
-    instrument I have", and closed with "13 block(s) swept". A row that cannot move is not evidence
-    of an inert switch, and the two were indistinguishable in the output.
-
-    ⭐ **THE THIRD WORD IS WHY THIS PASSES ON A FRESH CHECKOUT.** The ranker trees are git-ignored
-    (`assets/models/grasp_ranker/**/*.json`; the cards beside them are committed), so on a clean
-    clone the overlay fail-safes to `None` and `deep_ranker` moves nothing under either instrument.
-    That is a fact about the box rather than an inert switch, and the check now prints `unloaded`
-    plus the sentence the shipped code logged. What this test forbids is the silent word.
-    """
-
-    def test_no_block_reads_no_change_in_every_mode(self) -> None:
-        proc = _run(_CHECKS / "grasping_switches.py")
-        output = proc.stdout + proc.stderr
-        self.assertNotIn("Traceback", output, output[-1500:])
-        self.assertIn("deep_ranker", proc.stdout, "the sweep no longer reaches deep_ranker at all")
-        inert = [line.split()[0] for line in proc.stdout.splitlines()
-                 if line.startswith("  ") and " no change" in line
-                 and "reads on" not in line and "runtime" not in line
-                 and "unloaded" not in line]
-        self.assertEqual(
-            inert, [],
-            f"{inert} moved nothing in any mode under either instrument and said nothing about "
-            f"why, so the sweep measured nothing about them while reporting that it swept "
-            f"them:\n{proc.stdout}",
-        )
-        self.assertEqual(proc.returncode, 0, f"the sweep failed:\n{output[-1500:]}")
 
 
 class TheGuardChecksAdviceClearsItTests(unittest.TestCase):

@@ -1,18 +1,18 @@
 """A motion is judged while the arm settles, and the steady gate waits right before it is sent (map4 motion C4).
 
 On the cell the steady gate cost 0.54 to 0.61 s every time it directly followed a motion: the controller's
-``is_steady()`` takes that long to say "at rest", and the judgement of the next motion waited behind it (map4 F5). With
-``robot.safety.dwell.gate_at: send`` the cuRobo UR judges first and gates its own sends: it waits for steady right
-before the ``moveJ`` or ``moveL``, and where the arm then stands more than 1 mm from where the motion was judged from,
-it judges the motion again from there. Pinned here, on the real UR driver, its real guard and planner glue, over the
+``is_steady()`` takes that long to say "at rest", and the judgement of the next motion waited behind it (map4 F5).
+Every cuRobo arm judges first and gates its own sends (the owner's cell's ``robot.safety.dwell.gate_at: send``, every
+cuRobo arm's since 2026-10-17): it waits for steady right before the ``moveJ`` or ``moveL``, and where the arm then
+stands more than 1 mm from where the motion was judged from, it judges the motion again from there. Pinned here, on the real UR driver, its real guard and planner glue, over the
 test bench's camera and sidecar (the fixture of ``test_a_grasp_judged_ahead_runs_as_it_was_judged``):
 
 * the order: the judgement, then the gate, then the send, for a route, a line, a joint move and a joint path;
 * an arm that came to rest more than 1 mm off is judged again; one within it is sent the judged motion;
 * a timeout at the gate, and a halt during it, send nothing;
 * a route whose first waypoint is where the gate found the arm skips that zero-length first ``moveJ``;
-* in ``"verb"``, the default, the arm waits once at the start of its verb, before it judges anything (P0e E9), and no
-  verb above the arm waits any more.
+* an ik arm waits once at the start of its verb, before it judges anything (P0e E9), and no verb above the arm waits
+  any more.
 
 Honesty bucket (2): the arm's real judgement on a stand-in controller.
 """
@@ -26,6 +26,7 @@ from typing import Any
 from src.config.schema.robot import RobotConfig
 from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionStatus
 from src.robot.core.arm_capabilities import HaltState, LineMotion, LineReading
+from src.robot.core.robot_arm import STEADY_TIMEOUT_S
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.execution.motion import steady_timeout_of
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
@@ -43,8 +44,7 @@ from tests.test_every_verb_meets_the_camera_world import _mesh_backend_available
 
 
 def _sending(arm: Any, events: "list[str]") -> None:
-    """The arm gates its own sends (``gate_at: send``), and its controller's gate and sends are recorded in ``events``."""
-    arm._gates_sends = True
+    """The arm's controller's steady gate and sends, recorded in ``events``; the arm, a cuRobo UR, gates its own sends."""
 
     def steady(*_asked: Any) -> bool:
         events.append("steady")
@@ -95,14 +95,6 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
                          "the moveJ to where the arm stands went out, or a judged waypoint did not")
         self.assertNotIn("gate_planned_path", events, "the route judged ahead was judged a second time")
 
-    def test_verb_mode_waits_once_at_the_start_of_the_verb_and_sends_every_waypoint(self) -> None:
-        arm, events, _solved = _cell()
-        self.assertEqual("", _judged_ahead(arm))
-        route = arm._judged_ahead.route
-        self.assertTrue(arm.move(_STANDOFF).ok)
-        self.assertEqual(len(route.waypoints), arm._conn.moveJ.call_count)
-        arm._conn.wait_until_steady.assert_called_once()
-
     def test_an_arm_that_came_to_rest_half_a_millimetre_off_is_judged_again_from_there(self) -> None:
         arm, events, _solved = _cell()
         _sending(arm, events)
@@ -146,7 +138,7 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
         arm._conn.wait_until_steady.side_effect = lambda *_asked: False
         result = arm.move(_STANDOFF)
         self.assertIs(MotionStatus.TIMEOUT, result.status)
-        self.assertIn("gate_at 'send'", result.message)
+        self.assertIn("before the motion was sent", result.message)
         self.assertIn("nothing was sent", result.message)
         arm._conn.moveJ.assert_not_called()
 
@@ -254,41 +246,27 @@ class TheVerbsAboveTheArmLeaveTheGateToItTests(unittest.TestCase):
         self.assertEqual([], arm.waited)
 
     def test_the_robot_verbs_ask_the_arm_with_no_gate_of_their_own(self) -> None:
-        from types import SimpleNamespace
-
         from src.robot.execution import motion
 
         arm = _WaitedArm()
         arm.plans_paths = True
         arm.is_connected = True  # type: ignore[attr-defined]
-        arm.config = SimpleNamespace(safety=SimpleNamespace(dwell=SimpleNamespace(  # type: ignore[attr-defined]
-            require_steady_before_motion=True, steady_timeout_s=4.0)))
         self.assertTrue(motion.move(arm, _STANDOFF).ok)
         self.assertEqual([], arm.waited)
-        self.assertEqual(4.0, steady_timeout_of(arm), "what the tree asks stays what it asks, for the push")
+        self.assertEqual(STEADY_TIMEOUT_S, steady_timeout_of(arm), "the push waits the arm's own gate")
 
 
-class TheGateAtKeyReachesTheArmTests(unittest.TestCase):
-    def _arm(self, **safety: Any) -> URRobotArm:
-        planner = safety.pop("planner", "curobo")
-        # No guard that reads a hand: what is read here is the key, not the guard.
-        guards = {"payload": {"enforce": False}, "ik_quality": {"enforce": False}, "self_collision": {"enforce": False}}
+class EveryCuroboArmGatesItsOwnSendsTests(unittest.TestCase):
+    def _arm(self, planner: str = "curobo") -> URRobotArm:
         return URRobotArm(RobotConfig.model_validate({"vendor": "ur", "motion": {"planner": planner},
-                                                      "safety": {**guards, **safety}}))
+                                                      "gripper": {"model": "robotiq_2f85"}}))
 
-    def test_send_on_a_curobo_arm_gates_its_own_sends(self) -> None:
-        self.assertTrue(self._arm(dwell={"gate_at": "send"})._gates_sends)
-
-    def test_verb_the_default_waits_at_the_start_of_the_verb(self) -> None:
-        self.assertFalse(self._arm()._gates_sends)
-        self.assertEqual("verb", RobotConfig().safety.dwell.gate_at)
-
-    def test_no_gate_asked_is_no_gate_moved(self) -> None:
-        self.assertFalse(self._arm(dwell={"gate_at": "send", "require_steady_before_motion": False})._gates_sends)
+    def test_a_curobo_arm_gates_its_own_sends(self) -> None:
+        self.assertTrue(self._arm()._gates_sends)
 
     def test_an_ik_arm_waits_at_the_start_of_its_verb(self) -> None:
         """Only a cuRobo arm sends every motion through the sends that gate."""
-        self.assertFalse(self._arm(dwell={"gate_at": "send"}, planner="ik")._gates_sends)
+        self.assertFalse(self._arm("ik")._gates_sends)
 
 
 if __name__ == "__main__":

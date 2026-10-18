@@ -122,7 +122,7 @@ class TheSidecarSourceTests(unittest.TestCase):
 
     def test_the_seed_is_reset_before_every_joint_plan(self) -> None:
         self.assertTrue(self.plan_js, "the plan_js branch is gone")
-        reset, plan = self.plan_js.find("_planner.reset_seed()"), self.plan_js.find("_planner.plan_cspace(")
+        reset, plan = self.plan_js.find("_planner.reset_seed()"), self.plan_js.find("result = plan_cspace(")
         self.assertTrue(0 <= reset < plan, "plan_js plans without resetting the seed first")
 
     def test_check_js_reads_the_clearance_and_says_the_one_it_judged_at(self) -> None:

@@ -2,16 +2,16 @@
 
 Three things are pinned here, and the second is the one that matters most:
 
-1. **The facade builds what the legacy keys always built.** With ``models.pipeline`` unset, the stack is
-   the same two objects wrapped in a backend -- so every cell that predates the block is unaffected.
+1. **The facade builds the cell's stack.** ``models.pipeline`` names it: the VLM grounds free text
+   (``zero_shot``, the default) or RT-DETR answers with its trained classes (``closed_set``), and SAM2 cuts
+   every box either way. GroundingDINO, OneFormer, the prompt router and the fallback to GroundingDINO left
+   on 2026-10-17 (the owner's cleanup), so a cell whose VLM cannot load refuses the pick.
 2. **The two-stage chain moved, it was not rewritten.** Its two failure rules are behaviour, not
    accident: a detector error yields no objects at all (downstream reports an honest ``no_valid_grasp``
    rather than raising mid-pick), while a *single* segmentation error skips that object and keeps the
    rest (one bad mask in a cluttered bin must not discard the objects that segmented fine).
-3. **Illegal combinations are refused at load, by name.** Every detector x segmenter pairing used to
-   build silently, including ones where the prompt means something different to each half. The failure
-   this whole arc exists to remove is a stack that runs confidently and grounds the wrong thing, and a
-   warning in a log has never stopped a grasp.
+3. **A key that chose what left is refused at load, by name.** A stack nobody can build must not load
+   quietly and run a different one.
 
 No model weights and no torch inference: these exercise the wiring, which is exactly the part that used
 to be duplicated in six places.
@@ -75,7 +75,7 @@ class TwoStageBackendTests(unittest.TestCase):
 
     def test_it_pairs_each_detection_with_its_mask(self) -> None:
         backend = TwoStageBackend(_Detector(["cube", "mug"]), _Segmenter())
-        objects = backend.perceive(object(), "a cube. a mug.")
+        objects = backend.perceive(object(), "cube | mug")
 
         self.assertEqual(len(objects), 2)
         self.assertTrue(all(isinstance(o, PerceivedObject) for o in objects))
@@ -108,147 +108,67 @@ class TwoStageBackendTests(unittest.TestCase):
         self.assertEqual(segmenter.calls, ["cube", "mug", "box"], "every detection was still attempted")
 
     def test_detections_are_not_deduplicated(self) -> None:
-        """Deliberate: a multi-phrase prompt grounds neighbour clutter, and the sampler wants it."""
+        """Deliberate: a class list grounds neighbour clutter, and the sampler wants it."""
         backend = TwoStageBackend(_Detector(["cube", "cube"]), _Segmenter())
-        self.assertEqual(len(backend.perceive(object(), "a cube. a cube.")), 2)
+        self.assertEqual(len(backend.perceive(object(), "a cube")), 2)
 
 
-class PipelineMatrixTests(unittest.TestCase):
-    """What the schema refuses, and what it quietly gets right."""
+class PipelineSchemaTests(unittest.TestCase):
+    """What the schema holds, and what it refuses."""
 
-    def test_the_default_is_the_stack_this_repo_has_always_run(self) -> None:
+    def test_the_default_is_the_owners_stack(self) -> None:
         pipeline = PipelineConfig()
         self.assertEqual(pipeline.kind, "zero_shot")
-        self.assertEqual(pipeline.zero_shot.backend, "grounded_sam")
-        self.assertEqual(pipeline.zero_shot.segmenter, "sam2")
+        self.assertEqual("Qwen/Qwen3-VL-4B-Instruct-FP8", pipeline.zero_shot.vlm.model_id)
 
-    def test_a_vlm_stack_may_choose_its_segmenter(self) -> None:
-        """Reversed 2026-08-11. This used to be refused, on the belief that the VLM route always cuts
-        with SAM2 -- but that was POLICY, not a technical limit: OneFormer implements the same
-        box-prompted `segment_detection`, so it works with any box source, VLM included. Refusing it
-        was a knob withheld for no reason."""
-        pipeline = PipelineConfig(zero_shot={"backend": "vlm", "segmenter": "oneformer"})
-        self.assertEqual(pipeline.zero_shot.segmenter, "oneformer")
+    def test_the_vlm_block_holds_its_model_id_alone(self) -> None:
+        self.assertEqual({"model_id"}, set(type(PipelineConfig().zero_shot.vlm).model_fields))
+        self.assertEqual({"vlm"}, set(type(PipelineConfig().zero_shot).model_fields))
+        self.assertEqual({"kind", "zero_shot"}, set(PipelineConfig.model_fields))
 
-    def test_a_vlm_stack_with_the_real_segmenter_is_legal(self) -> None:
-        self.assertEqual(PipelineConfig(zero_shot={"backend": "vlm"}).zero_shot.backend, "vlm")
-
-    def test_a_closed_set_stack_cannot_be_told_to_route(self) -> None:
-        """Routing decides between open-vocabulary backends; a closed-set detector answers only with
-        its trained class list, so the decision would have nothing to act on."""
-        with self.assertRaises(pydantic.ValidationError) as ctx:
-            PipelineConfig(kind="closed_set", router={"enabled": True})
-        self.assertIn("closed-set detector answers only", str(ctx.exception))
-
-    def test_a_closed_set_stack_that_never_mentioned_the_router_is_simply_resolved(self) -> None:
-        """Failing someone for a default they never wrote -- when the correct value is unambiguous --
-        is a validator being pedantic rather than protective."""
-        pipeline = PipelineConfig(kind="closed_set")
-        self.assertFalse(pipeline.router.enabled)
-
-    def test_the_vlm_refuses_by_default_when_it_cannot_be_loaded(self) -> None:
-        """Degrading would do exactly what this route exists to prevent: hand a complex prompt to the
-        model that grounds it confidently and wrongly."""
-        self.assertEqual(PipelineConfig().zero_shot.vlm.on_unavailable, "refuse")
-        self.assertFalse(PipelineConfig().zero_shot.vlm.preload)
-
-    def test_oneformer_no_longer_advertises_modes_it_does_not_implement(self) -> None:
-        """The wrapper always calls ``post_process_instance_segmentation``, so ``semantic`` and
-        ``panoptic`` validated cleanly and then ran instance segmentation anyway."""
-        from src.config.schema.models.models_schema import OneFormerConfig
-
-        self.assertEqual(
-            OneFormerConfig(model_path="x", local=True, task="instance").task, "instance"
-        )
-        with self.assertRaises(pydantic.ValidationError):
-            OneFormerConfig(model_path="x", local=True, task="panoptic")
+    def test_a_key_that_chose_what_left_is_refused(self) -> None:
+        """The schema forbids them; the loader names each with its sentence (`tests/test_config_schema.py`)."""
+        for values in ({"router": {"enabled": True}}, {"zero_shot": {"backend": "grounded_sam"}},
+                       {"zero_shot": {"segmenter": "oneformer"}}, {"zero_shot": {"vlm": {"on_unavailable": "degrade"}}},
+                       {"zero_shot": {"vlm": {"preload": True}}}, {"closed_set": {"segmenter": "sam2"}}):
+            with self.subTest(values=values), self.assertRaises(pydantic.ValidationError):
+                PipelineConfig(**values)
 
 
 class FactoryTests(unittest.TestCase):
-    """``build_perception`` is the one-line API. It must resolve the legacy stack unchanged."""
+    """``build_perception`` is the one-line API."""
 
-    def test_an_absent_pipeline_block_builds_the_legacy_pair(self) -> None:
-        from unittest.mock import patch
-
+    def test_the_vlm_stack_builds_the_holders_grounder_without_loading_the_vlm(self) -> None:
+        """Every prompt goes to the VLM. The grounder must still not load at build time: the owner's cell loads it at
+        its first prompt, and a cell that never picks must never pay."""
         from src.models import factory
+        from src.models.segmentation.realtime import segmenter
+        from src.models.vlm import Qwen3VLGrounder
 
-        models = _models_config(pipeline=None)
-        with patch.object(factory, "build_object_detector", return_value="DET") as det, \
-             patch.object(factory, "build_segmenter", return_value="SEG") as seg:
+        models = _models_config()
+        with mock.patch.object(segmenter, "Sam2Segmenter", return_value="SEG") as seg:
             backend = factory.build_perception(models)
 
-        det.assert_called_once()
         seg.assert_called_once()
         self.assertIsInstance(backend, TwoStageBackend)
+        self.assertIsInstance(backend.detector, Qwen3VLGrounder)
+        self.assertFalse(backend.detector.loaded, "the VLM must not be loaded while merely building the cell")
+        self.assertEqual(backend.segmenter, "SEG")
+        self.assertEqual(models.weights_root, seg.call_args.kwargs["weights_root"])
+
+    def test_the_closed_set_stack_builds_rtdetr_and_sam2_from_the_weights_root(self) -> None:
+        from src.models import factory
+        from src.models.detection.closed_set import detector
+        from src.models.segmentation.realtime import segmenter
+
+        models = _models_config(pipeline=PipelineConfig(kind="closed_set"))
+        with mock.patch.object(detector, "RtDetrObjectDetector", return_value="DET") as det, \
+             mock.patch.object(segmenter, "Sam2Segmenter", return_value="SEG"):
+            backend = factory.build_perception(models)
+
         self.assertEqual((backend.detector, backend.segmenter), ("DET", "SEG"))
-
-    def test_the_vlm_route_builds_a_guarded_backend_without_loading_the_vlm(self) -> None:
-        """P3, router off: every prompt goes to the VLM. The grounder must still not load at build
-        time -- `preload: false` is the default, and a cell that never picks must never pay."""
-        from src.models import factory
-        from src.models.vlm import GuardedVlmBackend
-
-        models = _models_config(
-            pipeline=PipelineConfig(zero_shot={"backend": "vlm"}, router={"enabled": False}),
-        )
-        with mock.patch.object(factory, "_build_named_segmenter", return_value="SEG") as seg:
-            backend = factory.build_perception(models)
-
-        seg.assert_called_once()
-        self.assertIsInstance(backend, GuardedVlmBackend)
-        grounder = backend._vlm.detector  # noqa: SLF001 - asserting the wiring, not the behaviour
-        self.assertFalse(grounder.loaded, "the VLM must not be loaded while merely building the cell")
-        self.assertEqual(backend._vlm.segmenter, "SEG")  # noqa: SLF001
-
-    def test_the_routed_stack_builds_neither_model_until_a_prompt_arrives(self) -> None:
-        """Router on: the join. Eager construction would load GroundingDINO AND Qwen at cell build."""
-        from src.models import factory
-        from src.models.routed_backend import RoutedPerceptionBackend
-
-        models = _models_config(
-            pipeline=PipelineConfig(zero_shot={"backend": "vlm"}, router={"enabled": True}),
-        )
-        with mock.patch.object(factory, "_build_named_segmenter", return_value="SEG") as seg:
-            backend = factory.build_perception(models)
-
-        self.assertIsInstance(backend, RoutedPerceptionBackend)
-        self.assertEqual(backend.built_routes(), (), "no route may be built before a prompt selects one")
-        seg.assert_called_once()  # ...but SAM2 is built ONCE and shared by both routes
-
-    def test_an_explicit_router_without_a_vlm_is_refused_at_load(self) -> None:
-        """Routing with nowhere better to send a hard prompt is a decision nothing can act on."""
-        with self.assertRaises(pydantic.ValidationError) as ctx:
-            PipelineConfig(zero_shot={"backend": "grounded_sam"}, router={"enabled": True})
-        self.assertIn("needs zero_shot.backend='vlm'", str(ctx.exception))
-
-    def test_the_default_pipeline_leaves_routing_off_rather_than_failing(self) -> None:
-        """`pipeline: {}` must be valid: the router defaults on, the backend defaults to the phrase
-        grounder, and rejecting a combination nobody wrote would be pedantry, not protection."""
-        self.assertFalse(PipelineConfig().router.enabled)
-
-    def test_the_vlm_route_pins_sam2_rather_than_reading_the_segmenter_knob(self) -> None:
-        """There is no second mask source to choose between until a native-mask checkpoint exists, so
-        offering the choice here would be a knob that cannot do anything."""
-        from src.models import factory
-
-        models = _models_config(
-            pipeline=PipelineConfig(zero_shot={"backend": "vlm", "segmenter": "sam2"}),
-        )
-        with mock.patch.object(factory, "_build_named_segmenter", return_value="SEG") as seg:
-            factory.build_perception(models)
-        self.assertEqual(seg.call_args.args[1], "sam2")
-
-    def test_degrade_without_a_phrase_detector_is_refused_at_build_time(self) -> None:
-        """Caught here, not at the moment of degradation -- which would be mid-pick, far too late."""
-        from src.models import factory
-
-        models = _models_config(
-            pipeline=PipelineConfig(zero_shot={"backend": "vlm", "vlm": {"on_unavailable": "degrade"}}),
-            objectdetector=None,
-        )
-        with self.assertRaises(ValueError) as ctx:
-            factory.build_perception(models)
-        self.assertIn("models.objectdetector", str(ctx.exception))
+        self.assertIs(models.rtdetr, det.call_args.args[0])
+        self.assertEqual(models.weights_root, det.call_args.kwargs["weights_root"])
 
     def test_a_closed_set_pipeline_without_its_config_block_says_what_is_missing(self) -> None:
         from src.models import factory
@@ -257,6 +177,13 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             factory.build_perception(models)
         self.assertIn("models.rtdetr", str(ctx.exception))
+
+    def test_there_is_no_other_builder(self) -> None:
+        from src.models import factory
+
+        self.assertEqual(["build_perception"], factory.__all__)
+        for gone in ("build_object_detector", "build_segmenter", "_build_named_segmenter"):
+            self.assertFalse(hasattr(factory, gone), gone)
 
 
 def _models_config(**overrides: object) -> object:

@@ -11,7 +11,7 @@ __all__ = ["Detection"]
 
 @dataclass(frozen=True, slots=True)
 class Detection:
-    """Immutable detection result emitted by the zero-shot and closed-set detectors.
+    """Immutable detection result emitted by the VLM grounder and the closed-set detector.
 
     :meth:`__post_init__` enforces the contract: ``box`` has length 4 in
     ``(x0, y0, x1, y1)`` order with ``x1 > x0`` and ``y1 > y0``, the box corners and

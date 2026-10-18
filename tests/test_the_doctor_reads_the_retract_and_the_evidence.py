@@ -46,7 +46,7 @@ class TheDoctorLooksUpWhatAStartLooksUpTests(unittest.TestCase):
         self.assertEqual(str(row.status), "ok", row.detail)
         self.assertIn("+Z+X", row.detail)
         self.assertEqual(str(evidence.status), "ok", evidence.detail)
-        self.assertIn("ur5e_robotiq_2f85_c0mm_+Z+X_m4mm_a0.json", evidence.detail)
+        self.assertIn("ur5e_robotiq_2f85_c0mm_+Z+X_m4mm.json", evidence.detail)
 
     def test_a_margin_nobody_judged_is_missing_with_the_command(self) -> None:
         report = _doctor(_ursim(planner_margin_mm=6.0))

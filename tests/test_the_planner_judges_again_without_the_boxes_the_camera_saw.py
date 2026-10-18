@@ -9,12 +9,11 @@ aside: ``check_js`` takes ``ignore_perceived``. This file holds that question on
 * the sidecar's helper (``_curobo_perceived``): it sets aside exactly the camera's boxes it is named, every one the
   planner holds, only those, and puts every flag back as it was, or says the world can no longer be vouched for;
 * the sidecar's ``check_js`` branch, read as source (it runs only in the cuRobo environment): it sets aside only under
-  the new key, says which in its reply, refuses while it may hold a carried part, and exits where its world cannot be
-  put back; ``attach`` marks a carried part before it hangs one and ``detach`` clears it only once detached;
+  the new key, says which in its reply, and exits where its world cannot be put back; it holds no carried part (no cell
+  models one since 2026-10-17);
 * the client: the key goes out only where asked, a request without it is the one it always was, and a reply that does
   not say it set aside exactly those boxes is no report;
-* the glue: it asks only with the boxes its last refresh handed the planner, never a declared one's name, never while
-  a part may be carried.
+* the glue: it asks only with the boxes its last refresh handed the planner, never a declared one's name.
 
 The stubs are real subprocesses, as in ``test_curobo_state_refusal.py``. The GPU half is
 ``scripts/curobo/probe_turned_boxes.py``.
@@ -164,12 +163,10 @@ class TheCamerasBoxesAreSetAsideAndPutBackExactlyTests(unittest.TestCase):
         self.assertIn(("seen_00", True), store.set_calls, "it was asked to put it back")
 
     def test_a_plain_check_asks_nothing_aside_and_touches_no_storage(self) -> None:
-        """⭐ THE CONTROL the sidecar runs: a check_js request without the key asks nothing to be set aside, carried part or
-        not, and the world it is judged in is the planner's whole world: the storage is not even built."""
-        for carrying in (False, True):
-            with self.subTest(carrying=carrying):
-                self.assertIsNone(self.p.requested_aside({"cmd": "check_js", "joints": [[0.0] * 6]},
-                                                         key="ignore_perceived", prefix="seen_", carrying=carrying))
+        """⭐ THE CONTROL the sidecar runs: a check_js request without the key asks nothing to be set aside, and the world
+        it is judged in is the planner's whole world: the storage is not even built."""
+        self.assertIsNone(self.p.requested_aside({"cmd": "check_js", "joints": [[0.0] * 6]}, key="ignore_perceived",
+                                                 prefix="seen_"))
         built: list[_Store] = []
 
         def store() -> _Store:
@@ -180,19 +177,14 @@ class TheCamerasBoxesAreSetAsideAndPutBackExactlyTests(unittest.TestCase):
             pass
         self.assertEqual(built, [], "a plain judgement builds no storage and switches nothing")
 
-    def test_a_request_with_the_key_is_refused_while_a_part_may_be_carried(self) -> None:
-        """⭐ The sidecar's own word on a carried part: with the key, the names come back sorted where no part may be held,
-        and nothing is set aside while one may be; a malformed list is refused either way."""
+    def test_a_request_with_the_key_names_the_boxes_sorted(self) -> None:
+        """⭐ With the key, the names come back sorted; a malformed list is refused."""
         request = {"cmd": "check_js", "ignore_perceived": ["seen_01_bin", "seen_00"]}
-        self.assertEqual(self.p.requested_aside(request, key="ignore_perceived", prefix="seen_", carrying=False),
+        self.assertEqual(self.p.requested_aside(request, key="ignore_perceived", prefix="seen_"),
                          ("seen_00", "seen_01_bin"))
-        with self.assertRaises(self.p.PerceivedAsideError) as caught:
-            self.p.requested_aside(request, key="ignore_perceived", prefix="seen_", carrying=True)
-        self.assertIn("carried part", str(caught.exception))
         for value in (None, [], ["support_plane"], "seen_00"):
             with self.subTest(value=value), self.assertRaises(self.p.PerceivedAsideError):
-                self.p.requested_aside({"ignore_perceived": value}, key="ignore_perceived", prefix="seen_",
-                                       carrying=False)
+                self.p.requested_aside({"ignore_perceived": value}, key="ignore_perceived", prefix="seen_")
         store = _Store(_WORLD)
         with self.p.judged_world(("seen_00", "seen_01_bin"), lambda: store, prefix="seen_"):
             self.assertEqual({n for n, on in store.flags.items() if not on}, {"seen_00", "seen_01_bin"})
@@ -251,16 +243,16 @@ def _inside_block(source: str, header: str, at: int) -> bool:
         at - (source.rfind("\n", 0, at) + 1) > indent)
 
 
-#: How the check_js branch asks what to set aside: the CPU-tested helper, with the key, the prefix and this sidecar's own
-#: carried-part mark (``_curobo_perceived.requested_aside``).
-_ASKED = "requested_aside(req, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX, carrying=_CARRYING)"
+#: How the check_js branch asks what to set aside: the CPU-tested helper, with the key and the prefix
+#: (``_curobo_perceived.requested_aside``).
+_ASKED = "requested_aside(req, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX)"
 
 
 def _sets_aside_only_when_asked(check: str) -> bool:
-    """True when the check_js branch asks the helper what to set aside with its own carried-part mark, judges inside the
-    world the helper opens (``judged_world``, which opens nothing for a plain check), never opens a set-aside on its own
-    terms, echoes the names once, after that world closed and only inside ``if _aside is not None:``, and a world it
-    cannot put back ends the sidecar."""
+    """True when the check_js branch asks the helper what to set aside, judges inside the world the helper opens
+    (``judged_world``, which opens nothing for a plain check), never opens a set-aside on its own terms, echoes the names
+    once, after that world closed and only inside ``if _aside is not None:``, and a world it cannot put back ends the
+    sidecar."""
     asked = check.find(_ASKED)
     opened = check.find("with judged_world(_aside, ")
     judged = check.find("_terms(req[\"joints\"]")
@@ -270,15 +262,6 @@ def _sets_aside_only_when_asked(check: str) -> bool:
             and not _inside_block(check, "with judged_world(", echo)
             and _inside_block(check, "if _aside is not None:", echo) and "SetAside(" not in check
             and "WorldRestoreError" in check and "sys.exit(" in check[check.find("WorldRestoreError"):])
-
-
-def _marks_the_carried_part(source: str) -> bool:
-    """True when attach marks a carried part before it hangs one, and detach clears the mark only after it detached."""
-    attach = _block(source, 'if cmd == "attach":', 'if cmd == "detach":')
-    detach = _block(source, 'if cmd == "detach":', 'if cmd == "set_voxels":')
-    mark, hang = attach.find("_CARRYING = True"), attach.find("attachment_manager.attach(")
-    done, clear = detach.find("attachment_manager.detach("), detach.find("_CARRYING = False")
-    return 0 <= mark < hang and 0 <= done < clear and detach.find("except", done) > clear
 
 
 class TheSidecarSetsAsideOnlyWhenAskedTests(unittest.TestCase):
@@ -292,11 +275,12 @@ class TheSidecarSetsAsideOnlyWhenAskedTests(unittest.TestCase):
         self.assertIn("PERCEIVED_PREFIX", check)
         self.assertIn("_PlannerCuboids(_planner.scene_collision_checker)", check)
 
-    def test_the_carried_part_is_marked_before_it_hangs_and_cleared_once_it_is_off(self) -> None:
+    def test_the_sidecar_holds_no_carried_part(self) -> None:
+        """No cell models a part in the jaws (2026-10-17): the sidecar takes no attach and keeps no mark of one."""
         source = _server_source()
-        self.assertTrue(_marks_the_carried_part(source))
-        self.assertIn("_CARRYING = False", source[:source.find("for _line in sys.stdin:")],
-                      "a sidecar starts holding no part")
+        for gone in ('if cmd == "attach":', 'if cmd == "detach":', "_CARRYING", "attachment_manager"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, source)
 
     def test_the_planners_own_switch_sets_the_box_aside(self) -> None:
         """cuRobo's own ``enable_obstacle`` switches a box, and its flag is read back off cuRobo's cuboid storage."""
@@ -306,8 +290,8 @@ class TheSidecarSetsAsideOnlyWhenAskedTests(unittest.TestCase):
 
     def test_the_scans_can_fail(self) -> None:
         """⭐ THE CONTROL: a branch that echoes whatever was asked, echoes before the world is back, judges outside the
-        world the helper opens, opens a set-aside on its own terms, tells the helper no part is carried, or never exits on
-        a world it cannot put back reads False; and an attach that hangs the part before marking it, too."""
+        world the helper opens, opens a set-aside on its own terms, or never exits on a world it cannot put back reads
+        False."""
         good = (f'_aside = {_ASKED}\n'
                 'with judged_world(_aside, lambda: store, prefix=PERCEIVED_PREFIX):\n'
                 '    _bound = _terms(req["joints"], c)\n'
@@ -317,7 +301,6 @@ class TheSidecarSetsAsideOnlyWhenAskedTests(unittest.TestCase):
         bad = {
             "echoes what nobody asked": good.replace("if _aside is not None:\n", "if True:\n"),
             "judges on in a world it cannot vouch for": good.replace("sys.exit(3)", "pass"),
-            "sets aside while a part may be carried": good.replace("carrying=_CARRYING", "carrying=False"),
             "judges outside the world it opened": good.replace('    _bound = _terms(req["joints"], c)\n', "    pass\n")
             + '_bound = _terms(req["joints"], c)\n',
             "echoes before the world is back": good.replace(
@@ -330,13 +313,6 @@ class TheSidecarSetsAsideOnlyWhenAskedTests(unittest.TestCase):
         for what, branch in bad.items():
             with self.subTest(what=what):
                 self.assertFalse(_sets_aside_only_when_asked(branch))
-        late = ('if cmd == "attach":\n    _planner.attachment_manager.attach(x)\n    _CARRYING = True\n'
-                'if cmd == "detach":\n    _planner.attachment_manager.detach(y)\n    _CARRYING = False\n'
-                '    except E:\nif cmd == "set_voxels":')
-        self.assertFalse(_marks_the_carried_part(late))
-        self.assertTrue(_marks_the_carried_part(late.replace(
-            "_planner.attachment_manager.attach(x)\n    _CARRYING = True",
-            "_CARRYING = True\n    _planner.attachment_manager.attach(x)")))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -529,12 +505,6 @@ class _Judging:
         self.worlds.append([dict(box) for box in boxes])
         return len(boxes) + len(meshes or ()) - self.short
 
-    def attach_payload(self, joints: Any, dims_m: Any, pose: Any) -> bool:
-        return True
-
-    def detach_payload(self) -> bool:
-        return True
-
     def judge_joints(self, configs: Any, **asked: Any) -> Any:
         from src.robot.safety.planning.curobo_client import PathJudgement
 
@@ -627,10 +597,9 @@ class TheGlueAsksOnlyWithWhatItsRefreshHandedThePlannerTests(unittest.TestCase):
         glue.judge_joint_path([[0.0] * 6], clearance_mm=0.0)
         self.assertNotIn("ignore_perceived", client.judged[-1], "a report nobody asked to set aside is unchanged")
 
-    def test_it_never_asks_with_other_names_a_declared_name_or_while_a_part_may_be_carried(self) -> None:
+    def test_it_never_asks_with_other_names_or_a_declared_name(self) -> None:
         """⭐ FAIL CLOSED before the sidecar is asked: the names the guard holds and the boxes the planner was handed by
-        the last refresh are one list; a declared fixture is never set aside, whatever it is called; and nothing is set
-        aside while the planner may hold a carried part, which only it holds."""
+        the last refresh are one list, and a declared box is never set aside, whatever it is called."""
         glue, client, _ = _glue()
         glue.refresh_world(near_point_mm=(600.0, 0.0, 300.0))
         held = tuple(glue.perceived_in_world() or ())
@@ -638,13 +607,6 @@ class TheGlueAsksOnlyWithWhatItsRefreshHandedThePlannerTests(unittest.TestCase):
         for names in (held[:-1], (*held, "seen_99")):
             with self.subTest(names=names), self.assertRaises(CuroboUnavailableError):
                 glue.judge_joint_path([[0.0] * 6], ignore_perceived=names)
-        self.assertTrue(glue.attach_payload([0.0] * 6, (50.0, 50.0, 80.0), (0.0, 0.0, 200.0)))
-        self.assertTrue(glue.carries_part)
-        with self.assertRaises(CuroboUnavailableError) as caught:
-            glue.judge_joint_path([[0.0] * 6], ignore_perceived=held)
-        self.assertIn("carried", str(caught.exception))
-        self.assertTrue(glue.detach_payload())
-        self.assertFalse(glue.carries_part)
         self.assertEqual(len(client.judged), asked, "the sidecar was asked none of them")
 
         named_like_it = {"name": held[0], "dims_m": [0.1] * 3, "pose": [0.0, -0.4, 0.05, 1.0, 0.0, 0.0, 0.0]}

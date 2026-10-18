@@ -22,12 +22,12 @@ median and 2.26 at the 90th percentile, 0.18 mm of it away from the camera, the 
 :func:`footprint_rim` cuts it: the mask eroded by ``ceil(rim_mm * fx / z)`` px, ``z`` the median depth under the mask
 and ``fx`` the colour lens's focal length in pixels (the depth is aligned to the colour image), with the elliptical
 kernel the rim was measured with, never more than :data:`FOOTPRINT_RIM_MAX_SHARE` of the mask. Two inputs lose it: a
-look's own input in the calculator (``GraspCalculator(support_footprint_rim_mm=...)``, from
-``robot.grasping.geometry.footprint_rim_mm``) and the footprint cloud the pick loop fuses beside the looks' surfaces
+look's own input in the calculator (``GraspCalculator(support_footprint_rim_mm=...)``, :data:`FOOTPRINT_RIM_MM` from
+``build_calculator``) and the footprint cloud the pick loop fuses beside the looks' surfaces
 (``ObservedView.footprints``, ``FusedSceneGeometry.footprint_clouds_base_mm``). The full mask stays for everything
 else: the jaw-face check, the association of looks, the kept scene, the colour check, the planner world's hold-out and
-the neighbours' growth. A rim taken off adds no point anywhere: it can only make a footprint smaller, which
-``inflate_mm`` gives back as a margin, and the exact guard judges every motion as before.
+the neighbours' growth. A rim taken off adds no point anywhere: it can only make a footprint smaller, which the part's
+visual hull gives back (``footprint_hull``), and the exact guard judges every motion as before.
 
 Pure and deterministic: numpy and OpenCV's erosion, image-shaped arrays, depth in millimetres.
 """
@@ -40,7 +40,15 @@ from typing import Final
 
 import numpy as np
 
-__all__ = ["FOOTPRINT_RIM_MAX_SHARE", "FootprintRim", "footprint_rim", "rim_px"]
+__all__ = ["FOOTPRINT_RIM_MAX_SHARE", "FOOTPRINT_RIM_MM", "FootprintRim", "footprint_rim", "rim_px"]
+
+#: The rim a cell's calculator cuts, millimetres at the part (the owner, 2026-10-09: "Ja, für Montag", and that evening
+#: on without a switch of its own): ``build_calculator`` hands it every calculator it builds, and the pick loop cuts the
+#: same off the looks it fuses. With it every mask pixel the stage does not read is placed in the part's visual hull
+#: (``footprint_hull``): on the 23 cubes above the centre 0.58 mm off at the median and 1.79 at the 90th percentile. It
+#: was ``robot.grasping.geometry.footprint_rim_mm`` until that block left on 2026-10-16 (the owner's cleanup), at this
+#: number on every cell.
+FOOTPRINT_RIM_MM: Final[float] = 2.0
 
 #: The most of a mask's pixels the rim may take. Where it would take more, the part is small for the rim, and a rim one
 #: pixel narrower is cut, and so on down to none. A choice, not a measurement: the review that measured the rim on

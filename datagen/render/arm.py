@@ -122,8 +122,8 @@ def arm_point_mask(model: str, joints_rad, points_mm, *, margin_mm: float = 0.0)
     half-width): here that errs towards calling a table point "arm", which costs a few points of
     table and never mislabels arm as table.
 
-    The DH chain and the Isaac USD base can differ by 180 deg about +Z, which is what
-    `self_collision` carries `kinematics_base_yaw_deg` for. `_segments_mm` is what datagen poses the
+    The DH chain and the Isaac USD base differ by 180 deg about +Z, which the Isaac arm states for the
+    guard (`src/willy_sim/guard_numbers.py`). `_segments_mm` is what datagen poses the
     arm with, so the two are the same chain by construction; a caller that supplied its own origins
     would have to reconcile that itself.
     """

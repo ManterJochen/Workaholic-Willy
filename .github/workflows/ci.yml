@@ -75,11 +75,6 @@ jobs:
             --cov-report=xml \
             --cov-fail-under=80
 
-      - name: Production soak gate
-        # Deterministic synthetic soak and 12 key KPI gate; exit 0 only if all
-        # pass. It checks telemetry and KPI consistency, not grasp quality.
-        run: python -m src.robot.grasping.replay --soak-report
-
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4

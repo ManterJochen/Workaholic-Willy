@@ -3,7 +3,7 @@ back where it was grasped after every lift, so one part serves the whole campaig
 a record of every attempt, and a picture of what the camera saw and gripped.
 
 A wrist camera looks from the looks below in order, each fused with the ones before, and grips at the first safe
-grasp; a fixed camera's arm is moved to them too. Leave look= out and the profile's robot.look_joint_positions_deg
+grasp; a fixed camera's arm is moved to them too. Leave look= out and the profile's robot.motion.look_deg
 serve, else home on a wrist camera. With SHOW_CAMERAS every camera shows live, each grasp overlay on the primary's.
 
 Run it at the cell, under the cell's profile, once its camera is calibrated (07-10):

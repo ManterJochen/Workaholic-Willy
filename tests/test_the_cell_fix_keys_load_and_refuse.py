@@ -1,14 +1,16 @@
-"""The cell fixes' keys load with their defaults, a declared fixture keeps 10 mm, and the owner's looks ship as depth.
+"""The cell fixes' keys are every cell's, a declared fixture is the guard's, and the owner's looks ship as depth.
 
 The owner's decisions of 2026-10-01 and 2026-10-02 (fix plan revision 3, Track K):
 
-* four keys, each on by default where the owner chose it: ``robot.grasping.scene_obstacles`` (the calculator sees the
-  parts beside the one it grasps), ``robot.grasping.side_approaches`` (tilted grasps join the vertical ones),
-  ``robot.safety.planning_world.perceived.support_surfaces`` (the stack finds what it stands on) and
-  ``...perceived.support_allowance_mm``, 2 mm, from 0 to 10;
-* ``self_collision.min_distance_mm`` below 10 is refused at load while a fixture is declared and the planning world
-  includes it: what a camera sees within 5 mm of a declared fixture leaves the world as the fixture's and nothing
-  holds that band as solid (S8). The owner's cell declares none, and its 5 loads;
+* four keys the owner chose on, refused at load since 2026-10-17 at the values every cell runs since:
+  ``robot.grasping.scene_obstacles`` (the calculator sees the parts beside the one it grasps) and
+  ``robot.grasping.side_approaches`` (tilted grasps join the vertical ones), with ten more of the cell's grasping
+  switches, and ``robot.safety.planning_world.perceived.support_surfaces`` and ``...perceived.support_allowance_mm``:
+  the stack finds what it stands on and holds it 2 mm over its band on every cell;
+* ``self_collision.min_distance_mm`` below 10 was refused at load while a fixture was declared and the planning world
+  included it: what a camera saw within 5 mm of a declared fixture left the world as the fixture's and nothing held
+  that band as solid (S8). A fixture stays the guard's on every cell since 2026-10-17 (the camera world drops nothing
+  as one), so the rule went with the key, and a fixture loads beside any distance the guard keeps;
 * two of the owner's recorded looks, depth only: the owner allowed the depth to ship and not the colour images.
 """
 
@@ -24,11 +26,11 @@ from pydantic import ValidationError
 
 from src.config import load_robot_config
 from src.config.loader import available_profiles
+from src.config.schema._removed import removed_key_sentence
 from src.config.schema.robot import RobotConfig
-from src.config.schema.robot import safety_schema
 from src.config.schema.robot.grasping_schema import RobotGraspingConfig
-from src.config.schema.robot.safety_schema import PerceivedWorldConfig, RobotSafetyConfig
-from src.robot.safety.planning.perceived import DECLARED_SURFACE_MM
+from src.config.schema.robot.safety_schema import RobotSafetyConfig
+from src.robot.safety.planning.perceived import SUPPORT_ALLOWANCE_MM
 from tests import _cell_2026_10_01 as cell
 
 _OWNER_TREE = Path("D:/helper_cell/robominds_config/config/robot/robot.yaml")
@@ -36,79 +38,66 @@ _DATA = Path(__file__).resolve().parent / "data" / "cell_2026_10_01"
 _LOOK_0_DEG = (-87.50, -64.51, -85.79, -129.82, 90.27, -108.84)
 
 
-def _safety(min_distance_mm: float, fixtures: list[dict[str, object]], *, include: bool = True) -> RobotSafetyConfig:
-    return RobotSafetyConfig.model_validate({
-        "self_collision": {"min_distance_mm": min_distance_mm, "fixtures": fixtures},
-        "planning_world": {"include_fixtures": include},
-    })
-
-
 _WALL: dict[str, object] = {"name": "bin_wall", "center_mm": [0.0, -600.0, 50.0],
                             "half_extents_mm": [100.0, 5.0, 50.0]}
 
 
-class TheFourKeysLoadWithTheirDefaultsTests(unittest.TestCase):
-    def test_every_key_is_on_where_the_owner_chose_it(self) -> None:
-        robot = load_robot_config(profile=None)
-        perceived = robot.safety.planning_world.perceived
-        self.assertIs(robot.grasping.scene_obstacles, True)
-        self.assertIs(robot.grasping.side_approaches, True)
-        self.assertIs(perceived.support_surfaces, True)
-        self.assertEqual(perceived.support_allowance_mm, 2.0)
+class TheSupportsAreEveryCellsTests(unittest.TestCase):
+    def test_every_cell_holds_its_supports_2_mm_over_their_band(self) -> None:
+        # Every cell's camera world finds its supports and holds them 2 mm over their band (the owner's cleanup).
+        self.assertEqual(SUPPORT_ALLOWANCE_MM, 2.0)
 
-    def test_each_key_can_be_switched(self) -> None:
-        grasping = RobotGraspingConfig.model_validate({"scene_obstacles": False, "side_approaches": False})
-        self.assertIs(grasping.scene_obstacles, False)
-        self.assertIs(grasping.side_approaches, False)
-        perceived = PerceivedWorldConfig.model_validate({"support_surfaces": False, "support_allowance_mm": 0.0})
-        self.assertIs(perceived.support_surfaces, False)
-        self.assertEqual(perceived.support_allowance_mm, 0.0)
-        self.assertEqual(PerceivedWorldConfig.model_validate({"support_allowance_mm": 10.0}).support_allowance_mm, 10.0)
-
-    def test_an_allowance_outside_0_to_10_is_refused(self) -> None:
-        for bound in (0.0, 10.0):
-            self.assertEqual(PerceivedWorldConfig.model_validate({"support_allowance_mm": bound}).support_allowance_mm,
-                             bound)
-        for refused in (-0.1, 10.5, 50.0):
-            with self.subTest(allowance=refused), self.assertRaises(ValidationError) as caught:
-                PerceivedWorldConfig.model_validate({"support_allowance_mm": refused})
-            self.assertIn("support_allowance_mm", str(caught.exception))
+    def test_a_tree_that_still_tunes_the_supports_is_refused(self) -> None:
+        for key, value in (("support_surfaces", False), ("support_allowance_mm", 10.0)):
+            with self.subTest(key=key), self.assertRaises(ValidationError) as caught:
+                RobotSafetyConfig.model_validate({"planning_world": {"perceived": {key: value}}})
+            self.assertIn("perceived", str(caught.exception))
 
 
-class ADeclaredFixtureKeepsTenMillimetresTests(unittest.TestCase):
-    def test_5_with_a_fixture_the_planning_world_includes_is_refused_naming_both_keys(self) -> None:
+class TheCellsGraspingSwitchesAreRefusedTests(unittest.TestCase):
+    """The twelve grasping switches that left on 2026-10-17 at the values the owner's cell ran (the owner's cleanup)."""
+
+    GONE = ("max_attempts", "scene_obstacles", "side_approaches", "inner_grasps", "first_good_part", "good_part_score",
+            "colour_check", "colour_check_clipped", "name_neighbours", "weak_look_trigger", "hide_own_places",
+            "follow_parts")
+
+    def test_each_is_refused_at_load_with_what_every_cell_does(self) -> None:
+        for key in self.GONE:
+            with self.subTest(key=key):
+                self.assertNotIn(key, RobotGraspingConfig.model_fields)
+                with self.assertRaises(ValidationError):
+                    RobotGraspingConfig.model_validate({key: True})
+                self.assertIsNotNone(removed_key_sentence(f"robot.grasping.{key}"))
+
+    def test_a_tree_that_writes_one_does_not_load_and_says_why(self) -> None:
+        from src.config.tree import ConfigTree
+
+        refused = ConfigTree.from_directory(profile=None).load().with_values({"robot.grasping.max_attempts": 5})
+        self.assertFalse(refused.ok)
+        self.assertIn("removed on purpose", refused.error)
+        self.assertIn("MAX_ATTEMPTS", refused.error)
+
+
+class ADeclaredFixtureIsTheGuardsTests(unittest.TestCase):
+    def test_a_fixture_loads_beside_any_distance_the_guard_keeps(self) -> None:
+        """No planning world takes a declared fixture since 2026-10-17, so no band about one leaves the camera world."""
+        for distance in (5.0, 9.9, 10.0):
+            with self.subTest(distance=distance):
+                safety = RobotSafetyConfig.model_validate({"self_collision": {
+                    "min_distance_mm": distance, "perceived_min_distance_mm": 4.0, "fixtures": [_WALL]}})
+                self.assertEqual(distance, safety.self_collision.min_distance_mm)
+
+    def test_the_old_switch_is_refused_at_load(self) -> None:
         with self.assertRaises(ValidationError) as caught:
-            _safety(5.0, [_WALL])
-        said = str(caught.exception)
-        self.assertIn("safety.self_collision.min_distance_mm (5)", said)
-        self.assertIn("safety.planning_world.include_fixtures", said)
-        self.assertIn("bin_wall", said)
-
-    def test_just_under_10_is_refused_and_10_loads(self) -> None:
-        with self.assertRaises(ValidationError):
-            _safety(9.9, [_WALL])
-        self.assertEqual(_safety(10.0, [_WALL]).self_collision.min_distance_mm, 10.0)
-
-    def test_the_owners_cell_declares_no_fixture_and_its_5_loads(self) -> None:
-        self.assertEqual(_safety(5.0, []).self_collision.min_distance_mm, 5.0)
-
-    def test_a_fixture_kept_out_of_the_planning_world_does_not_refuse(self) -> None:
-        self.assertEqual(_safety(5.0, [_WALL], include=False).self_collision.min_distance_mm, 5.0)
-
-    def test_a_fixture_with_a_zero_extent_declares_nothing(self) -> None:
-        off: dict[str, object] = dict(_WALL, half_extents_mm=[0.0, 0.0, 0.0])
-        self.assertEqual(_safety(5.0, [off]).self_collision.min_distance_mm, 5.0)
-
-    def test_the_least_is_the_declared_band_plus_the_5_mm_the_guard_keeps(self) -> None:
-        self.assertEqual(safety_schema._DECLARED_FIXTURE_LEAST_MM, DECLARED_SURFACE_MM + 5.0)
+            RobotSafetyConfig.model_validate({"planning_world": {"include_fixtures": True}})
+        self.assertIn("include_fixtures", str(caught.exception))
 
 
 class EveryShippedProfileStillLoadsTests(unittest.TestCase):
     def test_every_profile_layer_loads(self) -> None:
         for layer in (None, *available_profiles()):
             with self.subTest(profile=layer):
-                robot = load_robot_config(profile=layer)
-                self.assertIs(robot.safety.planning_world.perceived.support_surfaces, True)
+                load_robot_config(profile=layer)
 
     def test_the_owners_robot_profile_loads(self) -> None:
         if not _OWNER_TREE.is_file():
@@ -117,8 +106,6 @@ class EveryShippedProfileStillLoadsTests(unittest.TestCase):
         robot = RobotConfig.model_validate(data)
         # 3 mm for everything since the owner's decision of 2026-10-05; 5 mm before.
         self.assertEqual(robot.safety.self_collision.min_distance_mm, 3.0)
-        self.assertIs(robot.safety.planning_world.perceived.support_surfaces, True)
-        self.assertIs(robot.grasping.side_approaches, True)
 
 
 class TheOwnersLooksShipAsDepthOnlyTests(unittest.TestCase):

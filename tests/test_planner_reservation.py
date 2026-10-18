@@ -6,9 +6,10 @@ reserved 16 boxes, no mesh and no grid whatever the cell declared, and the one f
 grid had no caller. A cell that declared a tote as a mesh, or turned the live scene on, was refused at its
 first motion by a planner that had nowhere to put either.
 
-The slot counts are derived (owner, Step 4 Q3): as many boxes as the cell declares plus the perceived
-boxes it allows, never fewer than 16, one mesh slot per declared mesh, and a grid only where a live scene
-asks for one. The config wins over a hand set environment variable, and says so.
+The slot counts are derived (owner, Step 4 Q3): as many boxes as the cell declares plus the 128 camera
+boxes every cell's world holds since 2026-10-17, never fewer than 16, one mesh slot per declared mesh, and
+the distance field's grid at its 10 mm wherever a live scene is built. The config wins over a hand set
+environment variable, and says so.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from src.config.schema.robot import RobotConfig
 from src.robot.safety.planning.curobo_client import CuroboPlanClient
 from src.robot.safety.planning.fine_world import FINE_REACH_MM, FineRegion
 from src.robot.safety.planning.perceived import (
+    CAMERA_FIELD_VOXEL_MM,
+    CAMERA_MAX_BOXES,
     WorldBuildLimits,
     WorldBuildTuning,
     build_voxel_field,
@@ -32,8 +35,8 @@ _ENV = ("WILLY_CUROBO_CUBOID_CACHE", "WILLY_CUROBO_MESH_CACHE", "WILLY_CUROBO_VO
 _LIMITS = WorldBuildLimits(
     x_mm=(-500.0, 500.0), y_mm=(-500.0, 500.0), z_mm=(0.0, 600.0), support_plane_top_mm=0.0
 )
-#: 1000 mm at 30 mm rounds to 33 voxels, 990 mm, on both horizontal axes; 600 mm is 20 voxels.
-_GRID = "0.9900,0.9900,0.6000,0.0300"
+#: Every cell's 10 mm field: 1000 mm is 100 voxels on both horizontal axes, 600 mm is 60.
+_GRID = "1.0000,1.0000,0.6000,0.0100"
 #: The fine grid about a goal beside it (``perceived.near_grid_extent``): the 150 mm square and 120 mm past it on each
 #: side, 540 mm at 4 mm, as high as the field at the most.
 _NEAR = "0.5400,0.5400,0.6000,0.0040"
@@ -43,28 +46,26 @@ def _cell(
     *,
     fixtures: int = 0,
     meshes: int = 0,
-    voxel_mm: float = 0.0,
-    max_boxes: int = 8,
-    enabled: bool = True,
-    payload: bool = False,
-    length_mm: "float | None" = None,
+    bench: bool = True,
     planner: str = "curobo",
     planner_margin_mm: "float | None" = 4.0,
 ) -> RobotConfig:
     """A UR cell. It declares a planner margin by default, because since B1 S17 a cuRobo cell that declares none
-    refuses to start a planner, and every case here is about the reservation rather than about the margin."""
+    refuses to start a planner, and every case here is about the reservation rather than about the margin. ``bench``
+    declares the bench, which turns the planning world on; the guard's ``fixtures`` never reach the planner."""
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "motion": {"planner": planner},
+        "motion": {"planner": planner,
+                   "workspace": {"x_min": -500.0, "x_max": 500.0, "y_min": -500.0, "y_max": 500.0,
+                                 "z_min": 0.0, "z_max": 600.0}},
         "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": {"x_min": -500.0, "x_max": 500.0, "y_min": -500.0, "y_max": 500.0,
-                             "z_min": 0.0, "z_max": 600.0},
         "safety": {
-            "payload": {"enforce": False},
             "self_collision": {
                 "planner_margin_mm": planner_margin_mm,
-                # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
+                # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does, and 10 from what the
+                # camera saw: 4 over the 6 mm the camera world grows its boxes by.
                 "min_distance_mm": 10.0 if fixtures else 3.0,
+                "perceived_min_distance_mm": 4.0 if fixtures else 2.0,
                 "fixtures": [
                     {"name": f"wall{i}", "center_mm": [400.0, -300.0 + 40.0 * i, 75.0],
                      "half_extents_mm": [10.0, 10.0, 75.0]}
@@ -72,11 +73,9 @@ def _cell(
                 ],
             },
             "planning_world": {
-                "enabled": enabled,
-                "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                "perceived": {"voxel_field_mm": voxel_mm, "max_boxes": max_boxes},
+                "support_plane": ({"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}
+                                  if bench else None),
                 "meshes": [{"name": f"tote{i}", "path": f"assets/tote{i}.obj"} for i in range(meshes)],
-                "payload": {"enabled": payload, "sphere_slots": 16, "length_mm": length_mm},
             },
         },
     })
@@ -114,8 +113,8 @@ class TheReservationTests(_NoPlannerEnvironment):
     def test_the_reservation_describes_the_field_a_refresh_builds(self) -> None:
         from src.robot.safety.planning.reservation import PlannerReservation
 
-        reservation = PlannerReservation.from_config(robot_cfg=_cell(voxel_mm=30.0))
-        field = build_voxel_field((), limits=_LIMITS, tuning=WorldBuildTuning(voxel_field_mm=30.0),
+        reservation = PlannerReservation.from_config(robot_cfg=_cell())
+        field = build_voxel_field((), limits=_LIMITS, tuning=WorldBuildTuning(voxel_field_mm=CAMERA_FIELD_VOXEL_MM),
                                   near=(FineRegion.about((0.0, 0.0, 0.0), FINE_REACH_MM), ()))
         assert field is not None and field.near is not None
 
@@ -130,64 +129,30 @@ class TheReservationTests(_NoPlannerEnvironment):
     def test_the_slots_are_derived_from_what_the_cell_declares(self) -> None:
         from src.robot.safety.planning.reservation import PlannerReservation
 
-        reservation = PlannerReservation.from_config(
-            robot_cfg=_cell(fixtures=15, meshes=1, voxel_mm=30.0, payload=True, length_mm=120.0)
-        )
+        reservation = PlannerReservation.from_config(robot_cfg=_cell(fixtures=15, meshes=1))
 
-        # The bench and fifteen walls, plus the eight perceived boxes the cell allows.
+        # The bench, plus the 128 boxes of what the cameras saw every cell's world holds; the fifteen walls are the
+        # guard's, and no planner box since 2026-10-17.
         self.assertEqual(
             reservation,
-            PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid=f"{_GRID};{_NEAR}", sphere_slots=16),
+            PlannerReservation(cuboid_slots=1 + CAMERA_MAX_BOXES, mesh_slots=1, voxel_grid=f"{_GRID};{_NEAR}"),
         )
 
-    def test_a_small_cell_keeps_the_sixteen_it_always_had(self) -> None:
+    def test_every_live_scene_holds_the_camera_worlds_boxes_and_its_field(self) -> None:
         from src.robot.safety.planning.reservation import PlannerReservation
 
-        reservation = PlannerReservation.from_config(robot_cfg=_cell(fixtures=2, max_boxes=4))
+        reservation = PlannerReservation.from_config(robot_cfg=_cell(fixtures=2))
 
-        self.assertEqual(reservation.cuboid_slots, 16)
-        self.assertEqual(reservation.voxel_grid, "", "no field asked for, so no grid is reserved")
+        self.assertEqual(reservation.cuboid_slots, 1 + CAMERA_MAX_BOXES)
+        self.assertEqual(reservation.voxel_grid, f"{_GRID};{_NEAR}")
 
-    def test_a_disabled_planning_world_reserves_nothing_beyond_the_default(self) -> None:
-        """The byte-identical path: every shipped profile has this block disabled."""
+    def test_a_cell_with_no_bench_reserves_nothing_beyond_the_default(self) -> None:
+        """The byte-identical path: the shipped base profile declares no bench, so its planning world is off."""
         from src.robot.safety.planning.reservation import PlannerReservation
 
-        reservation = PlannerReservation.from_config(
-            robot_cfg=_cell(fixtures=3, meshes=1, voxel_mm=30.0, payload=True, enabled=False)
-        )
+        reservation = PlannerReservation.from_config(robot_cfg=_cell(fixtures=3, meshes=1, bench=False))
 
-        self.assertEqual(
-            reservation, PlannerReservation(cuboid_slots=16, mesh_slots=0, voxel_grid="", sphere_slots=0)
-        )
-
-
-class TheCarriedPartReservesOnlyWhatItDeclaresTests(_NoPlannerEnvironment):
-    """Step 8e (O1 A): payload spheres are reserved where a length is declared, world on or off, and nowhere else."""
-
-    def test_a_payload_with_a_length_reserves_its_spheres_with_the_world_off(self) -> None:
-        from src.robot.safety.planning.reservation import PlannerReservation
-
-        reservation = PlannerReservation.from_config(robot_cfg=_cell(enabled=False, payload=True, length_mm=60.0))
-
-        self.assertEqual(16, reservation.sphere_slots)
-
-    def test_a_payload_without_a_length_reserves_nothing(self) -> None:
-        from src.robot.safety.planning.reservation import PlannerReservation
-
-        reservation = PlannerReservation.from_config(robot_cfg=_cell(payload=True))
-
-        self.assertEqual(0, reservation.sphere_slots)
-        self.assertIn("no payload spheres", reservation.render())
-
-    def test_the_shipped_sim_tree_reserves_no_payload_spheres(self) -> None:
-        """The control, green before and after: no shipped tree declares a length, so every start stays _a0."""
-        from src.config import load_robot_config
-        from src.robot.safety.planning.reservation import PlannerReservation
-
-        for profile in ("sim", "console_dummy"):
-            with self.subTest(profile):
-                reservation = PlannerReservation.from_config(robot_cfg=load_robot_config(profile=profile))
-                self.assertEqual(0, reservation.sphere_slots)
+        self.assertEqual(reservation, PlannerReservation(cuboid_slots=16, mesh_slots=0, voxel_grid=""))
 
 
 class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
@@ -195,18 +160,17 @@ class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
         from tests._arm_kit import planned_arm
 
         # Declares its planner margin, as every cuRobo cell must since B1 S17: the factory refuses without it.
-        client = planned_arm(_cell(fixtures=15, meshes=1, voxel_mm=30.0, planner_margin_mm=4.0))._default_curobo_client_factory()()
+        client = planned_arm(_cell(fixtures=15, meshes=1, planner_margin_mm=4.0))._default_curobo_client_factory()()
 
         self.assertEqual((client._scene, client._mesh_cache, client._voxel_grid),  # noqa: SLF001
-                         ("24", 1, f"{_GRID};{_NEAR}"))
+                         (str(1 + CAMERA_MAX_BOXES), 1, f"{_GRID};{_NEAR}"))
 
     def test_a_shipped_base_profile_client_is_unchanged(self) -> None:
         """The control, green before and after: no planning world, the sidecar it always started."""
         from tests._arm_kit import planned_arm
 
         config = RobotConfig.model_validate({"vendor": "ur",
-                                            "safety": {"payload": {"enforce": False},
-                                                       "self_collision": {"planner_margin_mm": 4.0}},
+                                            "safety": {"self_collision": {"planner_margin_mm": 4.0}},
                                             "gripper": {"model": "robotiq_2f85"}})
         client = planned_arm(config)._default_curobo_client_factory()()
 
@@ -218,7 +182,7 @@ class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
         from src.robot.drivers.sim.config import SimRobotConfig
         from src.robot.safety.planning.reservation import PlannerReservation
 
-        reservation = PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid=_GRID, sphere_slots=0)
+        reservation = PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid=_GRID)
         from src.willy_sim.config import load_sim_config, sim_safety_preflight
 
         # With the sim cell's preflight, which names its hand: a descriptor is named by the arm and the hand, and a
@@ -245,7 +209,7 @@ class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
         from src.robot.safety.planning.reservation import PlannerReservation
         from src.willy_sim.config import sim_driver_config
 
-        cfg = _cell(fixtures=15, meshes=1, voxel_mm=30.0)
+        cfg = _cell(fixtures=15, meshes=1)
         driver = sim_driver_config(SimpleNamespace(robot=cfg))  # type: ignore[arg-type]
 
         self.assertEqual(driver.planner_reservation, PlannerReservation.from_config(robot_cfg=cfg))
@@ -259,7 +223,7 @@ class TheConfigWinsTests(_NoPlannerEnvironment):
         client = CuroboPlanClient()
 
         with self.assertLogs("CuroboPlanClient", level="WARNING") as logs:
-            client.reserve_world(PlannerReservation(cuboid_slots=24, mesh_slots=0, voxel_grid="", sphere_slots=0))
+            client.reserve_world(PlannerReservation(cuboid_slots=24, mesh_slots=0, voxel_grid=""))
 
         self.assertEqual(client._scene, "24")  # noqa: SLF001
         self.assertTrue(
@@ -274,7 +238,7 @@ class TheConfigWinsTests(_NoPlannerEnvironment):
         os.environ["WILLY_CUROBO_VOXEL_GRID"] = "1,1,1,0.05"
         reserved = CuroboPlanClient()
         with self.assertLogs("CuroboPlanClient", level="WARNING"):
-            reserved.reserve_world(PlannerReservation(cuboid_slots=16, mesh_slots=0, voxel_grid="", sphere_slots=0))
+            reserved.reserve_world(PlannerReservation(cuboid_slots=16, mesh_slots=0, voxel_grid=""))
 
         env = reserved._sidecar_env()  # noqa: SLF001
         self.assertEqual(env["WILLY_CUROBO_MESH_CACHE"], "0")
@@ -283,24 +247,21 @@ class TheConfigWinsTests(_NoPlannerEnvironment):
         # The control: a client nobody reserved for still inherits the shell, as it always did.
         self.assertEqual(CuroboPlanClient()._sidecar_env()["WILLY_CUROBO_MESH_CACHE"], "4")  # noqa: SLF001
 
-    def test_a_margin_and_a_payload_the_caller_did_not_ask_for_are_not_inherited(self) -> None:
-        """The same hole as the grid, in the two variables that decide how much room the planner keeps.
+    def test_a_margin_the_caller_did_not_ask_for_is_not_inherited(self) -> None:
+        """The same hole as the grid, in the variable that decides how much room the planner keeps.
 
-        Nothing in this repo sets either variable: the client writes them and the sidecar reads them. So a value in
-        the shell can only be a leftover, and inheriting one gives a cell a margin or a payload its config never
-        asked for. The client's own numbers are the whole truth about them.
+        Nothing in this repo sets it: the client writes it and the sidecar reads it. So a value in the shell can only
+        be a leftover, and inheriting one gives a cell a margin its config never asked for. The client's own number is
+        the whole truth about it.
         """
         os.environ["WILLY_CUROBO_SELF_COLLISION_MARGIN_MM"] = "99.0"
-        os.environ["WILLY_CUROBO_ATTACH_SPHERES"] = "7"
 
         env = CuroboPlanClient()._sidecar_env()  # noqa: SLF001
         self.assertNotIn("WILLY_CUROBO_SELF_COLLISION_MARGIN_MM", env)
-        self.assertNotIn("WILLY_CUROBO_ATTACH_SPHERES", env)
 
         # The control: what the caller DID ask for is written, whatever the shell holds.
-        asked = CuroboPlanClient(self_collision_margin_mm=10.0, attach_spheres=4)._sidecar_env()  # noqa: SLF001
+        asked = CuroboPlanClient(self_collision_margin_mm=10.0)._sidecar_env()  # noqa: SLF001
         self.assertEqual(asked["WILLY_CUROBO_SELF_COLLISION_MARGIN_MM"], repr(10.0))
-        self.assertEqual(asked["WILLY_CUROBO_ATTACH_SPHERES"], "4")
 
 
 class ThePreflightPrintsTheReservationTests(_NoPlannerEnvironment):
@@ -308,7 +269,7 @@ class ThePreflightPrintsTheReservationTests(_NoPlannerEnvironment):
         """Owner, Step 4 Q4: no VRAM budget yet, but the grid is printed so the number is visible."""
         from src.robot.execution.real_cell.preflight import CheckStatus, run_config_preflight
 
-        report = run_config_preflight(_cell(fixtures=1, meshes=1, voxel_mm=30.0), curobo_available=True)
+        report = run_config_preflight(_cell(fixtures=1, meshes=1), curobo_available=True)
 
         rows = [c for c in report.checks if c.name == "planner reservation"]
         self.assertEqual(len(rows), 1, [c.name for c in report.checks])
@@ -320,7 +281,7 @@ class ThePreflightPrintsTheReservationTests(_NoPlannerEnvironment):
     def test_an_ik_cell_has_no_such_row(self) -> None:
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
-        report = run_config_preflight(_cell(voxel_mm=30.0, planner="ik"), curobo_available=True)
+        report = run_config_preflight(_cell(planner="ik"), curobo_available=True)
 
         self.assertNotIn("planner reservation", [c.name for c in report.checks])
 

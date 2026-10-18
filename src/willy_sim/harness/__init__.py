@@ -13,7 +13,7 @@ from .env import RunnerEnv
 from .gate import GateResult, gate_passed, lift_mm_since, reset_object_to_home_z0
 from .ik_service import ArmBackedIKService
 from .instrumentation import write_pick_artifacts, write_run_result
-from .modes import DEMO_MODES, DENSE_MODES, mode_service_kwargs, resolve_demo_mode
+from .modes import DEMO_MODES, DENSE_MODES, resolve_demo_mode
 from .randomizer import DomainRandomizer, RandomizationConfig
 
 __all__ = [
@@ -30,7 +30,6 @@ __all__ = [
     "write_run_result",
     "DEMO_MODES",
     "DENSE_MODES",
-    "mode_service_kwargs",
     "resolve_demo_mode",
     "DomainRandomizer",
     "RandomizationConfig",

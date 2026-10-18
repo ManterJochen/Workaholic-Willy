@@ -1,7 +1,7 @@
 """The P5 attribute scene, checked where it can be checked without Isaac.
 
 The scene's whole claim is that **no single word identifies an object** — that is what makes it an
-instrument for comparing perception routes rather than another cube demo. A claim like that decays
+instrument for measuring a detector's attribute binding rather than another cube demo. A claim like that decays
 silently: someone adds a fifth object, or renames one, and the scene still runs, still prints
 numbers, and the numbers no longer mean what the runner says they mean. So the claim is asserted
 here, next to the arithmetic that turns a grounded box into a scored answer.
@@ -22,8 +22,8 @@ from src.willy_sim.run_attribute_pick import (
     OBJECT_SIZE_MM,
     PROMPTS,
     attribute_specs,
+    detector_of,
     grounded_index,
-    models_for_route,
     project_base_points_to_image,
     target_for_prompt,
 )
@@ -48,7 +48,7 @@ class SceneAmbiguityTests(unittest.TestCase):
         self.assertEqual(len(set(names)), len(names), "two objects share a description")
 
     def test_objects_are_geometrically_identical(self) -> None:
-        """Same grasp problem four times, so a route comparison is not a geometry comparison."""
+        """Same grasp problem four times, so a grounding comparison is not a geometry comparison."""
         specs = attribute_specs()
         self.assertEqual({s.size_mm for s in specs}, {OBJECT_SIZE_MM})
         self.assertEqual({s.mass_kg for s in specs}, {specs[0].mass_kg})
@@ -87,16 +87,14 @@ class PromptTableTests(unittest.TestCase):
                 ]
                 self.assertTrue(rivals, f"{prompt!r} has no rival sharing an attribute ({language})")
 
-    def test_the_german_half_routes_to_the_vlm(self) -> None:
-        """The router's NON_ENGLISH rule is what this scene exists to test; assert it still fires."""
-        from src.models.routing import Route, RuleBasedRouter
+    def test_the_german_half_is_german_and_the_english_half_english(self) -> None:
+        """The two halves are scored apart, so each must be the language it is filed under, as the command reader
+        reads a phrase (``src.models.routing.analyse``)."""
+        from src.models.routing import analyse
 
-        router = RuleBasedRouter()
         for prompt, _target, language in PROMPTS:
             with self.subTest(prompt=prompt):
-                decision = router.route(prompt)
-                expected = Route.VLM if language == "de" else Route.SIMPLE
-                self.assertIs(decision.route, expected, decision.describe())
+                self.assertEqual(language == "de", analyse(prompt).non_english)
 
     def test_umlauts_are_optional_when_typing_a_prompt(self) -> None:
         self.assertEqual(target_for_prompt("der rote Wuerfel"), target_for_prompt("der rote Würfel"))
@@ -166,41 +164,29 @@ class AttributionTests(unittest.TestCase):
         self.assertLessEqual(GROUNDING_TOLERANCE_PX, spacing / 2.0)
 
 
-class RouteOverrideTests(unittest.TestCase):
-    """``--route`` is the A/B knob; it must change exactly the two fields it claims to."""
+class TheDetectorItNamesTests(unittest.TestCase):
+    """The runner grounds with the cell's own stack and names it on every line and record; the ``--route`` knob that
+    compared GroundingDINO with the VLM left with GroundingDINO (2026-10-17)."""
 
-    def _models(self):  # noqa: ANN202 - a test fixture, typed by use
-        """The loaded ModelsConfig -- the same fixture the pipeline tests use."""
-        from src.config.loader import load_config
-        from src.config.schema.models.models_schema import PipelineConfig
+    def _models(self, **values):  # noqa: ANN202, ANN003 - a test fixture, typed by use
+        from src.config import load_tree
 
-        return load_config().models.model_copy(update={"pipeline": PipelineConfig()})
+        tree = load_tree(None).with_values(values)
+        self.assertTrue(tree.ok, tree.error)
+        return tree.app_config.models
 
-    def test_simple_pins_the_phrase_grounder_and_silences_the_router(self) -> None:
-        models = models_for_route(self._models(), "simple")
-        self.assertEqual(models.pipeline.zero_shot.backend, "grounded_sam")
-        self.assertFalse(models.pipeline.router.enabled)
+    def test_a_zero_shot_tree_names_its_vlm(self) -> None:
+        models = self._models()
+        self.assertEqual(models.pipeline.zero_shot.vlm.model_id, detector_of(models))
 
-    def test_vlm_pins_the_vlm_without_routing(self) -> None:
-        models = models_for_route(self._models(), "vlm")
-        self.assertEqual(models.pipeline.zero_shot.backend, "vlm")
-        self.assertFalse(models.pipeline.router.enabled)
+    def test_a_closed_set_tree_names_its_rtdetr(self) -> None:
+        models = self._models(**{"models.pipeline.kind": "closed_set"})
+        self.assertEqual(models.rtdetr.model_id, detector_of(models))
 
-    def test_auto_is_the_shipping_configuration(self) -> None:
-        models = models_for_route(self._models(), "auto")
-        self.assertEqual(models.pipeline.zero_shot.backend, "vlm")
-        self.assertTrue(models.pipeline.router.enabled)
+    def test_there_is_no_route_to_choose(self) -> None:
+        import src.willy_sim.run_attribute_pick as runner
 
-    def test_the_override_leaves_everything_else_alone(self) -> None:
-        before = self._models()
-        after = models_for_route(before, "vlm")
-        self.assertEqual(after.objectdetector, before.objectdetector)
-        self.assertEqual(after.pipeline.zero_shot.segmenter, before.pipeline.zero_shot.segmenter)
-        self.assertEqual(after.pipeline.zero_shot.vlm, before.pipeline.zero_shot.vlm)
-
-    def test_an_unknown_route_is_refused(self) -> None:
-        with self.assertRaises(ValueError):
-            models_for_route(self._models(), "qwen")
+        self.assertFalse(hasattr(runner, "models_for_route"))
 
 
 if __name__ == "__main__":

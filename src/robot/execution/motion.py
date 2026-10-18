@@ -8,12 +8,12 @@ motions reach it (:func:`route_of`):
   The verb runs through the arm's own checked verbs, whose camera world is mandatory or declined.
 * UNPLANNED: a desk arm, the dummy or the kinematic mock. It has no controller, the pose is set, and nothing real moves.
   The verb runs, and the motion's camera world says UNPLANNED.
-* REFUSED: an arm that drives a controller and plans nothing (a UR on the ik planner, a KUKA), a cuRobo arm whose paths
+* REFUSED: an arm that drives a controller and plans nothing (a UR on the ik planner), a cuRobo arm whose paths
   cannot be judged, or an arm that does not say. The verb commands nothing.
 
 Before any command a verb also refuses a link that is not open, a pose not in BASE, and a camera world the arm's own
 motion would be refused for (``PlansMotions``), in that order and before the route. The arm waits for its own steady
-gate (``safety.dwell``) inside its verb since P0e, so a timeout comes back as the arm's TIMEOUT result and reads
+gate (``STEADY_TIMEOUT_S``) inside its verb since P0e, so a timeout comes back as the arm's TIMEOUT result and reads
 MOTION_REFUSED. A decline reaches ``move`` and ``move_joints`` as the arm's own keyword, and
 ``home`` as a block around the arm's home verb, which takes no keyword.
 
@@ -72,6 +72,7 @@ from src.robot.core.errors import (
 )
 from src.robot.core.joint_positions import JointPositions
 from src.robot.core.motion_result import MotionCommand, MotionResult, MotionStatus
+from src.robot.core.robot_arm import STEADY_TIMEOUT_S
 
 __all__ = [
     "MotionOutcome",
@@ -213,25 +214,23 @@ def route_of(arm: object) -> RouteReading:
 
 
 def steady_timeout_of(arm: object) -> float | None:
-    """The arm's own steady gate, where its tree asks for one and it can wait; ``None`` otherwise. The push reads it for
-    the rest it waits for before each of its legs (``push_motion``); a motion verb leaves the gate to the arm since
+    """The arm's own steady gate, :data:`~src.robot.core.robot_arm.STEADY_TIMEOUT_S` where it can wait; ``None`` for an
+    arm that cannot, and for one whose wait steps its own physics (``StepsItsOwnPhysics``: the Isaac sim). The push reads
+    it for the rest it waits for before each of its legs (``push_motion``); a motion verb leaves the gate to the arm since
     P0e."""
-    dwell = getattr(getattr(getattr(arm, "config", None), "safety", None), "dwell", None)
-    if dwell is None or not callable(getattr(arm, "wait_until_steady", None)):
+    if not callable(getattr(arm, "wait_until_steady", None)) or getattr(arm, "steps_its_own_physics", False) is True:
         return None
-    if not bool(getattr(dwell, "require_steady_before_motion", False)):
-        return None
-    return float(getattr(dwell, "steady_timeout_s", 5.0))
+    return STEADY_TIMEOUT_S
 
 
 def expecting_next(arm: object, joints: "JointPositions | str | None") -> AbstractContextManager[Any]:
     """The block in which the joint move to ``joints`` is the leg after the verbs running in it, on an arm that judges
-    such a move ahead (``URRobotArm.expecting_next``, ``robot.motion.judge_next_leg``); elsewhere, and for ``None``, a
+    such a move ahead (``URRobotArm.expecting_next``, every cuRobo arm); elsewhere, and for ``None``, a
     block that changes nothing.
 
     A task wraps its pick in it with the look it carries the part to, and its place with the pose it returns to: the
     pick judges the carry while the jaws close, the place the return while they open, each in the world its junction
-    holds (``safety.planning_world.hold``), and the move runs as judged where nothing it was judged on changed.
+    holds (``holds_world_at``), and the move runs as judged where nothing it was judged on changed.
     ``"home"`` is the home the arm's home verb drives to (``home_joint_positions``), as a look of ``"home"`` is.
     Declaring moves nothing and judges nothing.
     """

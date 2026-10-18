@@ -2,7 +2,7 @@
 
 The owner, 2026-10-08 night: "Multi-View" and "Alle Posen" became one choice (``options.multi_view`` and
 ``options.every_look``), and "Direkt über die Kante tragen" overrides the cell's carry to a bin for one task
-(``options.carry``, null the cell's ``robot.place.carry``). The route echoes both in the resolved plan, the run carries
+(``options.carry``, null the cell's ``robot.motion.place.carry``). The route echoes both in the resolved plan, the run carries
 them to the library (``api.task_run.library_plan``), and each pick of the task is handed ``every_look``; asking for every
 look with multi-view off is refused before anything moves.
 

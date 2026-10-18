@@ -8,10 +8,11 @@ everything here is about writing fewer passes without moving a box:
   later, three after a code fence. The parser reads the same boxes from the answer cut there, which is pinned here
   on answers the model really wrote.
 * **The answer lookup** (``prompt_lookup_tokens`` for grounding, ``text_prompt_lookup_tokens`` for the command
-  reader's text answers, both off). The next tokens are proposed from the answer itself, after the image only, never
-  an image placeholder (one without features fails the pass) and never an end token; the model checks them in one
-  pass. A lookup that fails falls back to the plain answer and stays off until a reload.
-* **The switches** live in the ``vlm`` block and reach the process's one copy at every build.
+  reader's text answers, both 10 on the owner's cell). The next tokens are proposed from the answer itself, after the
+  image only, never an image placeholder (one without features fails the pass) and never an end token; the model
+  checks them in one pass. A lookup that fails falls back to the plain answer and stays off until a reload.
+* **The settings** were switches of the ``vlm`` block until 2026-10-17 and are fixed since at the owner's cell's
+  values: every copy is built with them, and ``configure`` stays for a measurement.
 
 The real model's side of the same claims is ``tests/test_vlm_answer_speed_inference.py``.
 """
@@ -28,7 +29,7 @@ from unittest import mock
 import numpy as np
 from pydantic import ValidationError
 
-from src.config.schema.models.models_schema import PipelineConfig, VlmConfig
+from src.config.schema.models.models_schema import VlmConfig
 from src.models.vlm import Qwen3VLGrounder, parse_grounding_response, shared_vlm
 from src.models.vlm.command import extract_command_object
 from src.models.vlm.qwen import _AnswerLookup, _EndOfAnswer, answer_array_closed, answer_loops, answer_object_closed
@@ -328,7 +329,10 @@ class _Torch:
 
 
 def _grounder(model: _Model, answer: str = YELLOW_BIN, **settings: Any) -> Qwen3VLGrounder:
-    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", local=True, **settings)
+    """A grounder over ``model`` answering the plain way, no lookup, unless a test names one: the paths are pinned one at
+    a time here, and the owner's cell's settings, the constructor's defaults, in their own test."""
+    plain = {"prompt_lookup_tokens": 0, "text_prompt_lookup_tokens": 0}
+    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", **{**plain, **settings})
     grounder._load = lambda: (_Processor(answer), model, _Torch())  # type: ignore[method-assign]
     return grounder
 
@@ -338,15 +342,16 @@ def _look(grounder: Qwen3VLGrounder) -> list[Any]:
 
 
 class TheGroundersDecodingTests(unittest.TestCase):
-    def test_the_defaults_are_today_s_answer_ended_at_its_array(self) -> None:
+    def test_the_defaults_are_the_owners_cells(self) -> None:
+        """What the cell ran (its grounder's log of 2026-10-12), fixed since 2026-10-17."""
         grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct")
-        self.assertEqual(grounder.prompt_lookup_tokens, 0)
-        self.assertEqual(grounder.text_prompt_lookup_tokens, 0)
+        self.assertEqual(grounder.prompt_lookup_tokens, 10)
+        self.assertEqual(grounder.text_prompt_lookup_tokens, 10)
         self.assertTrue(grounder.stop_at_answer_end)
         self.assertEqual("auto", grounder.decode_graphs, "the graphs write the plain answers, byte for byte")
         self.assertIsNone(grounder.lookup_failure)
 
-    def test_a_look_ends_at_the_array_and_looks_nothing_up_by_default(self) -> None:
+    def test_a_plain_look_ends_at_the_array_and_looks_nothing_up(self) -> None:
         model = _Model()
         self.assertEqual(len(_look(_grounder(model))), 1)
         [call] = model.calls
@@ -456,54 +461,38 @@ class TheGroundersDecodingTests(unittest.TestCase):
         for wrong in ({"prompt_lookup_tokens": -1}, {"text_prompt_lookup_tokens": -1}):
             with self.subTest(wrong=wrong), self.assertRaises(ValueError):
                 grounder.configure(**wrong)
-        self.assertEqual((grounder.prompt_lookup_tokens, grounder.text_prompt_lookup_tokens), (0, 0),
-                         "a refused setting changes nothing")
+        self.assertEqual((grounder.prompt_lookup_tokens, grounder.text_prompt_lookup_tokens), (0, 10),
+                         "a refused setting changes nothing, and the text lookup kept the cell's 10")
 
 
 # --- the switches ---------------------------------------------------------------------------------------------------
 
 
-class TheSwitchesTests(unittest.TestCase):
+class TheFixedSettingsTests(unittest.TestCase):
     def setUp(self) -> None:
         shared_vlm().forget()
         self.addCleanup(shared_vlm().forget)
 
-    def test_the_schema_defaults(self) -> None:
-        vlm = VlmConfig()
-        self.assertEqual(vlm.prompt_lookup_tokens, 0)
-        self.assertEqual(vlm.text_prompt_lookup_tokens, 0)
-        self.assertTrue(vlm.stop_at_answer_end)
-        self.assertEqual(vlm.decode_graphs, "auto")
-        for wrong in ({"prompt_lookup_tokens": -1}, {"text_prompt_lookup_tokens": -1}):
-            with self.subTest(wrong=wrong), self.assertRaises(ValidationError):
-                VlmConfig(**wrong)
+    def test_the_block_holds_no_answer_setting(self) -> None:
+        """They left the ``vlm`` block on 2026-10-17; the loader names each with its sentence."""
+        self.assertEqual({"model_id"}, set(VlmConfig.model_fields))
+        for gone in ({"prompt_lookup_tokens": 10}, {"text_prompt_lookup_tokens": 10}, {"stop_at_answer_end": True},
+                     {"decode_graphs": "auto"}, {"preload": False}):
+            with self.subTest(gone=gone), self.assertRaises(ValidationError):
+                VlmConfig(**gone)
 
-    def test_a_build_hands_the_block_s_settings_to_the_held_copy(self) -> None:
+    def test_every_copy_a_build_takes_answers_at_the_cells_settings(self) -> None:
         from src.config.loader import load_config
         from src.models import factory
+        from src.models.segmentation.realtime import segmenter
 
-        def build(**vlm: Any) -> Any:
-            pipeline = PipelineConfig(kind="zero_shot", zero_shot={"backend": "vlm", "vlm": {
-                "model_id": "Qwen/Qwen3-VL-4B-Instruct", "local": True, **vlm}}, router={"enabled": False})
-            models = load_config().models.model_copy(update={"pipeline": pipeline})
-            with mock.patch.object(factory, "_build_named_segmenter", return_value="SEG"):
-                factory.build_perception(models)
-            assert models.pipeline is not None
-            return shared_vlm().grounder_for(models.pipeline.zero_shot.vlm)
-
-        grounder = build(prompt_lookup_tokens=10, text_prompt_lookup_tokens=6, stop_at_answer_end=False,
-                         decode_graphs="off")
-        self.assertEqual(grounder.prompt_lookup_tokens, 10)
-        self.assertEqual(grounder.text_prompt_lookup_tokens, 6)
-        self.assertFalse(grounder.stop_at_answer_end)
-        self.assertEqual("off", grounder.decode_graphs)
-        self.assertFalse(grounder.loaded, "a build sets how the copy answers and loads nothing")
-        again = build()
-        self.assertIs(again, grounder, "the same weights keep the same copy")
-        self.assertEqual((again.prompt_lookup_tokens, again.text_prompt_lookup_tokens), (0, 0),
-                         "the next build's block decides, not the last one's")
-        self.assertTrue(again.stop_at_answer_end)
-        self.assertEqual("auto", again.decode_graphs)
+        models = load_config().models  # the shipped stack: the VLM grounds
+        with mock.patch.object(segmenter, "Sam2Segmenter", return_value="SEG"):
+            factory.build_perception(models)
+        grounder = shared_vlm().grounder_for(models.pipeline.zero_shot.vlm)
+        self.assertEqual((10, 10, True, "auto"), (grounder.prompt_lookup_tokens, grounder.text_prompt_lookup_tokens,
+                                                  grounder.stop_at_answer_end, grounder.decode_graphs))
+        self.assertFalse(grounder.loaded, "a build loads nothing")
 
 
 if __name__ == "__main__":

@@ -26,7 +26,6 @@ from api.schemas import (
     MotionStackOut,
     PerceptionStackOut,
     ReachabilityOut,
-    RoutePreviewOut,
     VendorReadinessOut,
 )
 from src.models.perception_spec import PerceptionSpec
@@ -34,10 +33,9 @@ from src.utility.log_cfg import create_logger
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
-#: Only the probes that an operator asked for are logged. ``_perception`` and ``/route`` are excluded
-#: on purpose: the first is re-read by ``GET /v1/cell`` every 2 seconds (the console's shared poll, ``useCell``) and
-#: every second in the audience window, and the second runs on a 350 ms debounce while a prompt is being typed, so a
-#: line each would be a poll trace rather than a record of anything.
+#: Only the probes that an operator asked for are logged. ``_perception`` is excluded on purpose: it is re-read by
+#: ``GET /v1/cell`` every 2 seconds (the console's shared poll, ``useCell``) and every second in the audience window,
+#: so a line each would be a poll trace rather than a record of anything.
 logger = create_logger("DiagnosticsRouter", ROUTER_DIAGNOSTICS_LOG_FILE, log_dir=API_LOG_DIR)
 
 #: The RTDE port a UR controller listens on. Used only for a connect/close reachability probe: no
@@ -148,150 +146,69 @@ def _reachability(cell: Console) -> ReachabilityOut:
         )
 
 
-def _vlm_weights_present(model_id: str, model_path: str | None) -> bool:
-    """Is the checkpoint on this box? Never downloads, never loads, never raises."""
-    if model_path:
-        from pathlib import Path
+def _vlm_weights_present(model_id: str, weights_root: str | None = None) -> bool:
+    """Is the checkpoint on this box, in the weights folder or the Hugging Face cache? Never downloads, never loads,
+    never raises (``src.models.weights``, the resolver the model reads its weights through)."""
+    from src.models.weights import weights_present
 
-        return Path(model_path).exists()
-    try:
-        from huggingface_hub import snapshot_download
-
-        snapshot_download(repo_id=model_id, local_files_only=True)
-    except Exception:  # noqa: BLE001 (any failure means "not usable here", which is the answer)
-        return False
-    return True
+    return weights_present(model_id, kind="vlm", root=weights_root)
 
 
 def _perception(cell: Console) -> PerceptionStackOut:
     """Read the configured stack. Loads no model: an operator asks this before spending VRAM."""
     # `Console.config` is a method, not an attribute. Read without the call it yields a bound method
     # object, which has no `models` and is truthy, so the guard below would not fire and the endpoint
-    # would report the legacy zero_shot stack whatever the tree says.
+    # would report a stack whatever the tree says.
     try:
         app_cfg = cell.config()
     except Exception as exc:  # noqa: BLE001 (a config that will not load is "cannot answer", not 500)
-        # This fallback answers with the legacy zero_shot stack, which is a confident answer derived
-        # from a failure. The warning is what separates the two: a tree that stopped loading otherwise
-        # looks exactly like a tree that configures no pipeline.
         logger.warning(
-            "Cannot read the config while reporting the perception stack (%s: %s); "
-            "falling back to the legacy answer.", type(exc).__name__, exc,
+            "Cannot read the config while reporting the perception stack (%s: %s).", type(exc).__name__, exc,
         )
         app_cfg = None
     models = getattr(app_cfg, "models", None) if app_cfg is not None else None
     if models is None:
         return PerceptionStackOut(
-            pipeline_configured=False, kind="zero_shot", backend="grounded_sam",
-            segmenter="sam2", router_enabled=False,
-            detail="No models.pipeline block: the legacy keys decide everything (GroundingDINO + SAM2). "
-                   "This is the default and is byte-identical to every cell that predates the pipeline.",
+            kind="zero_shot", backend="vlm", segmenter="sam2",
+            detail="The config does not load, so which stack this cell builds cannot be read; "
+                   "`python -m src.config` names what is wrong.",
         )
 
     # The branch logic is not re-derived here. This reads the same resolution the builder acts on, so
-    # the panel cannot describe a VLM stack for a cell that will run GroundingDINO: there is nothing
-    # left in this file for the builder to disagree with.
+    # the panel cannot describe another stack than the one the cell builds.
     resolution = PerceptionSpec.from_config(models).resolve()
-    #: The wire vocabulary is not the resolution's. `PerceptionStackOut.backend` says
-    #: "grounded_sam | vlm | rtdetr" and a browser reads it, so the map is here rather than in the
-    #: value: a routed stack is a VLM stack whose `router_enabled` is true.
-    backend = {
-        "groundingdino": "grounded_sam", "rtdetr": "rtdetr", "vlm": "vlm", "routed": "vlm",
-    }[resolution.detector]
-    configured = resolution.source == "models.pipeline"
+    #: The wire vocabulary is not the resolution's: `PerceptionStackOut.backend` says "vlm | rtdetr", and a browser
+    #: reads it.
+    backend = "rtdetr" if resolution.detector == "rtdetr" else "vlm"
 
     if resolution.refusal:
         # A stack that cannot be built is the most useful thing this endpoint can say, and it says it
         # here rather than leaving the refusal to arrive as a traceback at cell construction. The words
         # are the builder's own, not a paraphrase.
         return PerceptionStackOut(
-            pipeline_configured=configured, kind=resolution.kind, backend=backend,
-            segmenter=resolution.segmenter, router_enabled=resolution.router_enabled,
+            kind=resolution.kind, backend=backend, segmenter=resolution.segmenter,
             detail=f"This cell CANNOT build a perception stack: {resolution.refusal}",
         )
 
     if resolution.kind == "closed_set":
         return PerceptionStackOut(
-            pipeline_configured=configured, kind="closed_set", backend="rtdetr",
-            segmenter=resolution.segmenter, router_enabled=False,
-            detail="Closed-set stack: RT-DETR answers with its trained class list and ignores the "
-                   "prompt text. Free-text prompts are refused rather than silently mismatched.",
-        )
-
-    if backend != "vlm":
-        legacy = "" if configured else (
-            " No models.pipeline block, so the legacy keys decide everything; the default, and "
-            "byte-identical to every cell that predates the pipeline."
-        )
-        return PerceptionStackOut(
-            pipeline_configured=configured, kind="zero_shot", backend=backend,
-            segmenter=resolution.segmenter, router_enabled=False,
-            detail=f"Phrase grounding only (GroundingDINO + {resolution.segmenter}). Complex "
-                   f"prompts are NOT routed anywhere better; they are grounded by a model that fails "
-                   f"confidently on them.{legacy}",
+            kind="closed_set", backend="rtdetr", segmenter=resolution.segmenter,
+            detail="Closed-set stack: RT-DETR answers with its trained class list and reads a prompt only as a "
+                   "class-name filter. Free text is refused rather than silently mismatched.",
         )
 
     model_id = resolution.vlm_model_id or ""
-    vlm = models.pipeline.zero_shot.vlm if models.pipeline is not None else None
-    present = _vlm_weights_present(model_id, vlm.model_path if vlm is not None else None)
-    routed = resolution.router_enabled
+    present = _vlm_weights_present(model_id, models.weights_root)
     if present:
-        detail = (f"VLM route ready ({model_id}). "
-                  + ("Each prompt is routed; simple ones still go to the phrase grounder."
-                     if routed else "EVERY prompt goes to the VLM; the router is off."))
+        detail = f"VLM stack ready ({model_id}): it grounds every prompt, and SAM2 cuts each box."
     else:
-        consequence = ("complex prompts will be refused"
-                       if resolution.vlm_on_unavailable == "refuse"
-                       else "complex prompts will fall back to the phrase grounder, which returns a "
-                            "confident box for the WRONG object")
-        detail = (f"VLM weights for {model_id} are NOT on this box, so {consequence}. "
-                  f"Fetch them: python scripts/model_weights/fetch.py")
+        from src.models.weights import fetch_hint
+
+        detail = (f"VLM weights for {model_id} are NOT on this box, so every pick is refused until they are: "
+                  f"{fetch_hint(model_id).replace('`', '')}.")
     return PerceptionStackOut(
-        pipeline_configured=configured, kind="zero_shot", backend="vlm",
-        # Read from the resolution, not pinned to "sam2": the builder reads the same config key.
-        segmenter=resolution.segmenter,
-        router_enabled=routed, vlm_model_id=model_id, vlm_weights_present=present,
-        vlm_on_unavailable=resolution.vlm_on_unavailable, detail=detail,
-    )
-
-
-@router.get("/route", response_model=RoutePreviewOut,
-            summary="Which route a prompt would take; no GPU, no model, no image")
-def preview_route(prompt: str, cell: Annotated[Console, Depends(console)]) -> RoutePreviewOut:
-    """Answer 'why was that pick slow / why was it refused' by typing the prompt instead of running it.
-
-    Pure text analysis, so it costs nothing and works on a cell with no weights at all. It also reports
-    whether the chosen route could actually run here, which is the difference between "the router would
-    send this to the VLM" and "this pick will work".
-    """
-    from src.models.routing import Route, normalize_simple_prompt, route
-
-    decision = route(prompt)
-    stack = _perception(cell)
-    raw_signals = decision.to_dict().get("signals")
-    signals: dict[str, object] = raw_signals if isinstance(raw_signals, dict) else {}
-
-    runnable, blocked = True, None
-    if decision.route is Route.VLM:
-        if stack.backend != "vlm":
-            runnable = False
-            blocked = ("this prompt needs the VLM route, but this cell configures none; it will be "
-                       "ground by the phrase detector, which fails confidently on prompts like this.")
-        elif stack.vlm_weights_present is False:
-            runnable = False
-            blocked = f"the VLM route is configured but {stack.vlm_model_id} is not on this box."
-        elif not stack.router_enabled:
-            blocked = None  # every prompt goes to the VLM anyway; still runnable
-
-    return RoutePreviewOut(
-        prompt=prompt,
-        route=str(decision.route),
-        reason=str(decision.reason),
-        description=decision.describe(),
-        normalized_prompt=(normalize_simple_prompt(prompt) if decision.route is Route.SIMPLE else None),
-        signals=signals,
-        runnable=runnable,
-        blocked_reason=blocked,
+        kind="zero_shot", backend="vlm", segmenter=resolution.segmenter,
+        vlm_model_id=model_id, vlm_weights_present=present, detail=detail,
     )
 
 

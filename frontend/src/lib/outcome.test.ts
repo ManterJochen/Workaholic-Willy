@@ -11,7 +11,7 @@ import { STOP_CODES } from '../api/codes'
 import { outcomeTone, runTone, stopTone } from './outcome'
 
 describe('outcomeTone', () => {
-  it('draws every fail-closed refusal red, the three that used to read as a bad grasp included', () => {
+  it('draws every fail-closed refusal red, a retired one an old record carries included', () => {
     for (const outcome of ['uncertainty_fail_closed', 'drift_blocked_auto', 'ood_blocked_auto', 'decision_fail_closed']) {
       expect(outcomeTone(outcome), outcome).toBe('block')
     }

@@ -93,6 +93,10 @@ class Box:
 
 
 CUBE = Box(CUBE_LOW, CUBE_HIGH, "part")
+#: A bar 30 mm along x and 60 mm along y about the cube's centre, as tall: the Hand-E closes across it along x alone, on
+#: the faces an east and a west look show. The cube's grasp closes either way, and the part's body takes the way its
+#: grid reads the cube narrower (two measured faces read a cell wider), so a test that means the x grasp grips this.
+X_BAR = Box((-15.0, -730.0, 0.0), (15.0, -670.0, 40.0), "part")
 
 
 def render(camera_to_base: np.ndarray, boxes: tuple[Box, ...]) -> tuple[np.ndarray, np.ndarray]:

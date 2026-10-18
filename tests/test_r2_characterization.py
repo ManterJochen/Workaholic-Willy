@@ -7,10 +7,12 @@ built fully off-box via AutonomousGraspService.from_components + self-contained 
 tests/test_autonomous_grasp_service.py). Any drift in the report (outcome / profile / telemetry / pick_report /
 decision / recovery) during R2.1 fails here with a readable diff.
 
-This file (R2.0a) covers the LEGACY pick path (_execute_pick_body, now _run_legacy_attempt) + the mode-routing +
-the report contract across EASY / AUTO / DENSE_CLUTTER. The WIRED decision scenarios (_pick_with_decision) + the
-orchestrator-state side-effect harness land in R2.0b (the report-only golden is BLIND to orch._last_policy_report /
-perception.calls — the R1.2 hazard recurring).
+This file (R2.0a) covers the pick path (_execute_pick) + the mode-routing + the report contract across EASY / AUTO /
+DENSE_CLUTTER, with the orchestrator-state side-effect harness of R2.0b (the report-only golden is BLIND to
+orch._last_policy_report / perception.calls — the R1.2 hazard recurring). The wired decision scenarios
+(``decision_grasp_now``, ``decision_block_auto``, ``decision_uncertainty_active``) and the report's ``decision``,
+``uncertainty`` and carrier keys left on 2026-10-16 with the decision, uncertainty, watchdog, success-model and RL
+layers (the owner's cleanup).
 
 The two-scan refinement and the two modes that ran it left on 2026-09-29, and their four scenarios with them
 (``dense_autonomous_unwired``, ``refine_two_scan``, ``refine_hold``, ``closed_loop_s4_gate``), as did the profile's
@@ -40,13 +42,8 @@ from src.geometry import Frame, Pose
 from src.robot.core import MotionCommand, MotionResult, RobotCapabilities
 from src.robot.execution.autonomous_grasp import (
     AutonomousGraspService,
-    EffectiveGraspingConfig,
-    EffectiveUncertaintyConfig,
-    EffectiveWatchdogConfig,
     GraspMode,
 )
-from src.robot.execution.autonomous_grasp.watchdog import WatchdogSample
-from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.perception import PerceptionFrame
@@ -105,16 +102,7 @@ def _snap_report(report: object) -> dict:
             "n_attempts": len(getattr(pr, "attempts", ()) or ()),
             "attempt_actions": [getattr(a, "action", None) for a in (getattr(pr, "attempts", ()) or ())],
         },
-        "decision": _jsonable(getattr(report, "decision", None)),
-        "uncertainty": _jsonable(getattr(report, "uncertainty", None)),
         "recovery_actions": _jsonable(getattr(report, "recovery_actions", ()) or ()),
-        "carriers_set": {
-            name: getattr(report, name, None) is not None
-            for name in (
-                "shadow_success_telemetry", "ranking_blend_telemetry",
-                "uncertainty_rerank_telemetry", "shadow_router_telemetry",
-            )
-        },
     }
 
 
@@ -204,51 +192,17 @@ def _svc(mode: GraspMode, *, results: list, frames: list) -> AutonomousGraspServ
 # --------------------------------------------------------------------------- R2.0b: orch-state harness
 def _orch_state(svc: AutonomousGraspService) -> dict:
     """The orchestrator-side side-effects the report-only golden is BLIND to (the R1.2 hazard):
-    perception.calls, whether _last_policy_report was set, and watchdog_history differ per path. R2.1 must keep
-    these byte-identical."""
+    perception.calls and whether _last_policy_report was set differ per path."""
     orch = svc.runtime.orchestrator
     return {
         "perception_calls": getattr(getattr(orch, "perception", None), "calls", None),
         "last_policy_report_set": getattr(orch, "_last_policy_report", None) is not None,
-        "watchdog_history_len": len(getattr(svc, "watchdog_history", ()) or ()),
     }
 
 
 def _run(svc: AutonomousGraspService, **pick_kw: object) -> dict:
     report = svc.pick(**pick_kw)
     return {**_snap_report(report), "orch_state": _orch_state(svc)}
-
-
-# --------------------------------------------------------------------------- R2.0b: decision-path doubles
-def _base_effective_config(**overrides: object) -> EffectiveGraspingConfig:
-    return EffectiveGraspingConfig(
-        default_mode=GraspMode.AUTO,
-        max_attempts=1,
-        **overrides,  # type: ignore[arg-type]
-    )
-
-
-def _decision_svc(
-    *,
-    effective_config: object = None,
-    watchdog_history: object = None,
-) -> AutonomousGraspService:
-    """A from_components service routed to _pick_with_decision (decision_engine wired). An optional
-    effective_config activates the watchdog/uncertainty stages (from_components leaves it None -> INERT)."""
-    svc = AutonomousGraspService.from_components(
-        arm=_TypedFakeArm(),  # type: ignore[arg-type]
-        calculator=_ScriptedCalculator([_success_result()]),  # type: ignore[arg-type]
-        perception=_FakePerception([_frame()]),
-        mode=GraspMode.AUTO,
-    )
-    engine = DecisionEngine(policy=DecisionPolicy())
-    svc.decision_engine = engine
-    svc.decision_policy = engine.policy
-    if effective_config is not None:
-        svc.effective_config = effective_config  # type: ignore[assignment]
-    if watchdog_history is not None:
-        svc.watchdog_history = watchdog_history  # type: ignore[assignment]
-    return svc
 
 
 # --------------------------------------------------------------------------- scenarios
@@ -260,18 +214,6 @@ def _scenarios() -> dict:
     out["easy_rescan_exhausted"] = _run(_svc(GraspMode.EASY, results=[_rescan_result()], frames=[_frame()]), mode=GraspMode.EASY)
     out["auto_success"] = _run(_svc(GraspMode.AUTO, results=[_success_result()], frames=[_frame()]))
     out["dense_clutter_success"] = _run(_svc(GraspMode.DENSE_CLUTTER, results=[_success_result()], frames=[_frame()]))
-    # R2.0b (pre-STEP-B): the wired _pick_with_decision path — pins _decide_once + _rank_grasp_for_decision +
-    # _handle_watchdog_pretick (BLOCK_AUTO) + _resolve_uncertainty_runtime/_build_uncertainty_snapshot_for_tick.
-    out["decision_grasp_now"] = _run(_decision_svc())
-    out["decision_block_auto"] = _run(_decision_svc(
-        effective_config=_base_effective_config(
-            watchdog=EffectiveWatchdogConfig(mode="active", block_modes=("auto",)),
-        ),
-        watchdog_history=[WatchdogSample(predicted_observed_calibration_delta_mm=15.0, ood_score=0.05)],
-    ))
-    out["decision_uncertainty_active"] = _run(_decision_svc(
-        effective_config=_base_effective_config(uncertainty=EffectiveUncertaintyConfig(enabled=True)),
-    ))
     return out
 
 

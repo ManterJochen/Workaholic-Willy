@@ -12,7 +12,7 @@ Pinned:
   picked closing along the axis, whichever order the camera lists the two in; A is never pushed. A part the axis
   refused is the frame's failure only where no other part failed for its own reason, and no frame-wide guard stops B's
   push because A was refused;
-* where the cell names how its hand and camera naturally stand (``robot.natural_closing_axis``), every pose of a push
+* where the cell names how its hand and camera naturally stand (``robot.motion.natural_closing_axis``), every pose of a push
   closes the way round whose tool +X lies nearer that direction at the part, as every camera grasp does; without it,
   and where the push runs straight across it, the way round nearer where the tool stands, as before.
 """

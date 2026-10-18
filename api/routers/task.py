@@ -9,13 +9,13 @@ the cell's state first (409), then the request's own (422). It resolves the plan
 its joints, the return, the push distance, the air over a bin's rim) and echoes it; the run then drives the library's
 ``run_task`` on its own thread (``api.task_run``). What the picks ground is built from the object, the one part the
 operator singled out (``which``) and where the parts lie (``source``), as the library builds it
-(``task.pick_phrase``), and the route guard judges the operator's words in that phrase.
+(``task.pick_phrase``).
 
 A sort (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die blaue") is one task of several rules: the
 task's own object, which, source and place are its first, ``TaskIn.more_rules`` up to three more, each kind of part to
 its rule's place. Every refusal above holds for every rule, in the same order: the camera target the cell can find
-once where any place is a camera's, each rule's kind (a sort names every one), each rule's phrase and each camera
-place's, each taught pose a rule places at; then a sort on a cell whose perception grounds no phrase, which tells no
+once where any place is a camera's, each rule's kind (a sort names every one), each taught pose a rule places at;
+then a sort on a cell whose perception grounds no phrase, which tells no
 kind from another, and whatever the library's plan refuses (one kind in two rules, a ``|`` in a phrase). The plan
 resolves each further rule's place as it resolves the first's (``TaskPlanOut.more_rules``), and a Restart checks them
 all again.
@@ -25,10 +25,18 @@ is still placed, the arm returns, then the task ends; a Home run it stops before
 ``POST /v1/cell/brake``. After a problem stop the way back is ``POST /v1/task/restart``, whose first motion is the
 planned move to the return pose; it keeps every refusal of a new task but ``restart_required``, read against the cell as
 it is now.
+
+What a task takes where its sentence says nothing is the cell's (``runtime.task``, the owner, 2026-10-16): whether Enter
+starts it, its mode, its place, the tick for "anything", how its picks look and whether its parts are critical. The
+console reads them at ``GET /v1/task/settings`` and its Settings page writes them at ``PATCH /v1/task/settings``, into
+the cell's own layer through the task settings' door (``src.config.edit.set_task_settings``, the owner, 2026-10-17), as
+a taught pose is written. Neither route moves anything or starts a task: the console fills a card from them, and
+``POST /v1/task`` alone starts one.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from typing import Annotated, Any, NamedTuple
 
@@ -40,9 +48,8 @@ from api.codes import RunKind
 from api.constants import API_LOG_DIR, ROUTER_TASK_LOG_FILE
 from api.overlays import target_key
 from api.readiness import refusal
-from api.routers.pick import _refuse_unroutable_prompt
 from api.runs import RunConflict, RunRefused
-from api.schemas import RestartIn, RunOut, TaskIn
+from api.schemas import RestartIn, RunOut, TaskIn, TaskSettingsIn, TaskSettingsOut
 from src.robot.core.camera_world import live_planner_world_of
 from src.utility.log_cfg import create_logger
 
@@ -52,6 +59,9 @@ logger = create_logger("TaskRouter", ROUTER_TASK_LOG_FILE, log_dir=API_LOG_DIR)
 
 #: How the overlay routes answer: a PNG, or the one failure envelope.
 _PNG: dict[int | str, dict[str, Any]] = {200: {"content": {"image/png": {}}, "description": "The overlay, as a PNG."}}
+#: One change of the task settings at a time: two clicks that crossed would each rewrite the cell's layer from what it
+#: read before the other wrote, and one would lose the other's setting while both answered that it landed.
+_ONE_CHANGE_AT_A_TIME = threading.Lock()
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -79,17 +89,6 @@ def _refuse_a_camera_target_this_cell_cannot_find(cell: Console) -> None:
             raise refusal("camera_target_unavailable", (
                 "a wrist camera's place holds every frame of the bin's look while the part goes in, and this arm has no "
                 "live planner world to hold them: nothing would keep the bin's walls in the world."))
-
-
-def _grounded(obj: str, which: str, source: str) -> str:
-    """The phrase a task's picks ground (``task.pick_phrase``) as the route guard judges it: without the "each
-    separate" the task puts in front of a kind, its own words, which the router reads as a quantifier and which every
-    cell has grounded since 2026-10-06 (judged with it, every task on a phrase-only cell would be refused). What is
-    left is the operator's: the which alone, or the object and where the parts lie ("gray cube on the black mat"); a
-    task that names nothing leaves "object", which the router routes as a plain noun."""
-    from src.robot.execution.task import EACH_SEPARATE, pick_phrase  # noqa: PLC0415
-
-    return pick_phrase(obj, which=which, source=source).removeprefix(f"{EACH_SEPARATE} ")
 
 
 def _refuse_an_empty_object(cell: Console, phrase: str, pick_anything: bool) -> None:
@@ -127,9 +126,9 @@ def _named(cell: Console, name: str, which: str) -> tuple[str | None, list[float
     """A taught pose's label and joints (degrees); ``422 unknown_pose`` naming ``which`` (place, return) for a name
     nobody taught."""
     robot = cell.robot()
-    pose = robot.named_poses.get(name)
+    pose = robot.motion.named_poses.get(name)
     if pose is None:
-        known = ", ".join(sorted(robot.named_poses)) or "none is"
+        known = ", ".join(sorted(robot.motion.named_poses)) or "none is"
         raise refusal("unknown_pose", f"the {which} names the pose {name!r}, and no pose of that name was taught "
                                       f"({known}).", which=which, pose=name)
     return (pose.label or None), [float(value) for value in pose.joints_deg]
@@ -203,9 +202,9 @@ def _refuse_a_sort_that_names_no_kind(rules: Sequence[_Rule]) -> None:
 def _refuse_what_the_rules_ask_that_this_cell_cannot(cell: Console, rules: Sequence[_Rule], *,
                                                      pick_anything: bool) -> None:
     """The request's own refusals of 1.3.2 up to the plan, in its order, every rule in turn (its own first): the camera
-    target the cell can find, once where any place is a camera's; the kind of each rule (``object_required``: an empty
-    one only with ``pick_anything``, and a sort names every rule's); the phrase each rule's picks ground
-    (``prompt_not_routable``); then each camera place's phrase (``target_not_routable``)."""
+    target the cell can find, once where any place is a camera's; then the kind of each rule (``object_required``: an
+    empty one only with ``pick_anything``, and a sort names every rule's). Every phrase is the VLM's to ground, or a
+    closed-set detector's to match against its classes (2026-10-17: GroundingDINO and its route guard left)."""
     cameras = list(dict.fromkeys(rule.camera for rule in rules if rule.camera is not None))
     if cameras:
         _refuse_a_camera_target_this_cell_cannot_find(cell)
@@ -213,10 +212,6 @@ def _refuse_what_the_rules_ask_that_this_cell_cannot(cell: Console, rules: Seque
         _refuse_a_sort_that_names_no_kind(rules)
     else:
         _refuse_an_empty_object(cell, rules[0].object, pick_anything)
-    for rule in rules:
-        _refuse_unroutable_prompt(cell, _grounded(rule.object, rule.which, rule.source))
-    for phrase in cameras:
-        _refuse_unroutable_prompt(cell, phrase, code="target_not_routable")
 
 
 def _refuse_a_sort_this_cell_cannot_tell_apart(cell: Console, sorts: bool) -> None:
@@ -252,9 +247,9 @@ def _resolved_place(cell: Console, place: Any, number: int, *, named: "tuple[str
     if not name:
         if number == 1:
             raise refusal("no_place_declared", ("the task names no place pose, and this cell declares no default "
-                                                "place (robot.default_place_pose): teach one, or name the place."))
+                                                "place (robot.motion.default_place_pose): teach one, or name the place."))
         raise refusal("no_place_declared", (f"rule {number} of the sort names no place pose, and this cell declares no "
-                                            "default place (robot.default_place_pose): teach one, or name the place."),
+                                            "default place (robot.motion.default_place_pose): teach one, or name the place."),
                       rule=number)
     label, joints = named if named is not None else _named(cell, name, _place_said(number))
     return {"kind": "pose", "pose": name, "pose_label": label, "pose_joints_deg": joints, "phrase": None, "said": None}
@@ -266,7 +261,7 @@ def _plan(cell: Console, body: TaskIn) -> dict[str, Any]:
     (``more_rules``) resolve their places as the first does, each named in a refusal (``place of rule 2``), and a sort
     on a cell that grounds no phrase is refused last."""
     from api.schemas import TaskPlanOut  # noqa: PLC0415
-    from src.robot.execution.place_target import rim_clearance_mm  # noqa: PLC0415
+    from src.robot.execution.place_target import RIM_AIR_DEFAULT_MM  # noqa: PLC0415
 
     options = body.options
     push_mm = _resolved_push(cell, options.push_mm)
@@ -280,12 +275,11 @@ def _plan(cell: Console, body: TaskIn) -> dict[str, Any]:
     return_to = body.return_to.strip() or "home"
     if return_to != "home":
         return_label, return_joints = _named(cell, return_to, "return")
-    resolved = [_resolved_place(cell, place, number, named=named[number - 1], default=robot.default_place_pose)
+    resolved = [_resolved_place(cell, place, number, named=named[number - 1], default=robot.motion.default_place_pose)
                 for number, place in enumerate(places, start=1)]
     rim_air = None
     if any(place.kind == "camera" for place in places):
-        rim_air = (float(options.rim_air_mm) if options.rim_air_mm is not None
-                   else rim_clearance_mm(getattr(cell.session.arm, "config", None)))
+        rim_air = float(options.rim_air_mm) if options.rim_air_mm is not None else RIM_AIR_DEFAULT_MM
     axis = _closing_axis(cell, options.closing_axis)
     _refuse_both_faces_the_cell_turns_away(cell, options.both_faces)
     _refuse_a_sort_this_cell_cannot_tell_apart(cell, bool(body.more_rules))
@@ -463,6 +457,80 @@ def post_task_restart(cell: Annotated[Console, Depends(console)], body: RestartI
     logger.warning("Run %s restarts run %s (%s): its first motion is the planned move to the return pose.", run.id,
                    stopped.id, stopped.kind)
     return RunOut(**run.as_accepted())
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The cell's task settings: what a task takes where its sentence says nothing (neither route moves anything)
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _task_settings(cell: Console) -> TaskSettingsOut:
+    """The cell's task settings as its tree holds them now, the file a change is written to, and why none can be."""
+    from api.teach import _tree  # noqa: PLC0415 (the chain as the pose door writes it)
+    from src.config.schema.runtime import task_place  # noqa: PLC0415
+
+    task = cell.config().runtime.task
+    kind, name = task_place(task.place)
+    place = {"pose": {"kind": kind, "pose": name}, "camera": {"kind": kind, "phrase": name}}.get(kind, {"kind": kind})
+    tree = _tree(cell)
+    target = tree.task_file()
+    why_not = tree.task_layer_refusal()
+    return TaskSettingsOut.model_validate({
+        "start": task.start, "scope": task.scope, "place": place, "anything": task.anything, "looks": task.looks,
+        "critical_parts": task.critical_parts, "target_file": None if target is None else str(target),
+        "why_not": why_not, "why_not_code": "no_layer" if why_not else "",
+    })
+
+
+@router.get("/task/settings", response_model=TaskSettingsOut, summary="The cell's task settings (moves nothing)")
+def get_task_settings(cell: Annotated[Console, Depends(console)]) -> TaskSettingsOut:
+    """What every task the console is given takes where its sentence says nothing, for every browser of the cell:
+    whether Enter starts it, its mode, its place, the tick for "anything", how its picks look and whether its parts are
+    critical; the file a change is written to, and why none can be (``why_not_code`` ``no_layer``). Moves nothing."""
+    return _task_settings(cell)
+
+
+@router.patch("/task/settings", response_model=TaskSettingsOut,
+              summary="Change the cell's task settings, into its own layer (moves nothing)")
+def patch_task_settings(cell: Annotated[Console, Depends(console)], body: TaskSettingsIn) -> TaskSettingsOut:
+    """Write the settings named into the cell's own layer, all or none, and answer every setting as the tree now holds
+    it. One left out or null keeps its value. Nothing starts: the next task the console is given takes them.
+
+    Refused with nothing written: ``run_active`` (409); ``empty_patch`` (400) for a change that names none;
+    ``unknown_pose`` (422) for a place at a pose the tree holds none of; ``no_layer`` (422: the chain has no layer of the
+    cell's own, or its last is one git does not keep out); ``invalid_value`` (422, the loader's sentence) where the tree
+    refuses the result, which is rolled back.
+    """
+    from api.cell import RunLocked  # noqa: PLC0415
+    from api.teach import _code, _tree  # noqa: PLC0415 (the chain and the codes of the pose door)
+    from src.config.schema.runtime import task_place_text  # noqa: PLC0415
+
+    try:
+        cell.require_idle()
+    except RunLocked as locked:
+        raise refusal("run_active", str(locked), run_id=locked.run_id) from locked
+    values: dict[str, Any] = body.model_dump(exclude_none=True, exclude={"place"})
+    place = body.place
+    if place is not None:
+        name = str(getattr(place, "pose", "") or getattr(place, "phrase", ""))
+        if place.kind == "pose" and name not in cell.robot().motion.named_poses:
+            known = ", ".join(sorted(cell.robot().motion.named_poses)) or "none"
+            raise refusal("unknown_pose", (f"{name!r} is no pose of this cell (poses: {known}): teach it first, or "
+                                           "choose one of them"), which="place", pose=name)
+        values["place"] = task_place_text(place.kind, name)
+    if not values:
+        raise refusal("empty_patch", "the change names no task setting; nothing was written.")
+    with _ONE_CHANGE_AT_A_TIME:
+        result = _tree(cell).write_task_settings(values)
+        if not result.applied:
+            logger.warning("Task settings %s refused (%s): %s", ", ".join(sorted(values)), result.refused,
+                           result.message)
+            raise refusal(_code(str(result.refused)), result.message or "the task settings' door refused the write",
+                          key=result.refused_key, keys=list(result.keys))
+        logger.info("Task settings written: %s -> %s.",
+                    ", ".join(f"{k}={v!r}" for k, v in sorted(result.values.items())),
+                    ", ".join(str(path) for path in result.files))
+        return _task_settings(cell)
 
 
 def _overlay(cell: Console, run_id: str, key: int | str) -> Response:

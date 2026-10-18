@@ -1,4 +1,4 @@
-"""The decode passes as CUDA graphs (``vlm.decode_graphs``): the plain pass's arithmetic, or the plain pass itself.
+"""The decode passes as CUDA graphs (``decode_graphs``): the plain pass's arithmetic, or the plain pass itself.
 
 No weights and no card. A pass of the model over one new token is about 2400 kernel launches, and on the cell each
 costs the CPU more than the card needs to run it (about 140 ms a token for the 8B, where reading its weights takes about
@@ -15,7 +15,8 @@ can pin:
   or newer), the decoder laid out as Qwen3-VL's; logged once per loaded copy and mode.
 * **The fallback.** A capture that fails (here: no card to capture on) or a pass that raises halfway turns graphs off for
   the copy, the cache is cut back and the pass runs plainly: the answer is the plain answer.
-* **The switch.** ``decode_graphs`` in the ``vlm`` block, ``auto`` by default, refused when it names no mode.
+* **The setting.** ``auto``, the owner's cell's, fixed since 2026-10-17 when the ``vlm`` block's key left; the
+  grounder's ``configure`` takes another mode for a measurement, and refuses one it does not know.
 
 The real model's side of the same claims: ``tests/test_vlm_decode_graphs_inference.py``.
 """
@@ -269,7 +270,7 @@ class _NoGraphsTorch:
 
 
 def _grounder(model: Any, **settings: Any) -> Qwen3VLGrounder:
-    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", local=True, **settings)
+    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", **settings)
     grounder._load = lambda: (_Processor(), model, _NoGraphsTorch())  # type: ignore[method-assign]
     return grounder
 
@@ -315,7 +316,7 @@ class TheGroundersSwitchTests(unittest.TestCase):
         torch = _NoGraphsTorch()
         torch.cuda = SimpleNamespace(CUDAGraph=object, is_available=lambda: True, empty_cache=lambda: None,  # type: ignore[misc]
                                      get_device_capability=unreadable, get_device_name=unreadable)
-        grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", local=True, decode_graphs="auto")
+        grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", decode_graphs="auto")
         grounder._load = lambda: (_Processor(), model, torch)  # type: ignore[method-assign]
         with self.assertLogs("src.models.vlm.qwen", level="INFO") as said:
             self.assertEqual(1, len(_look(grounder)))
@@ -335,21 +336,14 @@ class TheGroundersSwitchTests(unittest.TestCase):
             grounder.configure(decode_graphs="fast")
         self.assertEqual("off", grounder.decode_graphs, "a refused setting changes nothing")
 
-    def test_the_schema_s_key(self) -> None:
-        """``auto`` by default, as the grounder's own: byte-identical answers on the 90 calls and the 67 sentences."""
-        self.assertEqual("auto", VlmConfig().decode_graphs)
+    def test_the_cells_setting_is_fixed_and_no_key_chooses_it(self) -> None:
+        """``auto``, the owner's cell's: byte-identical answers on the 90 calls and the 67 sentences. The ``vlm`` block's
+        key left on 2026-10-17, and the loader names it with its sentence."""
+        self.assertEqual("auto", qwen_module.DECODE_GRAPHS_MODE)
         self.assertEqual("auto", Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct").decode_graphs)
-        self.assertEqual("off", VlmConfig(decode_graphs="off").decode_graphs)
-        with self.assertRaises(ValidationError):
-            VlmConfig(decode_graphs="fast")  # type: ignore[arg-type]
-
-    def test_a_bare_on_or_off_in_yaml_is_the_word(self) -> None:
-        """YAML reads a bare ``on`` as true and ``off`` as false."""
-        import yaml
-
-        for text, mode in (("decode_graphs: on", "on"), ("decode_graphs: off", "off"), ('decode_graphs: "off"', "off")):
-            with self.subTest(text=text):
-                self.assertEqual(mode, VlmConfig(**yaml.safe_load(text)).decode_graphs)
+        for value in ("off", "on", True, False):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                VlmConfig(decode_graphs=value)  # type: ignore[call-arg]
 
     def test_an_unload_takes_the_graphs_and_the_decision_with_the_weights(self) -> None:
         grounder = _grounder(_Model(), decode_graphs="auto")

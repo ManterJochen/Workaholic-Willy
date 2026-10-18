@@ -1,23 +1,25 @@
-"""The desk A/B before a cell plans on another robot or with fewer passes: plan success, the plans the judgement then
-refuses, and the plan's time, between home and the looks and in the bench's hard scenes.
+"""The desk measure of a cell's planner: plan success, the plans the judgement then refuses, and the plan's time,
+between home and the looks and in the bench's hard scenes.
 
     .venv/Scripts/python.exe scripts/curobo/ab_planning_spheres.py --dry-run          # CPU: the problems, both robots
     WILLY_CUROBO_PYTHON=D:/dev/willy_handover/2026-10-02/final/gpu_aurora/wsl_sidecar.cmd \
     WILLY_PROBE_CUROBO_CONTENT=D:/dev/Workaholic-Willy/ext_deps/curobo/curobo/content \
     WILLY_COAL_PREFIX=D:/dev/Workaholic-Willy/ext_deps/coal_env \
         .venv/Scripts/python.exe scripts/curobo/ab_planning_spheres.py --work logs/curobo/ab_planning
-    ... --models ,lean --finetune 3,0 --in-place 0     # the variants are every combination of the three lists
 
 What runs is the cell's own planner, as ``real_cell --start-planner`` starts it: the arm built alone from the tree
 (``--tree``, ``--profile``), its wrist cameras handed in, ``start_planner`` (the descriptor and evidence checks, the
-declared world registered), with the tree changed in three keys only, per variant:
-``safety.planned_motion.planning_spheres`` (``--models``, ``""`` today's robot, ``lean`` the planning model),
-``safety.planned_motion.finetune_passes`` (``--finetune``) and ``safety.planning_world.register_in_place``
-(``--in-place``). The first variant is the one the others are compared with.
+declared world registered). Until 2026-10-17 it was the desk A/B of two keys, the robot cuRobo plans with
+(``safety.planned_motion.planning_spheres``) and the time-optimal passes after a plan's first
+(``safety.planned_motion.finetune_passes``), and its variants chose the lean model and no pass for the owner's cell.
+Both are every cell's since and no key varies them (the owner's cleanup), so it measures the one planner every cell
+runs; the dry run still composes both robots, the one every check judges with and the one cuRobo plans with. It
+varied ``safety.planning_world.register_in_place`` too until that day, when every world went through cuRobo's
+``update_world``.
 
-The problems, the same for every variant:
+The problems:
 
-* home to each look, each look to home, and each look to the next (``robot.look_joint_positions_deg``), in the
+* home to each look, each look to home, and each look to the next (``robot.motion.look_deg``), in the
   declared world;
 * each of the bench's hard scenes (``scripts/bench/scenes.py``, ``--scenes``), its parts and bins standing on the
   owner's mat as ``scripts/bench/run_bench.py`` places them: every part becomes the box the camera world would hand
@@ -33,11 +35,10 @@ with the refresh off, timed on the wall clock, then a plan is judged as the arm 
 (``URRobotArm._judged_waypoints``: shortened to the waypoints both authorities pass, or the plan as cuRobo returned
 it). Nothing moves: the arm is never connected.
 
-It writes ``<work>/ab_planning.json`` (every problem, every variant) and ``<work>/ab_planning.txt``: per variant the
-problems planned, the plans found, the plans the judgement refused, the starts and goals the check refused before any
-plan, the plan time p50 and p90 over every plan asked and over the plans found, and the set_world p50; then, against
-the first variant, the problems both plan, only one plans, and the plans only one has judged clear. Exit 0 when every
-variant ran, 2 when a planner could not start.
+It writes ``<work>/ab_planning.json`` (every problem) and ``<work>/ab_planning.txt``: the problems planned, the plans
+found, the plans the judgement refused, the starts and goals the check refused before any plan, the plan time p50 and
+p90 over every plan asked and over the plans found, and the set_world p50. Exit 0 when the planner ran, 2 when it could
+not start.
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ DEFAULT_CROP = REPO / "tests" / "data" / "cell_2026_10_01" / "p1_pick-63e1b3dac2
 STANDOFF_MM = 80.0
 #: How far under a part's top the TCP stands at the grasp, millimetres: about half a Hand-E pad.
 GRASP_DEPTH_MM = 15.0
-#: The joint speed the arm ranks its goals by, rad/s (``motion_limits.max_velocity`` on the owner's cell).
+#: The joint speed the arm ranks its goals by, rad/s (``motion.max_velocity`` on the owner's cell).
 RANK_SPEED = 0.5
 
 
@@ -90,22 +91,6 @@ class Problem:
     goal: list[float]
     world: list[dict[str, Any]] = field(default_factory=list)
     guard: list[Any] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class Variant:
-    model: str
-    finetune: int
-    in_place: bool
-
-    @property
-    def label(self) -> str:
-        return f"{self.model or 'today'}/finetune {self.finetune}/{'in place' if self.in_place else 'update_world'}"
-
-    def values(self) -> "dict[str, Any]":
-        return {"robot.safety.planned_motion.planning_spheres": self.model,
-                "robot.safety.planned_motion.finetune_passes": self.finetune,
-                "robot.safety.planning_world.register_in_place": self.in_place}
 
 
 def load_cell(tree: Path, profile: str, calibration: "Path | None") -> Any:
@@ -184,9 +169,9 @@ def problems_for(loaded: Any, *, scenes: str, parts: int, crop: Path) -> "tuple[
     from src.robot.drivers.planned.curobo_motion import planner_envelope_rad  # noqa: PLC0415
 
     robot = loaded.robot
-    # Home is read in radians: the schema turns home_joint_positions_deg into home_joint_positions and clears the one.
-    home = [float(v) for v in (robot.home_joint_positions or ())]
-    looks = [[math.radians(float(v)) for v in row] for row in (robot.look_joint_positions_deg or ())]
+    # Home is read in radians, as every driver reads it (robot.motion.home_rad).
+    home = [float(v) for v in (robot.motion.home_rad or ())]
+    looks = [[math.radians(float(v)) for v in row] for row in (robot.motion.look_deg or ())]
     envelope = planner_envelope_rad(str(robot.arm.model))
     window = (list(envelope[0]), list(envelope[1]))
     out: list[Problem] = []
@@ -233,17 +218,16 @@ def _travel_deg(path: "list[list[float]]") -> float:
     return float(np.degrees(steps.sum())) if len(path) > 1 else 0.0
 
 
-def run_variant(loaded: Any, variant: Variant, problems: "list[Problem]") -> "tuple[list[dict[str, Any]], str]":
-    """Start the cell's planner on ``variant``, plan and judge every problem, stop it. Rows, and what it loaded."""
+def run_planner(loaded: Any, problems: "list[Problem]") -> "tuple[list[dict[str, Any]], str]":
+    """Start the cell's planner, plan and judge every problem, stop it. Rows, and what it loaded."""
     from src.robot.core import MotionCommand  # noqa: PLC0415
     from src.robot.core.joint_positions import JointPositions  # noqa: PLC0415
     from src.robot.drivers import create_arm  # noqa: PLC0415
     from src.robot.execution.wrist_bodies import WristBodies  # noqa: PLC0415
 
-    tree = loaded.with_values(variant.values())
-    robot = tree.robot
+    robot = loaded.robot
     arm: Any = create_arm("ur", config=robot)
-    WristBodies.from_config(robot, tree.app_config.camera, data_dir=tree.root).hand_to(arm)
+    WristBodies.from_config(robot, loaded.app_config.camera, data_dir=loaded.root).hand_to(arm)
     rows: list[dict[str, Any]] = []
     try:
         began = time.perf_counter()
@@ -325,29 +309,10 @@ def summary(rows: "list[dict[str, Any]]") -> "dict[str, Any]":
     }
 
 
-def against(base: "list[dict[str, Any]]", other: "list[dict[str, Any]]") -> "dict[str, Any]":
-    """The problems both variants plan, and those only one plans or only one has judged clear."""
-    by_key = {row["key"]: row for row in other}
-    both = only_base = only_other = clear_only_base = clear_only_other = 0
-    for row in base:
-        theirs = by_key.get(row["key"])
-        if theirs is None:
-            continue
-        mine, yours = bool(row.get("found")), bool(theirs.get("found"))
-        both += mine and yours
-        only_base += mine and not yours
-        only_other += yours and not mine
-        clear_mine, clear_yours = row.get("judged") == "clear", theirs.get("judged") == "clear"
-        clear_only_base += clear_mine and not clear_yours
-        clear_only_other += clear_yours and not clear_mine
-    return {"both_found": both, "only_base_found": only_base, "only_other_found": only_other,
-            "only_base_judged_clear": clear_only_base, "only_other_judged_clear": clear_only_other}
-
-
-def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped: "list[str]", *,
-            dump: "Path | None" = None) -> int:
-    """The problems, and each model's spheres and self pairs composed on the CPU as the sidecar would compose them;
-    with ``dump``, the robots written there for ``probe_planning_model.py`` to load into cuRobo."""
+def dry_run(loaded: Any, problems: "list[Problem]", skipped: "list[str]", *, dump: "Path | None" = None) -> int:
+    """The problems, and both robots' spheres and self pairs composed on the CPU as the sidecar would compose them: the
+    evidence model every check judges with (``today``) and the lean model cuRobo plans with; with ``dump``, the robots
+    written there for ``probe_planning_model.py`` to load into cuRobo."""
     import yaml  # noqa: PLC0415
 
     from src.config.arms import curobo_descriptor_name  # noqa: PLC0415
@@ -356,7 +321,7 @@ def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped
     from src.robot.safety.planning._curobo_body_links import compose_for_cell  # noqa: PLC0415
     from src.robot.safety.planning.body_link import HandLink, coupling_bodies  # noqa: PLC0415
     from src.robot.safety.planning.hand import PlannerHand, planner_hand  # noqa: PLC0415
-    from src.robot.safety.planning.planning_model import planning_payload  # noqa: PLC0415
+    from src.robot.safety.planning.planning_model import LEAN, planning_payload  # noqa: PLC0415
 
     families: dict[str, int] = {}
     for problem in problems:
@@ -381,24 +346,22 @@ def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped
     wrist = [body.link(arm=arm) for body in WristBodies.from_config(robot, loaded.app_config.camera,
                                                                     data_dir=loaded.root).bodies]
     margin = float(robot.safety.self_collision.planner_margin_mm or 0.0)
-    today, _, _, _, _ = compose_for_cell(raw, bodies=bodies, wrist_bodies=wrist, margin_mm=margin)
+    today, _, _, _ = compose_for_cell(raw, bodies=bodies, wrist_bodies=wrist, margin_mm=margin)
     print(f"[robots] today: {sum(planning.sphere_count(today).values())} spheres, "
           f"{planning.self_pair_count(today)} self pairs ({planning.sphere_count(today)})")
     urdf = content / "assets" / str(raw["robot_cfg"]["kinematics"].get("urdf_path", ""))
     written = {"today": today}
-    for model in [model for model in models if model]:
-        sent = planning_payload(model, arm=str(robot.arm.model).lower(), body_links=bodies, wrist_body_links=wrist)
-        if isinstance(sent, str):
-            print(f"[robots] {model}: not composed: {sent}")
-            continue
-        if not urdf.is_file():
-            print(f"[robots] {model}: {sent.render()}; no URDF at {urdf} to place it in")
-            continue
+    sent = planning_payload(arm=str(robot.arm.model).lower(), body_links=bodies, wrist_body_links=wrist)
+    if isinstance(sent, str):
+        print(f"[robots] {LEAN}: not composed: {sent}")
+    elif not urdf.is_file():
+        print(f"[robots] {LEAN}: {sent.render()}; no URDF at {urdf} to place it in")
+    else:
         planned = planning.planning_config(raw, planning.read_payload(sent.to_json()),
                                            urdf_text=urdf.read_text(encoding="utf-8"), evidence=today, margin_mm=margin)
-        print(f"[robots] {model}: {sum(planning.sphere_count(planned).values())} spheres, "
+        print(f"[robots] {LEAN}: {sum(planning.sphere_count(planned).values())} spheres, "
               f"{planning.self_pair_count(planned)} self pairs ({planning.sphere_count(planned)})")
-        written[model] = planned
+        written[LEAN] = planned
     if dump is not None:
         dump.mkdir(parents=True, exist_ok=True)
         for name, config in written.items():
@@ -420,48 +383,33 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--scenes", default="bin,clutter,tray,shapes",
                         help="all, families or names of scripts/bench/scenes.py; empty for the looks alone")
     parser.add_argument("--parts", type=int, default=2, help="targets per clearing scene")
-    parser.add_argument("--models", default=",lean", help="planning_spheres per variant, comma separated; '' is today's")
-    parser.add_argument("--finetune", default="3", help="finetune_passes per variant, comma separated")
-    parser.add_argument("--in-place", default="0", help="register_in_place per variant, 0 or 1, comma separated")
     parser.add_argument("--limit", type=int, default=0, help="at most this many problems (0: all)")
     parser.add_argument("--work", default=str(REPO / "logs" / "curobo" / time.strftime("ab_planning_%Y%m%d_%H%M%S")))
     parser.add_argument("--dry-run", action="store_true", help="build the problems and compose both robots, plan nothing")
     parser.add_argument("--dump", default="", help="with --dry-run: write the robots here for probe_planning_model.py")
     args = parser.parse_args(argv)
 
-    models = [value.strip() for value in args.models.split(",")]
-    variants = [Variant(model=model, finetune=int(finetune), in_place=bool(int(in_place)))
-                for model in models for finetune in args.finetune.split(",") for in_place in args.in_place.split(",")]
     loaded = load_cell(Path(args.tree), args.profile, Path(args.calibration) if args.calibration else None)
     problems, skipped = problems_for(loaded, scenes=args.scenes, parts=args.parts, crop=Path(args.crop))
     if args.limit > 0:
         problems = problems[:args.limit]
     if args.dry_run:
-        return dry_run(loaded, models, problems, skipped, dump=Path(args.dump) if args.dump else None)
+        return dry_run(loaded, problems, skipped, dump=Path(args.dump) if args.dump else None)
 
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {"tree": args.tree, "profile": args.profile, "scenes": args.scenes,
-                              "problems": [problem.key for problem in problems], "skipped": skipped, "variants": {}}
-    for variant in variants:
-        print(f"[variant] {variant.label}", flush=True)
-        try:
-            rows, said = run_variant(loaded, variant, problems)
-        except Exception as exc:  # noqa: BLE001 (a planner that does not start is this run's answer)
-            print(f"  the planner did not start: {type(exc).__name__}: {exc}", flush=True)
-            report["variants"][variant.label] = {"started": False, "reason": f"{type(exc).__name__}: {exc}"}
-            (work / "ab_planning.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
-            return 2
-        report["variants"][variant.label] = {"started": True, "loaded": said, "summary": summary(rows), "rows": rows}
+                              "problems": [problem.key for problem in problems], "skipped": skipped}
+    print("[planner] the one every cell runs: the lean model, no time-optimal pass after a plan's first", flush=True)
+    try:
+        rows, said = run_planner(loaded, problems)
+    except Exception as exc:  # noqa: BLE001 (a planner that does not start is this run's answer)
+        print(f"  the planner did not start: {type(exc).__name__}: {exc}", flush=True)
+        report["planner"] = {"started": False, "reason": f"{type(exc).__name__}: {exc}"}
         (work / "ab_planning.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
-    labels = [variant.label for variant in variants]
-    lines = []
-    for label in labels:
-        lines.append(f"{label}: " + json.dumps(report["variants"][label]["summary"]))
-    for label in labels[1:]:
-        compared = against(report["variants"][labels[0]]["rows"], report["variants"][label]["rows"])
-        report.setdefault("against_first", {})[label] = compared
-        lines.append(f"{label} against {labels[0]}: " + json.dumps(compared))
+        return 2
+    report["planner"] = {"started": True, "loaded": said, "summary": summary(rows), "rows": rows}
+    lines = ["planner: " + json.dumps(report["planner"]["summary"])]
     (work / "ab_planning.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
     (work / "ab_planning.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines), flush=True)

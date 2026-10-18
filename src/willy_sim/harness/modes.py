@@ -1,13 +1,13 @@
 """Grasp-mode selection for the Isaac sim runners.
 
-One place that maps a demo-mode string to the typed :class:`GraspMode` and to the
-``AutonomousGraspService.from_components`` sub-policy kwargs that mode needs, so every pick runner
-and the mode-matrix harness wire the modes the same way:
+One place that maps a demo-mode string to the typed :class:`GraspMode`, so every pick runner and the
+mode-matrix harness read the modes the same way:
 
-* ``easy``: no extra wiring, the deterministic trust path.
-* ``auto``: a real ``DecisionEngine``, so a pick perceives, ranks, decides and then grasps.
-* ``dense_clutter``: no extra sub-policy wiring. The profile switches the sampler to the dense
-  point-cloud one and enables itself on a multi-object frame. Meaningful only on a clutter scene.
+* ``easy``: the deterministic trust path.
+* ``auto``: the automatic sampler. The decision gate it ran before every grasp left on 2026-10-16 with
+  ``robot.grasping.decision``.
+* ``dense_clutter``: the profile switches the sampler to the dense point-cloud one and enables itself on a
+  multi-object frame. Meaningful only on a clutter scene.
 
 ``closed_loop`` and ``dense_autonomous`` were removed on 2026-09-29 with the two-scan pre-grasp
 refinement they ran; a runner asked for either refuses with the mode to name instead.
@@ -53,17 +53,4 @@ def resolve_demo_mode(mode: Any) -> Any:
     return table[key]
 
 
-def mode_service_kwargs(mode: Any) -> dict[str, Any]:
-    """Return the ``from_components`` sub-policy kwargs that wire ``mode``: a decision engine for ``auto``."""
-
-    from src.robot.execution.autonomous_grasp.config import GraspMode
-
-    gm = resolve_demo_mode(mode)
-    if gm is GraspMode.AUTO:
-        from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
-
-        return {"decision_engine": DecisionEngine(policy=DecisionPolicy())}
-    return {}
-
-
-__all__ = ["DEMO_MODES", "DENSE_MODES", "resolve_demo_mode", "mode_service_kwargs"]
+__all__ = ["DEMO_MODES", "DENSE_MODES", "resolve_demo_mode"]

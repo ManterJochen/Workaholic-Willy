@@ -43,7 +43,7 @@ def _sim_cfg(**sim: object) -> RobotConfig:
     return RobotConfig(  # type: ignore[arg-type]
         vendor="sim",
         gripper={"vendor": "none"},
-        grasping={"default_mode": "auto", "max_attempts": 5},
+        grasping={"default_mode": "auto"},
         sim={"mock_mode": False, **sim},
     )
 

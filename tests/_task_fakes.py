@@ -44,7 +44,7 @@ from src.robot.core import (
     RobotStatus,
     SafetyMode,
 )
-from src.robot.core.arm_capabilities import LineMotion, LineReading, PayloadModel
+from src.robot.core.arm_capabilities import LineMotion, LineReading
 from src.robot.core.errors import RobotError, RobotKinematicsError
 from src.robot.core.gripper import HoldEvidence
 from src.robot.execution.autonomous_grasp.config import GraspMode, _profile_for
@@ -204,8 +204,7 @@ class TaskArm(PlansItsMotions):
     anything is sent (a status) or nothing: ``refuse(kind, index, target) -> MotionStatus | None``. ``on_motion`` runs
     before each motion runs, so a test can press a button while the arm is on its way (it may raise, as a driver that
     meets a camera which cannot vouch does). ``statuses`` are what the controller answers, in order, the last one from
-    then on. ``attaches`` is what an attach of the carried part leaves in force: the planner and the filter as on a
-    cuRobo UR that models it, ``FILTER_ONLY`` where the planner declined it, ``NONE`` where nothing modelled it.
+    then on. No carried part is modelled (2026-10-17): the double attaches and detaches nothing, as every arm.
     """
 
     plans_paths = True
@@ -215,9 +214,8 @@ class TaskArm(PlansItsMotions):
                  unreachable_above_mm: float | None = None,
                  refuse: "Callable[[str, int, Any], MotionStatus | None] | None" = None,
                  on_motion: "Callable[[str, int], None] | None" = None,
-                 statuses: tuple[RobotStatus, ...] = (RUNNING,), declined: str | None = None,
-                 world: bool = True, holds: bool = True,
-                 attaches: PayloadModel = PayloadModel.PLANNER_AND_FILTER) -> None:
+                 statuses: tuple[RobotStatus, ...] = (RUNNING,),
+                 world: bool = True, holds: bool = True) -> None:
         self.log = log
         self.fk_table = {**{_key(PLACE_JOINTS): PLACE_TCP, _key(PARK_JOINTS): PARK_TCP, _key(HOME_JOINTS): HOME},
                          **dict(fk_table or {})}
@@ -226,14 +224,11 @@ class TaskArm(PlansItsMotions):
         self.refuse = refuse
         self.on_motion = on_motion
         self._statuses = list(statuses)
-        self.declined = declined
-        self.attaches = attaches
         self.set_live_planner_world(_World(log, holds=holds) if world else None)
         self.is_connected = True
         self.home_joint_positions = tuple(HOME_JOINTS.tolist())
         self._tcp = HOME
         self._joints = HOME_JOINTS
-        self._payload: float | None = None
         self.index = 0
         self.screened: list[tuple[float, ...]] = []
         self.nearest_asked: list[Pose] = []
@@ -290,26 +285,6 @@ class TaskArm(PlansItsMotions):
         nearby = tuple(v + 0.01 for v in joints.tolist()) if verdict is not PoseVerdict.CLEAR else None
         return PoseScreen(verdict, f"scripted {verdict.value}", nearby=nearby)
 
-    # ---- the carried part ---------------------------------------------------------------------------------
-
-    def attach_payload(self, grip_width_mm: float) -> bool:
-        self.log.append(("attach",))
-        if self.attaches is PayloadModel.NONE:
-            return False
-        self._payload = float(grip_width_mm)
-        return self.attaches is PayloadModel.PLANNER_AND_FILTER
-
-    def detach_payload(self) -> bool:
-        self.log.append(("detach",))
-        self._payload = None
-        return True
-
-    def payload_declined_reason(self) -> str | None:
-        return self.declined
-
-    def payload_model(self) -> PayloadModel:
-        return PayloadModel.NONE if self._payload is None else self.attaches
-
     # ---- motions ------------------------------------------------------------------------------------------
 
     def _motion(self, kind: str, target: Any, command: MotionCommand, *, linear: bool = False,
@@ -322,7 +297,7 @@ class TaskArm(PlansItsMotions):
             return MotionResult.failed(MotionStatus.CANCELLED, command, target_pose=pose, target_joints=joints,
                                        message=f"halted: {self.halted}; nothing was sent")
         if self.on_motion is not None:
-            # A button pressed while this motion runs: with robot.ur.brake_on_halt off (Q1), the motion runs to its end.
+            # A button pressed while this motion runs: this double does not brake, so the motion runs to its end.
             self.on_motion(kind, index)
         refused = self.refuse(kind, index, target) if self.refuse is not None else None
         if refused is not None:
@@ -365,8 +340,7 @@ class Pick:
     """One scripted pick: what it comes to (``kind``), where the part stood, and what else it says.
 
     ``kind`` is ``part`` (gripped and lifted), ``empty`` (nothing found), ``excluded`` (only parts the task keeps out
-    were seen, each in a region of the task), ``zoned`` (only parts were seen that a ``next_target`` zone skips after a
-    failed pick: parts the task still has to pick), ``failed`` (a part seen and no grasp), ``failed_holding`` (the lift
+    were seen, each in a region of the task), ``failed`` (a part seen and no grasp), ``failed_holding`` (the lift
     was refused with the part closed in the jaws), ``fault``, ``controller``, ``gripper``, ``needs_person`` or
     ``cancelled``. ``detector_failed`` raises the service's detector failure count during the pick. ``grasp`` False
     reports no grasp pose on a part picked. ``looks`` are the looks its report says it perceived from (none, as a pick
@@ -538,13 +512,7 @@ class TaskService:
                            pick_report=SimpleNamespace(outcome=PickOutcome.NO_PERCEPTION, attempts=()))
         if pick.kind == "excluded":
             attempt = SimpleNamespace(reasons=(), excluded="Every part the camera sees (1) stands where the task keeps "
-                                                         "out, so the pick stops here.", excluded_by_regions=True)
-            return _report(AutonomousGraspOutcome.NO_VALID_GRASP,
-                           pick_report=SimpleNamespace(outcome=PickOutcome.RESCANNED_EXHAUSTED, attempts=(attempt,)))
-        if pick.kind == "zoned":
-            attempt = SimpleNamespace(reasons=(), excluded="Every 'part' the camera sees (1) failed in one of the last 3 "
-                                                         "picks and is being skipped, so the pick stops here.",
-                                      excluded_by_regions=False)
+                                                         "out, so the pick stops here.")
             return _report(AutonomousGraspOutcome.NO_VALID_GRASP,
                            pick_report=SimpleNamespace(outcome=PickOutcome.RESCANNED_EXHAUSTED, attempts=(attempt,)))
         if pick.kind == "failed":
@@ -568,11 +536,9 @@ class TaskService:
         # A part: the approach, the close (one change of DO0 on a toggle), the lift.
         grasp = Pose.tool_down(x, y, GRASP_Z_MM, label="approach_01")
         above = Pose.tool_down(x, y, GRASP_Z_MM + 80.0, label="approach_00")
-        self.arm.detach_payload()
         self.arm.move(above)
         self.arm.move(grasp, linear=True)
         self.jaws.set_closed(True)
-        self.arm.attach_payload(40.0)
         if pick.kind == "failed_holding":
             attempt = SimpleNamespace(reasons=(), excluded=None)
             return _report(AutonomousGraspOutcome.EXECUTION_FAILED,
@@ -1034,17 +1000,16 @@ __all__.append("ClassListLocator")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# A sort: picks that say the kind they went for, a detector asked for one phrase, a cell that keeps the old rule
+# A sort: picks that say the kind they went for, a detector asked for one phrase, a cell's own place
 # ---------------------------------------------------------------------------------------------------------------------
 
 
 def placing(arm: TaskArm, **place: Any) -> TaskArm:
-    """``arm`` keeping a tree that says only how its parts are set down (``robot.place`` as ``place`` says, every other
-    key its default): every other reading of the tree finds nothing there, as on an arm that keeps none.
-    ``placing(arm, relocate=False)`` is a cell that keeps the old rule: a bin the check lost puts the part back."""
+    """``arm`` keeping a tree that says only how its parts are set down (``robot.motion.place`` as ``place`` says, every
+    other key its default): every other reading of the tree finds nothing there, as on an arm that keeps none."""
     from src.config.schema.robot.place_schema import RobotPlaceConfig  # noqa: PLC0415
 
-    arm.config = SimpleNamespace(place=RobotPlaceConfig(**place))  # type: ignore[attr-defined]
+    arm.config = SimpleNamespace(motion=SimpleNamespace(place=RobotPlaceConfig(**place)))  # type: ignore[attr-defined]
     return arm
 
 
@@ -1125,8 +1090,8 @@ __all__.extend(["OnePhraseLocator", "SortPick", "SortingService", "placing", "ru
 
 def declaring(arm: TaskArm, length_mm: "float | None", **place: Any) -> TaskArm:
     """``arm`` keeping a tree that declares how far its carried parts hang past the fingertips
-    (``safety.planning_world.payload.length_mm``; ``None`` declares none), the bench at 0 and no container floor, its
-    parts set down as ``robot.place`` says (``place``, every other key its default). It names no hand, so the fingertips
+    (``robot.motion.place.part_hang_mm``; ``None`` declares none), the bench at 0 and no container floor, its parts set
+    down as ``robot.motion.place`` says (``place``, every other key its default). It names no hand, so the fingertips
     reach nothing past the TCP.
 
     Declared, a place stands the part's bottom where it says and the tool higher by the part's hang; undeclared, the
@@ -1134,8 +1099,8 @@ def declaring(arm: TaskArm, length_mm: "float | None", **place: Any) -> TaskArm:
     from src.config.schema.robot.place_schema import RobotPlaceConfig  # noqa: PLC0415
 
     arm.config = SimpleNamespace(  # type: ignore[attr-defined]
-        place=RobotPlaceConfig(**place),
-        safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(length_mm=length_mm))),
+        motion=SimpleNamespace(place=RobotPlaceConfig(**{"part_hang_mm": length_mm, **place})),
+        safety=SimpleNamespace(planning_world=SimpleNamespace(support_plane=None)),
         grasping=SimpleNamespace(support=SimpleNamespace(height_mm=0.0, container=SimpleNamespace(
             floor_height_mm=None))))
     return arm

@@ -108,8 +108,8 @@ class CoordinateSpace(StrEnum):
 
 #: The score stamped on every VLM detection. Not a confidence; see the module docstring. It is 1.0
 #: because downstream filters compare against a detector's box threshold, and a box that survived
-#: this parser was asserted by the model: dropping it on a threshold meant for GroundingDINO's
-#: logits would discard the route's entire output.
+#: this parser was asserted by the model: dropping it on a threshold meant for a scoring detector's
+#: logits would discard the VLM's entire output.
 VLM_NOMINAL_SCORE = 1.0
 
 #: The label a box of a class list is given where no one description clearly claims it: the model
@@ -426,8 +426,8 @@ def claimed_once(detections: list[Detection], prompt: str) -> list[Detection]:
     more than one label (compared as words, case and spacing aside), two descriptions claim that object, and every box
     of the group becomes ambiguous: neither rule may take the part, and the boxes stay where they are as obstacles. A
     chain counts as one group, so no box of a doubly claimed object is left under one of the two names. One description
-    boxed twice keeps its label, as an answer to one description keeps it. :func:`parse_grounding_response` applies it
-    to a VLM's answer, and GroundingDINO to its own boxes of a class list (``detection.zero_shot.detector``).
+    boxed twice keeps its label, as an answer to one description keeps it. The VLM applies it to the boxes it grounded
+    for the descriptions of a class list one at a time (``Qwen3VLGrounder.detect_all``).
     """
     count = len(detections)
     group = list(range(count))

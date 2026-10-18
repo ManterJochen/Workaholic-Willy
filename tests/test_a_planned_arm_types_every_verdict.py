@@ -208,7 +208,7 @@ class MoveHomeIsGatedTests(unittest.TestCase):
     It went straight to `MotionController.move_home`, which checked the workspace box, logged a warning,
     and -- in its own words -- proceeded anyway (P0e deleted it). Measured 2026-08-09 on the September UR3e: the shipped
     UR5e-authored home (then `HOME_JOINTS_DEFAULT`, since P0e each description's `home_rad`) puts the grasp centre at z = 561.9 mm and r = 466.9 mm (93.4%
-    of a 500 mm reach) while that cell's `workspace_limits` stop at z = 320. So the first thing an
+    of a 500 mm reach) while that cell's `robot.motion.workspace` stops at z = 320. So the first thing an
     operator does would have driven outside the declared box on a log line.
 
     Two halves, and neither subsumes the other: `gate_joint_target` runs the DESTINATION guards (joint
@@ -228,7 +228,7 @@ class MoveHomeIsGatedTests(unittest.TestCase):
         fake = fake_transport()
         # FK stands in for the controller: report the pose the caller wants tested.
         fake.always("controller_fk", controller_pose([0.4, 0.0, 0.3, 0.0, 3.14, 0.0]))   # (400, 0, 300) mm, inside
-        return planned_arm(kit_tree("ik", safety={"payload": {"enforce": False}}, gripper={"tool_frame": _PLUS_Y}),
+        return planned_arm(kit_tree("ik", safety={}, gripper={"tool_frame": _PLUS_Y}),
                            transport=fake)
 
     def _assert_not_moved(self, arm: Any) -> None:
@@ -269,7 +269,7 @@ class MoveHomeIsGatedTests(unittest.TestCase):
         self._assert_not_moved(arm)
 
     def test_the_box_judges_the_grasp_centre_not_the_bare_flange(self) -> None:
-        """In willy mode the controller's FK is the bare flange, and `workspace_limits` bound the grasp
+        """In willy mode the controller's FK is the bare flange, and `robot.motion.workspace` bounds the grasp
         centre. Here the flange sits at z = 450 mm, inside the default z_max of 500, turned so its +Y
         points up: the grasp centre, 132 mm along flange +Y, is at z = 582 mm and outside."""
         arm = self._arm()

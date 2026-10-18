@@ -10,8 +10,7 @@ from src.robot.safety import SafetyPreflight
 
 tree = load_tree()                                      # the cell WILLY_PROFILE names
 gate = SafetyPreflight.from_tree(tree)
-print(gate.guard_names)                                 # the guards that run, in order
-print(gate.omitted_guards)                              # the families this cell switched off
+print(gate.guard_names)                                 # the six guards, in order: every cell runs all of them
 
 arm = create_arm(tree.robot.vendor, config=tree.robot)  # read for its limits; nothing connects
 refusal = gate.gate_planned_path(waypoints, arm=arm)    # joint waypoints; None when every sample passes
@@ -20,25 +19,28 @@ print("clear" if refusal is None else refusal)
 
 The UR and other vendor drivers build this gate from the same tree, so a `Robot` or a `Cell` on one of
 them already runs it before each move; the dummy arm carries none.
-[`scripts/checks/safety_guards.py`](../../../scripts/checks/safety_guards.py) makes every guard your cell
-wires refuse a violation of its own family, and exits 1 when one does not.
+[`scripts/checks/safety_guards.py`](../../../scripts/checks/safety_guards.py) makes every guard of your cell
+refuse a violation of its own family, and exits 1 when one does not or is missing.
 
 ## The six guards
 
 | Order | Guard | Rejects when | Needs |
 | --- | --- | --- | --- |
-| 1 | `workspace` | the TCP target is outside the box, shrunk by `limits.workspace_margin_mm` on every face | a target pose in `Frame.BASE` |
-| 2 | `joint_limit` | an axis is outside its limit, less `margin_deg` at both ends | target joints |
-| 3 | `ik_quality` | the solution is non-finite, the wrong size, a large jump, near a limit, or near-singular | target joints; the arm for the singularity probe |
-| 4 | `self_collision` | a link, the tool or a declared fixture comes closer than `min_distance_mm` (10), or a box a camera saw closer than `perceived_min_distance_mm` (2) | target joints and a kinematics model |
+| 1 | `workspace` | the TCP target is outside the box, shrunk by 20 mm on every face (`workspace.WORKSPACE_MARGIN_MM`) | a target pose in `Frame.BASE` |
+| 2 | `joint_limit` | an axis is outside the arm's own limit, less 5 degrees at both ends (`JOINT_LIMIT_MARGIN_DEG`), or more than half a turn from home on a real arm | target joints; the home the arm states |
+| 3 | `ik_quality` | the solution is non-finite, the wrong size, a jump over 1.0 rad, within 2 degrees of a limit, or near-singular (a least singular value under 0.005, a condition number over 250) | target joints; the arm for the singularity probe |
+| 4 | `self_collision` | a link, the tool or a declared fixture comes closer than `min_distance_mm` (3), or a box a camera saw closer than `perceived_min_distance_mm` (2) | target joints and a kinematics model |
 | 5 | `payload` | mass, centre of gravity or inertia is outside the declared envelope | config only |
-| 6 | `motion_continuity` | the step from the last accepted target is larger than its cap | the previous accepted target |
+| 6 | `motion_continuity` | the step from the last accepted target is over 45 degrees of a joint, 30 of the TCP's turn or 250 mm | the previous accepted target |
 
-The workspace box always runs. Every other guard runs only while its family's `enforce` key under
-`robot.safety` is true: `enforce: false` removes the guard when the gate is built, and `omitted_guards`
-names what is gone. Every verdict is a frozen `SafetyDecision` with a `SafetyReason` (`OK`, `WORKSPACE`,
-`JOINT_LIMIT`, `IK_QUALITY`, `SELF_COLLISION`, `PAYLOAD`, `CONTINUITY`, `UNAVAILABLE`) that maps to one
-`MotionStatus`, so a driver turns a rejection into a typed `MotionResult` without reclassifying it.
+Every guard runs on every cell: no key switches one off since 2026-10-17 (the owner's cleanup took the `enforce`
+keys and fixed the numbers above at the owner's cell's). They are the numbers of the arm the gate is built for
+([`guard_numbers.py`](guard_numbers.py)): every real arm's are the cell's, and the Isaac arm states its own in code
+([`src/willy_sim/guard_numbers.py`](../../willy_sim/guard_numbers.py): a half-turned base, its whole joint envelope,
+IK and continuity limits sized for a position-controlled drive). Every verdict is a frozen `SafetyDecision` with a
+`SafetyReason` (`OK`, `WORKSPACE`, `JOINT_LIMIT`, `IK_QUALITY`, `SELF_COLLISION`, `PAYLOAD`, `CONTINUITY`,
+`UNAVAILABLE`) that maps to one `MotionStatus`, so a driver turns a rejection into a typed `MotionResult` without
+reclassifying it.
 
 ## The nouns
 
@@ -55,15 +57,14 @@ names what is gone. Every verdict is a frozen `SafetyDecision` with a `SafetyRea
 
 | Refusal | When | What to do |
 | --- | --- | --- |
-| `JointLimitTableMissing` from `create_arm` | the joint-limit guard is wired and no table resolves (the sim) | set `robot.safety.joint_limits.min_deg` and `max_deg` |
+| `JointLimitTableMissing` from `create_arm` | no table resolves for the arm (no description), the arm states no home, or the window about home leaves an axis no range (a home more than half a turn outside the table) | describe the arm in `config/arms/<model>.yaml`; set `robot.motion.home_deg`, in degrees as the pendant shows the joints |
 | `ConfigError` when the gate is built | an exact-mesh guard reads hand geometry and `robot.gripper.model` names no hand | name the hand the flange carries |
 | `ConfigError` when the gate is built | the declared tool frame places no hand model (a mirror, an oblique axis) | declare the tool frame the hand model admits |
-| a config refused at load | `self_collision.perceived_min_distance_mm` plus `planning_world.perceived.margin_mm` falls short of `self_collision.min_distance_mm`, the step every path is sampled at | raise either of the first two until they reach the step |
-| a config refused at load | `planning_world.perceived.voxel_size_mm` is coarser than 10 while `perceived_min_distance_mm` is under `min_distance_mm`: the seen boxes are fitted to one pixel per voxel, and that distance was measured at a 10 mm voxel | keep `voxel_size_mm` at 10 or finer |
+| a config refused at load | `self_collision.perceived_min_distance_mm` plus the 6 mm every camera world grows its boxes by falls short of `self_collision.min_distance_mm`, the step every path is sampled at | raise the first, or lower the step |
 | a config refused at load | `self_collision.perceived_min_distance_mm` is below 1: where only the camera's boxes refuse the planner's world, the exact guard alone decides them at that distance (the owner, 2026-10-12) | set it to 1 or more |
 | a path gate refusal, `UNSUPPORTED` | no self-collision guard, the capsule proxy, no reach for the arm, or too many samples | `path_judge_refusal(arm)` names the cause before any motion |
-| a UR connect refusal | `payload.enforce: true` with `mass_kg: 0.0`, or a mass with `cog_mm` at the origin | weigh the tool and measure its centre of gravity, or `enforce: false` for a bare flange |
-| `UNAVAILABLE` on a move | a guard lacks the config, telemetry or asset it needs while its family is enforced | the message names what is missing |
+| a UR connect refusal | `payload.mass_kg: 0.0`, the shipped "not weighed yet", or a mass with `cog_mm` at the origin | weigh what the flange carries and measure its centre of gravity |
+| `UNAVAILABLE` on a move | a guard lacks the config, telemetry or asset it needs | the message names what is missing |
 
 ## Self collision: exact meshes, or the capsule proxy
 
@@ -89,10 +90,10 @@ nothing the planner refused. There the exact guard decides the arm's own pairs a
 `wrist_3`, the hand and the wrist cameras; the `shoulder_link`, which is also the planner's only model of
 the base, and any pair padded beyond `planner_margin_mm` stay the planner's
 ([guide 04](../../../docs/guide/04-robot-and-safety.md), section 6). `SafetyPreflight.perceived_obstacles`
-names the boxes a camera saw that this guard holds: where only those refuse the planner's world, no part
-is carried and the hand reads empty and open, the band admission sets exactly them aside in the planner and
-this guard decides them, judging every refused sample again at `perceived_min_distance_mm`, never less than
-5 mm (a load refuses less).
+names the boxes a camera saw that this guard holds: where only those refuse the planner's world, whatever the
+hand holds (no cell models a part in the jaws since 2026-10-17), the band admission sets exactly them aside in the
+planner and this guard decides them, judging every refused sample again at `perceived_min_distance_mm`, never less
+than 1 mm (a load refuses less).
 
 **Where it stands the hand.** The links stand on the model's nominal DH table; the flange, and with it the hand, its
 fingers and a wrist camera, stands where the arm's controller puts it, where the arm says
@@ -107,11 +108,11 @@ in a path judged whole.
 **The camera's boxes, turned, at their own distance.** A declared fixture is an axis-aligned box. A box a
 camera saw carries the turned box the planner holds (`AxisAlignedBox.turned`), and the exact backend judges
 that one, turned about base Z; the capsule proxy judges its enclosure. The guard asks the arm and the
-declared fixtures at `min_distance_mm` (10) first, then the seen boxes alone at
-`self_collision.perceived_min_distance_mm` (2), each already grown by `planning_world.perceived.margin_mm`
-(15), so the arm keeps 20 mm off a seen face, measured to the thinned cloud, one point per 10 mm voxel. A
-pixel the thinning dropped was measured as near as 4.1 mm inside its box, about 9 mm from the arm at a
-sample that passes; a measurement, not a bound ([guide 04](../../../docs/guide/04-robot-and-safety.md), 5.5).
+declared fixtures at `min_distance_mm` (3) first, then the seen boxes alone at
+`self_collision.perceived_min_distance_mm` (2), each already grown by the 6 mm every camera world grows its
+boxes by (`perceived.CAMERA_BOX_MARGIN_MM`), so the arm keeps 8 mm off the thinned cloud, one point per 10 mm
+voxel. A pixel the thinning dropped was measured as near as 4.1 mm inside a box grown by 15; a measurement, not
+a bound ([guide 04](../../../docs/guide/04-robot-and-safety.md), 5.5).
 A refusal's detail says where the box stood: `fixture` (`seen` or `declared`), `box_centre_mm`,
 `box_size_mm`, `box_yaw_deg`, `box_corners_mm`, `box_note` and the `joints_deg`, and the path gates log it.
 
@@ -119,22 +120,26 @@ A refusal's detail says where the box stood: `fixture` (`seen` or `declared`), `
 
 - **Workspace.** A margin that would invert an axis raises. A joint-only command carries no pose and
   passes here; the joint and self-collision guards judge it.
-- **Joint limits.** `min_deg` and `max_deg` from config win; otherwise the envelope the arm registry
-  describes for the model the arm reports, `capabilities.model` (`config/arms/<model>.yaml`, plus or minus
-  360 degrees per axis, `ur3` to `ur20`), whatever its vendor; otherwise `UNAVAILABLE`. The Isaac arm
-  reports the UR it drives and resolves that UR's envelope. That envelope is the manufacturer's, not the installation limits set on the controller, which the controller
-  enforces itself as a protective stop.
+- **Joint limits.** The envelope the arm registry describes for the model the arm reports,
+  `capabilities.model` (`config/arms/<model>.yaml`, plus or minus 360 degrees per axis, `ur3` to `ur20`),
+  whatever its vendor; otherwise `UNAVAILABLE`, and `create_arm` refuses the arm. The Isaac arm reports the UR
+  it drives and resolves that UR's envelope. On every real arm every full-turn joint (a UR's elbow excepted)
+  stays within half a turn of the home the arm drives to, so a cable along the arm is never wound further; the
+  Isaac arm keeps its whole envelope. That envelope is the manufacturer's, not the installation limits set on the
+  controller, which the controller enforces itself as a protective stop.
 - **IK quality.** Limit proximity is skipped when no envelope resolves. The singularity probe runs only
   on an arm with `has_native_fk`, and a probe that fails is `UNAVAILABLE`.
-- **Self collision.** The base column, a tool shape at the TCP, the arm links, the boxes under
-  `self_collision.fixtures` and the boxes the cameras saw. Arm links need an arm whose `capabilities.model`
-  the arm registry describes as a UR (`described_ur_model`), whatever its vendor: a real UR reports
-  `ur.model`, the Isaac arm `sim.robot_model`. Any other arm gets only the base, the tool and the fixtures.
-  Until P0d D5 the Isaac arm reported `isaac-sim` and needed `self_collision.kinematics_model` to opt in;
-  that key is removed and a tree that still writes it is refused at load. `tool_model: finger`
-  models descending two-finger jaws.
-- **Payload.** The UR driver pushes mass and centre of gravity to the controller at connect while
-  `enforce` is true, and drops the connection if the push fails.
+- **Self collision.** On the capsule proxy: the base column up to the shoulder joint the arm's description
+  places, 80 mm round; the hand's fingers as one capsule along the grasp's closing axis at the TCP, from the
+  hand's registry file (the 2F-85 every arm bundle carries where no hand is named); the arm links, 60 mm round;
+  the boxes under `self_collision.fixtures` and the boxes the cameras saw. Arm links and the base need an arm
+  whose `capabilities.model` the arm registry describes as a UR (`described_ur_model`), whatever its vendor: a
+  real UR reports `ur.model`, the Isaac arm `sim.robot_model`. Any other arm gets only the tool and the
+  fixtures. Until P0d D5 the Isaac arm reported `isaac-sim` and needed `self_collision.kinematics_model` to opt
+  in; until 2026-10-17 the capsule's dimensions and the Isaac base's half turn were keys too. A tree that still
+  writes one is refused at load.
+- **Payload.** The UR driver pushes mass and centre of gravity to the controller at connect on every cell, and
+  drops the connection if the push fails.
 - **Motion continuity.** Caps the joint, TCP and orientation step against the last accepted target. The
   first command after `reset()` passes.
 - **A planned move.** Both drivers skip `ik_quality` and `motion_continuity` on the planner's final
@@ -145,19 +150,19 @@ A refusal's detail says where the box stood: `fixture` (`seen` or `declared`), `
 `gate_joint_path` and `gate_planned_path` judge every configuration of a path before any of it is
 commanded, with the joint-limit, self-collision (fixtures included) and payload guards. No key turns
 them off and there is no stride. The step is the self-collision margin (`path_step_mm`), and the reach
-comes from the arm and what its flange carries: the hand, a wrist camera and a declared carried part.
+comes from the arm and what its flange carries: the hand and a wrist camera.
 
-**A path judged whole** (`self_collision.whole_path_judge`, off by default). On, the gate first asks each
-guard of a joint move for the first sample it might refuse, over the whole path at once (`first_suspect`):
-the joint limits on every sample at once, the payload once, the exact meshes with every part placed at every
-sample in one pass (`_ur_kinematics.ur_link_transforms_mm_many`, bit for bit the chain one sample is placed
+**A path judged whole**, on every cell since 2026-10-17 (the owner's `self_collision.whole_path_judge`, on at the
+cell). The gate first asks each guard of a joint move for the first sample it might refuse, over the whole path at once
+(`first_suspect`): the joint limits on every sample at once, the payload once, the exact meshes with every part placed
+at every sample in one pass (`_ur_kinematics.ur_link_transforms_mm_many`, bit for bit the chain one sample is placed
 with). A sample before that one is passed only on a proof that every distance the guard would measure there
 keeps its limit: the bounding spheres the guard culls by; a part's convex hull (Coal only), which holds the
 mesh and is taken 0.001 mm nearer than it measures; or a distance measured at an earlier sample less how far
 the pair can have moved since, an arm pair in either part's frame and a part against a box as the guard's own
 box rule. Where none proves it, the pair is measured exactly as the guard measures it, and a distance under
-the limit plus 1e-6 mm ends the pass there. From that sample on the gate judges every sample one at a time
-exactly as with the switch off, so the verdict, the sample it names and its message are the same
+the limit plus 1e-6 mm ends the pass there. From that sample on the gate judges every sample one at a time,
+so the verdict, the sample it names and its message are those of judging every sample in turn
 (`tests/test_a_whole_path_is_judged_as_every_sample_is.py`: routes, lines and paths over the cell's worlds
 of 2026-10-07, the borderline at 3 mm give or take 1e-7 mm, the guard order). A guard that offers no such
 pass, a site-local one, or the self-collision guard where it would answer with the capsule proxy, leaves
@@ -199,8 +204,10 @@ under 19.6 mm, the wrist clearance of a natural grasp, or a good pick stops.
 | [`singularity.py`](singularity.py) | Jacobian and singular-value analysis |
 | [`continuous_monitor.py`](continuous_monitor.py) | the per-step monitor and its profile |
 | [`attestation.py`](attestation.py) | `SafetyAttestation` and `SafetyPosture` |
+| [`guard_numbers.py`](guard_numbers.py) | `GuardNumbers`, what the guards hold an arm to that no cell configures, and `CELL`, every real arm's |
 | `_capsule.py`, `_ur_kinematics.py`, `_fcl_self_collision.py` | capsule distances, the UR DH tables and the chain of many configurations at once, the exact mesh backend and its whole-path pass |
-| `_ur_ik.py` | the closed-form inverse kinematics of the UR flange and its branches; on a controller's own calibrated rows (`_ur_kinematics.URDhChain`), the configuration nearest a seed as its `getInverseKinematics` answers it, or why that cannot be vouched for (`ur_chain_ik_nearest`, `robot.safety.ik_quality.line_ik`) |
+| `_ur_ik.py` | the closed-form inverse kinematics of the UR flange and its branches; on a controller's own calibrated rows (`_ur_kinematics.URDhChain`), the configuration nearest a seed as its `getInverseKinematics` answers it, or why that cannot be vouched for (`ur_chain_ik_nearest`; every line a cuRobo UR judges is solved so since 2026-10-17) |
+| [`partner_arm.py`](partner_arm.py) | another arm of the cell as the boxes this arm keeps its distance from (`partner_world`, `PartnerWorld`, `partner_cuboids`, `hull_gap_mm`) |
 | [`planning/`](planning/README.md) | the planner sidecar and the two external engines |
 | `data/` | the committed mesh bundles and `bundles.json` |
 

@@ -105,7 +105,7 @@ class AConsolePatchOfAPoseIsRefusedTests(unittest.TestCase):
         self.addCleanup(set_console, previous)
         before = _tree_hash(self.tmp)
 
-        response = TestClient(create_app()).patch("/v1/config", json={"robot.named_poses.drop_left.joints_deg": _DROP})
+        response = TestClient(create_app()).patch("/v1/config", json={"robot.motion.named_poses.drop_left.joints_deg": _DROP})
 
         self.assertEqual(403, response.status_code, response.text)
         body = response.json()

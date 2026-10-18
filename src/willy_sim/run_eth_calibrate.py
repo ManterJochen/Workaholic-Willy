@@ -202,7 +202,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
 
     routine = CalibrationRoutine(
         arm=arm, marker_source=marker_source,
-        workspace_limits=cell.robot.workspace_limits, eth_settings=he,
+        workspace_limits=cell.robot.motion.workspace, eth_settings=he,
         marker_id=sim.scene_setup.marker.aruco_marker_id,
         settle_time_s=cal.settle_time_s,
         calibration_mode=MountingMode.EYE_TO_HAND,

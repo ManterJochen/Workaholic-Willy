@@ -19,7 +19,7 @@ Under `WILLY_PROFILE=console_dummy` the same lines run at a desk on a dummy arm
 [03_connect_and_move.py](../../examples/real_robot/03_connect_and_move.py) is the first example that
 moves the arm. Poses are millimetres in the robot's base frame, rotations XYZW quaternions, joints
 radians, and vendor unit conventions stay inside the drivers. `robot.tool_down(x, y, z)` points the tool
-straight down with its fingers along the cell's `robot.natural_closing_axis`, base x where it names none,
+straight down with its fingers along the cell's `robot.motion.natural_closing_axis`, base x where it names none,
 as the cell-free `Pose.tool_down` does.
 
 ```bash
@@ -45,7 +45,7 @@ Every command and its exit codes: [docs/cli.md](../../docs/cli.md).
 | [`faults/`](faults/README.md) | a person acknowledging a fault at the cell, the one door to `SupportsRobotStatus.acknowledge_fault`; never automatic, never from the console | `python -m src.robot.faults acknowledge` |
 
 Beside them, `constants.py` holds the log file names, and `events.py` the
-calibration and watchdog events with their listener Protocols. `src.robot` resolves its UR-bound names
+calibration events with their listener Protocol. `src.robot` resolves its UR-bound names
 lazily, so importing it loads no UR driver.
 
 ## The pick, in order
@@ -54,25 +54,24 @@ lazily, so importing it loads no UR driver.
    pick's looks, fuses them and stops at the first safe grasp; one generated view on the straight joint
    line is the last resort. Fixed cameras fuse without moving.
 2. Generate and score: 6-DoF candidates, ranked.
-3. Decide: the AUTO decision gate.
+3. Choose: the first part whose grasp scores 0.6, else the best (the AUTO decision gate that stood here left on
+   2026-10-16).
 4. Gate: `SafetyPreflight` and IK.
 5. Drive: standoff, approach, grasp, close.
 6. Check the hold: the execution policy asks the gripper after its close whether it holds something.
-7. Recover: `auto` and `dense_clutter` may perceive and pick again (`rescan`) or skip the failed part for
-   another of the same label (`next_target`); `dense_clutter` alone may also push a blocked part aside
-   (`nudge_target`), inside a wrist camera's pick attempt, with the jaws open and nobody asked. A push
+7. Recover: `auto` and `dense_clutter` may perceive and pick again (`rescan`); `dense_clutter` alone may
+   also push a blocked part aside (`nudge_target`), inside a wrist camera's pick attempt, with nobody
+   asked. A push
    that stops leaves the arm where it is, and a person clears the cell before the next run. `easy` never
    recovers, and nothing on a config-built cell shakes a bin.
 8. Log: one `GraspAttemptRecord` per attempt, as JSON lines.
 
-Steps 3 and 7 are opt-in and off by default, so the shipped pick is 1, 2, 4, 5, 6 and 8: open-loop.
-Turning a step on is a config change. A switch known to read as on while doing nothing is refused by the
-schema (`RobotGraspingConfig.UNWIRED_SWITCHES`, today `occlusion.hard_reject_enabled` alone); every other
-flag is held to reaching a runtime carrier, which is not the same as the pick acting on it
-([the config reference](../../docs/grasping-config-reference.md), sections 2 and 6.1). The
-reinforcement-learning layer is off too: trained offline, shadow-only at run time, and it can never
-override a safety rejection. Offline, the logged records feed the KPI
-roll-up and the training loop, which are never imported back into the live path.
+Every step runs on a cell built from config, and the pick stays open-loop: step 7 is the recovery the owner's
+cell ran, fixed since 2026-10-16, and nothing looks again between the grasp chosen and the jaws closing. Every
+flag left in `robot.grasping` is held to reaching a runtime carrier, which is not the same as the pick acting on
+it, and a switch removed on purpose is refused at load ([the config reference](../../docs/grasping-config-reference.md),
+sections 2 and 6.1). The reinforcement-learning layer left on 2026-10-16 with its code. Offline, the logged
+records feed the KPI roll-up and the training loop, which are never imported back into the live path.
 
 ## Triaging a safety rejection
 
@@ -83,7 +82,7 @@ it fire.
 
 | Guard | Symptom | What to do |
 | --- | --- | --- |
-| `workspace` | The target pose is outside the configured workspace box. | Check `robot.workspace_limits` and `robot.safety.limits.workspace_margin_mm`, then the camera calibration. |
+| `workspace` | The target pose is outside the configured workspace box, less the 20 mm every cell keeps inside each face. | Check `robot.motion.workspace`, then the camera calibration. |
 | `joint_limit` | The IK solution would drive an axis past its window. | Change the approach angle or prefer another IK seed. Do not widen the limits. |
 | `ik_quality` | IK returned a high-residual or near-singular solution. | Rank toward feasible candidates and require a minimum IK quality. |
 | `self_collision` | A link, the tool or a fixture comes closer than `min_distance_mm`. | Take another approach through a rescan recovery or a look pose that sees the part from elsewhere, or tune the inflation margin. |

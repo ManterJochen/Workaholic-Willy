@@ -21,7 +21,6 @@ The loader expects (paths are relative to ``data_dir``)::
 
     app/runtime.yaml          (optional: schema defaults are used otherwise)
     camera/cam.yaml
-    camera/stereomatcher.yaml
     camera/hand_eye.yaml       (optional: schema defaults are used otherwise)
     models/*.yaml             (auto-discovered; every top-level key is merged)
     robot/robot.yaml          (optional)
@@ -80,7 +79,7 @@ from src.contracts import UNSET, Maybe, chosen
 
 from ._merge import _deep_merge
 from .paths import CONFIG_FOLDER, PROJECT_ROOT_ANCHOR, PROJECT_ROOT_VARIABLE
-from .schema.app import AppConfig, CameraConfig, ModelsConfig, PerceptionModelsConfig
+from .schema.app import AppConfig, CameraConfig, ModelsConfig, PerceptionModelsConfig, WeightsRootSection
 from .schema.models import SpeechToTextConfig
 from .schema.robot import RobotConfig
 
@@ -104,30 +103,25 @@ _PROFILE_ENV_VAR = "WILLY_PROFILE"
 #: ``WILLY_PROFILE`` accepts a comma-separated chain of profile layers applied left-to-right:
 #: ``"sim,ur3e"`` merges every ``*.sim.yaml`` first, then every ``*.ur3e.yaml`` on top, and a single
 #: name is a one-element chain. Layers chain rather than fork because they are independent
-#: dimensions: the sim overlays span four files (``robot``, ``camera/hand_eye``, ``models/object``,
-#: ``models/segmenting``) and carry measured values such as the detector ``torch_dtype`` reset that
-#: small-object recall depends on, and a "sim cell driving a UR3e" profile would fork all four and
-#: duplicate those values per robot, where they drift. Chaining keeps one ``sim`` layer and adds a
-#: small per-robot layer stating only what the robot changes.
+#: dimensions: the sim overlays span two files (``robot`` and ``camera/hand_eye``) and carry what the
+#: Isaac cell needs differently, such as its scene and its calibration sampling, and a "sim cell
+#: driving a UR3e" profile would fork both and duplicate those values per robot, where they drift.
+#: Chaining keeps one ``sim`` layer and adds a small per-robot layer stating only what the robot changes.
 _PROFILE_SEPARATOR = ","
-#: Phase U11 opt-in environment variable naming an overlay YAML. When it points at a readable path,
-#: the loader deep-merges that overlay into the ``robot`` section of the raw config before Pydantic
-#: validation, and rejects it unless every leaf key path is in the ``runtime_mutable=True``
-#: allow-list discovered from ``RobotConfig``. Unset means no overlay is merged.
-_ADAPTATION_OVERLAY_ENV_VAR = "WILLY_ADAPTATION_OVERLAY"
-
 #: Reset sentinel for profile overlays, and the only way an overlay can force a field back to
 #: ``None``. A ``None`` overlay leaf keeps the base value, so a partial overlay never wipes a field;
 #: a profile that must unset one writes this string instead and the loader resolves it to ``None``
-#: after the merge. ``models/object.sim.yaml`` uses it to drop the production
-#: ``optim.torch_dtype: auto`` so the sim's detector runs its validated unset/fp32-weights recall
-#: path.
+#: after the merge.
 _OVERLAY_RESET = "__null__"
 
 # The required camera files, not auto-discovered: the loader maps each one to a specific section
 # of the AppConfig tree.
-_CAMERA_FILES = ("cam.yaml", "stereomatcher.yaml")
-_CAMERA_KEYS = ("cameras", "stereomatcher")
+_CAMERA_FILES = ("cam.yaml",)
+_CAMERA_KEYS = ("cameras",)
+#: Camera files that left the tree, each with its top-level key, read only to be refused. A tree that still carries
+#: ``camera/stereomatcher.yaml`` (removed 2026-10-17) is refused at load, naming the file, the line and what replaced
+#: the block (``schema/_removed.py``), rather than loading as if the file said nothing.
+_REMOVED_CAMERA_FILES = (("stereomatcher.yaml", "stereomatcher"),)
 
 # Matches ${VAR} and ${VAR:-default} on a single line; nested references are not supported.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\:-([^}]*))?\}")
@@ -220,19 +214,14 @@ def load_robot_section(
 
     It equals ``load_config(...).robot`` on a tree that loads, and it still loads when a camera file or a
     model file is broken, which :func:`load_robot_config` does not: that one validates the whole tree
-    first. The U11 adaptation overlay is applied here exactly as the whole-tree load applies it, or the
-    two doors would describe different cells whenever ``WILLY_ADAPTATION_OVERLAY`` is set. The
-    cross-section rule on :class:`AppConfig` (every fused camera is a rig) needs the camera section
-    and does not run here; a caller that combines this section with :func:`load_camera_section` runs
-    it through :func:`~src.config.schema.app.camera_calibration_conflict`. A schema failure names each
-    key with its ``robot.`` prefix and the file and line it was written on, as the whole-tree load does.
+    first. A schema failure names each key with its ``robot.`` prefix and the file and line it was written on, as the whole-tree load does.
 
     Not cached. A section is cheap to read, and a cached one would outlive the file edit that
     :func:`reload_config` is documented to cover. The other side of that: after a change and before
     :func:`reload_config`, a section already reads the new state while :func:`load_config` still
     returns the tree it cached. That holds for a file edit and equally for the environment the load
-    reads, a changed ``WILLY_ADAPTATION_OVERLAY`` or a ``${VAR}`` a file substitutes, because the cache
-    is keyed by the data directory and the profile chain only.
+    reads, a ``${VAR}`` a file substitutes, because the cache is keyed by the data directory and the
+    profile chain only.
     """
     root, chain = _root_and_chain(data_dir, profile)
     path = root / "robot" / "robot.yaml"
@@ -240,14 +229,11 @@ def load_robot_section(
     robot = _load_optional_section(path, "robot", chain)
     if robot is not None:
         raw["robot"] = robot
-    # The whole-tree order: the file first, then the overlay, which can supply a robot block the
-    # file does not have.
-    _apply_env_adaptation_overlay(raw)
     _apply_named_hand(raw, root, chain)
     if raw.get("robot") is None:
         raise ConfigError(
             f"there is no robot section: {path} and its profile overlays are absent or leave the "
-            "top-level 'robot:' empty, and no adaptation overlay supplies one"
+            "top-level 'robot:' empty"
         )
     return _validate_section(RobotConfig, raw["robot"], ("robot",), root, chain)
 
@@ -257,12 +243,10 @@ def load_camera_section(
     *,
     profile: "Maybe[str | None]" = UNSET,
 ) -> CameraConfig:
-    """The ``camera`` section alone: ``camera/cam.yaml``, ``stereomatcher.yaml`` and ``hand_eye.yaml``.
+    """The ``camera`` section alone: ``camera/cam.yaml`` and ``hand_eye.yaml``.
 
     It equals ``load_config(...).camera`` on a tree that loads, and it reads neither the robot nor the
-    models. The cross-section rule on :class:`AppConfig` does not run, for the reason given on
-    :func:`load_robot_section`; a caller combining both sections runs
-    :func:`~src.config.schema.app.camera_calibration_conflict`. Not cached.
+    models. Not cached.
     """
     root, chain = _root_and_chain(data_dir, profile)
     return _validate_section(
@@ -303,17 +287,44 @@ def load_perception_section(
     *,
     profile: "Maybe[str | None]" = UNSET,
 ) -> PerceptionModelsConfig:
-    """The seven ``models`` keys the perception stack reads, without ``stt`` or the hand detectors.
+    """The four ``models`` keys the perception stack reads, without ``stt``.
 
     Every field equals the same field of ``load_config(...).models`` on a tree that loads, and the
     result carries exactly what :class:`~src.models.perception_spec.PerceptionSpec` reads. When
-    a model file cannot be read and one of the seven was found nowhere, the section refuses: the
+    a model file cannot be read and one of the four was found nowhere, the section refuses: the
     unreadable file might have held it, and a schema default must not stand in for a value nobody
     could read. Not cached.
     """
     root, chain = _root_and_chain(data_dir, profile)
     found = _load_model_keys(root, chain, tuple(PerceptionModelsConfig.model_fields))
     return _validate_section(PerceptionModelsConfig, found, ("models",), root, chain)
+
+
+def load_weights_root(
+    data_dir: str | Path | None = None,
+    *,
+    profile: "Maybe[str | None]" = UNSET,
+) -> str:
+    """The folder every model's weights are read from, ``models.weights_root``, read alone. Not cached.
+
+    What the speech holder and the fetch script ask beside their own section, so a tree that keeps its weights
+    elsewhere names the folder once and every reader takes it from there.
+
+    Args:
+        data_dir (str | Path | None): The config directory; ``None`` is the repository's (default: None).
+        profile (Maybe[str | None]): The profile chain; unset is ``WILLY_PROFILE``'s, ``None`` the base tree
+            (default: UNSET).
+
+    Returns:
+        str: The folder, absolute: the tree's value read by the path rule, or the repository's
+            ``assets/models/hf`` where no file writes the key.
+
+    Raises:
+        ConfigError: The key does not validate, or a models file cannot be read where it may have held it.
+    """
+    root, chain = _root_and_chain(data_dir, profile)
+    found = _load_model_keys(root, chain, ("weights_root",))
+    return _validate_section(WeightsRootSection, found, ("models",), root, chain).weights_root
 
 
 def reload_config() -> None:
@@ -609,9 +620,15 @@ def _block_origins(segments: Sequence[str | int], origins: Mapping[str, Any]) ->
     key = _bracketed(segments, origins)
     if key in origins:
         return (origins[key],)
+    return _first_line_per_file(key, origins)
+
+
+def _first_line_per_file(key: str, origins: Mapping[str, Any], *, itself: bool = False) -> tuple[Any, ...]:
+    """The first line each file writes the block ``key`` on, by file name: a line of its keys, and with ``itself`` the
+    key's own line too."""
     first: dict[str, Any] = {}
     for other, origin in origins.items():
-        if other.startswith((f"{key}.", f"{key}[")):
+        if (itself and other == key) or other.startswith((f"{key}.", f"{key}[")):
             held = first.get(str(origin.file))
             if held is None or origin.line < held.line:
                 first[str(origin.file)] = origin
@@ -701,7 +718,7 @@ def _assemble(root: Path, profile: str, values: Mapping[str, Any]) -> AppConfig:
     The one pipeline behind :func:`load_config` and :meth:`~src.config.tree.LoadedTree.with_values`,
     so a value given in memory meets exactly the checks a value written in a layer meets. Every file
     is read first, the runtime section with the others, and then the steps that change the merged
-    mapping run: the adaptation overlay, the values, the named hand. The runtime file and the named
+    mapping run: the values, the named hand. The runtime file and the named
     hand touch different sections, so their order decides only which refusal a tree broken in both
     places meets first, and that is the runtime file's.
     """
@@ -718,7 +735,6 @@ def _assemble(root: Path, profile: str, values: Mapping[str, Any]) -> AppConfig:
     if runtime is not None:
         raw["runtime"] = runtime
 
-    _apply_env_adaptation_overlay(raw)
     given = _in_memory_keys(values)
     _apply_values(raw, values)
     _apply_named_hand(raw, root, profile, in_memory=given)
@@ -787,7 +803,14 @@ def _describe_validation_error(
         if _within(dotted, in_memory) or (origin is None and _holds(dotted, in_memory)):
             lines.append(f"      at {_IN_MEMORY_ORIGIN}")
         elif origin is not None:
-            lines.append(f"      at {origin.location(root)}")
+            # A rule over a block several files write (robot.motion's looks or poses, robot.motion written in the base
+            # and in a layer): the index keeps the block's own line from one file, and the value the rule refused may
+            # stand in another, so every file is named, as for a block written by none of its own lines.
+            spread = _first_line_per_file(where, origins, itself=True) if err["type"] == "value_error" else ()
+            if len(spread) > 1:
+                lines.append(f"      (a rule over the block written at {_places(spread, root)})")
+            else:
+                lines.append(f"      at {origin.location(root)}")
         elif err["type"] == "missing" and (blocks := _block_origins(segments[:-1], origins)):
             # A required key nobody wrote, inside a block somebody did: the block is where to add it.
             lines.append(f"      (required, and the block at {_places(blocks, root)} does not write it)")
@@ -834,14 +857,18 @@ def _load_camera_section(root: Path, profile: str) -> dict[str, Any]:
     hand_eye = _load_optional_section(hand_eye_path, "hand_eye", profile)
     if hand_eye is not None:
         section["hand_eye"] = hand_eye
+    for filename, key in _REMOVED_CAMERA_FILES:
+        removed = _load_optional_section(root / "camera" / filename, key, profile)
+        if removed is not None:
+            section[key] = removed  # refused by the schema, with the sentence of the removed key
     return section
 
 
 def _load_models_section(root: Path, profile: str) -> dict[str, Any]:
     """Auto-discover every ``models/*.yaml`` and merge their top-level keys.
 
-    Each file contributes one or more named model configs at its top level (``handdetect:`` and
-    ``gesturedetect:`` in ``hand.yaml``). A key defined in two files is rejected, so the merge stays
+    Each file contributes one or more named model configs at its top level (``pipeline:`` and
+    ``rtdetr:`` in ``object.yaml``). A key defined in two files is rejected, so the merge stays
     unambiguous.
     """
     models_dir = root / "models"
@@ -998,10 +1025,16 @@ def _load_model_keys(root: Path, profile: str, wanted: tuple[str, ...]) -> dict[
     missing = [key for key in wanted if key not in found]
     blamed = [(path, key) for path, key, in_a_file_read in unknown if in_a_file_read or missing]
     if blamed:
+        from .schema._removed import removed_key_sentence
+
         lines = []
         for path, key in blamed:
+            # A key removed on purpose says what replaced it, as the whole-tree load says; any other gets the nearest
+            # key it may be a misspelling of.
+            removed = removed_key_sentence(f"models.{key}")
             near = difflib.get_close_matches(key, sorted(known), n=1)
-            lines.append(f"{path}: {key!r}" + (f" (did you mean {near[0]!r}?)" if near else ""))
+            lines.append(f"{path}: {key!r}" + (f" (removed on purpose: {removed})" if removed is not None
+                                               else f" (did you mean {near[0]!r}?)" if near else ""))
         raise ConfigError(
             "a models file carries a top-level key the schema does not know, in a file this section "
             "reads or while one of the section's own keys is missing, so it may be that key spelled "
@@ -1317,10 +1350,34 @@ _ANCHOR_STAND_IN: Final = "__" + PROJECT_ROOT_VARIABLE + "_"
 
 
 class _TreeYamlLoader(yaml.SafeLoader):
-    """``yaml.SafeLoader``, except that every string it builds holds the anchor where the text held its stand-in.
+    """``yaml.SafeLoader``, except that every string it builds holds the anchor where the text held its stand-in, and
+    that a mapping which writes one key twice is refused.
 
-    Keys and values alike, since both are built as strings; nothing else about the safe loader changes.
+    Keys and values alike, since both are built as strings. A key written twice in one mapping (two ``motion:`` blocks
+    under ``robot``) is refused naming both lines: YAML keeps the last and drops the first without a word, so a value
+    under the first block was gone with nothing said (found 2026-10-16: a tree's ``planner`` under its first
+    ``motion:`` loaded as the default). A merge (``<<:``) is no second writing: a key it brings is meant to be
+    overridden by the mapping's own.
     """
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+        first: dict[Any, Any] = {}
+        for key_node, _value in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=True)
+            try:
+                earlier = first.get(key)
+            except TypeError:  # an unhashable key: the safe loader refuses it below, in its own words
+                continue
+            if earlier is not None:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"found the key {key!r} twice in one mapping, first on line {earlier.line + 1}: YAML keeps only "
+                    f"the last, so everything under the first {key!r} would be dropped without a word. Merge the two "
+                    "into one", key_node.start_mark)
+            first[key] = key_node.start_mark
+        return super().construct_mapping(node, deep=deep)
 
 
 def _construct_tree_string(loader: yaml.SafeLoader, node: Any) -> str:
@@ -1343,85 +1400,3 @@ def _as_written(exc: yaml.YAMLError) -> str:
         if mark is not None and isinstance(buffer, str):
             mark.buffer = buffer.replace(_ANCHOR_STAND_IN, PROJECT_ROOT_ANCHOR)
     return str(exc).replace(_ANCHOR_STAND_IN, PROJECT_ROOT_ANCHOR)
-
-
-# ---------------------------------------------------------------------------
-# Phase U11 adaptation overlay merge
-# ---------------------------------------------------------------------------
-
-def _apply_env_adaptation_overlay(raw: dict[str, Any]) -> None:
-    """Merge the overlay :data:`_ADAPTATION_OVERLAY_ENV_VAR` names, if it names one.
-
-    The whole-tree load and :func:`load_robot_section` both call this, so a set variable reaches the
-    robot section the same way through either door.
-    """
-    overlay_path_str = os.environ.get(_ADAPTATION_OVERLAY_ENV_VAR, "").strip()
-    if overlay_path_str:
-        _apply_adaptation_overlay(raw, Path(overlay_path_str))
-
-
-def _apply_adaptation_overlay(raw: dict[str, Any], overlay_path: Path) -> None:
-    """Merge a U11 adaptation overlay YAML into ``raw`` in place.
-
-    The overlay must be a mapping rooted at ``robot:``, and every leaf key path must be in the
-    ``runtime_mutable`` allow-list that ``adaptation.discover_runtime_mutable_fields`` derives from
-    the schema. An unknown or forbidden key raises :class:`ConfigError`.
-    """
-
-    if not overlay_path.exists():
-        raise ConfigError(
-            f"adaptation overlay not found: {overlay_path} "
-            f"(env {_ADAPTATION_OVERLAY_ENV_VAR})"
-        )
-
-    # Local imports: reading config must not pull in the grasping replay package on the ordinary
-    # path, where the env var is unset and this function never runs.
-    from src.config.schema.robot.robot_schema import RobotConfig
-    from src.robot.grasping.replay.adaptation import (
-        OverlayPathError,
-        discover_runtime_mutable_fields,
-        validate_overlay_against_allowlist,
-    )
-
-    data = _load_yaml(overlay_path)
-    if not isinstance(data, dict):
-        raise ConfigError(
-            f"{overlay_path}: adaptation overlay must be a YAML mapping"
-        )
-    if set(data.keys()) - {"robot"}:
-        raise ConfigError(
-            f"{overlay_path}: adaptation overlay may only contain a "
-            f"top-level 'robot:' section (saw {sorted(data.keys())!r})"
-        )
-    if "robot" not in data:
-        return  # empty / no-op overlay
-
-    overlay_robot = data["robot"]
-    if not isinstance(overlay_robot, dict):
-        raise ConfigError(
-            f"{overlay_path}: 'robot' section must be a mapping"
-        )
-
-    allowed = tuple(
-        # Allow-list paths carry a ``robot.`` prefix. The overlay's ``robot:`` key is implicit
-        # below it, so strip the prefix before matching.
-        spec.dotted_key.removeprefix("robot.")
-        for spec in discover_runtime_mutable_fields(RobotConfig())
-    )
-    forbidden = validate_overlay_against_allowlist(overlay_robot, allowed)
-    if forbidden:
-        raise ConfigError(
-            f"{overlay_path}: adaptation overlay touches forbidden key(s): "
-            f"{', '.join(sorted(forbidden))}"
-        )
-
-    base_robot = raw.get("robot", {})
-    if not isinstance(base_robot, dict):
-        raise ConfigError(
-            f"{overlay_path}: cannot merge overlay, base 'robot' section "
-            f"is not a mapping"
-        )
-    raw["robot"] = _deep_merge(base_robot, overlay_robot)
-    # `OverlayPathError` is imported but not otherwise used here; binding it keeps the
-    # unused-symbol warning off the import.
-    _ = OverlayPathError

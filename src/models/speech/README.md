@@ -46,16 +46,22 @@ utterance at the latest.
 | Refusal | When | What to do |
 | --- | --- | --- |
 | `SpeechStackUnavailable` | a package this host cannot import, a DLL Windows refused, or no PortAudio | install from `requirements.txt`; the console answers 501 naming the file |
-| `SpeechModelMissing` | the Whisper or Silero weights are not on this machine | `python scripts/model_weights/fetch.py whisper-turbo silero-vad` |
+| `SpeechModelMissing` | the Whisper or Silero weights are not under `models.weights_root` (Whisper also not in the Hugging Face cache) | `python scripts/model_weights/fetch.py whisper-turbo silero-vad` |
 | `SpeechModelIncomplete` | the Whisper directory is there without a file the engine loads, which the refusal names, or its tokenizer does not hold the decoder prompt | `python scripts/model_weights/fetch.py whisper-turbo` downloads what the directory lacks and keeps the rest |
 | `RecordingTooLong` | a recording past Whisper's 30 s window, before either model runs | send one command per recording |
 | `MicrophoneUnavailable` | no input device the stream can open | connect or select a microphone |
 | an empty `Proposal` | Silero heard no utterance close, so Whisper is never asked | speak, or check the microphone level |
 | a turn that is not `ok` | not pressed in time, nothing captured, or held past 30 s (`HELD_TOO_LONG`) | say it again: a cut-off command is a different command |
-| `ConfigError` at load | `models.stt.task` other than `transcribe` | Whisper transcribes and never translates |
+| `ConfigError` at load, `removed on purpose` | a tree that still writes a key of `models.stt` that left on 2026-10-17: `task`, `model_path`, `vad_model_path`, `local`, `optim` or a microphone number | delete it; the sentence says what replaced it |
 
 ## What it decides
 
+- **What a tree chooses, and what is fixed.** `models.stt` holds Whisper's `model_id` and its `language`, nothing
+  else (the owner, 2026-10-17). Both models read their weights from `models.weights_root`: Whisper from
+  `speech/<org>--<name>`, Silero from `speech/silero-vad-6.2.1/silero_vad.jit`. Whisper transcribes and never
+  translates, loads fp16 on CUDA with `sdpa` (`src/models/_inference.py`), and the cell PC's microphone opens at
+  16 kHz, one channel of int16 in blocks of 8000 frames ([`capture.py`](capture.py)), each fixed at the owner's
+  cell's values.
 - **German or English, from one encoder pass.** `language: auto` scores only the `<|de|>` and `<|en|>`
   tokens and decodes with the winner; `german` or `english` forces one. A third language still comes
   out as one of the two. The report reads the language back from the decoder prompt it actually ran.
@@ -74,7 +80,7 @@ utterance at the latest.
 
 ## What it costs
 
-Measured on the workstation (RTX 5080, torch 2.7.1+cu128, `torch_dtype: auto`, float16 on CUDA), with
+Measured on the workstation (RTX 5080, torch 2.7.1+cu128, Whisper's fixed `torch_dtype` `auto`, float16 on CUDA), with
 the weights at the catalogue's pinned commit and synthetic audio at 16 kHz: 3 s of silence, and 3 s and
 8 s of a 440 Hz tone.
 
@@ -132,8 +138,8 @@ word, for which no licence-clean German model is known.
 
 ## Details
 
-- Weights and licences: `python scripts/model_weights/fetch.py whisper-turbo silero-vad` writes both,
-  pinned by hub commit and by sha256. Both are MIT; Whisper's training data is undisclosed, which
+- Weights and licences: `python scripts/model_weights/fetch.py whisper-turbo silero-vad` writes both under
+  `models.weights_root`, pinned by hub commit and by sha256. Both are MIT; Whisper's training data is undisclosed, which
   `NOTICE` records as a known provenance gap.
 - Guide: [models](../../../docs/guide/02-models.md); console routes: [api/README.md](../../../api/README.md)
 - Tests: `tests/test_speech_engine.py`, `tests/test_speech_push_to_talk.py`, `tests/test_speech_confirm.py`

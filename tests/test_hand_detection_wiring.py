@@ -1,62 +1,43 @@
-"""Every field of `models.handdetect` / `models.gesturedetect` must reach something.
+"""Every number the hand detectors run at reaches something, at the owner's cell's value.
 
-WHY THIS FILE EXISTS. Both blocks were DELETED from the schema on 2026-08-22 because a trace found
-that nothing read them: the config classes survived only as type annotations on a constructor no
-code ever called. Restoring them without this test would restore that situation exactly, and the
-next sweep would delete them again.
+WHY THIS FILE EXISTS. The `models.handdetect` and `models.gesturedetect` blocks were deleted once (2026-08-22) because
+nothing read them, restored with this guard, and left the config for good on 2026-10-17 (the owner's cleanup): every
+key they held was the bundle's path or a number no cell changed. The numbers are fixed in
+`src/models/handdetection/constants.py` at the cell's values, and the bundles are the weights catalogue's, read under
+`models.weights_root`. A fixed number that reaches nothing is the same dead weight a key was, so this asserts, per
+number, that it arrives at MediaPipe's options (or, for the two depth-sampling numbers, at `HandFinder`), and that the
+values are the cell's.
 
-So this does not hand-check the fields it happens to remember. It ENUMERATES them out of the pydantic
-model and asserts, per field, that changing the value changes what reaches MediaPipe (or, for the two
-depth-sampling knobs, what reaches `HandFinder`). A field added tomorrow is covered the day its
-schema line lands: it will fail here until someone wires it, and the failure names it.
-
-No `.task` bundle and no inference is involved -- MediaPipe's option classes are real, its task
-constructors are captured. The point is the WIRING, and a model file would only slow it down.
+No `.task` bundle and no inference is involved: MediaPipe's option classes are real, its task constructors are
+captured, and the bundles are empty files where the weights folder keeps them.
 """
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any, Callable
 
-from src.config.schema.models import GestureDetectConfig, HandDetectConfig
+from src.models.handdetection import constants
 from src.models.handdetection.model_files import MEDIAPIPE_AVAILABLE
+from src.models.weights import fixed_file
 
-#: Schema field -> how to read the value back off the captured MediaPipe options object.
-#: `None` means "not a MediaPipe option" and is checked against `HandFinder` instead, below.
-_HANDDETECT_READERS: dict[str, Callable[[Any], Any] | None] = {
-    "model_path": lambda options: options.base_options.model_asset_path,
-    "max_hands": lambda options: options.num_hands,
-    "threshold": lambda options: options.min_hand_detection_confidence,
-    "tracking_threshold": lambda options: options.min_tracking_confidence,
-    "presence_threshold": lambda options: options.min_hand_presence_confidence,
-    "palm_patch_radius_px": None,
-    "min_depth_samples": None,
+#: Each fixed number of the palm detector -> how to read it back off the captured MediaPipe options.
+_HAND_READERS: dict[str, Callable[[Any], Any]] = {
+    "MAX_HANDS": lambda options: options.num_hands,
+    "DETECTION_THRESHOLD": lambda options: options.min_hand_detection_confidence,
+    "TRACKING_THRESHOLD": lambda options: options.min_tracking_confidence,
+    "PRESENCE_THRESHOLD": lambda options: options.min_hand_presence_confidence,
 }
-
-_GESTUREDETECT_READERS: dict[str, Callable[[Any], Any] | None] = {
-    "model_path": lambda options: options.base_options.model_asset_path,
-    "max_hands": lambda options: options.num_hands,
-    "threshold": lambda options: options.min_hand_detection_confidence,
-    "tracking_threshold": lambda options: options.min_tracking_confidence,
-    "presence_threshold": lambda options: options.min_hand_presence_confidence,
-    "min_gesture_confidence": (
-        lambda options: options.canned_gesture_classifier_options.score_threshold
-    ),
+#: The gesture recogniser's: the same four, and the floor a gesture must clear.
+_GESTURE_READERS: dict[str, Callable[[Any], Any]] = {
+    **_HAND_READERS,
+    "MIN_GESTURE_CONFIDENCE": lambda options: options.canned_gesture_classifier_options.score_threshold,
 }
-
-#: A value that differs from the schema default for each field type, so the differential has an edge
-#: to detect. `model_path` is special-cased: it must be a file that EXISTS, because the resolver is
-#: fail-closed by design and a nonexistent path would never reach MediaPipe at all.
-_PROBES: dict[str, Any] = {
-    "max_hands": 4,
-    "threshold": 0.77,
-    "tracking_threshold": 0.66,
-    "presence_threshold": 0.44,
-    "min_gesture_confidence": 0.91,
-    "palm_patch_radius_px": 33,
-    "min_depth_samples": 7,
-}
+#: What the owner's cell's `models.handdetect` and `models.gesturedetect` held on 2026-10-14, the schema's defaults.
+_THE_CELLS = {"MAX_HANDS": 2, "DETECTION_THRESHOLD": 0.5, "TRACKING_THRESHOLD": 0.5, "PRESENCE_THRESHOLD": 0.5,
+              "MIN_GESTURE_CONFIDENCE": 0.5, "PALM_PATCH_RADIUS_PX": 15, "MIN_DEPTH_SAMPLES": 20}
 
 
 class _Captured:
@@ -69,189 +50,141 @@ class _Captured:
         return None
 
 
-def _capture(monkey: Any, class_name: str) -> list[Any]:
-    """Replace one MediaPipe task's `create_from_options` and collect what it is given."""
-    from mediapipe.tasks.python import vision
+class TheCellsNumbersTests(unittest.TestCase):
 
-    seen: list[Any] = []
-    task_class = getattr(vision, class_name)
+    def test_every_number_is_the_owners_cells(self) -> None:
+        for name, value in _THE_CELLS.items():
+            with self.subTest(name):
+                self.assertEqual(value, getattr(constants, name))
 
-    def _create_from_options(options: Any) -> _Captured:
-        seen.append(options)
-        return _Captured(options)
-
-    monkey(task_class, "create_from_options", staticmethod(_create_from_options))
-    return seen
+    def test_the_bundles_are_the_weights_catalogues_under_the_weights_root(self) -> None:
+        self.assertEqual(Path("R/mediapipe/hand_landmarker.task"), fixed_file(constants.HAND_BUNDLE, root="R"))
+        self.assertEqual(Path("R/mediapipe/gesture_recognizer.task"), fixed_file(constants.GESTURE_BUNDLE, root="R"))
 
 
 @unittest.skipUnless(MEDIAPIPE_AVAILABLE, "mediapipe is an optional extra")
 class _WiringCase(unittest.TestCase):
-    """Shared machinery: patch a task constructor for the duration of one test."""
+    """Shared machinery: an empty bundle where the weights folder keeps it, and one task constructor captured."""
 
     task_class_name = ""
+    bundle = ""
 
     def setUp(self) -> None:
         from mediapipe.tasks.python import vision
 
-        self._originals: list[tuple[Any, str, Any]] = []
-        self.seen = _capture(self._patch, self.task_class_name)
         self.vision = vision
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.file = fixed_file(self.bundle, root=self.root)
+        self.file.parent.mkdir(parents=True)
+        self.file.write_bytes(b"")
+        self.seen: list[Any] = []
+        task_class = getattr(vision, self.task_class_name)
+        original = task_class.__dict__["create_from_options"]
+        self.addCleanup(setattr, task_class, "create_from_options", original)
 
-    def _patch(self, target: Any, name: str, value: Any) -> None:
-        self._originals.append((target, name, getattr(target, name)))
-        setattr(target, name, value)
+        def _create_from_options(options: Any) -> _Captured:
+            self.seen.append(options)
+            return _Captured(options)
 
-    def tearDown(self) -> None:
-        for target, name, original in reversed(self._originals):
-            setattr(target, name, original)
+        task_class.create_from_options = staticmethod(_create_from_options)
 
-    def _options_for(self, **overrides: Any) -> Any:
+    def options(self) -> Any:
         raise NotImplementedError
 
+    def check(self, readers: dict[str, Callable[[Any], Any]]) -> None:
+        options = self.options()
+        self.assertEqual(self.file.resolve(), Path(options.base_options.model_asset_path).resolve(),
+                         "the bundle under models.weights_root reaches MediaPipe's base options")
+        for name, reader in readers.items():
+            with self.subTest(name):
+                self.assertEqual(getattr(constants, name), reader(options))
+        self.assertEqual(self.vision.RunningMode.VIDEO, options.running_mode,
+                         "IMAGE mode would leave the tracking threshold inert")
 
-class EveryHandDetectFieldReachesMediaPipeTests(_WiringCase):
+
+class ThePalmDetectorRunsAtTheCellsNumbersTests(_WiringCase):
     task_class_name = "HandLandmarker"
+    bundle = constants.HAND_BUNDLE
 
-    def _options_for(self, **overrides: Any) -> Any:
+    def options(self) -> Any:
         from src.models.handdetection.factory import build_palm_detector
 
-        config = HandDetectConfig(model_path=__file__, **overrides)
-        build_palm_detector(config)
+        build_palm_detector(weights_root=self.root.as_posix())
         return self.seen[-1]
 
-    def test_the_reader_table_covers_the_schema(self) -> None:
-        """The guard's own completeness check: a new schema field must be classified here.
-
-        Without this, adding a field and forgetting to wire it would pass silently -- the loop below
-        only iterates fields the table already knows about.
-        """
-        self.assertEqual(
-            set(HandDetectConfig.model_fields),
-            set(_HANDDETECT_READERS),
-            "a `models.handdetect` field is missing from this guard's reader table -- classify it "
-            "as a MediaPipe option or as a HandFinder knob, and wire it",
-        )
-
-    def test_each_mediapipe_field_arrives_with_the_value_it_was_given(self) -> None:
-        for field, reader in _HANDDETECT_READERS.items():
-            if reader is None:
-                continue
-            with self.subTest(field=field):
-                if field == "model_path":
-                    options = self._options_for()
-                    self.assertTrue(
-                        str(reader(options)).endswith("test_hand_detection_wiring.py"),
-                        "model_path did not reach MediaPipe's base options",
-                    )
-                    continue
-                probe = _PROBES[field]
-                options = self._options_for(**{field: probe})
-                self.assertEqual(
-                    reader(options), probe,
-                    f"models.handdetect.{field} was set to {probe!r} and did not arrive",
-                )
-
-    def test_the_running_mode_is_video_so_tracking_threshold_can_matter(self) -> None:
-        """IMAGE mode would make `tracking_threshold` inert -- a wired key that still does nothing."""
-        options = self._options_for()
-        self.assertEqual(options.running_mode, self.vision.RunningMode.VIDEO)
+    def test_each_number_and_the_bundle_arrive(self) -> None:
+        self.check(_HAND_READERS)
 
 
-class EveryGestureDetectFieldReachesMediaPipeTests(_WiringCase):
+class TheGestureRecogniserRunsAtTheCellsNumbersTests(_WiringCase):
     task_class_name = "GestureRecognizer"
+    bundle = constants.GESTURE_BUNDLE
 
-    def _options_for(self, **overrides: Any) -> Any:
+    def options(self) -> Any:
         from src.models.handdetection.factory import build_gesture_recognizer
 
-        config = GestureDetectConfig(model_path=__file__, **overrides)
-        build_gesture_recognizer(config)
+        build_gesture_recognizer(weights_root=self.root.as_posix())
         return self.seen[-1]
 
-    def test_the_reader_table_covers_the_schema(self) -> None:
-        self.assertEqual(
-            set(GestureDetectConfig.model_fields),
-            set(_GESTUREDETECT_READERS),
-            "a `models.gesturedetect` field is missing from this guard's reader table",
-        )
-
-    def test_each_field_arrives_with_the_value_it_was_given(self) -> None:
-        for field, reader in _GESTUREDETECT_READERS.items():
-            if reader is None:
-                continue
-            with self.subTest(field=field):
-                if field == "model_path":
-                    options = self._options_for()
-                    self.assertTrue(
-                        str(reader(options)).endswith("test_hand_detection_wiring.py")
-                    )
-                    continue
-                probe = _PROBES[field]
-                options = self._options_for(**{field: probe})
-                self.assertEqual(
-                    reader(options), probe,
-                    f"models.gesturedetect.{field} was set to {probe!r} and did not arrive",
-                )
+    def test_each_number_and_the_bundle_arrive(self) -> None:
+        self.check(_GESTURE_READERS)
 
     def test_the_gesture_floor_is_enforced_on_our_side_too(self) -> None:
         """MediaPipe's `score_threshold` filters categories; this checks the NONE-vs-THUMB_UP call.
 
-        Both are needed. The classifier's floor keeps weak categories out of the result; ours decides
-        what a surviving-but-weak thumbs-up means -- and a confirmation gesture firing at 0.2 is
-        worse than one that does not fire.
+        Both are needed. The classifier's floor keeps weak categories out of the result; ours decides what a
+        surviving-but-weak thumbs-up means, and a confirmation gesture firing below the floor is worse than one that
+        does not fire.
         """
         from src.models.handdetection.factory import build_gesture_recognizer
         from src.models.handdetection.types import HandGesture
 
-        recognizer = build_gesture_recognizer(
-            GestureDetectConfig(model_path=__file__, min_gesture_confidence=0.8)
-        )
+        recognizer = build_gesture_recognizer(weights_root=self.root.as_posix())
 
         class _Category:
             category_name = "Thumb_Up"
-            score = 0.5
+            score = 0.4
 
         reading = recognizer._read_gesture([_Category()], 0)
         self.assertIs(reading.gesture, HandGesture.NONE)
         self.assertEqual(reading.raw_label, "Thumb_Up", "the raw label must survive the demotion")
-        self.assertAlmostEqual(reading.confidence, 0.5)
+        self.assertAlmostEqual(reading.confidence, 0.4)
 
 
-class TheDepthKnobsReachTheFinderTests(unittest.TestCase):
-    """The two fields that are ours, not MediaPipe's. They travel through `build_hand_finder`."""
+@unittest.skipUnless(MEDIAPIPE_AVAILABLE, "mediapipe is an optional extra")
+class AMissingBundleTests(unittest.TestCase):
+
+    def test_a_bundle_the_weights_folder_lacks_is_refused_naming_the_fetch(self) -> None:
+        from src.models.handdetection.factory import build_gesture_recognizer, build_palm_detector
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            for build in (build_palm_detector, build_gesture_recognizer):
+                with self.subTest(build.__name__), self.assertRaises(FileNotFoundError) as caught:
+                    build(weights_root=tmp)
+                self.assertIn("fetch.py --mediapipe", str(caught.exception))
+                self.assertIn("models.weights_root", str(caught.exception))
+
+
+class TheDepthNumbersReachTheFinderTests(unittest.TestCase):
+    """The two numbers that are ours, not MediaPipe's. They travel through `build_hand_finder`."""
 
     class _Provider:
         @property
         def rig_ids(self) -> list[str]:
             return []
 
-    def test_the_patch_radius_and_sample_floor_arrive(self) -> None:
+    def test_the_patch_radius_and_sample_floor_arrive_at_the_cells_values(self) -> None:
         from src.models.handdetection.factory import build_hand_finder
 
-        config = HandDetectConfig(
-            model_path=__file__, palm_patch_radius_px=33, min_depth_samples=7
-        )
         finder = build_hand_finder(
-            config,
             provider=self._Provider(),  # type: ignore[arg-type]
             transforms={},
             observer=object(),  # type: ignore[arg-type]
         )
-        self.assertEqual(finder.palm_patch_radius_px, 33)
-        self.assertEqual(finder.min_depth_samples, 7)
-
-    def test_the_defaults_match_the_schema(self) -> None:
-        """A default that drifts between schema and code is a silent behaviour change."""
-        from src.models.handdetection.factory import build_hand_finder
-
-        config = HandDetectConfig(model_path=__file__)
-        finder = build_hand_finder(
-            config,
-            provider=self._Provider(),  # type: ignore[arg-type]
-            transforms={},
-            observer=object(),  # type: ignore[arg-type]
-        )
-        self.assertEqual(finder.palm_patch_radius_px, config.palm_patch_radius_px)
-        self.assertEqual(finder.min_depth_samples, config.min_depth_samples)
+        self.assertEqual(constants.PALM_PATCH_RADIUS_PX, finder.palm_patch_radius_px)
+        self.assertEqual(constants.MIN_DEPTH_SAMPLES, finder.min_depth_samples)
 
 
 if __name__ == "__main__":  # pragma: no cover

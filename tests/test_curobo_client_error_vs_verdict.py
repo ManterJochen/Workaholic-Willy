@@ -80,11 +80,14 @@ class ErrorVersusVerdictTests(unittest.TestCase):
                 )
 
     def test_the_sidecar_calls_a_method_that_exists(self) -> None:
-        """``plan_js`` was invented. Assert the name in the source is the real one.
+        """``plan_js`` was invented. Assert the joint plan is cuRobo's real loop.
 
-        cuRobo is not importable in CI, so this cannot introspect the class; it pins the name that was
-        verified on-box against ``MotionPlanner`` (2026-08-11, curobo 0.8.0.post1.dev42). If a future
-        cuRobo renames it, this fails and points at the probe rather than at a phantom robot descriptor.
+        cuRobo is not importable in CI, so this cannot introspect the class. The loop is ``MotionPlanner.plan_cspace``,
+        verified on-box (2026-08-11, curobo 0.8.0.post1.dev42), and since 2026-10-17 the sidecar runs its copy at no
+        time-optimal pass after the first (``_curobo_cspace.plan_cspace``), which
+        ``test_a_joint_plan_runs_the_passes_the_cell_asks_for.py`` holds call for call to cuRobo's own source in the
+        pinned checkout. If a future cuRobo renames what the copy calls, that file fails and points at the probe rather
+        than at a phantom robot descriptor.
         """
         from pathlib import Path
 
@@ -92,7 +95,8 @@ class ErrorVersusVerdictTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "src/robot/safety/planning/curobo_planner_server.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("_planner.plan_cspace(", source)
+        self.assertIn("from _curobo_cspace import", source)
+        self.assertIn("result = plan_cspace(", source)
         self.assertNotIn("_planner.plan_js(", source)
 
 
@@ -228,14 +232,13 @@ class TheBatchCheckBranchTests(unittest.TestCase):
         for name in (".validate(", "get_scene_self_collision_distance_from_joints"):
             with self.subTest(absent=name):
                 self.assertNotIn(name, terms)
-        # The evidence model's own kinematics (``_kin``) is read only where the planner plans on a planning model, and a
-        # sidecar that models a carried part builds none: everywhere else the spheres are the planner's, payload and all.
+        # The evidence model's own kinematics (``_kin``) is read only where the planner plans on a planning model:
+        # everywhere else the spheres are the planner's.
         own = terms.find("if _TWO_MODELS:")
         other = terms.find("else:", own)
         self.assertTrue(0 <= own < terms.find("_kin.") < other < terms.find("_planner.compute_kinematics("),
                         "the spheres judged are not the planner's wherever it plans on the robot it judges")
         self.assertNotIn("_kin.", terms[other:])
-        self.assertIn("if _attach_spheres > 0:\n                raise PlanningModelError(", self.source)
 
         build = self.source[: self.source.find('def _terms(')]
         for name in (
@@ -361,7 +364,7 @@ class TheSidecarJudgesBeforeItPlansTests(unittest.TestCase):
         joint_plan = NL.join(_block(self.source, _PLAN_JS_HEAD))
         self.assertTrue(joint_plan, "the plan_js branch is gone")
         self.assertTrue(
-            _precedes(joint_plan, "_judge_states(", "_planner.plan_cspace("),
+            _precedes(joint_plan, "_judge_states(", "result = plan_cspace("),
             "plan_js plans without judging its start and goal",
         )
         tail = self.source[self.source.find(_EXPLAIN_HEAD):]
@@ -388,9 +391,8 @@ class TheSidecarJudgesBeforeItPlansTests(unittest.TestCase):
     def test_a_measuring_sidecar_says_so_and_refuses_to_plan(self) -> None:
         self.assertIn("ENV_MEASURE_ONLY", self.source)
         self.assertTrue(_precedes(self.source, "_MEASURE_ONLY", _READY_EMIT))
-        for head in (_PLAN_JS_HEAD, 'if cmd == "attach":'):
-            with self.subTest(branch=head):
-                self.assertIn("_MEASURE_ONLY", NL.join(_block(self.source, head)))
+        # The joint plan's branch; the attach branch it once held too left with the carried part (2026-10-17).
+        self.assertIn("_MEASURE_ONLY", NL.join(_block(self.source, _PLAN_JS_HEAD)))
 
     def test_these_order_scans_can_fail(self) -> None:
         """⭐ THE CONTROLS, in the shape test_the_order_scan_can_fail uses: each scan read against a source that lies."""
@@ -402,11 +404,11 @@ class TheSidecarJudgesBeforeItPlansTests(unittest.TestCase):
                                    "_judge_states([_default_q]", _READY_EMIT))
         after = NL.join((
             'if cmd == "plan_js":',
-            "    _planner.plan_cspace(g, s)",
+            "    result = plan_cspace(g, s)",
             "    _judge_states([s])",
             "    continue",
         ))
-        self.assertFalse(_precedes(NL.join(_block(after, _PLAN_JS_HEAD)), "_judge_states(", "_planner.plan_cspace("))
+        self.assertFalse(_precedes(NL.join(_block(after, _PLAN_JS_HEAD)), "_judge_states(", "result = plan_cspace("))
 
 
 if __name__ == "__main__":

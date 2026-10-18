@@ -12,7 +12,7 @@ Stop is not kill. ``stop()`` sets a flag the pick loop reads between attempts, a
 part" (:meth:`RunRegistry.stop_after_part`) lets the part in hand be placed and the arm return first. Neither
 interrupts a motion in flight. "Halt now" (``POST /v1/cell/brake``, :meth:`RunRegistry.halt`) is the strongest
 thing a socket asks: the run stops commanding, and where the arm latches, every next motion and output is refused
-before anything is sent; where the arm also brakes (``robot.ur.brake_on_halt``) it brakes the move in flight under
+before anything is sent; where the arm also brakes (every UR) it brakes the move in flight under
 control. None of them is an emergency stop: a request over a socket depends on latency, an open tab and an awake
 laptop, and the red button on the wall does not.
 
@@ -23,7 +23,7 @@ a failed part that stopped once something may have moved). Each ends it FAILED w
 ``error``, because the next pick would meet the same stopped arm or the same hand, or drive the arm back
 to its look from where the push left it. And each pick looks from where a campaign's does: from home on
 a wrist camera, from where the arm stands on a fixed one. A run is a campaign, too: its picks share the
-push budgets and the parts ``next_target`` skips, and ``push_mm`` sets how far a push moves a part.
+push budgets and the regions its task keeps out, and ``push_mm`` sets how far a push moves a part.
 
 Two stops a campaign does not need, because a campaign runs in a terminal and a run does not. A run
 never asks a person anything: on a hand that toggles with no sensor, a pick that starts on jaws the
@@ -717,8 +717,8 @@ class RunRegistry:
             service.attach_progress_listener(_on_progress)
             # Between attempts the pick loop stops on the operator's stop, on "halt now" and on a cell taken down.
             service.set_cancel_check(lambda: run.stop_requested or run.halt_requested or bool(run.abandoned))
-            # A run is a campaign: fresh push budgets (1 per part, 2 per pick, 5 per run), no part skipped by
-            # next_target, and the run's push distance. A distance the cell refuses ends the run here, before any pick
+            # A run is a campaign: fresh push budgets (1 per part, 2 per pick, 5 per run) and the run's push
+            # distance. A distance the cell refuses ends the run here, before any pick
             # (the router refused it already; this says it again for a caller that did not go through the router).
             start_campaign = getattr(service, "start_campaign", None)
             if callable(start_campaign):
@@ -1338,7 +1338,7 @@ def _look_for(service: Any) -> Any:
 
     The rule ``PickRun._looks_for`` keeps for a campaign that names no look of its own
     (``src/robot/execution/pick_run.py``), and the console names none: the looks the cell profile
-    configures (``robot.look_joint_positions_deg``, read as ``service.configured_looks``), a fixed
+    configures (``robot.motion.look_deg``, read as ``service.configured_looks``), a fixed
     camera's arm sent to them too; else, as a wrist camera sees what the arm points it at, the arm's configured home
     (``src.robot.execution.looks.HOME``); else a fixed camera perceives from where the arm stands.
     Type-checked (``configured_looks_of``) and ``is True``, so a double that answers every attribute is
@@ -1398,8 +1398,8 @@ def _why_the_run_stops(report: Any) -> str:
     * a hand that needs a person (``gripper_fault``): a gripper that raised, whose jaws nobody can now
       name, a toggle that would not start a pick on jaws it believes closed with nobody at a
       terminal, a hand a push found nobody can vouch for (a toggle's count, a gripper that measures
-      its width not connected or unreadable), or a toggle's count found so before ``next_target``
-      drove the looks again. The pick ends EXECUTION_FAILED with no fault, and the next one meets the
+      its width not connected or unreadable), or a toggle's count found so before a rescan drove the
+      looks again. The pick ends EXECUTION_FAILED with no fault, and the next one meets the
       same hand;
     * a recovery that stopped where the arm stands (``needs_person``): a push of a failed part that
       stopped once something may have moved, or whose move back to the look failed. The next pick would

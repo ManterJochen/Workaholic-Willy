@@ -55,14 +55,13 @@ def _digest(root: Path) -> dict[str, str]:
 
 
 class _Clean(unittest.TestCase):
-    """`WILLY_PROFILE` and the adaptation overlay cleared, so each tree is the one its test names."""
+    """`WILLY_PROFILE` cleared, so each tree is the one its test names."""
 
     def setUp(self) -> None:
         environment = mock.patch.dict(os.environ)
         environment.start()
         self.addCleanup(environment.stop)
         os.environ.pop("WILLY_PROFILE", None)
-        os.environ.pop("WILLY_ADAPTATION_OVERLAY", None)
 
     def copy_of_the_tree(self) -> Path:
         tmp = Path(tempfile.mkdtemp(prefix="willy_with_values_"))
@@ -80,11 +79,11 @@ class _Clean(unittest.TestCase):
 
 
 class AHandNamedInMemoryTests(_Clean):
-    def test_the_hand_e_takes_its_thirteen_numbers_where_model_copy_kept_the_2f85s(self) -> None:
+    def test_the_hand_e_takes_its_three_numbers_where_model_copy_kept_the_2f85s(self) -> None:
         loaded = self.ursim()
         hande, f2f85 = _numbers("robotiq_hande"), _numbers("robotiq_2f85")
         self.assertEqual(len(hande), len(HAND_KEYS))
-        self.assertEqual(len(HAND_KEYS), 13)
+        self.assertEqual(len(HAND_KEYS), 3)
         self.assertNotEqual(hande["gripper.max_width_mm"], f2f85["gripper.max_width_mm"],
                             "the two hands must differ, or this proves nothing")
 

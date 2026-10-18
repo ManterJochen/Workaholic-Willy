@@ -8,136 +8,18 @@ from pydantic import Field, field_validator, model_validator
 
 from .._base import ConfigPath, StrictModel
 
-#: The thinning voxel, millimetres, at which a seen box held nearer than ``self_collision.min_distance_mm`` was
-#: measured (``RobotSafetyConfig._check_seen_box_clearance``): at 10 no pixel the camera measured lay less than 4.07 mm
-#: inside its box over 3,400 noise-free synthetic scenes, and at 20 one lay 5.6 mm outside every box (review of
-#: 2026-09-30). A measurement, not a bound.
-_SEEN_BOX_VOXEL_MM = 10.0
+#: What the camera world grows every box it builds by, millimetres: ``perceived.CAMERA_BOX_MARGIN_MM``, the owner's
+#: cell's 6, fixed with the rest of the camera world on 2026-10-17 (``RobotSafetyConfig._check_seen_box_clearance``).
+#: Its own number here, because the config layer imports no runtime module; a test pins the two equal.
+_SEEN_BOX_MARGIN_MM = 6.0
 
 #: The least distance the exact guard keeps from a box a camera saw, millimetres (the owner: 5 on 2026-10-01, 3 on
 #: 2026-10-05, 1 on 2026-10-12). Wherever only those boxes refuse the planner's world, the planner is asked again with
 #: them set aside and the exact guard alone decides them, so a config asking less is refused at load
-#: (``SelfCollisionSafetyConfig.perceived_min_distance_mm``). The box itself stands ``perceived.margin_mm`` past the
-#: points it holds, and no pixel the camera measured lay less than 4.07 mm inside its box (:data:`_SEEN_BOX_VOXEL_MM`).
+#: (``SelfCollisionSafetyConfig.perceived_min_distance_mm``). The box itself stands :data:`_SEEN_BOX_MARGIN_MM` past the
+#: points it holds, and at the camera world's 10 mm voxel no pixel the camera measured lay less than 4.07 mm inside its
+#: box over 3,400 noise-free synthetic scenes (review of 2026-09-30).
 _SEEN_BOX_LEAST_MM = 1.0
-
-#: The least ``self_collision.min_distance_mm`` while a fixture is declared and the planning world includes it,
-#: millimetres: the camera world's band round a declared body (``perceived.DECLARED_SURFACE_MM``, 5) plus the 5 mm the
-#: guard keeps. What a camera sees within that band of a fixture leaves the world as the fixture's, and nothing holds
-#: the band as solid, so at 5 the guard would keep no margin over what the band took (fix plan S8, 2026-10-01). Its
-#: own number here, because the config layer imports no runtime module; a test pins it to that constant plus 5.
-_DECLARED_FIXTURE_LEAST_MM = 10.0
-
-
-class LimitsSafetyConfig(StrictModel):
-    """Workspace-margin safety config.
-
-    ``workspace_margin_mm`` is consumed by :class:`SafetyPreflight.from_safety_config` to shrink the
-    ``workspace_limits`` box on every face before the workspace guard runs.
-
-    No velocity or acceleration ceiling lives here. Per-move vel/acc come from
-    :class:`MotionLimitsConfig` (``config.motion_limits``), which is also where hardware
-    speed-limiting belongs, as a ``min(motion_limits, safety)`` clamp at the UR/KUKA boundary.
-    """
-
-    enforce: bool = Field(default=True)
-
-    workspace_margin_mm: float = Field(default=20.0, ge=0.0, le=500.0)
-
-
-class JointLimitSafetyConfig(StrictModel):
-    """Per-axis joint-limit guard configuration.
-
-    The guard prefers driver-side telemetry where it exists (UR's RTDE
-    ``query_joint_limits``) and otherwise falls back to the static ``min_deg`` /
-    ``max_deg`` lists below. With neither source it returns
-    :attr:`SafetyReason.UNAVAILABLE` and fails closed while ``enforce`` is ``True``.
-
-    ``margin_deg`` is the buffer in degrees the guard keeps between each commanded
-    joint angle and the axis limit itself.
-
-    ``within_half_turn_of_home`` narrows every axis whose range is a full turn or more to
-    half a turn either side of the arm's own home configuration (``robot.home_joint_positions``,
-    or the driver's default where that is unset), before the margin comes off. A cable run along
-    the arm is then never wound more than half a turn from where it was at home, and no joint
-    range has to be typed. It costs no reach: a UR joint is 2*pi-periodic, so every angle has a
-    twin inside any full-turn window, and what the window refuses is a move across the seam
-    behind home, which is the long way round. The margin does cost a band of ``2 * margin_deg``
-    at that seam. A UR's elbow is left as the table has it: Universal Robots plans it within
-    +-180 degrees, so it never turns the full turn that winds a cable, and it has no twin to fall
-    back on. It is off by default, so a cell that does not ask keeps its envelope.
-    """
-
-    enforce: bool = Field(default=True)
-    margin_deg: float = Field(default=5.0, ge=0.0, le=45.0)
-    # Optional per-axis static fallback in degrees. When set, both lists must be
-    # as long as the arm's DoF, with ``min_deg[i] < max_deg[i]`` on every axis i.
-    min_deg: list[float] | None = Field(default=None)
-    max_deg: list[float] | None = Field(default=None)
-    within_half_turn_of_home: bool = Field(default=False)
-
-    @model_validator(mode="after")
-    def _check_axis_ordering(self) -> JointLimitSafetyConfig:
-        if (self.min_deg is None) != (self.max_deg is None):
-            raise ValueError(
-                "joint_limit.min_deg and joint_limit.max_deg must be set "
-                "together (both or neither)."
-            )
-        if self.min_deg is not None and self.max_deg is not None:
-            if len(self.min_deg) != len(self.max_deg):
-                raise ValueError(
-                    "joint_limit.min_deg and joint_limit.max_deg must have "
-                    "the same length."
-                )
-            for i, (lo, hi) in enumerate(zip(self.min_deg, self.max_deg)):
-                if lo >= hi:
-                    raise ValueError(
-                        f"joint_limit axis {i}: min_deg ({lo}) must be < "
-                        f"max_deg ({hi})."
-                    )
-        return self
-
-
-class IkQualitySafetyConfig(StrictModel):
-    """IK-solution-quality guard configuration.
-
-    The guard runs once the driver has produced a joint solution, and rejects:
-
-    * NaN or wrong-DoF solutions outright,
-    * solutions differing from the current pose by more than ``max_jump_rad`` on
-      any axis, since a jump that large signals a wrap-around ambiguity,
-    * solutions whose Jacobian condition number exceeds ``max_condition_number``
-      or whose smallest singular value falls below ``min_singular_value``, both
-      near-singular configurations,
-    * solutions inside ``limit_proximity_deg`` of the configured joint limits,
-      which the joint-limit guard also covers when enabled and this one still
-      catches when it is not.
-    """
-
-    enforce: bool = Field(default=True)
-    max_jump_rad: float = Field(default=1.0, gt=0.0, le=6.283185307179586)
-    min_singular_value: float = Field(default=0.005, gt=0.0, le=1.0)
-    max_condition_number: float = Field(default=250.0, gt=0.0, le=1.0e6)
-    limit_proximity_deg: float = Field(default=2.0, ge=0.0, le=45.0)
-    #: Who solves the samples of a line a cuRobo UR judges before a ``moveL`` (the line down at the standoff, the lift
-    #: at the part, the lines at the bin, and the lines judged ahead). ``"controller"``, the default and today's
-    #: behaviour: the controller's ``getInverseKinematics``, one round trip of about 33 ms a sample. ``"local"`` (the
-    #: owner, 2026-10-09): the driver solves every sample on the controller's own kinematics, its calibrated DH rows read
-    #: once per connection from its primary interface (nothing sent) and its active TCP, and asks the controller at two
-    #: samples of each line whether it answers the same configuration within 1e-6 rad. Where it does not, where a
-    #: sample cannot be vouched for (no solution, a second as near the seed, a singularity) or where the rows cannot be
-    #: read, that line is solved by the controller as before. Measured on URSim CB3, nominal and calibrated: 5.7e-10 rad
-    #: at worst over 1292 samples.
-    line_ik: Literal["controller", "local"] = Field(default="controller")
-    #: Which forward kinematics the singularity check before every ``moveL`` and ``moveJ`` of ``MotionController``
-    #: differentiates. ``"controller"``, the default and today's behaviour: 12 ``getForwardKinematics`` round trips.
-    #: ``"dh"`` (the owner, 2026-10-09): the arm's own DH chain, the controller's calibrated rows where they can be read
-    #: (as for ``line_ik``) and the model's nominal table where they cannot and the controller's FK confirms the table is
-    #: its chain (once per connection), times the controller's active TCP; the same central differences and thresholds.
-    #: Anywhere else the controller is asked, as with ``"controller"``. On URSim CB3, nominal and calibrated, the verdict
-    #: was the controller's on all 177 line ends tried, the cell's 21 of 2026-10-07/08 and 156 around the thresholds.
-    singularity_fk: Literal["controller", "dh"] = Field(default="controller")
-
 
 class FixtureBoxConfig(StrictModel):
     """Static fixture obstacle used by the self-collision guard.
@@ -173,19 +55,19 @@ class SelfCollisionSafetyConfig(StrictModel):
       link/fixture pair.
     * ``fcl`` uses the optional ``python-fcl`` package against the meshes in
       ``mesh_dir``. Selected without a populated ``mesh_dir``, the guard reports
-      :attr:`SafetyReason.UNAVAILABLE` and, while ``enforce`` is ``True``, rejects
-      the motion: it fails closed.
+      :attr:`SafetyReason.UNAVAILABLE` and rejects the motion: it fails closed.
+
+    The guard runs on every cell since 2026-10-17 (the owner's cleanup took ``enforce``).
 
     ``min_distance_mm`` is the minimum signed distance between any two monitored
     shapes; closer than that counts as a collision.
 
-    ``link_radii_mm`` is the per-link capsule radius in mm; when omitted the guard
-    uses a single default radius supplied at runtime. Its length is not validated
-    here because DoF is a driver-side property: the guard checks it at evaluation
-    time and reports :attr:`SafetyReason.UNAVAILABLE` on mismatch.
+    The capsule proxy's own geometry is no key since 2026-10-17 (the owner's cleanup): its fingers come from the
+    hand's registry file, its base from the arm's description, every link is 60 mm round
+    (``SelfCollisionGuard._tool_capsule``), and every path is judged whole first
+    (``SafetyPreflight.gate_joint_path``); ``schema/_removed.py`` refuses a tree that still writes one of those keys.
     """
 
-    enforce: bool = Field(default=True)
     backend: Literal["capsule", "fcl"] = Field(default="fcl")
     min_distance_mm: float = Field(default=3.0, ge=0.0, le=500.0)
     #: Clearance (mm) handed to the trajectory planner so it stops proposing configurations this guard
@@ -203,11 +85,10 @@ class SelfCollisionSafetyConfig(StrictModel):
     #: that measured this pair and chose no margin, and the two must not look the same. A consumer on
     #: any other path reads ``None`` as 0.0.
     planner_margin_mm: float | None = Field(default=None, ge=0.0, le=100.0)
-    link_radii_mm: list[float] | None = Field(default=None)
     fixtures: list[FixtureBoxConfig] = Field(default_factory=list)
     #: The distance the exact mesh guard keeps from a box a camera saw, in mm. Such a box holds the
-    #: camera world's thinned cloud, one point per 10 mm camera voxel, grown by
-    #: ``planning_world.perceived.margin_mm`` (8, the owner's cell 6), so 2 keeps the arm 10 mm (8) from
+    #: camera world's thinned cloud, one point per 10 mm camera voxel, grown by the 6 mm every cell's
+    #: camera world grows its boxes by (``perceived.CAMERA_BOX_MARGIN_MM``), so 2 keeps the arm 8 mm from
     #: every point of that cloud; a declared fixture is measured and keeps ``min_distance_mm``, and so does
     #: the arm against itself. This distance plus the margin has to reach ``min_distance_mm``, the step
     #: every path is sampled at, or the arm could reach a point of the cloud between two samples that both
@@ -217,9 +98,8 @@ class SelfCollisionSafetyConfig(StrictModel):
     #: synthetic scenes, down to 10.9 mm past the points kept, at an oblique face or an edge (4.07 mm
     #: inside a box grown by 15, review of 2026-09-30). A measurement, not a bound: the voxel's diagonal,
     #: 17.3 mm, is longer than any margin. A flat face the box is square to loses nothing, since every
-    #: pixel of it stands where its kept points stand. At a 20 mm voxel a measured pixel lay 5.6 mm outside
-    #: every box, so while this is below ``min_distance_mm`` a load also refuses a
-    #: ``planning_world.perceived.voxel_size_mm`` coarser than 10.
+    #: pixel of it stands where its kept points stand. The camera world thins at 10 mm, where this was
+    #: measured: at a 20 mm voxel a measured pixel lay 5.6 mm outside every box.
     #:
     #: 2 by default (the owner's 1 to 2 mm, 2026-10-12: over the replay bank's 116 recorded picks, 75 had a
     #: grasp the guard admits at 2 and at 1, 71 at 3, none fewer); at least 1, refused below at load:
@@ -236,54 +116,6 @@ class SelfCollisionSafetyConfig(StrictModel):
     # the hand the cell names, robot.gripper.model and robot.gripper.coupling_plates, through
     # ``safety.planning.hand.planner_hand``; ``schema/_removed.py`` refuses a tree that still writes
     # ``collision_mesh_variant`` or ``coupling_mm``.
-
-    # Yaw (degrees) of the bundled-DH base frame relative to the robot/system base frame that poses and
-    # fixtures are expressed in. The official UR DH (``_ur_kinematics.py``) base is rotated 180 deg
-    # about Z from the Isaac UR5e USD ``base_link``: ``ur_link_origins_mm`` == ``[-x, -y, z]`` against
-    # the Lula FK ground truth at every pose. The guard rotates the DH-derived arm-link origins by this
-    # yaw so that the arm capsules line up with the base, tool and fixture capsules, which are already
-    # in the system frame. Only the arm-link capsules move, and arm-vs-arm distance is
-    # rotation-invariant, so this knob cannot change it. The default 0.0 is no rotation and
-    # byte-identical for every existing cell. The arm self-collision path has never run on real UR, so
-    # a real ``vendor == "ur"`` cell must have its base yaw validated on hardware before
-    # arm-vs-fixture capsules are relied on.
-    kinematics_base_yaw_deg: float = Field(default=0.0, ge=-360.0, le=360.0)
-
-    # Tool and base capsule geometry (mm); the defaults match the module constants, so a cell that
-    # sets none of them keeps the built-in envelope. Override them to declare the real mounted tool,
-    # e.g. the Robotiq 2F-85, so tool-vs-link and tool-vs-fixture distances describe the tool that is
-    # actually there.
-    tool_length_mm: float = Field(default=150.0, gt=0.0, le=1000.0)
-    tool_radius_mm: float = Field(default=70.0, gt=0.0, le=500.0)
-    base_radius_mm: float = Field(default=80.0, gt=0.0, le=1000.0)
-    base_height_mm: float = Field(default=150.0, gt=0.0, le=2000.0)
-
-    # The tool collision model. The default ``capsule`` is one capsule along the tool approach axis
-    # (R[:, 2]) with radius ``tool_radius_mm``, a rotation-invariant bounding cylinder. For a
-    # parallel-jaw gripper that is over-conservative against a bin wall: a 2F-85 reaching into a KLT is
-    # ~27 mm wide perpendicular to its closing axis (from the Robotiq_2f_85 USD) while the r=70 cylinder
-    # claims 140 mm in every direction, so an off-center target is falsely wall-rejected. ``finger``
-    # models the descending fingers instead, as a thin capsule along the grasp's closing axis (R[:, 0];
-    # the [closing, binormal, approach] convention of execution_policy._quaternion_from_axes), of length
-    # ``tool_finger_span_mm`` (fingertip to fingertip at full open) and radius ``tool_finger_radius_mm``
-    # (the perpendicular half-width). Being rotation-aware, it clears the narrow wall the thin side
-    # faces and still rejects when the open span faces it. Keeping the default is byte-identical to
-    # every existing cell.
-    tool_model: Literal["capsule", "finger"] = Field(default="capsule")
-    tool_finger_radius_mm: float = Field(default=16.0, gt=0.0, le=200.0)
-    tool_finger_span_mm: float = Field(default=150.0, gt=0.0, le=500.0)
-
-    #: Whether a path gate judges a path whole before it judges it sample by sample
-    #: (``SafetyPreflight.gate_joint_path``, every route, joint move, plan, leg and line). On, each guard of a joint
-    #: move finds, over the whole path at once, the first sample it might refuse, never later than the first it does:
-    #: the joint limits on every sample at once, the payload once, the exact meshes with every part placed at every
-    #: sample in one pass, a sample passed only where a bounding sphere, a part's convex hull (Coal) or a distance
-    #: measured earlier less how far the pair can have moved since proves it keeps its distance. From that sample on the
-    #: gate judges every sample as it does with this off, so the verdict, the sample it names and its message are the
-    #: same (``tests/test_a_whole_path_is_judged_as_every_sample_is.py``). A route the exact guard took 2.3 to 2.6 s for
-    #: on the owner's cell (905 samples, 128 boxes) took 12 ms on the desk instead of 0.96 s, about 0.03 s on the cell.
-    #: Off by default: the sample-by-sample loop, bit for bit. The owner's cell turns it on after the bench.
-    whole_path_judge: bool = Field(default=False)
 
     @field_validator("perceived_min_distance_mm", mode="before")
     @classmethod
@@ -318,9 +150,12 @@ class PayloadSafetyConfig(StrictModel):
     ``inertia_kgm2`` is the diagonal inertia tensor (Ixx, Iyy, Izz) in kg*m^2.
     ``max_mass_kg`` is the absolute upper bound the guard refuses to set,
     regardless of the configured ``mass_kg``.
+
+    The guard runs, and a real arm pushes ``mass_kg`` and ``cog_mm`` to its controller at connect, on every cell since
+    2026-10-17 (the owner's cleanup took ``enforce``): a mass of 0, the shipped "not weighed yet" marker, is refused at
+    connect, so a cell weighs what its flange carries.
     """
 
-    enforce: bool = Field(default=True)
     mass_kg: float = Field(default=0.0, ge=0.0, le=50.0)
     max_mass_kg: float = Field(default=5.0, gt=0.0, le=50.0)
     cog_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -339,116 +174,6 @@ class PayloadSafetyConfig(StrictModel):
                     f"payload.inertia_kgm2.{axis} must be >= 0; got {val}."
                 )
         return self
-
-
-class MotionContinuitySafetyConfig(StrictModel):
-    """Step-size guard between consecutive commanded targets.
-
-    Catches an accidental ``move(other_pose)`` that would slam the arm across the
-    workspace. The guard caches the last accepted target inside
-    :class:`SafetyPreflight`, so the first command after a
-    :meth:`SafetyPreflight.reset` is always accepted: there is no previous target
-    to diff against.
-    """
-
-    enforce: bool = Field(default=True)
-    max_joint_step_deg: float = Field(default=45.0, gt=0.0, le=180.0)
-    max_orientation_step_deg: float = Field(default=30.0, gt=0.0, le=180.0)
-    max_tcp_step_mm: float = Field(default=250.0, gt=0.0, le=2000.0)
-
-
-class PlannedMotionSafetyConfig(StrictModel):
-    """How a cuRobo cell chooses the path of a move, and how far a planned path may wander.
-
-    A move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the
-    straight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the
-    goal, on any planned arm (``src/robot/drivers/planned/goal_set.py``). Both keys bound that choice. The Isaac sim
-    arm keeps its own route until it becomes a planned arm and reads neither.
-
-    ``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's
-    world, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is
-    planned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that
-    grazes one by a millimetre passes a check that asks only for no penetration. Where only the boxes a camera saw come
-    closer, the planner is asked again with them set aside, and with a hand known empty and open the exact guard decides
-    them at ``self_collision.perceived_min_distance_mm`` (Option 1). The default is 10 mm, the distance at
-    which cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_
-    distance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan
-    is shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, which the guard keeps
-    from the arm itself and from a declared fixture. From a box a camera saw, already its surface grown by
-    ``planning_world.perceived.margin_mm``, the guard keeps ``self_collision.perceived_min_distance_mm`` (5 mm). It is
-    not a certified distance, and 0 judges a line at no penetration, which is how a planned path is judged.
-
-    ``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and
-    where it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none
-    is left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and
-    refuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on
-    the owner's cell (2026-09-24).
-
-    ``mesh_first`` (on) lets the exact mesh guard judge a straight line and a goal configuration alone (the owner,
-    2026-10-07: "einfach mit den meshes prüfen und nicht mit kugeln"): where it accepts every sample, at its own
-    distances, the line runs and cuRobo's spheres are not asked; cuRobo plans only where the guard refuses the straight
-    line, and the guard judges every sample of that plan. It applies only where the guard holds everything the planner
-    would judge the motion against: the arm, the hand, the wrist cameras and the declared fixtures both hold, and the
-    camera's boxes the guard holds from the same refresh. Where the planner holds more, both authorities judge, as
-    before: a mesh its world declares, a distance field of the camera's points, a carried part, on a cell that models
-    one a hand not known empty and open, and the declared support plane wherever a part of the arm or the hand past
-    the shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes. On the real cell the spheres refused lines the meshes kept
-    18 mm clear, and every refusal cost a report over thousands of sphere pairs before the guard could decide.
-    """
-
-    line_clearance_mm: float = Field(default=3.0, ge=0.0, le=100.0)
-    max_detour_deg: float = Field(default=45.0, gt=0.0, le=360.0)
-    mesh_first: bool = Field(default=True)
-    #: How many time-optimal passes a cuRobo joint plan runs after the one that finds it (``_curobo_cspace``). 3, the
-    #: default and today's behaviour, is cuRobo's own ``plan_cspace``; those passes only shrink the plan's time step
-    #: towards cuRobo's acceleration and jerk limits, and the arm runs the plan's positions with ``moveJ`` at its own
-    #: speed, never that timing. 0 (the owner's cell after the desk A/B, 2026-10-09): the first pass's plan, about a
-    #: quarter of the optimiser's work per attempt. A plan is found exactly where it is found today (an attempt stops
-    #: after a first pass that finds none, and a later pass only replaces a plan with a faster one); its positions may
-    #: differ, and the exact guard and the planner's check judge every sample of it as they judge every plan.
-    finetune_passes: int = Field(default=3, ge=0, le=3)
-    #: The robot cuRobo plans with (the owner, 2026-10-08: "CuRobo richtig verwenden"). ``""``, the default and today's
-    #: behaviour: the robot every plan is judged with, the arm's cover fit (747 spheres on a UR10), the hand's and the
-    #: camera's, 172,414 sphere pairs on the owner's cell. ``"lean"``: a planning-only model the way NVIDIA's own UR
-    #: configs are made, a few spheres along each link's axis, fitted to this arm's and this hand's committed meshes,
-    #: the camera's boxes filled coarsely, and the self pairs the exact guard decides left to it
-    #: (``safety/planning/planning_model.py``). The planner, its IK and its graph planner are built from it; every check
-    #: (``check_js``, the start and goal checks, the ready gate), the combination evidence and the exact guard stay on
-    #: the robot they judge with now, and judge every sample of a plan as before. An arm or a hand with no committed
-    #: lean spheres, or a modelled carried part, plans on today's robot and says so.
-    planning_spheres: Literal["", "lean"] = Field(default="")
-
-
-class DwellSafetyConfig(StrictModel):
-    """Post-Stop dwell and steady-state gating.
-
-    A temporal check, does the controller report steady state, rather than the per-target spatial
-    check the other guards make, so it sits outside the per-move :class:`SafetyPreflight` pipeline.
-
-    ``require_steady_before_motion`` and ``steady_timeout_s`` are consumed by the planned arm itself
-    (``drivers/planned/arm.py``, since P0e): every motion verb waits on ``wait_until_steady(steady_timeout_s)``
-    after its frame and camera-world refusals and fails closed with a TIMEOUT result, so a park, a calibration pose
-    and a recovery move wait as the pick's moves do. ``dwell_after_stop_s`` is not enforced; there is no exercised
-    Stop or E-stop path in the runtime.
-    """
-
-    require_steady_before_motion: bool = Field(default=True)
-    steady_timeout_s: float = Field(default=5.0, gt=0.0, le=60.0)
-    #: Where the steady gate waits. ``"verb"``, the default and today's behaviour: the arm waits for steady at the start
-    #: of every motion verb (a grasp's approach, grasp and retreat, a robot's move, a pick's and a place's motions, a
-    #: park), and judges the motion after that. ``"send"``: the judgement goes first, while the arm settles from the
-    #: motion before, and an arm that gates its own sends (the cuRobo UR) waits for steady right before it sends
-    #: anything; where the arm then stands more than 0.5 mm from where the motion was judged from, it is judged again. A
-    #: timeout refuses with nothing sent either way, and the halt refuses every send either way. An arm that does not
-    #: gate its own sends waits at the start of its verb either way (map4 motion C4, the owner, 2026-10-09).
-    gate_at: Literal["verb", "send"] = Field(default="verb")
-    #: What a UR's steady gate reads (``arm.wait_until_steady``, also the zero-move skip at a look). ``"is_steady"``, the
-    #: default and today's behaviour: the controller's ``isSteady``, a script command of about 33 ms, polled every 20 ms.
-    #: ``"joint_speeds"`` (the owner, 2026-10-09): every actual joint speed at most 0.01 rad/s, the brake's stillness, on
-    #: three fresh samples in a row read 8 ms apart, locally from the receive interface with no round trip; ``isSteady``
-    #: decides where the speeds cannot be read. ``steady_timeout_s`` and its refusal are the same either way. On URSim CB3
-    #: the gate answered 16 to 24 ms after a move, ``isSteady`` 562 to 564 ms (it holds about 0.55 s after the arm stops).
-    steady_signal: Literal["is_steady", "joint_speeds"] = Field(default="is_steady")
 
 
 class SupportPlaneConfig(StrictModel):
@@ -492,31 +217,6 @@ class SupportPlaneConfig(StrictModel):
         return self
 
 
-class AttachedPayloadConfig(StrictModel):
-    """Whether the planner is told that the gripper is carrying something.
-
-    The planner's collision model ends at the gripper, so every transit, lift, place and retreat after
-    a successful close is planned as if the hand were empty. On a cell carrying a part out of a bin
-    that part is the geometry most likely to meet a wall.
-
-    It blocks on geometry rather than on principle: against the real planner (ur5e, a wall at
-    x = 250 mm) a 300 x 300 x 50 mm plate turns a 61-waypoint plan into no plan, while a 20 mm cube
-    still plans.
-
-    The box is not the part. Its lateral extents come from the jaw opening at the grasp, which
-    measures the part at the grasp line and says nothing about the rest of it, and ``length_mm`` is a
-    declared worst case rather than a measurement: how far the longest part this cell carries hangs
-    past the fingertips along the approach. No length is implied. A cell that declares none models no
-    carried part and reserves no payload spheres, and the checklist's ``carried part`` row says so;
-    one that declares a length reserves ``sphere_slots`` whether or not the planning world is enabled.
-    """
-
-    enabled: bool = Field(default=True)
-    sphere_slots: int = Field(default=16, ge=4, le=128)
-    length_mm: float | None = Field(default=None, gt=0.0, le=2000.0)
-    lateral_margin_mm: float = Field(default=10.0, ge=0.0, le=500.0)
-
-
 class PlannerMeshConfig(StrictModel):
     """A piece of the cell the planner routes around as the shape it is, rather than as a box.
 
@@ -553,249 +253,30 @@ class PlannerMeshConfig(StrictModel):
     scale: float = Field(default=1.0, gt=0.0, le=1000.0)
 
 
-class PerceivedWorldConfig(StrictModel):
-    """Turning what the cameras see into obstacles the planner routes around.
-
-    This has no opt-in of its own. A cell that declares ``planning_world`` has said the planner
-    should know its surroundings, and a photograph taken once at startup is not that: everything that
-    arrived afterwards is invisible to it while looking exactly like empty space in every log there
-    is. So it follows ``planning_world.enabled``, and ``enabled`` here is the way out rather than the
-    way in, for a cell that wants its bench declared and nothing camera driven.
-
-    What it costs, stated before the knobs. Every plan waits for a depth frame, converts it and
-    registers a world, and a frame older than ``max_age_ms`` refuses the motion rather than planning
-    against a cell that had time to change. The age is judged when the world is refreshed: before a
-    path is judged, and again before the next goal after a plan that was not taken, since one such plan
-    costs seconds (P0g R1); not while a plan is being computed. That refusal is the point of the feature
-    and it is also the way it will first annoy somebody: a camera that stalls stops the arm.
-    """
-
-    #: The way out, not the way in. ``planning_world.enabled`` is what turns this on.
-    enabled: bool = Field(default=True)
-
-    #: A frame older than this is not planned against, milliseconds.
-    #:
-    #: Measured from the shutter rather than from the conversion, because that is the time in which
-    #: the cell could have changed. A frame with no capture time counts as unknown age and therefore
-    #: as too old: a producer that does not stamp its frames has to be fixed, not trusted.
-    max_age_ms: float = Field(default=500.0, gt=0.0, le=60_000.0)
-
-    #: How many more times a camera is asked for a fresh frame after a reading it cannot vouch for,
-    #: before the motion raises instead of being refused.
-    #:
-    #: A frame that is missing, blind or older than ``max_age_ms`` is a camera problem rather than a
-    #: fact about the cell, so it is not an ordinary refusal: after this many further readings every
-    #: verb raises ``CameraWorldUnavailable`` and a pick campaign stops. 3 means a dead camera is asked
-    #: four times; 0 raises on the first failure. A RealSense grab that blocks costs one grab timeout
-    #: per reading, so a dead camera is found after that many timeouts.
-    fresh_frame_attempts: int = Field(default=3, ge=0, le=10)
-
-    #: Read every nth pixel of every frame. 1 reads all of them.
-    #:
-    #: The cheapest lever there is, and not an approximation while it stays under the voxel size in
-    #: image terms: at a metre a D435 pixel is about 1.6 mm, so a 10 mm voxel spans six pixels and
-    #: every second pixel fills the same voxels the whole frame would. Measured on an 848 x 480
-    #: frame: 33 ms at 1, 9 ms at 2, with the resulting box within a millimetre.
-    pixel_stride: int = Field(default=2, ge=1, le=16)
-
-    #: Cloud thinning before anything else, millimetres. Smaller keeps more shape and costs more time.
-    #:
-    #: It keeps the first pixel of each voxel in the camera's frame and the boxes are fitted to those, so
-    #: a coarser voxel lets a pixel it dropped lie further out of its box: at 20 a measured pixel lay
-    #: 5.6 mm outside every box. The 5 mm ``self_collision.perceived_min_distance_mm`` was measured at 10,
-    #: and while seen boxes are held nearer than ``self_collision.min_distance_mm`` a load refuses a
-    #: coarser voxel.
-    voxel_size_mm: float = Field(default=10.0, gt=0.0, le=200.0)
-
-    #: Edge length of a voxel in the distance field handed to the planner, millimetres. 0 sends none.
-    #:
-    #: This is the difference between the planner seeing the nearest few obstacles and seeing the
-    #: whole cell. The box channel is bounded by the planner collision slots, so something always has
-    #: to be left out and the report has to say what; a distance field carries everything the cameras
-    #: saw at the resolution it is cut to.
-    #:
-    #: The planner allocates the grid when it starts. The volume comes from the workspace limits
-    #: and the resolution from this key, and both have to be settled before the sidecar spawns: a
-    #: planner started without a voxel reservation refuses the field, and refusing the field refuses
-    #: the motion rather than planning against half a cell.
-    #:
-    #: Measured on this repository: a 30 mm field over a two metre cell is 13.7 ms to build, 1.9 ms
-    #: to register, and it blocked a path a plan otherwise took.
-    voxel_field_mm: float = Field(default=0.0, ge=0.0, le=200.0)
-
-    #: The grid the clustering runs on, millimetres. Two points in touching cells are one object, so
-    #: this is also the gap at which two parts stop being one obstacle.
-    cluster_voxel_mm: float = Field(default=25.0, gt=0.0, le=500.0)
-
-    #: Below this a cluster is sensor noise rather than a thing.
-    min_points: int = Field(default=12, ge=1, le=100_000)
-
-    #: Grown on every side of every box, millimetres. A box that is exactly the measured hull is a
-    #: box the planner will graze, and depth noise at an edge is one-sided. The robot's own body is
-    #: taken back out of the cameras' view by at least 15 mm about every link, by this where wider
-    #: (``perceived.self_filter_padding``): the owner's cell grows its boxes by 6 mm, and its base and
-    #: shoulder, seen 6 to 20 mm off, stood as boxes (2026-10-08 and 2026-10-12).
-    margin_mm: float = Field(default=8.0, ge=0.0, le=500.0)
-
-    #: The fingers may come to a detected neighbour part (the owner, 2026-10-05: "Finger dürfen streifen").
-    #:
-    #: A box the camera world builds of a part the detector named, no larger than a part
-    #: (``perceived.PART_SIZED_MM``), holds a finger link to its measured surface rather than to its
-    #: margin and the guard's distance: the exact guard judges the Hand-E's finger meshes against that
-    #: box less ``margin_mm`` and ``finger_contact_mm``, at 0 mm, and every other link, the hand's
-    #: housing and the wrist camera among them, as before. A box nobody named (a wall, a bin, a support,
-    #: what the detector did not see) stays whole for every link. The calculator offers the grasps the
-    #: guard admits so (``scene_obstacles.SeenEnvelope``). Off, every box is whole for every link.
-    fingers_touch_parts: bool = Field(default=True)
-
-    #: How far past a detected part's measured surface a finger may go, millimetres: 3, the owner's
-    #: decision of 2026-10-06 ("3 mm, in Isaac prüfen"); 0, that of 2026-10-05, is to its surface and no
-    #: further. The descending finger may shove the neighbour aside by up to this much, which a dense pile
-    #: with gaps under the open finger needs: the open Hand-E then needs 15 mm beside a part, not 18.
-    finger_contact_mm: float = Field(default=3.0, ge=0.0, le=20.0)
-
-    #: The fingers keep the guard's distance from what a support surface reads, not from the solid held over it (the
-    #: owner, 2026-10-05: "wir müssen tiefer gehen").
-    #:
-    #: A support's solid stands over the surface's reading by what the reading stands over its plane, the band and
-    #: ``support_allowance_mm``; the band and the allowance keep the guard's distance from a thin thing the band took for
-    #: the surface. On: the Hand-E's finger meshes keep ``perceived_min_distance_mm`` from the solid's top less its band
-    #: and its allowance, the reading and its excess, and every other link, the housing among them, from the whole
-    #: solid; the calculator plans the fingers so (``support_footprint.HandFloor``). On the grasp bench the solid stood
-    #: about 7 mm over the mat's reading and the fingertips stayed 10 mm over the mat; a D415 on a real cell reads a
-    #: wider band, and its grasps stood at the parts' tops. Off, every link keeps the distance from the whole solid.
-    fingers_to_the_support_reading: bool = Field(default=True)
-
-    #: How near a finger comes to what a support surface reads, millimetres, where the fingers keep their distance from
-    #: the reading (``fingers_to_the_support_reading``): 1, the owner's "bis auf 1 mm, solange er sie nicht berührt"
-    #: of 2026-10-06, for the mat and the bench alike. The guard holds every finger mesh this far over the reading and
-    #: its excess, every other link ``perceived_min_distance_mm`` from the whole solid; at or over that distance it
-    #: changes nothing. A part thinner than the band the reading swallowed is the support's, and the fingers come this
-    #: near it too.
-    finger_floor_mm: float = Field(default=1.0, ge=0.0, le=20.0)
-
-    #: How many perceived boxes there is room for beside the declared ones.
-    #:
-    #: The planner reserves a fixed number of collision slots when it starts, so this is a real
-    #: ceiling and not a preference. Every object is a height map of a few boxes (a bin is its walls),
-    #: so 64 leaves room for a few bins and their parts. Past it the boxes merge into the boxes that
-    #: hold them, down to one box per object; only what still does not fit is left out, the nearest
-    #: surviving, and the motion is refused naming this key, because an obstacle the planner never
-    #: received is one it will route straight through.
-    max_boxes: int = Field(default=64, ge=0, le=256)
-
-    #: Carry each box down to the support plane instead of stopping at the surface that was seen.
-    #:
-    #: A depth camera measures surfaces, not bodies: a part on a bench comes back as its top face and
-    #: nothing else, and a planner routing around that sheet will drive a link through the part under
-    #: it. Carrying the box down is the conservative reading. Each box is one column of the object's
-    #: height map, so a container nobody declared comes back as its walls, each carried down to the
-    #: bench, with its inside free as long as the camera sees its floor within ``plane_clearance_mm`` of
-    #: the bench. Off, a box ends ``margin_mm`` under the lowest point seen in it, and what stands under
-    #: a seen surface is in no box.
-    floor_to_plane: bool = Field(default=True)
-
-    #: How far above the declared plane a point still counts as the plane, millimetres.
-    plane_clearance_mm: float = Field(default=5.0, ge=0.0, le=200.0)
-
-    #: Find what the parts stand on, on every world build, and hold it as solid.
-    #:
-    #: The camera's own pixels say where the large, nearly level surfaces are: a mat on the bench, the bare bench, a
-    #: bin's floor, at most 5 degrees off level. Each one becomes a solid from the declared plane up to its own reading
-    #: plus the band, and the guard and the planner hold it. A point leaves the obstacles only where such a solid holds
-    #: every pixel it stands for, so nothing the band takes becomes free space. Nothing is declared for it: a mat that
-    #: is gone tomorrow is gone from the world tomorrow. The declared plane is held as a solid too, up to its band.
-    #: Off, the world is built as before: the band drops what lies on the declared plane and every surface above it
-    #: is obstacles, carried down to the bench.
-    support_surfaces: bool = Field(default=True)
-
-    #: How far the solids the guard and the planner hold stand over what their band took out, millimetres.
-    #:
-    #: The solid follows the camera's reading. Where the camera reads a surface low, a thin part the band took out
-    #: stands that much higher than its solid, and the guard keeps its distance from the solid. 2 mm keeps the
-    #: guard's 5 mm from such a part while the camera reads up to 4 mm low (the owner, 2026-10-02). It costs grasps
-    #: of short parts: the fingertip of a 30 mm part comes within reach of a higher solid. Only what the guard and the
-    #: planner hold rises; what the band takes out does not change.
-    support_allowance_mm: float = Field(default=2.0, ge=0.0, le=10.0)
-
-    # The robot's own body is not a pair of radii here. The self filter takes a point for an arm link
-    # only within ``margin_mm`` of that link's own surface, laid over the committed arm bundle, and for
-    # the hand, a wrist camera's housing or a carried part where it falls inside their spheres or
-    # capsule grown by ``margin_mm``: up to 27 mm off the Hand-E's mesh. ``schema/_removed.py`` refuses
-    # a tree that still writes ``self_radius_mm`` or ``tool_radius_mm``.
-
-    @model_validator(mode="after")
-    def _check_grids(self) -> PerceivedWorldConfig:
-        if self.cluster_voxel_mm < self.voxel_size_mm:
-            raise ValueError(
-                f"perceived.cluster_voxel_mm ({self.cluster_voxel_mm}) is finer than "
-                f"perceived.voxel_size_mm ({self.voxel_size_mm}). Clustering on a grid finer than the "
-                "cloud splits one object into one cluster per point, and nothing downstream would "
-                "say so."
-            )
-        return self
-
-
-class HeldWorldConfig(StrictModel):
-    """Where a pick or a place judges a motion in the world it already holds rather than in a new camera frame.
-
-    Each is the owner's decision (2026-10-09: "altes Bild, weil sich in der Kiste so oder so nichts verändert"), off by
-    default, which takes a new frame for every motion as before. A held world is the world the last refresh built, the
-    cameras' frames and boxes of that moment: every judgement still runs in it, the exact guard on every sample and the
-    planner against that world; only no new frame is taken.
-
-    * ``standoff``: at a standoff the line down to a grasp, or the line in to a place, is judged in the world held from
-      before the arm left for the standoff. A grasp judged ahead holds the world its line down was judged in at the look,
-      and the route to the standoff is judged in it too; a place holds the world its route to the standoff was judged
-      in. A standoff frame in a bin had no depth on 12 of 88 arrivals, and flipped a line down 0.05 mm short of the
-      guard distance that had passed ahead (map2 O2).
-    * ``carry``: the world the line down was judged in, held at the part, is held for the joint move a task declared
-      after the pick (the carry to the bin's look), judged while the jaws close (``robot.motion.judge_next_leg``).
-    * ``drop``: the world the line in was judged in is held through the release: the line out is judged in it, while the
-      jaws open where ``robot.motion.judge_next_leg`` says so, and the joint move a task declared after the place (the
-      return) is judged in it too.
-
-    ``carry`` acts only through ``robot.motion.judge_next_leg``: a leg not judged ahead is judged as it runs, in a world
-    of its own.
-    """
-
-    standoff: bool = Field(default=False)
-    carry: bool = Field(default=False)
-    drop: bool = Field(default=False)
-
-
 class PlanningWorldConfig(StrictModel):
-    """What the trajectory planner is told about the cell, as axis-aligned boxes in the base frame.
+    """What the trajectory planner is told about the cell, in the base frame: the bench, the meshes, and what the
+    cameras see.
 
-    Separate from the guard's own fixture list only in what consumes it: the guard checks a single
-    commanded configuration, the planner shapes the whole path. ``include_fixtures`` keeps the two one
-    declaration, so a bin wall added for the guard is a bin wall the planner routes around.
+    The world is on wherever a ``support_plane`` is declared. Registering a world replaces the planner's own, boot table
+    included, so a cell that declares no bench registers none and its planner keeps the world it booted with. Nothing
+    else switches it since the owner's cleanup of 2026-10-17, every switch fixed at the owner's cell's: the cameras'
+    world is built wherever it is on (``safety.planning.perceived``, its numbers every cell's), a pick and a place judge
+    across their standoff, their carry and their drop in the world they hold rather than in a new frame, a world the
+    planner confirms only in part refuses the motion, the guard's own fixtures stay the guard's (the cameras find what
+    the parts stand on), and no part in the jaws is modelled: a closed hand is judged as an empty one, by the exact
+    guard at full stroke.
 
-    The planner takes three kinds of geometry and the choice between them is a real one. Boxes are
-    what an operator writes down and what a refusal can name. A mesh is how a container keeps its
-    hollow, so a cell can reach into a tote instead of treating it as a solid block. A distance field
-    over a grid is how the whole scene arrives at once, with nothing left out for want of a collision
-    slot: see :class:`PerceivedWorldConfig`, which turns what the cameras see into boxes, a field, or
-    both, and is on whenever this block is.
+    The planner takes three kinds of geometry and the choice between them is a real one. Boxes are what an operator
+    writes down and what a refusal can name. A mesh is how a container keeps its hollow, so a cell can reach into a tote
+    instead of treating it as a solid block. A distance field over a grid is how the whole scene arrives at once, with
+    nothing left out for want of a collision slot: every cell's camera world sends the boxes it fits and a field of
+    every column its cameras measured. Every plan waits for a depth frame, converts it and registers a world, and a frame
+    too old refuses the motion rather than planning against a cell that had time to change, so a camera that stalls
+    stops the arm.
     """
 
-    enabled: bool = Field(default=False)
     support_plane: SupportPlaneConfig | None = Field(default=None)
-    payload: AttachedPayloadConfig = Field(default_factory=AttachedPayloadConfig)
-    include_fixtures: bool = Field(default=True)
-    require_registration: bool = Field(default=True)
-    #: Whether the cuRobo sidecar writes a world of boxes into its storage in one call (``_curobo_world``). Off, the
-    #: default and today's behaviour: ``update_world``, one box after another with a device sync each, 217 ms a refresh
-    #: at 129 boxes on the owner's cell (2026-10-08), about eight refreshes a pick. On (the owner's cell after the desk
-    #: probe, ``scripts/curobo/probe_world_in_place.py``): cuRobo's own ``load_batch``, the same slots bit for bit
-    #: (measured on the CPU: 0.29 ms against 13.9 ms at 129 boxes). A planner holding mesh slots or a voxel grid, and a
-    #: world with meshes or a field, register through ``update_world`` either way; the registration is confirmed before
-    #: the guard is handed the same boxes, as always.
-    register_in_place: bool = Field(default=False)
-    perceived: PerceivedWorldConfig = Field(default_factory=PerceivedWorldConfig)
     meshes: list[PlannerMeshConfig] = Field(default_factory=list)
-    #: Where a pick or a place judges in the world it holds rather than in a new frame (:class:`HeldWorldConfig`).
-    hold: HeldWorldConfig = Field(default_factory=HeldWorldConfig)
 
     @model_validator(mode="after")
     def _check_mesh_names(self) -> PlanningWorldConfig:
@@ -809,114 +290,52 @@ class PlanningWorldConfig(StrictModel):
             )
         return self
 
-    @model_validator(mode="after")
-    def _check_support_declared(self) -> PlanningWorldConfig:
-        if self.enabled and self.support_plane is None:
-            raise ValueError(
-                "safety.planning_world.enabled is true but no support_plane is declared. Registering a "
-                "world replaces the planner's own, boot table included, so enabling this without a "
-                "bench would remove the only surface the planner currently knows about. Declare the "
-                "bench you measured, or leave the block disabled."
-            )
-        return self
-
 
 class RobotSafetyConfig(StrictModel):
     """Vendor-neutral safety surface.
 
-    Each guard is a dedicated sub-block carrying its own gate: ``enforce`` on most, ``enabled`` on
-    :attr:`planning_world`, ``require_steady_before_motion`` on :attr:`dwell`. An operator can
-    disable one guard without touching the others.
+    Every guard family runs on every cell since 2026-10-17 (the owner's cleanup took the ``enforce`` switches), and
+    the workspace margin, the joint limits, the IK quality and the motion continuity run at the numbers of the arm
+    (``src/robot/safety/guard_numbers.py``: every real arm the owner's cell's), so their blocks left too. What a cell
+    still says is what differs from cell to cell. The steady gate before every motion is the arm's own and fixed
+    (``robot_arm.STEADY_TIMEOUT_S``; ``safety.dwell`` until 2026-10-17).
 
     Sub-blocks
     ----------
-    * :attr:`limits`: the ``workspace_margin_mm`` consumed by the workspace guard.
-    * :attr:`joint_limits`: per-axis joint hard limits and margin.
-    * :attr:`ik_quality`: IK-solution quality checks.
-    * :attr:`motion_continuity`: step size between consecutive commanded targets.
-    * :attr:`planned_motion`: the straight line's clearance and the detour a cuRobo path may take.
     * :attr:`payload`: mass, CoG and inertia envelope.
     * :attr:`self_collision`: link-link and link-fixture collision.
-    * :attr:`dwell`: post-Stop dwell and steady-state gating.
     * :attr:`planning_world`: the boxes the trajectory planner routes around.
 
     Not here: the emergency stop. It is a hardware and controller function, and nothing in this
     package can enable, disable, route or observe it.
     """
 
-    limits: LimitsSafetyConfig = Field(default_factory=LimitsSafetyConfig)
-    joint_limits: JointLimitSafetyConfig = Field(default_factory=JointLimitSafetyConfig)
-    ik_quality: IkQualitySafetyConfig = Field(default_factory=IkQualitySafetyConfig)
     self_collision: SelfCollisionSafetyConfig = Field(
         default_factory=SelfCollisionSafetyConfig
     )
     payload: PayloadSafetyConfig = Field(default_factory=PayloadSafetyConfig)
-    motion_continuity: MotionContinuitySafetyConfig = Field(
-        default_factory=MotionContinuitySafetyConfig
-    )
-    planned_motion: PlannedMotionSafetyConfig = Field(default_factory=PlannedMotionSafetyConfig)
-    dwell: DwellSafetyConfig = Field(default_factory=DwellSafetyConfig)
     planning_world: PlanningWorldConfig = Field(default_factory=PlanningWorldConfig)
 
     @model_validator(mode="after")
     def _check_seen_box_clearance(self) -> RobotSafetyConfig:
         """What the camera world keeps stays clear between two path samples: the guard's distance to a seen box,
-        plus the margin the box is grown by, is at least the step every path is sampled at,
-        ``self_collision.min_distance_mm``.
+        plus the margin the box is grown by (:data:`_SEEN_BOX_MARGIN_MM`), is at least the step every path is sampled
+        at, ``self_collision.min_distance_mm``.
 
-        What it keeps is the thinned cloud, one point per ``perceived.voxel_size_mm`` camera voxel, and a pixel the
-        thinning dropped can lie nearer a box face than the margin, which this sum does not see. A seen box held nearer
-        than the step was measured at a 10 mm voxel, where no pixel lay less than 4.07 mm inside its box; at 20 mm one
-        lay 5.6 mm outside every box, where a sample the guard passes can touch it (review of 2026-09-30). So while a
-        seen box is held nearer than the step, a voxel coarser than :data:`_SEEN_BOX_VOXEL_MM` is refused as well.
+        What it keeps is the thinned cloud, one point per 10 mm camera voxel, and a pixel the thinning dropped can lie
+        nearer a box face than the margin, which this sum does not see: at that voxel, where a seen box held nearer than
+        the step was measured, no pixel lay less than 4.07 mm inside its box (review of 2026-09-30).
 
         Checked whether or not a camera world is on, so turning one on later cannot bring the gap in with it.
         """
         seen = float(self.self_collision.perceived_min_distance_mm)
-        margin = float(self.planning_world.perceived.margin_mm)
         step = float(self.self_collision.min_distance_mm)
-        voxel = float(self.planning_world.perceived.voxel_size_mm)
-        if seen + margin < step:
+        if seen + _SEEN_BOX_MARGIN_MM < step:
             raise ValueError(
-                f"safety.self_collision.perceived_min_distance_mm ({seen:g}) plus "
-                f"safety.planning_world.perceived.margin_mm ({margin:g}) is {seen + margin:g} mm, less than "
+                f"safety.self_collision.perceived_min_distance_mm ({seen:g}) plus the {_SEEN_BOX_MARGIN_MM:g} mm every "
+                f"camera world grows its boxes by is {seen + _SEEN_BOX_MARGIN_MM:g} mm, less than "
                 f"safety.self_collision.min_distance_mm ({step:g}), the step every path is sampled at: between two "
-                "samples that both passed, the arm could reach a surface the camera saw. Raise either of the first two "
-                "until they add up to the step."
-            )
-        if seen < step and voxel > _SEEN_BOX_VOXEL_MM:
-            raise ValueError(
-                f"safety.planning_world.perceived.voxel_size_mm ({voxel:g}) is coarser than the "
-                f"{_SEEN_BOX_VOXEL_MM:g} mm that safety.self_collision.perceived_min_distance_mm ({seen:g}), nearer "
-                f"than safety.self_collision.min_distance_mm ({step:g}), was measured at: the boxes are fitted to one "
-                "pixel per voxel, and at 20 mm a pixel the camera measured lay 5.6 mm outside every box, where a "
-                f"sample the guard passes can touch it. Keep voxel_size_mm at {_SEEN_BOX_VOXEL_MM:g} or finer."
+                "samples that both passed, the arm could reach a surface the camera saw. Raise perceived_min_distance_mm "
+                f"to {step - _SEEN_BOX_MARGIN_MM:g} or lower min_distance_mm to {seen + _SEEN_BOX_MARGIN_MM:g}."
             )
         return self
-
-    @model_validator(mode="after")
-    def _keep_10_mm_over_a_declared_fixture(self) -> RobotSafetyConfig:
-        """A declared fixture the planning world includes keeps ``self_collision.min_distance_mm`` of at least 10 mm.
-
-        What a camera sees within 5 mm of a declared fixture leaves the camera world as the fixture's
-        (``perceived.DECLARED_SURFACE_MM``), and nothing holds that band as solid. The guard keeps
-        ``min_distance_mm`` from the fixture itself, so a thin part standing in the band keeps only the distance less
-        the band: at 10, 5 mm; at 5, none (fix plan S8). A fixture with a zero extent declares nothing, as the
-        planner reads it. A cell that declares no fixture, or keeps them out of the planning world, runs at 5.
-        """
-        if not bool(self.planning_world.include_fixtures):
-            return self
-        declared = [str(fixture.name) for fixture in self.self_collision.fixtures
-                    if min(float(h) for h in fixture.half_extents_mm) > 0.0]
-        step = float(self.self_collision.min_distance_mm)
-        if declared and step < _DECLARED_FIXTURE_LEAST_MM:
-            raise ValueError(
-                f"safety.self_collision.min_distance_mm ({step:g}) is below {_DECLARED_FIXTURE_LEAST_MM:g} mm while "
-                f"safety.planning_world.include_fixtures is true and the fixture(s) {declared} are declared. What a "
-                "camera sees within 5 mm of a declared fixture leaves the world as the fixture's and is held by "
-                "nothing, so the guard keeps only min_distance_mm less those 5 mm from a part standing there. Set "
-                f"min_distance_mm to {_DECLARED_FIXTURE_LEAST_MM:g} or more, or include_fixtures to false and let the "
-                "camera world find the surface itself."
-            )
-        return self
-

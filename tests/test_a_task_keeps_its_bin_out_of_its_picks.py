@@ -3,7 +3,7 @@
 A task that places into a bin the camera found must never pick the bin, or a part it already put in it; a task that
 places at a taught pose "until empty" must not pick back the parts it set down there. So a task lays a keep-out region
 on the campaign's exclusion zones (``ExclusionZones.keep_out_region``): the bin's footprint for both scopes, a circle of
-150 mm about a pose place's drop for "until empty". Unlike the zones ``next_target`` makes, a region:
+150 mm about a pose place's drop for "until empty". A region:
 
 * applies to every label where it names none, the empty label of an unlabelled detector included;
 * lasts until the task forgets it (``forget_regions``), whatever number of picks starts in between;
@@ -12,10 +12,9 @@ on the campaign's exclusion zones (``ExclusionZones.keep_out_region``): the bin'
 The pick loop asks the zones whether anything applies to a segmentation's label (``applies``) before it reads where
 the segmentation stands, so a region keeps out an unlabelled part too: before this the gate returned at once for a
 label no zone was made for, and an empty label was never asked about at all. A frame that sees only kept-out parts ends
-its attempt with the zones' sentence (``PickAttempt.excluded``), which the service reports as ``only_excluded``. Only
-where every one of them stands in a region of the task (``PickAttempt.excluded_by_regions``, the service's
-``only_kept_out``) does a task count it as an empty look: a part a zone skips after a failed pick still stands there to
-be picked, and a look that saw it is a failed pick.
+its attempt with the zones' sentence (``PickAttempt.excluded``), which the service reports as ``only_excluded`` and a
+task counts as an empty look. The zones ``next_target`` laid over a part a pick failed on, which still stood there to
+be picked, left on 2026-10-16 with ``next_target`` (the owner's cleanup).
 
 The pick loop runs for real here on a fixed camera over the bench, ray cast (``tests/_wrist_views.render``), with a
 calculator that grasps any part at its top and a policy that records what it was asked to execute.
@@ -184,35 +183,29 @@ class ARegionTests(unittest.TestCase):
 
 
 class TheZonesKeepRegionsTests(unittest.TestCase):
-    def test_a_region_lasts_every_pick_until_it_is_forgotten_and_the_zones_go_on_as_before(self) -> None:
+    def test_a_region_lasts_until_it_is_forgotten(self) -> None:
         zones = ExclusionZones()
-        zones.start_pick()
         zones.keep_out_region(ExclusionRegion.circle((0.0, 0.0), 100.0, reason="the drop"))
-        zones.exclude(label="bolt", centre_mm=(500.0, 0.0, 0.0))
-        for _ in range(10):
-            zones.start_pick()
-        self.assertTrue(zones.excludes(label="bolt", centre_mm=(10.0, 0.0, 0.0)), "a region expired with the picks")
-        self.assertFalse(zones.excludes(label="bolt", centre_mm=(500.0, 0.0, 0.0)), "a zone outlived its picks")
+        self.assertTrue(zones.excludes(label="bolt", centre_mm=(10.0, 0.0, 0.0)))
+        self.assertFalse(zones.excludes(label="bolt", centre_mm=(500.0, 0.0, 0.0)))
         self.assertEqual(1, zones.forget_regions())
         self.assertFalse(zones.excludes(label="bolt", centre_mm=(10.0, 0.0, 0.0)))
         self.assertEqual((), zones.regions())
 
     def test_applies_says_whether_anything_would_keep_a_label_out(self) -> None:
         zones = ExclusionZones()
-        zones.start_pick()
         self.assertFalse(zones.applies("bolt"))
         self.assertFalse(zones.applies(""))
-        zones.exclude(label="bolt", centre_mm=(0.0, 0.0, 0.0))
+        zones.keep_out_region(ExclusionRegion.circle((0.0, 0.0), 10.0, label="bolt"))
         self.assertTrue(zones.applies("Bolt"))
         self.assertFalse(zones.applies("nut"))
-        self.assertFalse(zones.applies(""), "a next_target zone names its label; the empty label is none")
+        self.assertFalse(zones.applies(""), "a region that names its label keeps out no unlabelled part")
         zones.keep_out_region(ExclusionRegion.circle((0.0, 0.0), 10.0))
         self.assertTrue(zones.applies("nut"))
         self.assertTrue(zones.applies(""))
 
     def test_remaining_and_only_excluded_read_regions_for_any_label(self) -> None:
         zones = ExclusionZones()
-        zones.start_pick()
         zones.keep_out_region(ExclusionRegion.rectangle((400.0, -300.0), (300.0, 200.0)))
         seen = [(400.0, -300.0, 30.0), (450.0, -280.0, 30.0), (100.0, -650.0, 20.0)]
         for label in ("part", ""):
@@ -222,26 +215,19 @@ class TheZonesKeepRegionsTests(unittest.TestCase):
                 self.assertFalse(zones.only_excluded_remain(label=label, centres_mm=seen))
                 self.assertTrue(zones.only_excluded_remain(label=label, centres_mm=seen[:2]))
 
-    def test_a_region_says_it_keeps_a_part_out_and_a_zone_does_not(self) -> None:
+    def test_a_region_naming_a_label_keeps_out_that_label_alone(self) -> None:
         zones = ExclusionZones()
-        zones.start_pick()
-        zones.exclude(label="bolt", centre_mm=(500.0, 0.0, 0.0))
         zones.keep_out_region(ExclusionRegion.circle((0.0, 0.0), 100.0))
         zones.keep_out_region(ExclusionRegion.circle((-500.0, 0.0), 100.0, label="nut"))
 
-        self.assertTrue(zones.kept_out_by_a_region(label="bolt", centre_mm=(10.0, 0.0, 0.0)))
-        self.assertTrue(zones.kept_out_by_a_region(label="", centre_mm=(10.0, 0.0, 0.0)))
-        self.assertTrue(zones.excludes(label="bolt", centre_mm=(500.0, 0.0, 0.0)))
-        self.assertFalse(zones.kept_out_by_a_region(label="bolt", centre_mm=(500.0, 0.0, 0.0)), "a zone is no region")
-        self.assertFalse(zones.kept_out_by_a_region(label="bolt", centre_mm=(-500.0, 0.0, 0.0)))
-        self.assertTrue(zones.kept_out_by_a_region(label="Nut", centre_mm=(-500.0, 0.0, 0.0)))
+        self.assertTrue(zones.excludes(label="bolt", centre_mm=(10.0, 0.0, 0.0)))
+        self.assertTrue(zones.excludes(label="", centre_mm=(10.0, 0.0, 0.0)))
+        self.assertFalse(zones.excludes(label="bolt", centre_mm=(500.0, 0.0, 0.0)))
+        self.assertFalse(zones.excludes(label="bolt", centre_mm=(-500.0, 0.0, 0.0)))
+        self.assertTrue(zones.excludes(label="Nut", centre_mm=(-500.0, 0.0, 0.0)))
 
-    def test_the_sentence_says_the_area_the_task_keeps_out_and_keeps_the_zones_words_without_one(self) -> None:
+    def test_the_sentence_says_the_area_the_task_keeps_out(self) -> None:
         zones = ExclusionZones()
-        zones.start_pick()
-        zones.exclude(label="bolt", centre_mm=(0.0, 0.0, 0.0))
-        before = zones.only_excluded_sentence(label="bolt", count=2)
-        self.assertIn("failed in one of the last 3 picks", before)
         zones.keep_out_region(ExclusionRegion.circle((0.0, 0.0), 50.0, reason="the blue bin it places into"))
         for label, what in (("bolt", "'bolt'"), ("", "part")):
             with self.subTest(label=label):
@@ -274,7 +260,7 @@ class ThePickLoopKeepsRegionsOutTests(unittest.TestCase):
         np.testing.assert_allclose(_centre(LEFT)[:2], policy.executed[0].position[:2])
 
     def test_a_frame_that_sees_only_kept_out_parts_ends_with_the_zones_sentence_and_picks_nothing(self) -> None:
-        from src.robot.execution.autonomous_grasp.service import found_nothing, only_excluded, only_kept_out
+        from src.robot.execution.autonomous_grasp.service import found_nothing, only_excluded
 
         service, policy = _service((RIGHT,))
         self._keep_out(service, RIGHT)
@@ -284,47 +270,8 @@ class ThePickLoopKeepsRegionsOutTests(unittest.TestCase):
         self.assertEqual([], policy.executed, "a part the task keeps out was picked")
         self.assertIs(AutonomousGraspOutcome.NO_VALID_GRASP, report.outcome)
         self.assertTrue(only_excluded(report))
-        self.assertTrue(only_kept_out(report))
         self.assertFalse(found_nothing(report), "a look that saw a kept-out part did see something")
         self.assertIn("the bin", report.failure_summary())
-
-    def test_a_part_a_zone_skips_after_a_failed_pick_is_excluded_but_no_part_the_task_keeps_out(self) -> None:
-        """What ``next_target`` lays over a part a pick failed on: the pick stops with the zones' sentence, and the part
-        still stands there to be picked, so it is no empty look. Red before: the service's word for an empty look read
-        any exclusion, and a task ended ``nothing_left`` with the part on the bench."""
-        from src.robot.execution.autonomous_grasp.service import only_excluded, only_kept_out
-
-        service, policy = _service((RIGHT,))
-        service.start_campaign()
-        service.campaign.zones.exclude(label="part", centre_mm=_centre(RIGHT))
-
-        report = service.pick()
-
-        self.assertEqual([], policy.executed)
-        self.assertTrue(only_excluded(report))
-        self.assertFalse(only_kept_out(report))
-        self.assertIs(False, report.pick_report.attempts[-1].excluded_by_regions)
-
-    def test_only_a_look_whose_every_excluded_part_stands_in_a_region_is_kept_out_by_the_task(self) -> None:
-        from src.robot.execution.autonomous_grasp.service import only_excluded, only_kept_out
-
-        for seen, zoned, regioned, kept_out in (((LEFT, RIGHT), (), (LEFT, RIGHT), True),
-                                                ((RIGHT,), (RIGHT,), (RIGHT,), True),
-                                                ((LEFT, RIGHT), (LEFT,), (RIGHT,), False)):
-            with self.subTest(zoned=[box.low for box in zoned], regioned=[box.low for box in regioned]):
-                service, policy = _service(seen)
-                service.start_campaign()
-                for box in zoned:
-                    service.campaign.zones.exclude(label="part", centre_mm=_centre(box))
-                for box in regioned:
-                    x, y, _ = _centre(box)
-                    service.campaign.zones.keep_out_region(ExclusionRegion.rectangle((x, y), (80.0, 80.0)))
-
-                report = service.pick()
-
-                self.assertEqual([], policy.executed)
-                self.assertTrue(only_excluded(report))
-                self.assertIs(kept_out, only_kept_out(report))
 
     def test_an_unlabelled_part_is_kept_out_too(self) -> None:
         """Red before: the gate returned for a label no zone was made for, so the rehearsal cell's unlabelled parts

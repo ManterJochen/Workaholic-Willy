@@ -73,7 +73,7 @@ class ARunTests(unittest.TestCase):
         from src.config.schema.models.models_schema import ObjectDetectorConfig
         from src.models.detection.closed_set.detector import RtDetrObjectDetector
 
-        detector = RtDetrObjectDetector(ObjectDetectorConfig(model_path=str(self.out), threshold=0.0, local=True))
+        detector = RtDetrObjectDetector(ObjectDetectorConfig(model_id=str(self.out), threshold=0.0))
         image = np.zeros((64, 96, 3), dtype=np.uint8)
         found = detector.detect_all(image)
         self.assertTrue(found)

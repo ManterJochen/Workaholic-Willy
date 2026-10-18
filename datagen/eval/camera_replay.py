@@ -10,20 +10,20 @@ What the corpus does offer are the two properties that make a replay worth runni
   * depth shaped like a real sensor. Every datagen view ships a noised copy alongside the exact one:
     axial noise proportional to z^2, edge dropout at depth discontinuities, random holes, disparity
     quantisation, range clipping to 0 (``datagen/render/depth_noise.py``, ``REALSENSE_D435``);
-  * masks a real detector produced. ``predict-masks`` runs GroundingDINO + SAM2 over every view and
-    writes them next to the ground truth.
+  * masks a real detector produced. ``predict-masks`` runs the cell's own perception (the VLM or RT-DETR,
+    then SAM2) over every view and writes them next to the ground truth.
 
 That exercises everything above the sensor, which is where the code is. It does not validate the
 sensor itself: noise magnitude, specular and dark dropout and auto-exposure are physical.
 
 Why this lives in datagen: ``datagen`` imports ``src``; ``src`` never imports ``datagen``. A replay
 harness under ``src/`` would invert that dependency and make the robot library depend on the data
-generator, the same reason ``datagen/rl/perception.py`` lives here.
+generator.
 
 One thing this cannot exercise faithfully. When the axis-aligned policy is selected,
 ``_maybe_fill_to_detection_box`` compares the mask against the detector's box, and ``predict-masks``
 does not store boxes. The box here is derived from the predicted mask's own extent, so the "SAM2
-truncated one end and GroundingDINO's box did not" case cannot occur. The other half is measurable
+truncated one end and the detector's box did not" case cannot occur. The other half is measurable
 exactly: the rule is an area ratio, so it also fires on a mask that is complete but simply not
 rectangular, which is what the probe counts.
 """
@@ -106,7 +106,7 @@ class _Perceived:
 
 @dataclass(frozen=True, slots=True)
 class ReplayBackend:
-    """Replays the stored GroundingDINO + SAM2 masks as the backend seam the adapter composes.
+    """Replays the stored predicted masks (the cell's detector, then SAM2) as the backend seam the adapter composes.
 
     The box is the mask's own axis-aligned extent (see the module docstring's caveat).
     """

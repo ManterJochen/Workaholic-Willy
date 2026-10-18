@@ -375,7 +375,7 @@ class TheConfigDoorTests(unittest.TestCase):
         source = PushToTalkSource.from_config(config=config)
         self.assertIsInstance(source.source, MicrophoneSource)
         self.assertIs(source.switch, shared_talk_button())
-        self.assertEqual(source.samplerate, config.samplerate)
+        self.assertEqual(source.samplerate, 16000, "the cell PC's microphone, at the owner's cell's rate")
         self.assertTrue(source.ended, "building the source opened the microphone")
 
     def test_a_chosen_switch_is_the_one_used(self) -> None:

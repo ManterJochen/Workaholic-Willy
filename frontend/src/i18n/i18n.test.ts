@@ -114,9 +114,9 @@ describe('the catalogs', () => {
     expect(translate('en', 'stop.halted')).toBe('Halted')
   })
 
-  it('never claim a halt braked the arm: the owner\'s cell latches without braking (Q1 = A, brake_on_halt off)', () => {
-    // With the brake off, the move in flight ends at its target and only the next one is refused; with it on, the move
-    // is braked. What every halt text says must be true of both: nothing was commanded after it, the arm stands.
+  it('never claim a halt braked the arm: a dummy arm latches without braking (every UR brakes)', () => {
+    // On an arm that does not brake, the move in flight ends at its target and only the next one is refused; on a UR the
+    // move is braked. What every halt text says must be true of both: nothing was commanded after it, the arm stands.
     const halts = (catalog: Record<string, string>) => Object.entries(catalog).filter(([key]) => /halt/i.test(key))
     for (const [key, text] of [...halts(codesDe), ...halts(commonDe)]) expect(text, `de ${key}`).not.toMatch(/brems/i)
     for (const [key, text] of [...halts(codesEn), ...halts(commonEn)]) expect(text, `en ${key}`).not.toMatch(/brak/i)

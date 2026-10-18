@@ -28,11 +28,11 @@ a footprint within :data:`FOOTPRINT_TOLERANCE` of the kept one, side for side, a
 of the kept one's; anything else is the target lost, so a bin removed or swapped is never mistaken for it. The kept one
 is the bin the survey found, never a later sighting, so a bin that creeps is not followed further and further. The drop
 (:func:`drop_plan`) is ``SetDown.onto`` the bin, then four rules in order: the air over the rim is the task's rim air
-(:func:`rim_clearance_mm`, ``robot.place.rim_air_mm``, 20 mm as shipped, 0 to 50: the owner's "genau auf Höhe der
-Kante" is 0), what the part's bottom keeps over the rim, or the tool where the cell declares no ``payload.length_mm``
-(*The hang*, below); a grasp within
+(:data:`RIM_AIR_DEFAULT_MM`, the owner's cell's 20 mm, or the task's own from 0 to 50: the owner's "genau auf Höhe
+der Kante" is 0), what the part's bottom keeps over the rim, or the tool where the cell declares no
+``robot.motion.place.part_hang_mm`` (*The hang*, below); a grasp within
 :data:`VERTICAL_WITHIN_DEG` of vertical is turned about the vertical until it closes along the cell's natural closing
-axis (``robot.natural_closing_axis``), any other keeps its own turn; the arm is asked where it would stand
+axis (``robot.motion.natural_closing_axis``), any other keeps its own turn; the arm is asked where it would stand
 (``nearest_configuration``) and the exact guard and the planner screen that (``screen_configuration``), and no
 configuration or an ERROR is unreachable; the part, turned as it will hang, must fit the opening (or the top).
 
@@ -48,15 +48,15 @@ detector looks at one place of several, at a check or a search, it grounds every
 and takes only what it labels that place's phrase, so a second bin in view is never taken for it.
 
 **A taught pose** (the build plan's item 7). The person teaches a place pose with empty jaws. Where the cell declares
-how far its parts hang (``safety.planning_world.payload.length_mm``), the fingertips stand where the part's BOTTOM is
+how far its parts hang (``robot.motion.place.part_hang_mm``), the fingertips stand where the part's BOTTOM is
 to be let go; each part hangs below them by its own amount, so the tool goes to the taught pose raised in BASE Z by
 that much (:func:`pose_drop`): the part's hang below the tool, measured part by part, less the fingertips' reach, or
 the declared length where the pick reports no grasp. Where the cell declares none, the tool goes to the taught pose
 itself and the part hangs from it. The drop is screened the same way.
 
 **The hang** (the owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen"). A place
-names a height: a bin's rim and the air over it, a taught pose. Where the cell declares ``payload.length_mm`` the
-part's bottom stands there, the tool higher by how far the part hangs below it, measured part by part: the grasp's Z
+names a height: a bin's rim and the air over it, a taught pose. Where the cell declares ``robot.motion.place.part_hang_mm``
+the part's bottom stands there, the tool higher by how far the part hangs below it, measured part by part: the grasp's Z
 less what the pick's looks read under the part (:func:`part_bottom`), a lower bound on its bottom, so every error goes
 toward more air. Where it declares none, the tool stands there.
 
@@ -134,9 +134,11 @@ __all__ = [
     "OPENING_MARGIN_MM",
     "OPENING_MIN_MM",
     "RELOCATE_COLOUR_DELTA_E",
+    "BELOW_THE_RIM_MM",
     "RIM_AIR_DEFAULT_MM",
     "RIM_AIR_MAX_MM",
     "RIM_AIR_MIN_MM",
+    "RIM_FLOOR_MARGIN_MM",
     "RIM_TOLERANCE_MM",
     "SPOT_BAND_MM",
     "SURFACE_TOLERANCE_MM",
@@ -171,9 +173,9 @@ __all__ = [
     "record_the_check",
     "recheck_on_look",
     "relocate",
-    "rim_clearance_mm",
     "screen_joints",
     "screen_pose",
+    "SPACING_MARGIN_MM",
     "survey",
     "survey_places",
     "the_bins_look",
@@ -202,8 +204,8 @@ _END_WALL_MM = 15.0
 #: A grasp whose approach is within this many degrees of straight down is dropped along the cell's natural closing axis
 #: (the build plan's item 6); any other keeps its own turn, so the part hangs as it was gripped.
 VERTICAL_WITHIN_DEG = 5.0
-#: The air over a bin's rim a task leaves where neither the operator nor the cell's tree chose one
-#: (``robot.place.rim_air_mm``): the owner's 20 mm.
+#: The air over a bin's rim a task leaves where the operator chose none: the owner's cell's 20 mm (the key
+#: ``robot.place.rim_air_mm`` until 2026-10-17).
 RIM_AIR_DEFAULT_MM = 20.0
 #: The owner's bounds on the air over a bin's rim, the operator's choice and the cell's own: 0, the part's bottom at the
 #: rim ("genau auf Höhe der Kante", 2026-10-14), to 50 mm.
@@ -525,7 +527,7 @@ def locators_for_service(service: Any, *, keep_image: bool = True, tool_frame: M
     .backend``), which the cell shares across its cameras. A wrist camera's locator reads the arm's TCP at each shutter
     (``arm.get_tcp_pose``) and is held to the cell's tool frame: ``tool_frame`` where given, else the one the arm's tree
     names (``robot.gripper.tool_frame``). ``attempts`` is how many more frames a wrist camera takes while the tool moved:
-    the tree's ``fresh_frame_attempts`` where the arm keeps one. ``keep_image`` keeps the colour image of each prompt's
+    unset, every cell's ``shutter_motion.FRESH_FRAME_ATTEMPTS``. ``keep_image`` keeps the colour image of each prompt's
     last sighting (:func:`located_image`), for the target's overlay.
 
     Refused with ``LocatorRefused`` before anything is located: a cell with no camera owner (the rehearsal scene, a
@@ -552,10 +554,6 @@ def locators_for_service(service: Any, *, keep_image: bool = True, tool_frame: M
     if not chosen(tool_frame):
         named = getattr(getattr(tree, "gripper", None), "tool_frame", None)
         tool_frame = named if named is not None else UNSET
-    if not chosen(attempts):
-        fresh = getattr(getattr(getattr(getattr(tree, "safety", None), "planning_world", None), "perceived", None),
-                        "fresh_frame_attempts", None)
-        attempts = int(fresh) if isinstance(fresh, int) and not isinstance(fresh, bool) else UNSET
     locators: list[Locator] = []
     for camera in cameras:
         sightings = _Sightings(str(camera.rig_id), keep=keep_image)
@@ -2094,25 +2092,23 @@ def relocate(locators: "Sequence[Any]", surveyed: KeptTarget, *, looks: "Sequenc
 # ---------------------------------------------------------------------------------------------------------------------
 
 
-def rim_clearance_mm(robot_config: Any) -> float:
-    """The air a task leaves over a bin's rim when the operator chose none: the cell's ``robot.place.rim_air_mm``
-    (:data:`RIM_AIR_MIN_MM` to :data:`RIM_AIR_MAX_MM`), what the part's bottom keeps over the rim, or the tool where the
-    cell declares no ``payload.length_mm``. A tree that says nothing gets the owner's :data:`RIM_AIR_DEFAULT_MM`."""
-    air = getattr(getattr(robot_config, "place", None), "rim_air_mm", None)
-    if not isinstance(air, (int, float)) or isinstance(air, bool) or not math.isfinite(float(air)):
-        return RIM_AIR_DEFAULT_MM
-    return min(RIM_AIR_MAX_MM, max(RIM_AIR_MIN_MM, float(air)))
-
-
 #: How far over what the camera reads inside a box the part's bottom stays when the jaws open below its rim, mm: the
 #: owner's "never lower than 10 mm above what the camera reads inside the box" (2026-10-08 night).
 INSIDE_AIR_MM = 10.0
 #: The least a part goes under a box's rim to be set down there rather than let go over it, mm: the owner's range runs
-#: from 10 to 50 mm (``robot.place.below_the_rim_mm``).
+#: from 10 to 50 mm.
 BELOW_RIM_LEAST_MM = 10.0
-#: How far inside a box's opening the part and the open hand keep on every side before the part goes below the rim, mm,
-#: where the cell says nothing (``robot.place.opening_margin_mm``).
+#: How far under the rim the part's bottom stands when the jaws open below it, mm: the owner's cell's (the key
+#: ``robot.place.below_the_rim_mm`` until 2026-10-17).
+BELOW_THE_RIM_MM = 30.0
+#: How far inside a box's opening the part and the open hand keep on every side before the part goes below the rim, mm:
+#: the owner's cell's. The guard judges the hand on the line in; the part is not modelled, so this keeps it off the walls.
 OPENING_MARGIN_MM = 10.0
+#: How far apart two parts lie side by side beyond their footprints, mm: the owner's cell's.
+SPACING_MARGIN_MM = 20.0
+#: How far over the rim, and over what the pick's looks saw on the way, beyond the rim air, the part's bottom stays on a
+#: carry over the rim, mm: the owner's cell's.
+RIM_FLOOR_MARGIN_MM = 15.0
 #: Which percentile of the part's cloud's reach from the grasp a part laid at a spot reaches, and how far either way a
 #: part going below a rim reaches along the box's sides: so one stray point is no edge (``_fit``'s rule).
 _REACH_PERCENTILE = 98.0
@@ -2178,9 +2174,10 @@ class PartBottom:
 
 def part_bottom(cloud_mm: Any, support_model: Any, *, declared_mm: float) -> PartBottom:
     """Where the part a pick gripped stood, a LOWER bound on its bottom, as every drop of a cell that declares
-    ``payload.length_mm`` takes it: the lowest reading of a surface the pick's looks found under its cloud (``SupportModel.local_plane_under``,
-    what the part stood on), or the cloud's own lowest point where that is lower (a camera never sees below a part's
-    bottom, so its lowest point is at or over it, and a reading of what it stands on is at or under it).
+    ``robot.motion.place.part_hang_mm`` takes it: the lowest reading of a surface the pick's looks found under its cloud
+    (``SupportModel.local_plane_under``, what the part stood on), or the cloud's own lowest point where that is lower (a
+    camera never sees below a part's bottom, so its lowest point is at or over it, and a reading of what it stands on is
+    at or under it).
 
     So the hang is the grasp's Z less what the part stood on, not less the support the cell declares (``declared_mm``):
     on the owner's cell a part on the 55 mm mat hung 55 mm short of what the drop was raised by, and the drop stood 85
@@ -2471,7 +2468,7 @@ class DropPlan:
     (``below_rim_mm`` under a box's rim, ``air_mm`` then below zero) or ``at_the_pose``. A drop below the rim carries the
     drop over it as ``instead``, the part let go there where the line into the box is refused before anything was sent;
     ``over_the_rim_why`` says why a part that could have gone below a rim did not. ``spot_xy`` is the spot of a flat place
-    the part is laid on (``robot.place.side_by_side``), ``spot_by`` how it was chosen (``camera`` or ``grid``) and
+    the part is laid on (``robot.motion.place.side_by_side``), ``spot_by`` how it was chosen (``camera`` or ``grid``) and
     ``spot_reach_mm`` how far the part and the open hand reach from it; ``None`` for the one spot.
     """
 
@@ -2658,8 +2655,8 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
               spot: "Spot | None" = None) -> DropPlan:
     """Where the part the tool gripped at ``grasp`` goes into ``kept``: over the middle of its rim, at its rim plus the
     part's hang plus ``air_mm``. ``hang_mm``, where given, is how far the part hangs below the tool in place of the one
-    measured from ``part_bottom_mm``: 0 for a cell that declares no ``payload.length_mm``, whose tool stands at the
-    height (the module's *The hang*).
+    measured from ``part_bottom_mm``: 0 for a cell that declares no ``robot.motion.place.part_hang_mm``, whose tool stands at
+    the height (the module's *The hang*).
 
     ``SetDown.onto`` measures it (the hang from ``part_bottom_mm``, a lower bound on where the part stood, so every
     error goes toward more air), turned as the grasp was; then a grasp within
@@ -2669,7 +2666,7 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
     cloud where it stood, BASE) turned as it will hang, must fit the opening (or the top), else it ``does_not_fit``.
     Without the cloud the fit is not judged, and said.
 
-    ``spot`` lays the part on a spot of a flat top (:func:`top_spots`, ``robot.place.side_by_side``) or of a box's inside
+    ``spot`` lays the part on a spot of a flat top (:func:`top_spots`, ``robot.motion.place.side_by_side``) or of a box's inside
     (:func:`inside_spots`) rather than over its middle, at the same height; below a box's rim the part keeps
     :data:`INSIDE_AIR_MM` over what the check read under that spot. ``below_rim_mm`` sets a part going into a box down below its rim (``robot.place
     .release_in_a_box: below_the_rim``, :func:`_below_the_rim`), what the check read of its inside (``inside``) the floor
@@ -2722,7 +2719,7 @@ def _below_the_rim(arm: Any, kept: KeptTarget, grasp: Pose, over: DropPlan, *,
     which stands, with why, wherever this cannot be): the owner's "1-5 cm unter dem Kistenrand" (2026-10-08 night).
 
     The part's bottom goes ``below_rim_mm`` under the rim (the tool, by the hang ``over`` holds: none where the cell
-    declares no ``payload.length_mm``), never lower than :data:`INSIDE_AIR_MM` over the highest the
+    declares no ``robot.motion.place.part_hang_mm``), never lower than :data:`INSIDE_AIR_MM` over the highest the
     check read anything inside (``inside``: the floor, or the parts already in it; under a spot, ``under_mm``, what it
     read within the part's reach of the spot), and at least
     :data:`BELOW_RIM_LEAST_MM` under the rim, or the box reads too full and the part goes over the rim. The tool stands
@@ -2871,8 +2868,8 @@ def pose_drop(arm: Any, taught: "JointPositions", grasp: "Pose | None", *, part_
               air_mm: float = 0.0, spot: "Spot | None" = None) -> DropPlan:
     """Where the part the tool gripped at ``grasp`` is let go at the pose ``taught`` (the module's *The hang*).
 
-    Where the cell declares ``length_mm`` (``payload.length_mm``, how far its longest part hangs past the fingertips),
-    the taught pose is where the fingertips stood when the part's bottom is let go there: the tool at ``taught``
+    Where the cell declares ``length_mm`` (``robot.motion.place.part_hang_mm``, how far its longest part hangs past the
+    fingertips), the taught pose is where the fingertips stood when the part's bottom is let go there: the tool at ``taught``
     (``arm.fk``) raised in BASE Z by how far the part reaches past the fingertips, which reach ``fingertips_mm`` below
     the tool: the part's hang below the tool, the grasp's Z less ``part_bottom_mm`` (what the pick's looks read under
     the part, a lower bound on its bottom, so every error goes toward more air), less ``fingertips_mm``; the declared
@@ -2884,7 +2881,7 @@ def pose_drop(arm: Any, taught: "JointPositions", grasp: "Pose | None", *, part_
     screened (:func:`screen_pose`): no configuration or an ERROR is ``unreachable``.
 
     ``air_mm`` raises the drop over the taught point by that much more. ``spot`` lays the part on a spot of the
-    place about the taught pose (``robot.place.side_by_side``, :func:`choose_spot`): the tool over the spot's middle,
+    place about the taught pose (``robot.motion.place.side_by_side``, :func:`choose_spot`): the tool over the spot's middle,
     raised by as much as its support reads higher than the taught pose's, turned and tilted as at the taught pose.
     """
     try:

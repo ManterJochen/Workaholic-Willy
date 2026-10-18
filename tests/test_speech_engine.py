@@ -192,7 +192,7 @@ class TheEngineIsLoadedOnceTests(unittest.TestCase):
 
         from src.models.speech.whisper_transformers import WhisperTransformersEngine
 
-        config = _config(model_path=self._weights_dir())
+        config = _config(model_id=self._weights_dir())
         processor, model = whisper_parts()
         with patch.dict(os.environ, {"WILLY_DEVICE": "cpu"}), \
                 patch.object(transformers.WhisperProcessor, "from_pretrained",
@@ -205,7 +205,8 @@ class TheEngineIsLoadedOnceTests(unittest.TestCase):
             for _ in range(2):
                 engine.transcribe(_silence(), samplerate=16000)
         self.assertEqual((processors.call_count, models.call_count), (1, 1))
-        self.assertEqual(processors.call_args.args[0], config.model_path, "local: true reads model_path")
+        self.assertEqual(Path(config.model_id), Path(processors.call_args.args[0]),
+                         "a folder named as the model is read as it is")
         self.assertTrue(models.call_args.kwargs.get("local_files_only"), "and never downloads")
 
     def test_a_local_directory_that_is_not_there_is_refused_naming_it(self) -> None:
@@ -216,14 +217,17 @@ class TheEngineIsLoadedOnceTests(unittest.TestCase):
         from src.models.speech.engine import SpeechModelMissing
         from src.models.speech.whisper_transformers import WhisperTransformersEngine
 
-        absent = Path(tempfile.gettempdir()) / "no-such-whisper-for-willy"
-        engine = WhisperTransformersEngine.from_parts(source=str(absent), device="cpu")
+        root = Path(tempfile.gettempdir()) / "no-such-weights-for-willy"
+        # The Hugging Face cache of the machine running the tests is no part of the question.
+        with patch("src.models.weights._in_the_cache", return_value=False):
+            engine = WhisperTransformersEngine.from_config(config=_config(), device="cpu", weights_root=str(root))
         with patch.object(transformers.WhisperProcessor, "from_pretrained") as processors:
             with self.assertRaises(SpeechModelMissing) as caught:
                 engine.load()
         processors.assert_not_called()
         self.assertIsInstance(caught.exception, FileNotFoundError)
-        for fragment in ("no-such-whisper-for-willy", "models.stt.model_path", "fetch.py"):
+        for fragment in ("no-such-weights-for-willy", "speech/openai--whisper-large-v3-turbo",
+                         "models.stt.model_id is 'openai/whisper-large-v3-turbo'", "fetch.py whisper-turbo"):
             self.assertIn(fragment, str(caught.exception))
 
 
@@ -275,7 +279,7 @@ class AnIncompleteDirectoryIsRefusedTests(unittest.TestCase):
                 self.assertIsInstance(found, SpeechModelMissing, "the console answers a missing model with 501")
                 self.assertEqual(found.missing, expected)
                 message = str(found)
-                for fragment in (*expected, "models.stt.model_path", "fetch.py whisper-turbo", str(Path(tmp).resolve())):
+                for fragment in (*expected, "the Whisper source", "fetch.py whisper-turbo", str(Path(tmp).resolve())):
                     self.assertIn(fragment, message)
 
     def test_sharded_weights_are_weights(self) -> None:

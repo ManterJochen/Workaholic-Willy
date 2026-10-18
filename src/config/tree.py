@@ -200,7 +200,7 @@ class LoadedTree:
     print(tree)                                   # the verdict in one line
     print(tree.robot.gripper.model)               # a validated section
     print(tree.explain("robot.gripper.model"))    # its value and the file that decided it
-    bench = tree.with_values({"robot.grasping.colour_check": "log"})   # a change in memory, validated
+    bench = tree.with_values({"robot.grasping.default_mode": "auto"})  # a change in memory, validated
     ```
 
     A tree that does not load is still returned, with ``ok`` false and its refusal; any ``from_tree`` on it raises
@@ -331,7 +331,7 @@ class LoadedTree:
                 ``LoadedTree.with_values``); a key the schema does not know, and a tree that did not load, say so.
                 Prints as itself.
         """
-        from .explain import Layer, _yaml_path, explain_in  # noqa: PLC0415
+        from .explain import Layer, explain_in  # noqa: PLC0415
 
         explanation = explain_in(self.config, key, self.tree.root, self.tree.layers)
         if not self.values or not explanation.known:
@@ -339,7 +339,7 @@ class LoadedTree:
         from .loader import _IN_MEMORY_ORIGIN, _normal_key  # noqa: PLC0415
 
         try:
-            spelled = {_normal_key(key), _normal_key(_yaml_path(key))}
+            spelled = {_normal_key(key)}
         except ValueError:  # a key that is no dotted path was given nothing in memory
             return explanation
         given = [name for name in self.values if _normal_key(name) in spelled]
@@ -609,6 +609,35 @@ class ConfigTree:
         from .edit import set_default_place_pose  # noqa: PLC0415
 
         return set_default_place_pose(name, root=self.root, layers=self.layers, profile=self.profile)
+
+    def task_file(self) -> Path | None:
+        """The file the cell's task settings are written to: the runtime overlay of this chain's LAST layer
+        (`edit.task_target_file`), ``app/runtime.cell.yaml`` under the owner's chain.
+
+        ``None`` for a chain with no layer over the shipped tree. Nothing is read or written: the console's Settings
+        page says it before anybody chooses.
+        """
+        from .edit import task_target_file  # noqa: PLC0415
+
+        return task_target_file(self.root, self.layers)
+
+    def task_layer_refusal(self) -> str:
+        """Why the cell's task settings may not be written under this chain, in one line, or ``""`` where they may
+        (`edit.task_layer_refusal`): the rule of a taught pose, for the runtime overlay. Nothing is written."""
+        from .edit import task_layer_refusal  # noqa: PLC0415
+
+        return task_layer_refusal(self.root, self.layers)
+
+    def write_task_settings(self, values: Mapping[str, Any]) -> "WriteResult":
+        """Write some of the cell's task settings through their own door (`edit.set_task_settings`), into this chain's
+        last layer, all or none.
+
+        `root`, `layers` and `profile` come from the tree, as in `write`. No `connected`: no task setting decides which
+        machine moves, and none starts a task.
+        """
+        from .edit import set_task_settings  # noqa: PLC0415
+
+        return set_task_settings(values, root=self.root, layers=self.layers, profile=self.profile)
 
 
 def load_tree(

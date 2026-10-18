@@ -1,9 +1,10 @@
 """The planning model a cell asks for, composed on the client: committed spheres for the arm and the hand, a coarse fill
 for a wrist camera's boxes, and the pairs the exact guard decides.
 
-``safety.planned_motion.planning_spheres`` names it: ``""``, the default, plans on the robot the sidecar judges with,
-as always; ``lean`` plans on the spheres NVIDIA's own UR configs are made of, a few along each link's axis
-(:data:`LEAN`). The sidecar builds its planner, IK and graph planner from it and keeps judging every sample with the
+Every cell plans on it since 2026-10-17 (the owner's cell since 2026-10-09, when
+``robot.safety.planned_motion.planning_spheres`` was ``lean`` there): the spheres NVIDIA's own UR configs are made of,
+a few along each link's axis (:data:`LEAN`). The sidecar builds its planner, IK and graph planner from it and keeps
+judging every sample with the
 evidence model and the exact guard (``_curobo_planning``), so the model decides what cuRobo proposes and nothing that
 is judged.
 
@@ -21,8 +22,8 @@ What a lean model is made of, per part:
   are the neighbours every descriptor ignores; the shoulder link, the planner's only model of the robot's base, stays
   checked against all of them.
 
-An arm or a hand with no committed lean file, a carried part the planner models, or a name this module does not know
-gives a sentence instead (:func:`planning_payload`), and the client plans on the evidence model and logs it.
+An arm or a hand with no committed lean file gives a sentence instead (:func:`planning_payload`), and the client plans
+on the evidence model and logs it.
 """
 
 from __future__ import annotations
@@ -44,7 +45,6 @@ __all__ = [
     "ENV_PLANNING_MODEL",
     "LEAN",
     "LEAN_BOX_REACH_MM",
-    "PLANNING_MODELS",
     "PlanningPayload",
     "arm_planning_spheres_path",
     "hand_planning_spheres_path",
@@ -53,8 +53,6 @@ __all__ = [
 
 #: NVIDIA's way: a few spheres along each link's axis, sized to the CB3's own links (``fit_planning_spheres.py``).
 LEAN = "lean"
-#: The names ``safety.planned_motion.planning_spheres`` takes; ``""`` plans on the evidence model, as always.
-PLANNING_MODELS = ("", LEAN)
 #: How far a lean fill of a wrist camera's boxes may reach past them, millimetres: the box's complete cover with cells
 #: of 20 / (sqrt(3) - 1) * 2 = 54.6 mm, three spheres along a D415 in its enclosure where 8 mm takes 28.
 LEAN_BOX_REACH_MM = 20.0
@@ -168,20 +166,14 @@ def _body(body: Mapping[str, Any], spheres: "list[dict[str, Any]]") -> "dict[str
 
 
 def planning_payload(
-    model: str,
     *,
     arm: "str | None",
     body_links: Sequence[Mapping[str, Any]],
     wrist_body_links: Sequence[Mapping[str, Any]],
-    attach_spheres: int = 0,
 ) -> "PlanningPayload | str":
-    """The planning model ``model`` for this arm and these bodies, or the sentence why this cell plans on the evidence
-    model: an unknown name, no arm the bundled DH tables know, a part without committed spheres, a carried part."""
-    if model not in PLANNING_MODELS or not model:
-        return f"{model!r} names no planning model; the names are {[name for name in PLANNING_MODELS if name]}"
-    if int(attach_spheres) > 0:
-        return ("the planner models a carried part, which only its own kinematics carries, so the check that judges "
-                "every plan would no longer see it")
+    """The lean planning model (:data:`LEAN`) for this arm and these bodies, or the sentence why this cell plans on the
+    evidence model: no arm the bundled DH tables know, a part without committed spheres."""
+    model = LEAN
     if arm is None:
         return "the descriptor names no arm this repository has planning spheres for"
     read = _arm_links(arm, model)

@@ -11,20 +11,20 @@
  *
  * **Nothing here moves the arm without a person's act: a click on a button that names the motion, or the person's
  * Enter on a sentence.** A sentence, typed or spoken, is read first (`POST /v1/commands/parse`, which moves nothing).
- * Where the settings say Enter starts (the default; the owner, 2026-10-08: "Enter ist der Klick der Person"), a clean
- * reading on a ready cell, asked afresh, starts at once, and the chat says the first motion; any doubt opens the card,
- * whose Start names the first motion, as it always does where the settings say "Erst die Karte". The line under the
- * box says which. Home and Restart ask first. A greeting ("Hallo Willy") opens no card, and Willy waves back as the app
- * config says (`runtime.greeting.wave`): at once, the greeting being the person's act (`direct`, the owner's choice of
- * 2026-10-06), after a dialog like Home's (`confirm`), or not at all (`off`); every swing is judged, and the wave is
- * never a way back after a stop. "Sofort anhalten" is one click and is not the e-stop. After a stop nothing starts by
- * itself: the stop card waits for a person.
+ * Where the cell's task settings say Enter starts (the default; the owner, 2026-10-08: "Enter ist der Klick der
+ * Person"), a clean reading on a ready cell, asked afresh, starts at once, and the chat says the first motion; any doubt
+ * opens the card, whose Start names the first motion, as it always does where the settings say "Erst die Karte" or are
+ * not read yet. The line under the box says which. Home and Restart ask first. A greeting ("Hallo Willy") opens no
+ * card, and Willy waves back as the app config says (`runtime.greeting.wave`): at once, the greeting being the person's
+ * act (`direct`, the owner's choice of 2026-10-06), after a dialog like Home's (`confirm`), or not at all (`off`); every
+ * swing is judged, and the wave is never a way back after a stop. "Sofort anhalten" is one click and is not the e-stop.
+ * After a stop nothing starts by itself: the stop card waits for a person.
  *
- * It reads the console's shared models (the one cell poll, the run on screen, the conversation, the preferences) and
- * polls nothing of the cell itself; only the live image is its own. It fills the window under the top bar and no more
- * (the stop strip always ends on screen); below 1200 px it stacks, and the stop buttons stay in view as the page
- * scrolls. After a reload under a stop record, the stopped run is followed again, so its parts, its numbers and where
- * it stopped are drawn as before the reload.
+ * It reads the console's shared models (the one cell poll, the run on screen, the conversation, the preferences, the
+ * cell's task settings) and polls nothing of the cell itself; only the live image is its own. It fills the window under
+ * the top bar and no more (the stop strip always ends on screen); below 1200 px it stacks, and the stop buttons stay in
+ * view as the page scrolls. After a reload under a stop record, the stopped run is followed again, so its parts, its
+ * numbers and where it stopped are drawn as before the reload.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -36,6 +36,7 @@ import { runKindMsg } from '../i18n/codes'
 import { say, useConversation } from '../model/chat'
 import { usePrefs } from '../model/prefs'
 import { EMPTY_RUN, hasEnded, STEPS, type RunView, type StepId } from '../model/runModel'
+import { useTaskSettings } from '../model/taskSettings'
 import { useCell } from '../model/useCell'
 import { useRun } from '../model/useRun'
 import { PromptInput } from '../prompt/PromptInput'
@@ -77,7 +78,8 @@ export default function Cockpit() {
   const conversation = useConversation()
   const motions = useMotions()
   const poses = usePoses(`${cell?.state ?? ''}:${view.kind === 'teach' && hasEnded(view.phase) ? view.runId : ''}`)
-  const command = useCommand({ lang, follow, refresh, greet: motions.wave, task: prefs.task, facts, poses })
+  const task = useTaskSettings().settings
+  const command = useCommand({ lang, follow, refresh, greet: motions.wave, task, facts, poses })
   const [mountedAt] = useState(() => Date.now() / 1000)
   const [text, setText] = useState('')
   const [source, setSource] = useState<'typed' | 'spoken'>('typed')
@@ -170,21 +172,23 @@ export default function Cockpit() {
     setText('')
     setSource('typed')
   }
-  // What Enter does, said under the box: the settings of this browser, one line, with the way to change them.
-  const task = prefs.task
-  const placeNote =
-    task.place.kind === 'pose'
-      ? t('ck.prompt.place.pose', { label: poseLabel(task.place.pose, poses) ?? task.place.pose })
-      : task.place.kind === 'camera'
-        ? t('ck.prompt.place.camera', { phrase: task.place.phrase })
-        : t('ck.prompt.place.default')
-  // How each pick looks, said where it is not the looks as they always ran ("bei Bedarf").
-  const looksNote = task.looks === 'when_needed' ? [] : [t('ck.prompt.looks', { looks: t(`looks.inline.${task.looks}`) })]
+  // What Enter does, said under the box: the cell's settings, one line, with the way to change them. Until they are
+  // read, Enter only reads, and the line says so.
+  let enterNote = t('ck.prompt.card')
+  if (task?.start === 'enter') {
+    const placeNote =
+      task.place.kind === 'pose'
+        ? t('ck.prompt.place.pose', { label: poseLabel(task.place.pose, poses) ?? task.place.pose })
+        : task.place.kind === 'camera'
+          ? t('ck.prompt.place.camera', { phrase: task.place.phrase })
+          : t('ck.prompt.place.default')
+    // How each pick looks, said where it is not the looks as they always ran ("bei Bedarf").
+    const looksNote = task.looks === 'when_needed' ? [] : [t('ck.prompt.looks', { looks: t(`looks.inline.${task.looks}`) })]
+    enterNote = [t('ck.prompt.enter'), t(`scope.${task.scope}`), placeNote, ...(task.anything ? [t('ck.prompt.anything')] : []), ...looksNote].join(' · ')
+  }
   const promptNote = (
     <>
-      {task.start === 'enter'
-        ? [t('ck.prompt.enter'), t(`scope.${task.scope}`), placeNote, ...(task.anything ? [t('ck.prompt.anything')] : []), ...looksNote].join(' · ')
-        : t('ck.prompt.card')}
+      {enterNote}
       {' · '}
       <Link to="/settings">{t('ck.prompt.settings')}</Link>
     </>

@@ -182,7 +182,7 @@ class StereoCapturePipelineTests(unittest.TestCase):
     def _pipeline(self, rigs) -> StereoCapturePipeline:  # noqa: ANN001
         camera_config = SimpleNamespace(primary_rig_id=rigs[0].rig_id, rigs=rigs)
         calibration = SimpleNamespace(marker_length_mm=50.0, aruco_dict_name="DICT_5X5_100")
-        return StereoCapturePipeline(camera_config, calibration, stereo_matcher=SimpleNamespace())
+        return StereoCapturePipeline(camera_config, calibration)
 
     def test_resolves_explicit_rig_id(self) -> None:
         rigs = [_webcam_rig("a"), _single_rig("b")]

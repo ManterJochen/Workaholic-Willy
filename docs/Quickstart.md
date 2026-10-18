@@ -7,9 +7,9 @@ the section on your own cell says so.
 A camera scene and a text prompt go in; a detector and a segmenter find the object, a geometric
 calculator ranks 6-DoF grasps, a fail-closed safety pipeline gates every motion, a driver executes it,
 and the attempt is written to a structured log. The default pick is open-loop: perceive, rank, gate,
-move, log. The layers above that (the automatic decision gate, recovery, fixed-camera fusion and the
-learned success model) are built and ship as `robot.grasping.*` blocks with `enabled: false`, and the
-reinforcement-learning router loads no policy by default (`robot.rl`). A **wrist camera** needs no
+move, log. Recovery runs on every cell, and fixed-camera fusion wherever two calibrated RGB-D rigs stand,
+with no switch; the automatic decision gate, the learned success model and the reinforcement-learning router
+(`robot.rl`) left on 2026-10-16 with their code. A **wrist camera** needs no
 switch: it looks from its look poses, fuses what it saw and stops as soon as the grasp is safe. No trained
 weights for the learned grasp calculator ship either: a cell that wants one trains it on its own data.
 
@@ -33,7 +33,7 @@ Perception model weights are fetched separately, into `assets/models/hf` inside 
 
 ```bash
 python scripts/model_weights/fetch.py --list       # every key that can be fetched, with its size
-python scripts/model_weights/fetch.py dino-tiny sam2   # the detector and segmenter a vision pick needs
+python scripts/model_weights/fetch.py vlm-4b sam2   # the VLM and the segmenter a vision pick needs
 ```
 
 Everything below runs from the repository root.
@@ -78,35 +78,30 @@ python -m src.robot.execution.real_cell --check    # then read it back as a cell
 ```
 
 Against the shipped tree, on a box with the `ext_deps` install, the second command reports a UR cell
-and seven blocking preflight items. Shown here are the blocking rows and the count; the report also
+and six blocking preflight items. Shown here are the blocking rows and the count; the report also
 prints the fix under each row, the rows that pass, the warnings and the bench items:
 
 ```
 === 1. CONFIG === vendor=ur profile=<none>
   [BLOCK] tool frame                 gripper.tool_frame.source is 'undeclared'; nobody has said where the grasp centre sits on the flange
-  [BLOCK] payload                    safety.payload has enforce: true but mass_kg: 0.0
-  [BLOCK] carried part               safety.planning_world.payload.length_mm is undeclared: the payload is modelled, and no length is implied, so every carry would be planned as if the hand were empty
+  [BLOCK] payload                    safety.payload has mass_kg: 0.0, the shipped 'not weighed yet'
   [BLOCK] camera -> base             camera.cameras.rigs['webcam_main'].extrinsics is not declared, so the primary camera has no CAMERA->BASE transform
-  [BLOCK] camera world               this cell plans with cuRobo and its cameras give no live world: safety.planning_world.enabled is false, so this cell has no live planner world. The pick service declines nothing, so every pick motion would be refused before it moves
+  [BLOCK] camera world               this cell plans with cuRobo and its cameras give no live world: safety.planning_world declares no support_plane, so this cell has no live planner world. The pick service declines nothing, so every pick motion would be refused before it moves
   [BLOCK] planner margin             safety.self_collision.planner_margin_mm is undeclared, and a cuRobo cell refuses to start a planner without one: undeclared is not zero
   [BLOCK] hand                       robot.gripper.model is unset, and this cell's self collision guard reads hand geometry: it checks exact meshes (safety.self_collision.backend fcl) on the ur5e arm, and which hand those meshes are is the hand's name.
 
-  7 blocking, 4 warnings, 2 deferred to the bench.
+  6 blocking, 5 warnings, 2 deferred to the bench.
 ```
 
-That is the correct state of a freshly cloned tree, not a fault. The tool frame, the payload and the
-camera to base transform are values only your bench can supply, and each is left unset because a
-plausible wrong value would fail open: a guessed tool frame drives the fingertips through the table
-and logs a success. The carried part is the same kind of value: the planner models the part a grasp
-carries, and no length is implied, so a cell declares how far its longest part hangs past the
-fingertips, or states `enabled: false` if it carries none. The camera world follows from the base tree
-planning with cuRobo: every cuRobo motion needs a live camera world or a decline, the pick service
-declines nothing, and the row clears once the calibrated primary RGB-D camera feeds
-`safety.planning_world`. The last two are declared by a cell for its own arm and hand: a planner starts
-only on a combination, margin included, that a committed evidence file measured, and the base tree
-names no hand so that no overlay inherits one. A box without the cuRobo environment or without Coal (the
-exact-mesh collision engine)
-blocks on two more rows. The exit code is `1` while anything blocks.
+That is the correct state of a freshly cloned tree, not a fault. The tool frame, the payload and the camera to base
+transform are values only your bench can supply, and each is left unset because a plausible wrong value would fail open:
+a guessed tool frame drives the fingertips through the table and logs a success. The camera world follows from the base
+tree planning with cuRobo: every cuRobo motion needs a live camera world or a decline, the pick service declines
+nothing, and the row clears once the calibrated primary RGB-D camera feeds it over a measured
+`safety.planning_world.support_plane`. The last two are declared by a cell for its own arm and hand: a planner starts
+only on a combination, margin included, that a committed evidence file measured, and the base tree names no hand so that
+no overlay inherits one. A box without the cuRobo environment or without Coal (the exact-mesh collision engine) blocks
+on two more rows. The exit code is `1` while anything blocks.
 
 The warnings never block, and the two items deferred to the bench are ones nothing in software can
 decide. [`real_cell`](../src/robot/execution/real_cell/README.md) explains what each item looks like
@@ -125,7 +120,7 @@ chain, applied left to right, and most commands take `--profile` for a single ru
 | `ur5e` | a real UR5e bench cell, with fixtures, a planning world and a self-collision model |
 | `ur3e` | a real UR3e cell, re-anchored because a UR3e works a 500 mm sphere and a UR5e an 850 mm one |
 | `sim` | the Isaac Sim cell: `vendor: sim`, three cameras, the gate thresholds |
-| `eth2` | the fusion half of a cell with two fixed RGB-D cameras. Use it as `ur5e,eth2` |
+| `eth2` | the camera half of a cell with two fixed RGB-D cameras, fused. Use it as `ur5e,eth2` |
 | `console_dummy` | the desk: a dummy arm and a dummy hand that command nothing |
 | `hande` | the Robotiq Hand-E as a cell's hand, chained onto an arm: `ur5e,hande` or `ur3e,hande` |
 
@@ -140,8 +135,8 @@ profile step of [cell_bringup.md](runbooks/cell_bringup.md) writes one, and
 Python. Three sub-commands answer the questions a YAML tree usually cannot:
 
 ```bash
-python -m src.config explain robot.grasping.fusion.enabled   # meaning, default, and who set it
-python -m src.config where fusion                            # find keys by substring, unwritten ones too
+python -m src.config explain robot.grasping.default_mode     # meaning, default, and who set it
+python -m src.config where container                         # find keys by substring, unwritten ones too
 python -m src.config decisions                               # only what this cell changes from default
 ```
 
@@ -162,105 +157,37 @@ A cell with no `CAMERA->BASE` transform builds, connects, and then refuses every
 [calibration setup](calibration-setup.md) is the page to work from, and
 `examples/real_robot/07_calibrate_a_fixed_camera.py` runs the same routine from Python.
 
-## Grasp presets
+## Grasp modes
 
-Two preset overlays ship under [`config/grasping_presets/`](../config/grasping_presets/). They are
-not part of the validated tree: `apply_preset` in `src/robot/grasping/replay/presets.py` deep-merges
-one onto an already loaded `robot:` block, so `python -m src.config` never sees it and a misspelt key
-merges in silently. `validate_preset` re-validates the merged result and is what rejects it.
+`robot.grasping.default_mode` sets the sampling and the recovery a mode allows together: `easy` samples
+one object and never recovers, `auto` takes the dense sampler where other parts stand beside the part, and
+`dense_clutter` always samples dense ([guide 05](guide/05-pick-loop.md), section 6). A tree or a call that
+still names `closed_loop` is refused with the mode to name instead, `auto`; `dense_autonomous` names
+`dense_clutter`. The grasp presets that overlaid a mode with its switches left on 2026-10-16.
 
-| Preset | Mode | What it arms |
-|---|---|---|
-| `easy` | `easy` | nothing. Recovery and uncertainty are both switched off |
-| `dense_clutter` | `dense_clutter` | recovery bounded to `rescan`, plus uncertainty fusion |
+The `dense_clutter` mode also allows the **push** (`nudge_target`), which slides a boxed-in part aside on
+a wrist camera's pick; a fixed-camera cell never pushes. Every `dense_clutter` cell pushes unless its parts
+are critical (`runtime.task.critical_parts`), and the push needs **no** fixture
+([guide 05](guide/05-pick-loop.md), section 6.4).
 
-A third, `verification_heavy`, set the `closed_loop` mode for a pre-grasp refinement and post-grasp
-verification. It was deleted on 2026-09-29 with that mode and the two-scan refinement it ran, and a
-tree or a preset that still names `closed_loop` is refused with the mode to name instead, `auto`.
-Verification ran only on that refinement's path, and the `robot.grasping.verification` block left the
-same day: a tree that still writes it is refused at load with the sentence that says what to do. The
-hold a pick reports is the gripper's own hold evidence, read after every close. `dense_clutter`
-allowed `next_viewpoint` until then; it was merged into `rescan`, and a preset or a tree that still
-names it is refused with `removed on purpose: use rescan`.
-
-Each block below is the shipped overlay. Paste it under your `robot:` block, or call
-`apply_preset`.
-
-`easy`, the minimum-risk single-object pick:
-
-```yaml preset=easy
-grasping:
-  default_mode: easy
-  recovery:
-    enabled: false
-  uncertainty:
-    enabled: false
-```
-
-`dense_clutter`, bin picking with a bounded rescan:
-
-```yaml preset=dense_clutter
-grasping:
-  default_mode: dense_clutter
-  recovery:
-    enabled: true
-    allowed_actions:
-      - rescan
-  uncertainty:
-    enabled: true
-    fail_closed_threshold: 0.4
-```
-
-Two things the files say about themselves and the table cannot. `easy` is excluded from
-`recovery.apply_modes` anyway, so switching recovery off there restates a guarantee the mode already
-carries. In `dense_clutter`, `fail_closed_threshold: 0.4` is the default of
-`decision.auto_uncertainty_threshold`, so arming the layer does not by itself move the gate, and
-nothing is refused at all unless `decision.enabled` is true.
-
-The `dense_clutter` mode also allows `next_target`, a rescan that skips the part that failed, and the
-**push** (`nudge_target`), which slides a boxed-in part aside with the open jaws on a wrist camera's
-pick; a fixed-camera cell never pushes. The preset names `rescan` alone: name the others in
-`recovery.allowed_actions` yourself. The push needs **no** `recovery.fixture`; a declared one only
-narrows where it lands ([guide 05](guide/05-pick-loop.md), section 6.4).
-
-## The soak gate
-
-```bash
-python -m src.robot.grasping.replay --soak-report
-```
-
-This runs a deterministic synthetic soak of at least 2000 attempts across three scenarios, evaluates
-the latency budgets, runs the drift and out-of-distribution watchdogs, compares against the committed
-baseline, and writes one artifact to `logs/u12/soak_report.json`. Exit `0` means every locked key
-passed; a non-zero exit prints the violating keys.
-
-Read what it proves narrowly. The outcome distribution it replays is authored, so a pass proves that
-telemetry, KPIs, the failure taxonomy, the latency packs and the watchdogs are internally consistent.
-It is not a measurement of grasp quality, and its own report says so.
-
-The thirteen gate keys are `min_attempts_met`, `untyped_outcomes_zero`,
-`unbounded_retry_loops_zero`, `telemetry_offenders_zero`, `extra_type_offenders_zero`,
-`dead_loop_rate_within_gate`, `pick_success_rate_non_regression`, `slo_packs_pass`,
-`drift_gate_pass`, `ood_gate_pass`, `failure_taxonomy_classifier_pass`,
-`easy_attempt_wall_time_within_budget`, and `passes`, which is the conjunction of the other twelve.
-`failure_taxonomy_classifier_pass` grades the failure classifier against the committed labeled pack
-rather than against the synthetic stream, which stamps no evidence flags and therefore cannot tell a
-working classifier from a deleted one. The thresholds are constants in
-[`src/robot/grasping/replay/soak.py`](../src/robot/grasping/replay/soak.py): 2000 attempts minimum, a
-recovery-action count above 8 counts as an unbounded retry loop, the dead-loop rate ceiling is 0.005,
-and the easy-mode wall-time budget is 1.05 times the baseline.
-
-For a signal about real picks rather than about the contract, roll up a record log:
+## The gate over a record log
 
 ```bash
 python -m src.robot.grasping.replay --records run.jsonl       # KPIs from a real record log
-python -m src.robot.grasping.replay --records-gate run.jsonl  # the same thresholds, and this one can fail
-python -m src.robot.grasping.replay --baseline-report         # regenerate docs/baselines/u_plus_baseline_v1.json
+python -m src.robot.grasping.replay --records-gate run.jsonl  # the gate over it, and this one can fail
 ```
 
-Record logging is opt-in. Set `robot.grasping.record_log_path` and the cell writes one record per
-attempt, stamped with the robot vendor and model; leave it unset and nothing is written, which the
-preflight reports as a warning. From Python, `Recording.to_file(...)` does the same for one campaign
+`--records` rolls the log up and never fails. `--records-gate` holds it to six keys and exits 1 on a
+violation: at least 2000 attempts, no untyped outcome, no pick with more than 8 recovery actions, no record
+missing the telemetry its outcome requires, no `extra` field of the wrong type, and a dead-loop rate of at
+most 0.005. The numbers are constants in
+[`src/robot/grasping/replay/soak.py`](../src/robot/grasping/replay/soak.py). A simulator's log is judged by
+`--sim-soak-report`, which reports the pick rate rather than gating it. The synthetic soak that replayed an
+authored outcome distribution, and passed by construction, left on 2026-10-16.
+
+Every cell writes one record per attempt, stamped with the robot vendor and model: to
+`robot.grasping.record_log_path`, or, where the tree leaves it unset, to `grasp_records.jsonl` in the log
+folder (since 2026-10-17). From Python, `Recording.to_file(...)` names a file for one campaign
 ([`examples/real_robot/12_pick_with_the_camera.py`](../examples/real_robot/12_pick_with_the_camera.py)).
 
 ## Isaac Sim
@@ -282,7 +209,6 @@ refuses to boot without. [Make Isaac ready](isaac-ready.md) is the setup, and
 ruff check src api datagen tests scripts examples willy
 mypy src api datagen scripts examples willy
 pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
-python -m src.robot.grasping.replay --soak-report
 ```
 
 `scripts/` and `examples/` are linted and type-checked with the library, so an example or a

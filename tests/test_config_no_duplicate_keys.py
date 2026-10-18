@@ -14,7 +14,7 @@ standalone:
     -> {'robot': {'gripper': {'min_width_mm': 5.0}}}          # max_width_mm is simply gone
 
 That was a cosmetic loss because it was caught in minutes. The same accident on `safety:` or
-`workspace_limits:` would ship a cell whose guards are configured by whichever duplicate happened to be
+`motion:` would ship a cell whose guards are configured by whichever duplicate happened to be
 last in the file.
 """
 

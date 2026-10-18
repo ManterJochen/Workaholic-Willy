@@ -421,7 +421,7 @@ class RetractChange:
 
 
 def retract_changes(existing: dict, merged: dict, *, evidence_dir: "Path | str | None" = None) -> "list[RetractChange]":
-    """Every pair of ``existing`` whose retract ``merged`` moved or dropped, with the evidence files named after it.
+    """Every pair of ``existing`` whose retract ``merged`` moved or dropped, with the evidence file named after it.
 
     A retract is ``default_q`` inside the composed config a sidecar hashes, so an evidence file measured at
     the old pose refuses on ``composed_sha256`` at the next start. Said when the table is written.
@@ -442,8 +442,9 @@ def retract_changes(existing: dict, merged: dict, *, evidence_dir: "Path | str |
         if new_pose == old_pose:
             continue
         arm, hand, plate, margin, placement = pair
-        pattern = f"{arm}_{hand}_c{plate:g}mm_{placement}_m{margin:g}mm_a*.json"
-        files = tuple(sorted(path.name for path in folder.glob(pattern))) if folder.is_dir() else ()
+        # One file a combination since the attach slots left its name (2026-10-17).
+        name = f"{arm}_{hand}_c{plate:g}mm_{placement}_m{margin:g}mm.json"
+        files = (name,) if (folder / name).is_file() else ()
         out.append(RetractChange(arm=arm, hand=hand, plate_mm=plate, planner_margin_mm=margin, placement=placement,
                                  before=old_pose, after=new_pose, evidence=files))
     return out

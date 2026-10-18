@@ -8,7 +8,7 @@ that is not clear is refused: the caller skips that angle, or approaches from wh
 
 ``move_to_joints_on_the_line`` (:class:`~src.robot.core.arm_capabilities.DrivesJointLines`) is ``move_to_joints`` less
 the plan around the line: the same twin inside the cable window, the same destination guards, the same line judged by
-both authorities at ``safety.planned_motion.line_clearance_mm``, and one ``moveJ`` where it passes. A planner double
+both authorities at ``path_samples.LINE_CLEARANCE_MM``, and one ``moveJ`` where it passes. A planner double
 that fails the test whenever it is asked to plan holds that cuRobo never is. An arm whose paths nobody judges (the ik
 planner) refuses the line: a line nobody judged is not the line the owner allows. The control: ``move_to_joints`` still
 plans around the same colliding line, as a declared look does. And a line a pick made up is judged against the camera
@@ -58,9 +58,8 @@ class _NeverPlans(RoutePlanner):
 
 def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo") -> URRobotArm:
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": motion_planner},
-        "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": OPEN_WORKSPACE,
+        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": motion_planner, "workspace": OPEN_WORKSPACE},
+        "safety": {}, "gripper": {"model": "robotiq_2f85"},
     }))
     arm._conn = MagicMock()
     arm._conn.is_connected = True
@@ -91,7 +90,7 @@ class TheStraightJointLineOnlyTests(unittest.TestCase):
         (lined,) = planner.lines()
         np.testing.assert_allclose(lined[1][0], _HERE, atol=0.0)
         np.testing.assert_allclose(lined[1][-1], _THERE, atol=0.0)
-        self.assertEqual(3.0, lined[3], "the line was not judged at safety.planned_motion.line_clearance_mm")
+        self.assertEqual(3.0, lined[3], "the line was not judged at path_samples.LINE_CLEARANCE_MM")
         self.assertEqual([], planner.named("execute"), "a planned route ran")
 
     def test_a_line_that_is_not_clear_is_refused_and_nothing_is_planned_around_it(self) -> None:

@@ -13,13 +13,13 @@ What it answers:
 - A plan to a pose is scripted (``script("plan", path, None, error)``): nothing plans to a pose unscripted,
   because a pose needs an inverse kinematics this double does not have, and a plan it invented would be a fixture
   richer than the artefact. A plan to a joint goal is a straight joint line in five waypoints unless scripted.
-- A joint path is clear at any clearance unless ``check_joints`` or ``judge_joints`` is scripted, and a payload
-  attaches and detaches.
+- A joint path is clear at any clearance unless ``check_joints`` or ``judge_joints`` is scripted. No part is
+  attached: no client attaches one since 2026-10-17.
 - A queue that runs dry raises :class:`ScriptExhausted`, as the fake transport's does.
 
-It offers no live-scene channel (``set_scene``, ``set_voxels``), which is what a real sidecar started without a voxel
-reservation offers; ``tests/test_the_fake_transport_keeps_step_with_the_protocols.py`` holds its signatures to
-``CuroboPlanClient``'s.
+It takes a live scene in one request (``set_scene``), as every cell's camera world sends its boxes and its distance
+field since 2026-10-17, and no field on its own (``set_voxels``);
+``tests/test_the_fake_transport_keeps_step_with_the_protocols.py`` holds its signatures to ``CuroboPlanClient``'s.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from src.robot.safety.planning import JointCheckVerdict
-from src.robot.safety.planning.curobo_client import PathJudgement
+from src.robot.safety.planning.curobo_client import PathJudgement, SceneRegistration
 from tests._fake_transport import Call, ScriptExhausted
 from tests._sidecar_identity import arm_identity
 
@@ -47,7 +47,6 @@ class FakePlanner:
         self.joint_names = list(joint_names) if joint_names is not None else [j.name for j in load_arm(arm).joints]
         self.calls: list[Call] = []
         self.started = False
-        self.attached = False
         self._scripts: dict[str, deque[Any]] = {}
 
     def script(self, verb: str, *answers: Any) -> None:
@@ -78,9 +77,6 @@ class FakePlanner:
     def reserve_world(self, reservation: Any) -> None:
         self._record("reserve_world", reservation)
 
-    def reserve_attach_spheres(self, slots: int) -> None:
-        self._record("reserve_attach_spheres", slots)
-
     def start(self) -> None:
         self._record("start")
         self._scripted("start")
@@ -95,6 +91,19 @@ class FakePlanner:
         self._record("set_world", [dict(c) for c in cuboids], None if meshes is None else [dict(m) for m in meshes])
         scripted, answer = self._scripted("set_world")
         return int(answer) if scripted else len(cuboids) + len(meshes or ())
+
+    def set_scene(self, cuboids: Sequence[dict], meshes: Sequence[dict] | None,
+                  voxels: dict | None) -> SceneRegistration:
+        """Every obstacle registered and the field taken, its occupancy as written, unless scripted."""
+        self._record("set_scene", [dict(c) for c in cuboids], None if meshes is None else [dict(m) for m in meshes],
+                     None if voxels is None else dict(voxels))
+        scripted, answer = self._scripted("set_scene")
+        if scripted:
+            return answer  # type: ignore[no-any-return]
+        import numpy as np  # noqa: PLC0415
+
+        taken = None if voxels is None else int(np.load(voxels["path"]).shape[0])
+        return SceneRegistration(world_set=len(cuboids) + len(meshes or ()), voxels_set=taken, reason="")
 
     def check_joints(self, configs: Sequence[Sequence[float]], clearance_mm: float = 0.0) -> JointCheckVerdict:
         """Clear unless scripted."""
@@ -134,21 +143,3 @@ class FakePlanner:
         if scripted:
             return None if answer is None else [[float(v) for v in w] for w in answer]
         return [[s + (g - s) * k / 4.0 for s, g in zip(start, goal, strict=True)] for k in range(5)]
-
-    def attach_payload(self, joints: list[float], dims_m: Sequence[float], pose: Sequence[float], *,
-                       name: str = "payload") -> bool:
-        """Attached unless scripted."""
-        self._record("attach_payload", [float(v) for v in joints], [float(v) for v in dims_m],
-                     [float(v) for v in pose], name=name)
-        scripted, answer = self._scripted("attach_payload")
-        self.attached = bool(answer) if scripted else True
-        return self.attached
-
-    def detach_payload(self) -> bool:
-        """Detached unless scripted."""
-        self._record("detach_payload")
-        scripted, answer = self._scripted("detach_payload")
-        done = bool(answer) if scripted else True
-        if done:
-            self.attached = False
-        return done

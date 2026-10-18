@@ -1,11 +1,12 @@
-"""cuRobo plans on a lean robot where the cell asks for one, and every judgement stays on the robot the evidence names.
+"""cuRobo plans on a lean robot wherever one composes, and every judgement stays on the robot the evidence names.
 
 The owner, 2026-10-08: "wir müssen CuRobo richtig verwenden ... die Kugeln richtig fitten, wie es bei den anderen
 Modellen ist". NVIDIA's own UR10e is 20 spheres and 83 sphere pairs; the owner's cell held 845 spheres and 172,414
 pairs (the UR10's cover fit, the Hand-E's, the D415's box fill), about 150 times the collision arithmetic in every
-iteration of every plan. ``safety.planned_motion.planning_spheres: lean`` builds the planner, its IK and its graph
-planner from a planning model made the way NVIDIA's are (``scripts/curobo/fit_planning_spheres.py``), and leaves the
-check behind ``check_js``, the ready gate and every evidence hash on the evidence model. This file holds on the CPU:
+iteration of every plan. Every cell builds the planner, its IK and its graph planner from a planning model made the
+way NVIDIA's are (``scripts/curobo/fit_planning_spheres.py``) since 2026-10-17 (the owner's cell since 2026-10-09, when
+``safety.planned_motion.planning_spheres`` was ``lean`` there), and leaves the check behind ``check_js``, the ready gate
+and every evidence hash on the evidence model. This file holds on the CPU:
 
 * the sidecar places the planning model's arm in the URDF it resolved exactly as the descriptor builder placed the
   evidence model's (``_curobo_planning.dh_to_link``, against ``_arm_spheres.link_frames`` on every UR the repository
@@ -15,10 +16,10 @@ check behind ``check_js``, the ready gate and every evidence hash on the evidenc
 * the planning config is the evidence robot in everything but its spheres and its ignored pairs, and anything else is
   refused (the sidecar then plans on the evidence model);
 * the client composes the payload from the committed maps and the cell's own bodies, and plans on the evidence model,
-  saying why, where it cannot; the config key is today's by default and reaches the client through the reservation;
+  saying why, where it cannot; the old config key is refused;
 * the sidecar, read as source: the planner from the planning model, every judgement from the evidence model.
 
-What the lean model costs and saves in plans is the GPU's to say: ``scripts/curobo/ab_planning_spheres.py``.
+What the planner every cell runs plans, and how fast, is the GPU's to say: ``scripts/curobo/ab_planning_spheres.py``.
 """
 
 from __future__ import annotations
@@ -45,7 +46,6 @@ from src.robot.safety.planning._declared_body import Box, inflated
 from src.robot.safety.planning.planning_model import (
     LEAN,
     LEAN_BOX_REACH_MM,
-    PLANNING_MODELS,
     arm_planning_spheres_path,
     hand_planning_spheres_path,
     planning_payload,
@@ -235,12 +235,12 @@ class TheCommittedLeanMapsAreNvidiasPatternTests(unittest.TestCase):
             self.skipTest("no built willy_ur10.yml on this box")
         raw = yaml.safe_load(built.read_text(encoding="utf-8"))
         hand, camera = _hand_body(), _camera_body()
-        today, _, _, _, _ = compose_for_cell(raw, bodies=[hand], wrist_bodies=[camera])
+        today, _, _, _ = compose_for_cell(raw, bodies=[hand], wrist_bodies=[camera])
         self.assertEqual(845, sum(planning.sphere_count(today).values()))
         self.assertEqual(172414, planning.self_pair_count(today))
-        old, _, _, _, _ = compose_for_cell(raw, bodies=[hand], wrist_bodies=[_camera_body(111.15)])
+        old, _, _, _ = compose_for_cell(raw, bodies=[hand], wrist_bodies=[_camera_body(111.15)])
         self.assertEqual(169642, planning.self_pair_count(old), "the count the map measured, 2026-10-08")
-        sent = planning_payload(LEAN, arm="ur10", body_links=[hand], wrist_body_links=[camera])
+        sent = planning_payload(arm="ur10", body_links=[hand], wrist_body_links=[camera])
         assert not isinstance(sent, str), sent
         payload = planning.read_payload(sent.to_json())
         lean = planning.planning_config(raw, payload, urdf_text=urdf.read_text(encoding="utf-8"), evidence=today)
@@ -256,7 +256,7 @@ class ThePlanningConfigIsTheEvidenceRobotButItsSpheresTests(unittest.TestCase):
     def _composed(self, payload: "dict | None" = None) -> "tuple[dict, dict]":
         """The planning config of ``payload`` against the evidence model of the cell ``_payload`` describes."""
         sent = payload or _payload()
-        evidence, _, _, _, _ = compose_for_cell(_descriptor(), bodies=[dict(_payload()["bodies"][0], spheres=[
+        evidence, _, _, _ = compose_for_cell(_descriptor(), bodies=[dict(_payload()["bodies"][0], spheres=[
             {"center": [0.0, 0.0, 0.05], "radius": 0.03}] * 4)], margin_mm=4.0, default_q=[0.1] * 6)
         planned = planning.planning_config(_descriptor(), planning.read_payload(json.dumps(sent)), urdf_text=_urdf(),
                                            evidence=evidence, margin_mm=4.0, default_q=[0.1] * 6)
@@ -326,7 +326,7 @@ class ThePlanningConfigIsTheEvidenceRobotButItsSpheresTests(unittest.TestCase):
 
 class TheClientComposesThePayloadTests(unittest.TestCase):
     def test_the_owner_cell_sends_its_arm_hand_and_camera_lean(self) -> None:
-        sent = planning_payload(LEAN, arm="ur10", body_links=[_hand_body()], wrist_body_links=[_camera_body()])
+        sent = planning_payload(arm="ur10", body_links=[_hand_body()], wrist_body_links=[_camera_body()])
         assert not isinstance(sent, str), sent
         payload = sent.payload
         self.assertEqual(list(_ARM_LINKS), list(payload["links"]))
@@ -343,32 +343,23 @@ class TheClientComposesThePayloadTests(unittest.TestCase):
     def test_a_sentence_where_no_model_can_be_composed(self) -> None:
         """Each of these plans on the evidence model, as today, and says why."""
         hand, camera = _hand_body(), _camera_body()
-        cases = {
-            "an unknown name": dict(model="nvidia", arm="ur10"),
-            "no name": dict(model="", arm="ur10"),
-            "a carried part": dict(model=LEAN, arm="ur10", attach_spheres=16),
-            "no arm": dict(model=LEAN, arm=None),
-            "an arm with no lean map": dict(model=LEAN, arm="ur99"),
-        }
-        for name, kwargs in cases.items():
+        for name, arm in (("no arm", None), ("an arm with no lean map", "ur99")):
             with self.subTest(case=name):
-                said = planning_payload(kwargs.pop("model"), body_links=[hand], wrist_body_links=[camera], **kwargs)
+                said = planning_payload(arm=arm, body_links=[hand], wrist_body_links=[camera])
                 self.assertIsInstance(said, str)
         stranger = dict(hand, model="no_such_hand")
-        self.assertIsInstance(planning_payload(LEAN, arm="ur10", body_links=[stranger], wrist_body_links=[]), str)
+        self.assertIsInstance(planning_payload(arm="ur10", body_links=[stranger], wrist_body_links=[]), str)
         flange = dict(hand, origin="flange")
-        said = planning_payload(LEAN, arm="ur10", body_links=[flange], wrist_body_links=[])
+        said = planning_payload(arm="ur10", body_links=[flange], wrist_body_links=[])
         self.assertIsInstance(said, str)
         self.assertIn("plate", str(said))
 
-    def test_the_client_sends_it_only_where_asked_and_never_inherits_one(self) -> None:
+    def test_the_client_sends_its_own_and_never_inherits_one(self) -> None:
         from src.robot.safety.planning.curobo_client import CuroboPlanClient
 
         with mock.patch.dict(os.environ, {ENV_PLANNING_MODEL: "{\"model\": \"stale\"}"}):
-            self.assertNotIn(ENV_PLANNING_MODEL, CuroboPlanClient(robot_config="willy_ur10.yml",
-                                                                  body_links=[_hand_body()])._sidecar_env())  # noqa: SLF001
             asked = CuroboPlanClient(robot_config="willy_ur10.yml", body_links=[_hand_body()],
-                                     wrist_body_links=[_camera_body()], planning_spheres=LEAN)
+                                     wrist_body_links=[_camera_body()])
             env = asked._sidecar_env()  # noqa: SLF001
         sent = json.loads(env[ENV_PLANNING_MODEL])
         self.assertEqual(LEAN, sent["model"])
@@ -377,14 +368,15 @@ class TheClientComposesThePayloadTests(unittest.TestCase):
     def test_a_model_the_client_cannot_compose_is_logged_and_not_sent(self) -> None:
         from src.robot.safety.planning.curobo_client import CuroboPlanClient
 
-        client = CuroboPlanClient(robot_config="willy_ur99.yml", body_links=[_hand_body()], planning_spheres=LEAN)
-        with self.assertLogs("CuroboPlanClient", level="WARNING") as logs:
+        client = CuroboPlanClient(robot_config="willy_ur99.yml", body_links=[_hand_body()])
+        with mock.patch.dict(os.environ, {ENV_PLANNING_MODEL: "{\"model\": \"stale\"}"}), \
+                self.assertLogs("CuroboPlanClient", level="WARNING") as logs:
             env = client._sidecar_env()  # noqa: SLF001
-        self.assertNotIn(ENV_PLANNING_MODEL, env)
+        self.assertNotIn(ENV_PLANNING_MODEL, env, "a shell's leftover was inherited")
         self.assertTrue(any("plans on the evidence model" in line for line in logs.output), logs.output)
 
 
-def _started(ready: dict, *, planning_spheres: str = ""):  # noqa: ANN202
+def _started(ready: dict, *, robot_config: str = "willy_ur10.yml"):  # noqa: ANN202
     from src.robot.safety.planning.curobo_client import CuroboPlanClient
 
     script = Path(tempfile.mkdtemp()) / "sidecar.py"
@@ -395,8 +387,8 @@ def _started(ready: dict, *, planning_spheres: str = ""):  # noqa: ANN202
             if json.loads(line).get("cmd") == "shutdown":
                 break
     """), encoding="utf-8")
-    return CuroboPlanClient(python_path=sys.executable, server_script=str(script), robot_config="willy_ur10.yml",
-                            body_links=[_hand_body()], planning_spheres=planning_spheres)
+    return CuroboPlanClient(python_path=sys.executable, server_script=str(script), robot_config=robot_config,
+                            body_links=[_hand_body()])
 
 
 _READY = {"status": "ready", "joint_names": ["j0", "j1", "j2", "j3", "j4", "j5"], "dt": 0.025}
@@ -413,7 +405,7 @@ class TheClientSaysWhichRobotPlansTests(unittest.TestCase):
         return client, logs.output
 
     def test_a_sidecar_that_built_it_is_said_to_plan_on_it(self) -> None:
-        client, said = self._start({**_READY, "planning": _ROW, "planning_sha256": "e" * 64}, planning_spheres=LEAN)
+        client, said = self._start({**_READY, "planning": _ROW, "planning_sha256": "e" * 64})
         self.assertEqual(LEAN, client.identity.plans_on)
         self.assertTrue(any("plans on the lean model" in line for line in said), said)
         self.assertIn("planning model: lean, 34 spheres and 120 self pairs", client.identity.render())
@@ -422,39 +414,29 @@ class TheClientSaysWhichRobotPlansTests(unittest.TestCase):
         for ready, words in (({**_READY, "planning": {"model": "lean", "refused": "no URDF"}}, "no URDF"),
                              (dict(_READY), "older than this client")):
             with self.subTest(words=words):
-                client, said = self._start(ready, planning_spheres=LEAN)
+                client, said = self._start(ready)
                 self.assertEqual("", client.identity.plans_on)
                 self.assertTrue(any(words in line for line in said), said)
 
-    def test_a_client_that_asked_for_none_says_nothing_of_it(self) -> None:
-        client, said = self._start(dict(_READY))
+    def test_a_client_that_could_send_none_says_nothing_of_it(self) -> None:
+        """An arm with no lean map (``willy_ur99.yml``): the sidecar is sent none, says nothing of one, and the client
+        says nothing of what it did not send, beside the warning that it sent none."""
+        client, said = self._start(dict(_READY), robot_config="willy_ur99.yml")
         self.assertEqual("", client.identity.plans_on)
-        self.assertFalse(any("planning model" in line for line in said), said)
+        self.assertFalse(any("plans on the lean model" in line or "older than this client" in line for line in said),
+                         said)
 
 
 class TheConfigKeyTests(unittest.TestCase):
-    def test_the_key_takes_the_models_planning_model_knows_and_is_todays_by_default(self) -> None:
-        from src.config.schema.robot.safety_schema import PlannedMotionSafetyConfig
-
-        self.assertEqual(set(PLANNING_MODELS),
-                         set(typing.get_args(PlannedMotionSafetyConfig.model_fields["planning_spheres"].annotation)))
-        self.assertEqual("", PlannedMotionSafetyConfig().planning_spheres)
-
-    def test_it_reaches_the_client_through_the_reservation(self) -> None:
+    def test_the_old_key_is_refused_naming_what_every_cell_plans_on(self) -> None:
         from pydantic import ValidationError
 
+        from src.config.schema._removed import removed_key_sentence
         from src.config.schema.robot import RobotConfig
-        from src.robot.safety.planning.curobo_client import CuroboPlanClient
-        from src.robot.safety.planning.reservation import PlannerReservation
 
-        self.assertEqual("", PlannerReservation.from_config(robot_cfg=RobotConfig.model_validate({"vendor": "ur"}))
-                         .planning_spheres)
         with self.assertRaises(ValidationError):
-            RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": {"planning_spheres": "nvidia"}}})
-        cell = RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": {"planning_spheres": "lean"}}})
-        client = CuroboPlanClient(robot_config="willy_ur10.yml", body_links=[_hand_body()])
-        client.reserve_world(PlannerReservation.from_config(robot_cfg=cell))
-        self.assertEqual(LEAN, json.loads(client._sidecar_env()[ENV_PLANNING_MODEL])["model"])  # noqa: SLF001
+            RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": {"planning_spheres": "lean"}}})
+        self.assertIn("lean sphere model", removed_key_sentence("robot.safety.planned_motion.planning_spheres") or "")
 
 
 class TheSidecarPlansOnItAndJudgesOnTheEvidenceTests(unittest.TestCase):
@@ -469,7 +451,7 @@ class TheSidecarPlansOnItAndJudgesOnTheEvidenceTests(unittest.TestCase):
         import subprocess
 
         folder = _SERVER.parent
-        code = ("import sys; sys.path.insert(0, sys.argv[1]); import _curobo_world, _curobo_cspace, _curobo_planning; "
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import _curobo_cspace, _curobo_planning; "
                 "assert _curobo_planning.compose_for_cell is not None; print('loaded')")
         done = subprocess.run([sys.executable, "-I", "-c", code, str(folder)], capture_output=True, text=True,
                               timeout=120, cwd=tempfile.gettempdir())

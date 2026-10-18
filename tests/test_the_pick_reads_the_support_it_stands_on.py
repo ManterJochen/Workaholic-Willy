@@ -24,7 +24,7 @@ from unittest import mock
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import GraspingSupportConfig
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
 from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
 from src.robot.grasping.recovery import push_planner
@@ -91,7 +91,7 @@ class _Cell:
             arm=self.arm, calculator=self.calculator, perception=self.camera,  # type: ignore[arg-type]
             frame_resolver=EyeInHandFrameResolver(t_cam_to_tool=camera_to_tool()), policy=self.policy,  # type: ignore[arg-type]
             max_attempts=2, primary_camera_id="wrist", gripper_model=HAND_E, looks=(LOOK_PLUS_Y,), target_label="part",
-            support_config=GraspingSupportConfig(height_mm=0.0, refine_from_target=False),
+            declared_support=DeclaredSupport(),
         )
         if push:
             self.orchestrator.push_gate = PushGate(budgets=PushBudgets(), distance_mm=30.0, cell=PushCell(

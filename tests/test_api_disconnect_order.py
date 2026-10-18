@@ -9,7 +9,7 @@
 6. disconnect.
 
 What this file pins: the order on a cell whose arm brakes and whose task is inside a motion; that a motion in flight
-leaves the arm latched on an arm that lets it run to its end too (brake_on_halt off, as shipped), so the next Connect
+leaves the arm latched on an arm that lets it run to its end too (one that does not brake), so the next Connect
 waits for "the cell is clear"; that with nothing in flight on such an arm the latch holds only while the cell comes
 down, so the cell connects again as it always did (the control of ``tests/test_api_cell.py``); that a halt a person
 pressed before the Disconnect is kept; that a Disconnect returns promptly while a connect waits on a jaws question with
@@ -87,7 +87,7 @@ class TheOrderTests(ConsoleCase):
 
     def test_a_move_in_flight_on_an_arm_that_does_not_brake_leaves_it_latched(self) -> None:
         """Build plan item 18, step 5: a motion in flight latches the arm, whether the arm brakes it or lets it run to
-        its end (brake_on_halt off, as shipped). The move in flight ends, nothing after it is sent, and the next Connect
+        its end (an arm that does not brake). The move in flight ends, nothing after it is sent, and the next Connect
         is refused ``halted`` until a person says the cell is clear."""
         inside, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)

@@ -28,8 +28,7 @@ The sidecar places the arm's spheres from their DH frames into the URDF link fra
 resolved (:func:`dh_to_link`), the placement ``scripts/arms/descriptor.py`` writes the evidence descriptor's
 spheres with, and composes the bodies over it with ``compose_for_cell`` as it composes the evidence model
 (:func:`planning_config`). Anything it cannot place or compose raises :class:`PlanningModelError`, and the sidecar
-plans on the evidence model and says why, as it does on a cell that models a carried part: only the planner's own
-kinematics carries that part, and the check would no longer see it.
+plans on the evidence model and says why.
 
 Imported from both sides of the process boundary, like ``_curobo_body_links``: as part of the Willy package under
 python 3.11, and as a plain sibling module by ``curobo_planner_server.py`` under python 3.10.
@@ -314,9 +313,9 @@ def planning_config(
     if left:
         raise PlanningModelError(f"the planning model gives no spheres for the arm links {left}")
     try:
-        loaded, _, _, _, _ = compose_for_cell(
+        loaded, _, _, _ = compose_for_cell(
             planned, bodies=payload.get("bodies", []), wrist_bodies=payload.get("wrist_bodies", []),
-            margin_mm=float(margin_mm), attach_spheres=0, default_q=default_q,
+            margin_mm=float(margin_mm), default_q=default_q,
         )
     except ValueError as exc:
         raise PlanningModelError(f"the planning model's bodies do not compose: {exc}") from exc

@@ -1,4 +1,4 @@
-"""Every calibrated enabled rig feeds the live planner world of a cell that enables it, primary first.
+"""Every calibrated enabled rig feeds the live planner world of a cell that declares its bench, primary first.
 
 `CameraWorldPlan` reads config and opens nothing; `CameraWorldWiring` takes open owners and builds the world.
 Both take rigs, owners and calibrations by duck typing, because the world is to be handed to `Robot`, whose
@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from src.config.schema.robot import RobotConfig
+from src.config.schema.runtime import RuntimeConfig
 from src.camera.orchestration.camera import CameraBusy
 from src.geometry import Frame, Pose, Transform
 from src.robot.core import JointPositions
@@ -81,20 +82,15 @@ _SELF = SelfEnvelope(
 )
 
 
-def _cell(*, world: bool = True, perceived: bool = True, planner: str = "curobo",
-          fused_off: tuple[str, ...] = ()) -> RobotConfig:
-    """A UR cell that enables the live planner world, or does not. Boxes only, and a generous age."""
-    safety: dict[str, object] = {"payload": {"enforce": False}}
+def _cell(*, world: bool = True, planner: str = "curobo") -> RobotConfig:
+    """A UR cell that declares its bench, which turns the live planner world on, or does not; its camera world is
+    every cell's."""
+    safety: dict[str, object] = {}
     if world:
         safety["planning_world"] = {
-            "enabled": True,
             "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-            "perceived": {"enabled": perceived, "voxel_field_mm": 0.0, "max_age_ms": 5000.0},
         }
-    return RobotConfig.model_validate({
-        "vendor": "ur", "motion": {"planner": planner}, "safety": safety,
-        "grasping": {"fusion": {"cameras": {cam_id: {"enabled": False} for cam_id in fused_off}}},
-    })
+    return RobotConfig.model_validate({"vendor": "ur", "motion": {"planner": planner}, "safety": safety})
 
 
 def _rig(rig_id: str, *, enabled: bool = True, source: str = "rgbd", calibrated: bool = True,
@@ -107,24 +103,31 @@ def _rig(rig_id: str, *, enabled: bool = True, source: str = "rgbd", calibrated:
 
 
 def _app(*rigs: SimpleNamespace) -> SimpleNamespace:
-    """A camera section whose first rig is the primary."""
+    """A camera section whose first rig is the primary, beside the runtime's defaults."""
     return SimpleNamespace(camera=SimpleNamespace(cameras=SimpleNamespace(rigs=list(rigs),
-                                                                          primary_rig_id=rigs[0].rig_id)))
+                                                                          primary_rig_id=rigs[0].rig_id)),
+                           runtime=RuntimeConfig())
 
 
 class _Handle:
     """A rig handle: an empty bench a metre down on every grab, or a frame of zeros, or a stereo pair."""
 
-    def __init__(self, rig_id: str, *, answer: str, captured_at_s: float | None) -> None:
+    def __init__(self, rig_id: str, *, answer: str, captured_at_s: float | None, age_s: float = 0.0) -> None:
         self.rig_id = rig_id
         self.answer = answer
         self.captured_at_s = captured_at_s
+        #: How long before each grab its frame was taken, where no fixed capture time is given.
+        self.age_s = age_s
+        #: The capture time the last grab handed out.
+        self.last_captured_at_s: float | None = None
 
     def grab(self) -> SimpleNamespace:
         if self.answer == "stereo":
             return SimpleNamespace(left=np.zeros((4, 4, 3)), right=np.zeros((4, 4, 3)))
         depth = np.zeros((40, 40)) if self.answer == "blind" else np.full((40, 40), 1000.0)
-        return SimpleNamespace(depth=depth, captured_at_s=time.time() if self.captured_at_s is None else self.captured_at_s)
+        stamp = time.time() - self.age_s if self.captured_at_s is None else self.captured_at_s
+        self.last_captured_at_s = stamp
+        return SimpleNamespace(depth=depth, captured_at_s=stamp)
 
     def get_intrinsics(self) -> np.ndarray:
         return _K
@@ -134,13 +137,13 @@ class _Owner:
     """A camera owner, recording what was asked of it."""
 
     def __init__(self, rig_id: str, *, wrist: bool = False, answer: str = "bench",
-                 captured_at_s: float | None = None, busy: bool = False) -> None:
+                 captured_at_s: float | None = None, age_s: float = 0.0, busy: bool = False) -> None:
         self.rig_id = rig_id
         self.wrist = wrist
         self.busy = busy
         self.opened = 0
         self.released = 0
-        self._handle = _Handle(rig_id, answer=answer, captured_at_s=captured_at_s)
+        self._handle = _Handle(rig_id, answer=answer, captured_at_s=captured_at_s, age_s=age_s)
 
     def open(self) -> None:
         if self.busy:
@@ -165,7 +168,7 @@ def _camera_class(owners: dict[str, _Owner]) -> type:
 
     class _Camera:
         @classmethod
-        def from_config(cls, camera_cfg: object, *, rig_id: str) -> _Owner:  # noqa: ARG003
+        def from_config(cls, camera_cfg: object, *, rig_id: str, workspace: object = None) -> _Owner:  # noqa: ARG003
             return owners[rig_id]
 
     return _Camera
@@ -190,19 +193,19 @@ class TheWorldPlanTableTests(unittest.TestCase):
 
     def test_the_world_plan_table(self) -> None:
         rows = (
-            ("a disabled block", _cell(world=False), (_rig("overhead"),), (), "safety.planning_world.enabled"),
-            ("perceived switched off", _cell(perceived=False), (_rig("overhead"),), (),
-             "safety.planning_world.perceived.enabled"),
+            ("no bench declared", _cell(world=False), (_rig("overhead"),), (), "declares no support_plane"),
             ("one calibrated RGB-D primary", _cell(), (_rig("overhead"),), ("overhead",), ""),
             ("two calibrated rigs, the primary listed second", _cell(), (_rig("side"), _rig("overhead")),
              ("overhead", "side"), ""),
             ("a disabled calibrated rig", _cell(), (_rig("overhead"), _rig("side", enabled=False)), ("overhead",), ""),
             ("an uncalibrated enabled rig", _cell(), (_rig("overhead"), _rig("side", calibrated=False)),
              ("overhead",), ""),
-            ("a calibrated rig fusion switches off", _cell(fused_off=("side",)), (_rig("overhead"), _rig("side")),
-             ("overhead", "side"), ""),
             ("a calibrated wrist rig", _cell(), (_rig("overhead"), _rig("wrist", wrist=True)),
              ("overhead", "wrist"), ""),
+            ("a calibrated stereo pair, its depth read through its stereo calibration", _cell(),
+             (_rig("overhead"), _rig("pair", source="webcam_pair")), ("overhead", "pair"), ""),
+            ("a calibrated stereo primary", _cell(), (_rig("overhead", source="single_device"),),
+             ("overhead",), ""),
             ("an uncalibrated primary beside a calibrated rig", _cell(),
              (_rig("overhead", calibrated=False), _rig("side")), (), "masks"),
         )
@@ -221,7 +224,8 @@ class TheWorldPlanTableTests(unittest.TestCase):
         why = dict(plan.left_out)
         self.assertEqual(why["off"], "enabled: false")
         self.assertIn("camera.cameras.rigs['bare'].extrinsics", why["bare"])
-        self.assertIn("no depth of its own", why["pair"])
+        # A stereo pair is left out for what any rig is left out for, and not for being a pair (2026-10-17).
+        self.assertIn("camera.cameras.rigs['pair'].extrinsics", why["pair"])
         self.assertTrue(plan.asked)
 
     def test_a_cell_that_did_not_ask_is_not_counted_as_asking(self) -> None:
@@ -333,9 +337,9 @@ class ARealCellWiresEveryCalibratedRigTests(unittest.TestCase):
         self.assertEqual((owners["overhead"].opened, owners["side"].opened), (0, 1),
                          "the primary is open already, and only the world-only rig is opened here")
 
-    def test_a_calibrated_rig_outside_fusion_is_opened_for_the_world_and_released(self) -> None:
+    def test_a_calibrated_rig_not_open_yet_is_opened_for_the_world_and_released(self) -> None:
         owners = {"overhead": _Owner("overhead"), "side": _Owner("side")}
-        service, _ = _wire(_cell(fused_off=("side",)), _app(_rig("overhead"), _rig("side")), owners)
+        service, _ = _wire(_cell(), _app(_rig("overhead"), _rig("side")), owners)
         self.assertIsInstance(service.runtime.orchestrator.planner_world_cameras, OpenedCameras)
 
         release_perception(service)
@@ -406,17 +410,16 @@ class APlannedStampNamesEveryWorldCameraTests(unittest.TestCase):
                                               lambda arm: arm.move_to_joints(JointPositions(_THERE)))
         for (arm_name, verb), (build, motion) in rows.items():
             with self.subTest(arm=arm_name, verb=verb):
-                # Per row: a UR move judges its straight line on the exact meshes first, 2.8 s here for 648 samples,
-                # and frames stamped once for all four rows went stale under the 5 s the cell allows before the last.
-                now = time.time()
+                # Each frame taken a little before its grab, the overhead's earlier: a UR move judges its straight line
+                # on the exact meshes first, 2.8 s here for 648 samples, and a frame stamped once before the motion went
+                # stale under the 2000 ms every cell allows.
                 arm = build()
-                owners = {"overhead": _Owner("overhead", captured_at_s=now - 2.0),
-                          "side": _Owner("side", captured_at_s=now - 1.0)}
+                owners = {"overhead": _Owner("overhead", age_s=0.4), "side": _Owner("side", age_s=0.2)}
                 _wire(_cell(), _app(_rig("overhead"), _rig("side")), owners, arm=arm)
                 stamp = motion(arm).camera_world
                 self.assertIs(stamp.use, CameraWorldUse.PLANNED, stamp.render())
                 self.assertEqual(stamp.cameras, ("overhead", "side"))
-                self.assertEqual(stamp.captured_at_s, now - 2.0)
+                self.assertEqual(stamp.captured_at_s, owners["overhead"].handle().last_captured_at_s)
 
 
 class AnOfferNamesItsCameraTests(unittest.TestCase):
@@ -454,7 +457,7 @@ class AWorldCameraThatCannotOpenRefusesTheBuildTests(unittest.TestCase):
                                        planner_world_cameras=None)
         service = SimpleNamespace(runtime=SimpleNamespace(orchestrator=orchestrator))
 
-        with patch.object(cells, "build_real_components", return_value=(None, perception, None, multi, None)), \
+        with patch.object(cells, "build_real_components", return_value=(None, perception, None, multi)), \
              patch.object(AutonomousGraspService, "from_robot_config", return_value=service), \
              patch("src.camera.orchestration.camera.Camera", _camera_class(owners)), \
              self.assertRaises(CellBuildRefused) as refused:
@@ -512,7 +515,7 @@ class ACuroboCellWhoseCamerasGiveNoWorldDoesNotBuildTests(unittest.TestCase):
     def test_a_curobo_cell_whose_calibrated_rig_yields_no_world_is_refused_before_a_camera_opens(self) -> None:
         with self.assertRaises(CellBuildRefused) as refused:
             self._build(_cell(world=False), _app(_rig("overhead")))
-        self.assertIn("safety.planning_world.enabled", str(refused.exception))
+        self.assertIn("declares no support_plane", str(refused.exception))
         self.assertIn("'overhead'", str(refused.exception))
 
         with self.assertRaises(CellBuildRefused) as primary:

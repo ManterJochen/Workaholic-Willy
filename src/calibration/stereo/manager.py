@@ -13,7 +13,7 @@ from .sub_modules.aruco_esti import ArucoPoseEstimator
 from src.calibration.exceptions import StereoCalibrationError
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from src.config.schema.camera import CalibrationConfig, StereoMatcherConfig
+    from src.config.schema.camera import CalibrationConfig
 
 __all__ = ["StereoCam3D"]
 
@@ -22,17 +22,17 @@ class StereoCam3D:
 
     Builds a `StereoRigRunTime` per configuration through `StereoRigFactory` and
     forwards each call to the rig named by `rig`, which defaults to the first one.
-    All rigs share the frame size, board geometry and matcher settings of the one
-    `CalibrationConfig`. `marker_length_mm` overrides it for marker pose estimation
-    only; `aruco_dict_name` overrides the dictionary for pose estimation and for the
-    ChArUco calibration alike.
+    All rigs share the frame size and board geometry of the one `CalibrationConfig`;
+    each matches at the measured settings over the search its own calibration gives
+    (`sub_modules.disparity`). `marker_length_mm` overrides it for marker pose
+    estimation only; `aruco_dict_name` overrides the dictionary for pose estimation
+    and for the ChArUco calibration alike.
     """
 
     def __init__(
         self,
         rigs: Sequence[StereoRigConfig],
         calibration: CalibrationConfig,
-        stereo_matcher: StereoMatcherConfig,
         marker_length_mm: float | None = None,
         aruco_dict_name: str | None = None,
     ):
@@ -52,7 +52,6 @@ class StereoCam3D:
             marker_length_mm=calibration.charuco_marker_length_mm,
             aruco_dict_name=dict_name,
             rectify_alpha=calibration.rectify_alpha,
-            stereo_matcher_cfg=stereo_matcher,
             logger=self.logger,
         )
 
@@ -90,13 +89,6 @@ class StereoCam3D:
 
     def compute_3D_point_xy(self, rect_left_bgr, rect_right_bgr, x, y, unit="mm", rig=0):
         return self._rig(rig).compute_3d_point_xy(rect_left_bgr, rect_right_bgr, x, y, unit)
-
-    def set_extrinsics(self, T_cam_to_base_4x4, rig=0):
-        runtime = self._rig(rig)
-        runtime.set_extrinsics(T_cam_to_base_4x4)
-
-    def transform_cam_to_base(self, point_cam, rig=0):
-        return self._rig(rig).transform_cam_to_base(point_cam)
 
     def estimate_marker_pose_left(self, rect_left_bgr, target_id: Optional[int] = None, rig=0):
         """Estimates T_cam_to_marker in the rig's rectified left frame.

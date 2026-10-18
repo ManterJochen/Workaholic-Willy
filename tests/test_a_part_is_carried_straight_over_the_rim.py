@@ -1,6 +1,6 @@
 """A part is carried straight over the rim to the bin, where the cell chose so (the owner, 2026-10-08 night: a switch).
 
-``robot.place.carry: over_the_rim`` (or the task's ``carry``) skips the stop at the bin's look (the motion map's C8):
+``robot.motion.place.carry: over_the_rim`` (or the task's ``carry``) skips the stop at the bin's look (the motion map's C8):
 where one of the pick's looks was the bin's, the bin is checked on that look's frame, its rim's depth and colour as a
 check reads them first, with no detector and no new frame; the arm's world holds the pick's frames again for the place,
 so the line into the bin is judged against the walls that look saw; and the part goes up, then straight over to the

@@ -107,10 +107,8 @@ class TallTargetClearsTheTableCheckTests(unittest.TestCase):
         from src.geometry import Frame
         from src.robot.grasping.collision import ParallelJawGripperModel, SupportPlane
         from src.robot.grasping.collision.table_collision import gripper_table_clearance_mm
-        from src.robot.grasping.generation.support_footprint import (
-            SupportFootprintJaw,
-            generate_support_footprint_grasps,
-        )
+        from src.robot.grasping.generation.hand import SupportFootprintJaw
+        from src.robot.grasping.generation.body_grasps import body_grasps
         from src.robot.grasping.planning import GraspPose
 
         model = ParallelJawGripperModel()
@@ -119,7 +117,7 @@ class TallTargetClearsTheTableCheckTests(unittest.TestCase):
         gx, gy = np.meshgrid(xs, ys, indexing="ij")
         cloud = np.column_stack([gx.ravel(), gy.ravel(), np.full(gx.size, height_mm)])
 
-        candidates = generate_support_footprint_grasps(
+        candidates = body_grasps(
             cloud,
             support_height_mm=0.0,
             jaw=SupportFootprintJaw.from_model(model, table_clearance_mm=self.MIN_CLEARANCE_MM),

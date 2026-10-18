@@ -249,7 +249,7 @@ class TheHandleTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
-    """The cell's three refusals, which the noun owns: an unknown, a disabled and a non RGB-D rig."""
+    """The cell's three refusals, which the noun owns: an unknown, a disabled and a stereo rig not yet calibrated."""
 
     def test_an_unknown_primary_is_refused_naming_the_rigs(self) -> None:
         with self.assertRaises(CameraRefused) as caught:
@@ -278,16 +278,19 @@ class SelectionTests(unittest.TestCase):
             "camera.cameras.primary_rig_id names 'overhead' and that rig has `enabled: false`. A cell "
             "cannot run on a camera its own config declares off. Switch it on, or name a rig that is on.")
 
-    def test_a_non_rgbd_primary_is_refused_naming_the_rgbd_rigs(self) -> None:
+    def test_a_stereo_primary_without_its_stereo_calibration_is_refused_naming_the_rigs_with_depth(self) -> None:
         with self.assertRaises(CameraRefused) as caught:
             Camera.from_config(_section("pair", _pair("pair", 0, 1), _opencv("overhead", 3)))
-        self.assertEqual(caught.exception.reason, "not_rgbd")
-        self.assertEqual(
-            str(caught.exception),
-            "camera.cameras.primary_rig_id names 'pair', a 'webcam_pair' rig, not an RGB-D device. A "
-            "grasp cell needs an RGB-D primary: the grasp is synthesised from its depth. The RGB-D rigs "
-            "here are ['overhead']. Name one of those instead, and prove it standalone with "
-            "`python -m src.robot.perception`.")
+        self.assertEqual(caught.exception.reason, "no_stereo_calibration")
+        said = str(caught.exception)
+        self.assertTrue(said.startswith(
+            "camera.cameras.primary_rig_id names 'pair': rig 'pair' is a 'webcam_pair' rig, which gives depth through "
+            "its stereo calibration, and there is none at camera.cameras.rigs['pair'].calibration_paths."
+            "stereo_map_file, "), said)
+        self.assertIn("examples/real_robot/19_calibrate_a_stereo_pair.py", said)
+        self.assertTrue(said.endswith(
+            "The rigs here that give depth now are ['overhead']: calibrate this one, or name one of those instead and "
+            "prove it standalone with `python -m src.robot.perception`."), said)
 
     def test_open_disabled_lifts_the_disabled_refusal_and_nothing_else(self) -> None:
         off = _opencv("overhead", 3).model_copy(update={"enabled": False})
@@ -298,7 +301,7 @@ class SelectionTests(unittest.TestCase):
         stereo = _pair("pair", 0, 1)
         with self.assertRaises(CameraRefused) as caught:
             Camera.from_config(_section("pair", stereo), open_disabled=True)
-        self.assertEqual(caught.exception.reason, "not_rgbd")
+        self.assertEqual(caught.exception.reason, "no_stereo_calibration")
         with self.assertRaises(CameraRefused) as unknown:
             Camera.from_config(_section("pair", stereo), rig_id="ghost", open_disabled=True)
         self.assertEqual(unknown.exception.reason, "unknown")

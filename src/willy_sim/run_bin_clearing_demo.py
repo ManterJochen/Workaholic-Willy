@@ -288,7 +288,7 @@ def _score_all(perception: Any, handles: Any, session: Any) -> "tuple[list[dict]
 
 
 def _select_by_prompt(detector: Any, frame: Any, prompt: str) -> "tuple[set[int], list]":
-    """Select objects by language, running GroundingDINO on the overhead RGB.
+    """Select objects by language, running the cell's VLM on the overhead RGB.
 
     Returns the set of ground-truth object indices whose segmentation-mask centroid falls inside a
     detected box. Mask and box share the one 640x480 overhead pixel space, and the indices are aligned
@@ -408,19 +408,18 @@ def record_clearing(out: str, *, headless: bool = True, fps: int = 24, capture_e
                     hold: int = 10, max_picks: int = 12, prompt: str | None = None) -> dict:
     _require_curobo()
     if prompt:
-        # A text prompt steers which objects are cleared, via GroundingDINO on the overhead RGB. Force
-        # HF offline before Isaac boots, or Kit's httpx closes and the model load crashes; the
-        # grounding-dino-tiny weights must already sit in the local HF cache.
+        # A text prompt steers which objects are cleared, via the cell's VLM on the overhead RGB. Force
+        # HF offline before Isaac boots, or Kit's httpx closes and the model load crashes; the VLM's
+        # weights must already sit under models.weights_root.
+        #
+        # Unmeasured with the VLM: GroundingDINO, the demo's detector until 2026-10-17, starved the
+        # rendered-depth annotator when it loaded onto CUDA next to Kit's live renderer, so it ran on
+        # the CPU. The VLM loads onto CUDA, as it does on a cell. If camera.get_depth() returns
+        # garbage again, every object scores seal=0 and footprint=inf and nothing is picked: that is
+        # the symptom to look for.
         import os
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-        # Run the detector on CPU. Loading GroundingDINO onto CUDA next to Kit's live renderer starves
-        # the rendered-depth annotator: camera.get_depth() returns garbage, every object then scores
-        # seal=0 and footprint=inf, everything is rejected and nothing is picked. Only the detector
-        # consults get_device(); the suction seal is numpy-analytical and Isaac, cuRobo and Coal keep
-        # the GPU, so CPU inference on one overhead frame per pick keeps the two decoupled. setdefault
-        # leaves an explicit WILLY_DEVICE winning.
-        os.environ.setdefault("WILLY_DEVICE", "cpu")
     from src.geometry import Frame, Pose
     from src.geometry.quaternion import to_rotation_matrix
     from src.robot.core import JointPositions
@@ -510,14 +509,16 @@ def record_clearing(out: str, *, headless: bool = True, fps: int = 24, capture_e
         camera=handles.camera, targets=list(handles.object_specs), session=session,
         warmup_steps=max(20, sim.scene_setup.render_warmup_steps))
 
-    # Language-driven selection: build GroundingDINO, the grounding-dino-tiny the sim profile configures
-    # with fp32 weights, so a text prompt can pick which objects get cleared. With prompt=None the demo
-    # clears everything pickable.
+    # Language-driven selection: the tree's VLM, the process's one copy, so a text prompt can pick which
+    # objects get cleared; it loads at its first prompt. Only the detector is needed, because the masks are
+    # Isaac's ground truth. With prompt=None the demo clears everything pickable.
     detector = None
     if prompt:
-        from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector
-        detector = GroundingDinoObjectDetector(cfg.models.objectdetector)
-        print(f"[lang] GroundingDINO ready; prompt={prompt!r} -> only matching objects are cleared", flush=True)
+        from src.models.vlm.holder import shared_vlm
+        detector = shared_vlm().grounder_for(cfg.models.pipeline.zero_shot.vlm,
+                                             weights_root=cfg.models.weights_root)
+        print(f"[lang] VLM {detector.model_id} ready; prompt={prompt!r} -> only matching objects are cleared",
+              flush=True)
 
     frames: list[np.ndarray] = []
     wrist_track: list[np.ndarray] = []
@@ -582,7 +583,7 @@ def record_clearing(out: str, *, headless: bool = True, fps: int = 24, capture_e
     placed = n_center = n_edge = 0
     _skip: set[int] = set()   # jaw objects whose grasp was unreachable: parked, not re-picked, not air-grabbed
     # Language selection is locked on the first, full-scene frame and then reused. The request is a fixed
-    # intent, "clear exactly these", and must not drift as objects leave: re-running GroundingDINO each
+    # intent, "clear exactly these", and must not drift as objects leave: re-running the detector each
     # iteration on the emptying bin lets "box" ground to the KLT tote itself, so a left-behind object
     # whose centroid falls in that box would flip to selected and be wrongly picked. Tool scoring still
     # re-runs per frame.
@@ -748,8 +749,8 @@ def main() -> int:
     ap.add_argument("--fps", type=int, default=24)
     ap.add_argument("--max-picks", type=int, default=12)
     ap.add_argument("--prompt", type=str, default=None,
-                    help="LANGUAGE-DRIVEN mode: a text prompt (e.g. 'box. package.' or 'a toy animal') -> REAL "
-                         "GroundingDINO clears ONLY the matching objects, dimming the rest. Omit = clear all.")
+                    help="LANGUAGE-DRIVEN mode: a text prompt (e.g. 'box | package' or 'a toy animal') -> the "
+                         "REAL VLM clears ONLY the matching objects, dimming the rest. Omit = clear all.")
     ap.add_argument("--gui", action="store_true")
     args = ap.parse_args()
     r = record_clearing(args.out, headless=not args.gui, fps=args.fps, max_picks=args.max_picks, prompt=args.prompt)

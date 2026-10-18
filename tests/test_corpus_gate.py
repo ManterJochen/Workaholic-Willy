@@ -10,10 +10,8 @@ Every assertion here is a thing that already happened in this project, not a thi
 * and three separate frame defects, which is why a spec carries its frame and a mismatch is refused
   rather than compared
 
-The last test in this file is the one that keeps the gate honest about itself: `rl/readiness.py`
-computes the same statistics for `GraspAttemptRecord` logs, and this package deliberately re-implements
-them in numpy rather than importing across the stack. That duplication is only safe if it is checked,
-so both are run over the same rows and asserted to agree.
+The check against `rl/readiness.py`, the second implementation of these statistics, left on 2026-10-16
+with the RL layer.
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ from src.robot.grasping.deep.ranker.features import (
     FeatureSpec,
     spec_named,
 )
-from datagen.corpus import assess_corpus, column_stats, format_verdict
+from datagen.corpus import assess_corpus, format_verdict
 
 SPEC = FeatureSpec(
     name="test_spec", frame="object",
@@ -228,37 +226,6 @@ class TheFeatureSpecIsAContractTests(unittest.TestCase):
         self.assertEqual(BOOTSTRAP_JAW_V1.frame, "grasp")
         self.assertTrue(BOOTSTRAP_JAW_V1.derived)
         self.assertEqual(BOOTSTRAP_OBJECT_FRAME_V0.frame, "object")
-
-
-class ThisPackageAgreesWithTheRLReadinessCheckerTests(unittest.TestCase):
-    """The duplication invariant, checked rather than hoped about.
-
-    `rl/readiness.py` computes the same statistics for `GraspAttemptRecord` logs. This package
-    re-implements them in numpy instead of importing across the stack -- a datagen package should not
-    depend on the RL layer, and a pure-Python loop over 218,529 rows takes minutes rather than
-    milliseconds. Two implementations of the same arithmetic are only safe while something checks that
-    they agree.
-    """
-
-    def test_both_reach_the_same_verdict_and_the_same_numbers(self) -> None:
-        from src.robot.grasping.rl.readiness import _column  # noqa: PLC0415
-
-        for name, values in (
-            ("constant", [3.0] * 12),
-            ("live", [float(v) for v in range(12)]),
-            ("with_zeros", [0.0, 0.0, 1.0, 2.5, 2.5, 9.0]),
-            ("noise_only", [1.0, 1.0 + 1e-12, 1.0 - 1e-12]),
-        ):
-            with self.subTest(column=name):
-                theirs = _column(name, values)
-                ours = column_stats(name, np.asarray(values))
-                self.assertEqual(ours.verdict, theirs.verdict)
-                self.assertEqual(ours.rows, theirs.rows)
-                self.assertEqual(ours.distinct, theirs.distinct)
-                self.assertEqual(ours.nonzero, theirs.nonzero)
-                self.assertAlmostEqual(ours.stdev, theirs.stdev, places=9)
-                self.assertAlmostEqual(ours.minimum, theirs.minimum, places=9)
-                self.assertAlmostEqual(ours.maximum, theirs.maximum, places=9)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -67,6 +67,10 @@ _HOME: dict[str, str] = {
     "TaskReport": "src.robot.execution.task",
     "TaskStop": "src.robot.execution.task",
     "run_task": "src.robot.execution.task",
+    # Several arms at once: steps that run at the same time, every arm halted where one fails.
+    "StepEnd": "src.robot.execution.together",
+    "TogetherFailed": "src.robot.execution.together",
+    "together": "src.robot.execution.together",
     # What a build or a connect refuses with.
     "CameraFusionPlan": "src.robot.execution.camera_fusion",
     "CameraWorldPlan": "src.robot.execution.camera_world_wiring",
@@ -88,6 +92,8 @@ _HOME: dict[str, str] = {
     "RGBDFrame": "src.camera",
     "RigCalibrationError": "src.camera",
     "RigNotCalibrated": "src.camera",
+    "StereoCalibration": "src.camera",
+    "StereoCalibrationReport": "src.camera",
     "SweepOptions": "src.robot.execution.hand_eye",
     "print_sweep_progress": "src.robot.execution.hand_eye",
     # A pixel of your own in BASE, from one frame, and a TCP pose proposed over it: no detector, nothing moves.
@@ -157,7 +163,9 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     # mypy reads every name reached that way as Any, so no call through them would be checked.
     from src.config.loader import ConfigError, load_speech_section
     from src.config.tree import LoadedTree, load_tree
-    from src.camera import Camera, CameraRefused, RGBDFrame, RigCalibrationError, RigNotCalibrated
+    from src.camera import (
+        Camera, CameraRefused, RGBDFrame, RigCalibrationError, RigNotCalibrated, StereoCalibration,
+        StereoCalibrationReport)
     from src.camera.live_view import LiveView
     from src.geometry import Frame, Pose
     from src.models.detection.closed_set.training.api import DetectorTraining
@@ -191,6 +199,7 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
         MAX_FURTHER_RULES, PlaceAt, SortRule, TaskEvent, TaskHooks, TaskOptions, TaskPlan, TaskRefused, TaskReport,
         TaskStop, run_task)
     from src.robot.execution.teach import teach_poses
+    from src.robot.execution.together import StepEnd, TogetherFailed, together
     from src.robot.execution.wrist_bodies import WristBodyRequired
     from src.robot.grasping.deep.foreign.service import PublicCorpus
     from src.robot.grasping.deep.train.api import GeneratorTraining

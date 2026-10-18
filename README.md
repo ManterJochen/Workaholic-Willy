@@ -23,7 +23,7 @@ a fail-closed safety pipeline, executes on a real or simulated arm, then checks 
 <!-- ────────────────────────────────────────────────────────────────────────── -->
 
 Workaholic-Willy turns a **text prompt + a camera scene** into a **completed pick**. It grounds the
-prompt (GroundingDINO + SAM2 or Qwen-VL + stereo/RGB-D depth), synthesizes and scores 6-DoF grasps, plans a
+prompt (Qwen-VL, or RT-DETR for trained classes, then SAM2, over stereo or RGB-D depth), synthesizes and scores 6-DoF grasps, plans a
 collision-free trajectory (cuRobo + Coal), gates every motion through six fail-closed guards, drives a
 robot arm + gripper, then checks the hold, recovers on failure, and logs each attempt as a structured `GraspAttemptRecord`.
 With a **wrist camera** it looks from several poses, fuses what it saw and stops as soon as the grasp is safe.
@@ -35,8 +35,8 @@ end-to-end on a **real UR10** with a jaw and a wrist **Intel RealSense** camera.
 flowchart LR
     P["🗣 <b>prompt</b><br/><i>pick the red cube</i>"]:::io
     C["📷 <b>RGB-D / stereo</b>"]:::io
-    D["<b>GroundingDINO / Qwen-VL / RT_DETR</b><br/>"]:::perc
-    S["<b>SAM2 / OneFormer</b><br/>"]:::perc
+    D["<b>Qwen-VL / RT_DETR</b><br/>"]:::perc
+    S["<b>SAM2</b><br/>"]:::perc
     G["<b>Grasp calculator</b><br/>generate · score · rank"]:::grasp
     F["<b>SafetyPreflight</b><br/>"]:::safe
     M["<b>cuRobo + Coal</b><br/>"]:::safe
@@ -72,10 +72,10 @@ Four pillars, one loop each, and every clip below **plays automatically**:
 |  👁 &nbsp; Vision-language perception  |  🧠 &nbsp; Autonomous decision  |
 |:--:|:--:|
 | ![perception](docs/assets/demo/gif/vision.gif) | ![autonomy](docs/assets/demo/gif/autonomy.gif) |
-| Prompt → GroundingDINO or Qwen-VL → SAM2 → masked point cloud → 6-DoF grasp | Filmed with the retired **DENSE_AUTONOMOUS** loop (perceive → refine → verify → recover); a clip of the **wrist multi-view** pick replaces it soon. The **AUTO decision gate** runs today: demo it with `run_m1_pick --mode auto` |
+| Prompt → Qwen-VL → SAM2 → masked point cloud → 6-DoF grasp | Filmed with the retired **DENSE_AUTONOMOUS** loop (perceive → refine → verify → recover); a clip of the **wrist multi-view** pick replaces it soon. Today's **AUTO** pick perceives, ranks and recovers on its own: demo it with `run_m1_pick --mode auto` |
 |  ♻ &nbsp; **Scene recovery**  |  🛡 &nbsp; **Fail-closed safety**  |
 | ![recovery](docs/assets/demo/gif/recovery.gif) | ![safety](docs/assets/demo/gif/safety.gif) |
-| Filmed with the earlier simulator push, a sweep that cleared a blocker out of the approach corridor. Today's **push** (`dense_clutter`, on a wrist camera's pick) slides a boxed-in part with the outer face of the open finger, inside an automatic push box, and never changes the jaws | Six ordered guards run **before every motion** ([`safety/preflight.py`](src/robot/safety/preflight.py)); this clip's refusal is `approach_path_blocked` from the swept-approach check, a *seventh*, grasping-side gate, and the pipeline fails closed either way |
+| Filmed with the earlier simulator push, a sweep that cleared a blocker out of the approach corridor. Today's **push** (`dense_clutter`, on a wrist camera's pick) slides a boxed-in part with the closed fingers, inside an automatic push box | Six ordered guards run **before every motion** ([`safety/preflight.py`](src/robot/safety/preflight.py)); this clip's refusal is `approach_path_blocked` from the swept-approach check, a grasping-side gate that left on 2026-10-16 (the exact guard judges every sample of every motion), and the pipeline fails closed either way |
 
 **Complementary end-effectors**, the jaw and suction on the *same* deep KLT bin.
 
@@ -105,16 +105,15 @@ The looping previews above are muted GIFs. The full recordings live in [`docs/as
 
 |  |  |
 |---|---|
-| 🗣 **Vision-language perception** | Text prompt → GroundingDINO or Qwen-VL detect → SAM2 segment → masked point cloud, over stereo or RGB-D depth. A VLM route handles the attribute prompts the detector gets wrong. |
+| 🗣 **Vision-language perception** | Text prompt → Qwen-VL grounds it (RT-DETR for trained classes) → SAM2 segments → masked point cloud, over stereo or RGB-D depth. The VLM reads colours, negations and where a part lies. |
 | ✋ **6-DoF grasp synthesis** | Support-plane geometry → antipodal / surface / dense contact sampling → geometric + stability + reachability scoring → deterministic rank. The math: [`docs/grasping-math.md`](docs/grasping-math.md). |
-| 🛡 **Fail-closed safety** | Six ordered guards (workspace · joint-limit · IK-quality · self-collision · payload · motion-continuity) run before every motion and **outrank ML/RL**. The math: [`docs/safety-math.md`](docs/safety-math.md). |
+| 🛡 **Fail-closed safety** | Six ordered guards (workspace · joint-limit · IK-quality · self-collision · payload · motion-continuity) run before every motion and **outrank every learned layer**. The math: [`docs/safety-math.md`](docs/safety-math.md). |
 | 🧭 **Collision-free motion** | cuRobo + Coal (vertex-exact mesh self-collision), with a blind-IK fallback that keeps CI green. |
 | 🤖 **Vendor-neutral drivers** |  All behind one `RobotArm`/`Gripper` `Protocol`. |
 | 🤏 **Six gripper drivers** | Robotiq (URCap socket) · jaw over digital I/O · suction over digital I/O · Isaac sim jaw + suction · Dummy · Null. |
 | 📷 **Multi-camera calibration & fusion** | Per-camera eye-to-hand / eye-in-hand extrinsics declared on each rig (`camera.cameras.rigs[<id>].extrinsics`) + AX=XB routine; multi-camera geometry fusion runs **in the core pick loop**. |
 | 🔄 **Wrist multi-view** | A wrist (eye-in-hand) camera visits its look poses, fuses every view and **stops as soon as the grasp is safe**. One generated view on a straight joint line is the last resort, every frame of the pick stays in the planner's world, and `both_faces=True` refuses a grip whose jaw contact faces were not both seen. Fixed cameras fuse without moving. |
-| 📊 **Structured telemetry** | Every attempt → a frozen `GraspAttemptRecord` → KPI rollup · soak gate · failure taxonomy · offline RL. |
-| 🧠 **Offline RL (shadow)** | Train → OPE → promote, gated; runs shadow/canary-only and never overrides the safety mask. `check-dataset` answers *is this log trainable?* **before** the training run, not after. |
+| 📊 **Structured telemetry** | Every attempt → a frozen `GraspAttemptRecord` → KPI rollup · soak gate over real logs · failure taxonomy. |
 | 🧠 **Deep Learning GraspEngine** | Generate Dataset or use GraspAnything → train → check result → See the magic happen. Use of your own CAD models is supported. |
 | 🎛 **Operator console** | FastAPI + React: say what to do, read what Willy understood, press **Start**. A task picks, places at a taught pose or into a bin the camera finds, and returns, once or until empty, with the live image, a step timeline, **halt now**, a stop card with Restart or Home, the jaws question in the browser, poses taught by hand, and an audience window for the projector. |
 | 🎲 **Synthetic data engine** | [`datagen/`](datagen/README.md) · path-traced scenes with posed arms, analytic grasp labels and a physics reward. Choice of engines: Isaac-Sim, Mujoco and no engine at all. |
@@ -151,8 +150,8 @@ A cell is either a profile or a custom data directory:
 1. **Write the profile.** Start from a worked cell: `ur5e` (a UR5e on a bench), `ur3e`, `ur5e,eth2`
    (two fixed RGB-D cameras, fused) or `sim` (the Isaac UR5e cell). [Guide 01](docs/guide/01-configuration.md)
    explains the tree, and the profile step of [cell_bringup.md](docs/runbooks/cell_bringup.md) writes it.
-   Name how the hand and its camera naturally stand with `robot.natural_closing_axis` (`"-y"` suits the real
-   UR10's hand and wrist camera; no shipped profile sets it): every camera grasp then closes that way round,
+   Name how the hand and its camera naturally stand with `robot.motion.natural_closing_axis` (`"-y"` suits the
+   real UR10's hand and wrist camera; no shipped profile sets it): every camera grasp then closes that way round,
    and `robot.tool_down` builds your fixed poses along it.
 2. **Write your own Data** Start either from [all_keys](config/all_keys) to have the base structure for your cell or use an existing cell as a template.
 2. **Check it at a desk.** `WILLY_PROFILE=<your cell> python -m src.robot.execution.real_cell --check` or `python -m src.robot.execution.real_cell --check --data-dir your/Path/<your cell>/`
@@ -190,7 +189,7 @@ watch it run, stop it, and bring the cell back after a stop, without the command
 # hardware-free: a dummy arm, a dummy hand, a desk scene, a place and a park pose
 python -m api --profile console_dummy          # -> http://127.0.0.1:8000
 
-# your cell: end the chain in its own git-ignored layer, where the poses taught at the cell are written
+# your cell: end the chain in its own git-ignored layer, where the poses and task settings chosen at the cell are written
 python -m api --profile <your cell>,cell
 # or your own data directory
 python -m api --data /path/to/your/data
@@ -198,17 +197,17 @@ python -m api --data /path/to/your/data
 
 | Page | Answers |
 |---|---|
-| 🕹 **Cockpit** | *What should Willy do?* Type it or say it. The **Understood** card shows what was read, and nothing moves before **Start**, whose label names the first motion. The live image, the step timeline, the success rate and a real chat. |
+| 🕹 **Cockpit** | *What should Willy do?* Type it or say it. The **Understood** card shows what was read, and nothing moves before **Start**, whose label names the first motion, or the person's Enter on a clean reading where the cell's task settings say Enter starts (`runtime.task.start: enter`, as shipped). The live image, the step timeline, the success rate and a real chat. |
 | 🛠 **Setup** | *Is this cell ready?* Check → Build → Preview → Connect (the jaws question in the browser) → Ready. Poses taught by hand, each screened by the exact guard and the planner at once. |
 | 📈 **History** | Every task of the session in numbers and two charts, and every logged `GraspAttemptRecord`, rolled up. |
-| ⚙ **Settings** | German or English, dark or light, the demo or the tech view, voice output, the talk key, and the bench values. |
+| ⚙ **Settings** | German or English, dark or light, the demo or the tech view, voice output and the talk key for this browser; how the cell starts a task ("Auftrag"), for every browser; and the bench values. |
 | 📽 **Audience window** | A read-only mirror for the projector: the live image, the step in big words, and the **STILL GRINDING** card. |
 
 **Nothing moves without a click** on a button that names the motion. **Nothing moves on its own after a stop**:
 a person says the cell is clear, then chooses Restart or Home, and the stop outlives a restart of the server.
 **"Sofort anhalten" is not the emergency stop**: one click stops the run and latches the arm, so nothing after
-the move in flight is sent, and only with `robot.ur.brake_on_halt` on (off as shipped) is that move braked under
-control. The red button at the cell stays the safety stop.
+the move in flight is sent, and every UR brakes that move under control (since 2026-10-17, as the owner's cell ran
+it). The red button at the cell stays the safety stop.
 
 Full surface, refusals and events: [`api/README.md`](api/README.md) ·
 the pages: [`frontend/README.md`](frontend/README.md) ·
@@ -229,7 +228,7 @@ See: [**`examples/`**](examples/README.md) for detailed usage and step-by-step g
 flowchart LR
     P["<b>prompt</b><br/><i>pick the red cube</i>"]:::io
     C["<b>RGB-D or stereo</b>"]:::io
-    D["<b>GroundingDINO</b><br/>ground the words"]:::perc
+    D["<b>Qwen-VL</b><br/>ground the words"]:::perc
     S["<b>SAM2</b><br/>segment, then a point cloud"]:::perc
     G["<b>Grasp calculator</b><br/>generate, score, rank"]:::grasp
     F["<b>SafetyPreflight</b><br/>six fail-closed guards"]:::safe
@@ -269,11 +268,11 @@ The dependency stack points one way, and nothing imports up:
   [`api/`](api/README.md) with [`frontend/`](frontend/README.md) is the operator console.
 
 
-The default pick is open-loop: perceive, rank geometrically, gate, move, log. A wrist camera handed look
-poses looks around first, with no switch to set. The AUTO decision gate, recovery, fixed-camera fusion, the learned
-success model and reinforcement learning are built, opt-in and off by default; each is a `robot.grasping.*` block
-(reinforcement learning is `robot.rl`), and
-[`docs/grasping-config-reference.md`](docs/grasping-config-reference.md) says which grasp mode each can
+The default pick perceives once and grasps: perceive, rank geometrically, gate, move, log. A wrist camera handed
+look poses looks around first, a cell of two or more calibrated RGB-D cameras fuses them, and every cell recovers
+from a miss with a rescan and, in `dense_clutter`, a push; none of these has a switch. The learned ranker is built,
+opt-in and off by default (`robot.grasping.deep_ranker`), and
+[`docs/grasping-config-reference.md`](docs/grasping-config-reference.md) says which grasp mode each block can
 fire in.
 
 <details>
@@ -286,15 +285,15 @@ src/
     geometry/               numpy SE(3): Frame, Pose, Transform, quaternions
     calibration/            extrinsics, eye-hand through AX=XB, stereo, versioned artifacts
     camera/                 capture rigs, frame providers, streaming over OpenCV or RealSense
-    models/                 GroundingDINO, SAM2, RT-DETR, a VLM route, hand and speech wrappers
+    models/                 the VLM (Qwen3-VL), SAM2, RT-DETR, hand and speech wrappers
     config/                 the loader, the schema and the CLI that reads the tree above
     robot/
         core/               RobotArm and Gripper Protocols, typed motion objects, vendor enums
-        drivers/            UR over RTDE, Isaac Sim, Dummy, and three reserved names
+        drivers/            UR over RTDE, Isaac Sim, Dummy
         grippers/           robotiq, onrobot, jaw_io, vacuum, the two simulated ones, dummy, null
         safety/             the ordered fail-closed preflight, and the cuRobo binding
         perception/         real-camera RGB-D into a PerceptionFrame, and the Locator
-        grasping/           generate, score, decide, look again, recover, log
+        grasping/           generate, score, look again, recover, log
         execution/          Robot, Cell, PickRun, the composition root, the real cell, calibration
     willy_sim/              the Isaac Sim runners, the full-motion validation platform
     utility/                paths, device selection, atomic IO, logging, unit scaling
@@ -313,13 +312,12 @@ docs/                       the guide, the runbooks, the math references, and th
 
 ## Testing
 
-Continuous integration runs lint, types, tests, coverage and the soak gate of the Python tree on every change. Locally:
+Continuous integration runs lint, types, tests and coverage of the Python tree on every change. Locally:
 
 ```bash
 ruff check src api datagen tests scripts examples willy
 mypy src api datagen scripts examples willy
 pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
-python -m src.robot.grasping.replay --soak-report
 
 # the console pages, not in CI yet
 cd frontend && npm ci && npm run lint && npm test && npm run build
@@ -358,7 +356,7 @@ Including
 - [Calibration](src/calibration/README.md), extrinsics, stereo, persistence
 - [Hand-eye](src/calibration/eye_hand/README.md), the two workflows
 - [Real-camera perception](src/robot/perception/README.md)
-- [Models](src/models/README.md), detection, segmentation, the VLM route
+- [Models](src/models/README.md), detection, segmentation, the VLM
 - [Speech](src/models/speech/README.md), push to talk and a confirmation
 
 </td></tr>
@@ -385,7 +383,7 @@ Including
 - [The full 6-DoF pipeline](src/robot/grasping/README.md)
 - [Contacts](src/robot/grasping/contacts/README.md), [planning](src/robot/grasping/planning/README.md), [collision](src/robot/grasping/collision/README.md)
 - [Scoring](src/robot/grasping/scoring/README.md), [suction](src/robot/grasping/suction/README.md), [multi-view](src/robot/grasping/multiview/README.md)
-- [KPI and the soak gate](src/robot/grasping/replay/README.md), [offline RL](src/robot/grasping/rl/README.md)
+- [KPI and the soak gate](src/robot/grasping/replay/README.md)
 - [Config reference](docs/grasping-config-reference.md), every block and the mode gate
 
 </td><td>

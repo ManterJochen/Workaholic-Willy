@@ -27,11 +27,11 @@ DOWN = np.column_stack([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
 
 
 def _hand() -> "tuple[Any, float]":
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
     from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
 
     cfg = hande_cell()
-    return build_gripper_geometry(cfg.grasping.gripper_geometry), float(cfg.gripper.max_width_mm)
+    return jaw_envelope(cfg), float(cfg.gripper.max_width_mm)
 
 
 def _box(centre: "tuple[float, float, float]", half: "tuple[float, float, float]", soft_mm: float = 0.0) -> Any:

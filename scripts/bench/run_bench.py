@@ -15,10 +15,13 @@ nothing else:
 * **The parts**: they do not fall or slide. A part the jaws close on is carried with the TCP, a push moves its part as
   far as the plan says. Whether a grasp holds is a question for the physics (MuJoCo or Isaac), not for this bench.
 
-The bench's layer (``robot.bench.yaml``) puts the owner's 2026-10-05 numbers over the tree: 3 mm for the guard and the
-lines, 8 mm round a box the camera saw, the cable window, and recovery with the push allowed. A pick counts as a success
-where the target is in the jaws when it ends. Each scene writes its looks (``views/<scene>.npz``) with one debug picture
-per look (the detections, their masks, the ranked grasps), and the run a ``bench_result.json`` and a ``report.html``.
+The bench's layer (``robot.bench.yaml``) puts the owner's 2026-10-05 distances over the tree: 3 mm for the guard from the
+arm, a fixture and a box the camera saw. The rest every cell runs as the owner's cell does since the cleanup of
+2026-10-17: 3 mm for the lines, the cable window, a box the camera saw grown by 6 mm, and recovery with the push. The
+bench's A/B of that growth (``--margin``) left with its key, ``safety.planning_world.perceived.margin_mm``: a world
+grown otherwise is no world a cell builds. A pick counts as a success where the target is in the jaws when it ends. Each
+scene writes its looks (``views/<scene>.npz``) with one debug picture per look (the detections, their masks, the ranked
+grasps), and the run a ``bench_result.json`` and a ``report.html``.
 
 While the owner games on this box (2026-10-05), run it only when they say so: the planner takes the GPU.
 """
@@ -69,21 +72,14 @@ _LAYER = {
     "robot": {
         "ur": {"ip": "127.0.0.1"},
         "safety": {
-            "joint_limits": {"within_half_turn_of_home": True},
             "self_collision": {"min_distance_mm": 3.0, "perceived_min_distance_mm": 3.0},
-            "planned_motion": {"line_clearance_mm": 3.0},
-            "planning_world": {"perceived": {"margin_mm": 8.0}},
-        },
-        "grasping": {
-            "recovery": {"enabled": True, "allowed_actions": ["rescan", "next_target", "nudge_target"],
-                         "per_action_budget": [["rescan", 1]], "critical_parts": False},
         },
     }
 }
 
 
 def copy_the_tree(tree: Path, work: Path, calibration: Optional[Path], *, no_planner: bool = False,
-                  ip: str = "127.0.0.1", margin_mm: Optional[float] = None) -> Path:
+                  ip: str = "127.0.0.1") -> Path:
     """``tree`` copied to ``<work>/config`` with the bench's layer, and the camera layer naming ``calibration``.
     ``no_planner`` runs the arm on its controller's IK, no cuRobo: a wiring check that needs no GPU, not a result.
     ``ip`` is the controller's address, which nothing dials (the instant controller answers every address) and which
@@ -92,9 +88,6 @@ def copy_the_tree(tree: Path, work: Path, calibration: Optional[Path], *, no_pla
     shutil.copytree(tree, copied)
     layer = json.loads(json.dumps(_LAYER))
     layer["robot"]["ur"]["ip"] = str(ip)
-    if margin_mm is not None:
-        # An A/B of how far the camera world grows its boxes past the points (``--margin``); the owner's 8 otherwise.
-        layer["robot"]["safety"]["planning_world"]["perceived"]["margin_mm"] = float(margin_mm)
     if no_planner:
         layer["robot"].setdefault("motion", {})["planner"] = "ik"
     text = ("# The bench's layer (scripts/bench/run_bench.py): the owner's numbers of 2026-10-05 over the tree, and the\n"
@@ -150,7 +143,7 @@ def _report_dict(report: Any) -> dict[str, Any]:
         "needs_person": str(getattr(report, "needs_person", "") or ""),
         "attempts": attempts,
         "calculator": {k: telemetry.get(k) for k in ("no_grasp_said", "rejected_collision", "rejected_table",
-                                                      "support_footprint_refused") if k in telemetry},
+                                                      "body_refused") if k in telemetry},
         "trail": json.loads(json.dumps(trail, default=str)),
     }
 
@@ -215,15 +208,14 @@ class Bench:
         self.work = Path(args.work)
         self.work.mkdir(parents=True, exist_ok=True)
         copied = copy_the_tree(Path(args.tree), self.work, None if args.no_calibration else Path(args.calibration),
-                               no_planner=bool(args.no_planner), ip=str(args.ip),
-                               margin_mm=getattr(args, "margin", None))
+                               no_planner=bool(args.no_planner), ip=str(args.ip))
         chain = f"{args.profile},{BENCH_LAYER}" if args.profile else BENCH_LAYER
         self.tree = load_tree(chain, root=copied)
         robot = self.tree.robot
         self.robot = robot
-        #: The cell's word on where a blocker of a clearing goes (``recovery.blocker_into_the_place``).
-        self.blocker_into_the_place = bool(getattr(robot.grasping.recovery, "blocker_into_the_place", True))
-        self.home = [float(v) for v in (robot.home_joint_positions or ())]
+        #: Where a blocker of a clearing goes: where the parts go, as every cell sets it down since 2026-10-16.
+        self.blocker_into_the_place = True
+        self.home = [float(v) for v in (robot.motion.home_rad or ())]
         self.state = instant_ur.ControllerState(model=str(robot.arm.model).lower(), joints=list(self.home),
                                                 tcp_offset=_tcp_offset(robot))
         static = ms.StaticScene.from_crop(Path(args.crop))
@@ -251,7 +243,7 @@ class Bench:
     def looks(self) -> list[Any]:
         from src.robot.core import JointPositions  # noqa: PLC0415
 
-        rows = [tuple(row) for row in (self.robot.look_joint_positions_deg or ())]
+        rows = [tuple(row) for row in (self.robot.motion.look_deg or ())]
         if self.args.looks == "first":
             rows = rows[:1]
         return [JointPositions.deg(*row) for row in rows]
@@ -272,7 +264,7 @@ class Bench:
         cam_to_tool = np.asarray(calibration.camera_to_tool().to_matrix(), dtype=np.float64)
         cameras: list[ms.StandInD415] = []
 
-        def create_streamer(rig: Any) -> ms.StandInD415:
+        def create_streamer(rig: Any, workspace: Any = None) -> ms.StandInD415:  # noqa: ARG001 (a stereo rig's, unread)
             camera = ms.StandInD415(rig, self.scene, camera_to_tool=cam_to_tool, tcp=lambda: self.state.tcp_mm())
             cameras.append(camera)
             return camera
@@ -370,13 +362,10 @@ class Bench:
         return summary
 
     def _open_and_forget(self) -> None:
-        """The jaws open and the arm forgets the part it carried, as ``Robot.release`` does at a place: a part the planner
-        still thought carried refused every approach of the next scene."""
+        """The jaws open, as ``Robot.release`` does at a place, so the next scene starts with them open. No planner holds
+        a carried part since 2026-10-17, so there is nothing more to forget."""
         if self.jaws_closed:
             self.cell.gripper.set_closed(False)
-        detach = getattr(self.cell.arm, "detach_payload", None)
-        if callable(detach):
-            detach()
 
     def _reset(self) -> None:
         self._open_and_forget()
@@ -459,7 +448,7 @@ class Bench:
         self.scene.keep_height_on_push = spec.keep_height_on_push
         self.backend.all_parts = spec.mode == "clear"
         # A clearing takes every part, as the owner's task "alle Objekte ... in die gelbe Kiste" does: a blocker is the
-        # part a pick takes and leaves the scene as a picked part does (``recovery.blocker_into_the_place``), and where
+        # part a pick takes and leaves the scene as a picked part does (every cell's since 2026-10-16), and where
         # no part has a grasp the scene is pushed, as a task until empty starts its campaign (``every_part``, 2026-10-15).
         into = spec.mode == "clear" and self.blocker_into_the_place
         self.service.start_campaign(blocker_is_the_pick=into, every_part=spec.mode == "clear")
@@ -567,9 +556,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="the camera's depth: real, the cell's D415 as its frames of 2026-10-07 read it (noise, holes, "
                          "shadows, blurred edges); harsh, worse than that, to stress the stack; clean, the render as it "
                          "was")
-    ap.add_argument("--margin", type=float, default=None,
-                    help="an A/B of how far the camera world grows its boxes past the points "
-                         "(safety.planning_world.perceived.margin_mm), millimetres; the owner's 8 where not given")
     ap.add_argument("--slack", type=float, default=None,
                     help="an A/B of the calculator's slack past the guard's distance (scene_obstacles.WHOLE_SLACK_MM), "
                          "millimetres; the shipped value where not given")

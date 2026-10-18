@@ -119,7 +119,7 @@ class CalculatorTopologyGateTests(unittest.TestCase):
         calc = _make_calc()
         mask = _ring_mask()
         depth = _depth(mask.shape)
-        calc.compute(SimpleNamespace(mask=mask, label="ring"), depth, pixel_to_mm=5.0)
+        calc.compute(SimpleNamespace(mask=mask, label="ring"), depth)
         # Risk is reported but no rejection happens.
         self.assertIn("topology_risk", calc.last_telemetry)
         reasons = calc.last_failure_reasons
@@ -130,7 +130,7 @@ class CalculatorTopologyGateTests(unittest.TestCase):
         mask = _ring_mask()
         depth = _depth(mask.shape)
         candidates = calc.compute(
-            SimpleNamespace(mask=mask, label="ring"), depth, pixel_to_mm=5.0
+            SimpleNamespace(mask=mask, label="ring"), depth
         )
         self.assertEqual(candidates, [])
         self.assertIn(
@@ -144,7 +144,7 @@ class CalculatorTopologyGateTests(unittest.TestCase):
         mask = _convex_mask()
         depth = _depth(mask.shape)
         calc.compute(
-            SimpleNamespace(mask=mask, label="box"), depth, pixel_to_mm=5.0
+            SimpleNamespace(mask=mask, label="box"), depth
         )
         # Convex masks must survive the gate -- behavior unchanged.
         self.assertNotIn(

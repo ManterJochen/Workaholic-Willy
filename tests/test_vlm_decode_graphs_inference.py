@@ -79,7 +79,10 @@ class DecodeGraphsInferenceTests(unittest.TestCase):
         if free < _VRAM_NEEDED_BYTES:
             raise unittest.SkipTest(f"{free / 1e9:.1f} GB of VRAM free, the model needs about "
                                     f"{_VRAM_NEEDED_BYTES / 1e9:.1f} GB")
-        cls.grounder = Qwen3VLGrounder(model_id=MODEL_ID, local=True, preload=True)
+        cls.grounder = Qwen3VLGrounder(model_id=MODEL_ID)
+        # The plain answer unless a test names a setting: the owner's cell's (both lookups at 10) are the constructor's.
+        cls.grounder.configure(prompt_lookup_tokens=0, text_prompt_lookup_tokens=0, stop_at_answer_end=True)
+        cls.grounder.ensure_loaded()
         cls.rgb = np.ascontiguousarray(_scene()[..., ::-1])
 
     @classmethod

@@ -28,7 +28,7 @@ from src.geometry import Frame
 from src.robot.grasping.collision import SupportPlane
 from src.robot.grasping.generation import calculator as calculator_module
 from src.robot.grasping.generation.footprint_hull import HULL_LIFT_MM, hull_points, unread_pixels
-from src.robot.grasping.generation.support_footprint import reconstruct_support_prism
+from src.robot.grasping.generation.support_prism import reconstruct_support_prism
 
 _W, _H, _F = 1280, 720, 913.7
 _K = np.array([[_F, 0.0, 640.0], [0.0, _F, 360.0], [0.0, 0.0, 1.0]])
@@ -117,12 +117,13 @@ def _compute(calculator: Any, mask: np.ndarray, depth: np.ndarray, camera_to_bas
     return dict(calculator.last_telemetry), cloud
 
 
-def _sides(cloud: np.ndarray, inflate_mm: float = 0.0) -> tuple[float, float, float]:
-    """``(short side, long side, centre off the cube's)`` of the prism SFE builds from ``cloud``, millimetres."""
-    prism = reconstruct_support_prism(cloud, 0.0, inflate_mm=inflate_mm)
+def _sides(cloud: np.ndarray, given_back_mm: float = 0.0) -> tuple[float, float, float]:
+    """``(short side, long side, centre off the cube's)`` of the prism SFE builds from ``cloud``, millimetres, every face
+    ``given_back_mm`` outward (the rim was measured with 1.25 given back, the ``inflate_mm`` before the hull)."""
+    prism = reconstruct_support_prism(cloud, 0.0)
     assert prism is not None
-    short = min(prism.ext_u, prism.ext_v) + 2 * inflate_mm
-    long_ = max(prism.ext_u, prism.ext_v) + 2 * inflate_mm
+    short = min(prism.ext_u, prism.ext_v) + 2 * given_back_mm
+    long_ = max(prism.ext_u, prism.ext_v) + 2 * given_back_mm
     return short, long_, float(np.linalg.norm(prism.centre - _CENTRE))
 
 
@@ -214,7 +215,7 @@ class TheCalculatorPlacesItsUnreadPixelsTests(unittest.TestCase):
         holed = _holed(mask, depth, 0.35)
         _t, with_hull = _compute(_calculator(support_footprint_rim_mm=2.0), mask, holed, camera_to_base)
         with _no_hull():
-            _t, without = _compute(_calculator(support_footprint_rim_mm=2.0, support_footprint_inflate_mm=1.25), mask,
+            _t, without = _compute(_calculator(support_footprint_rim_mm=2.0), mask,
                                    holed, camera_to_base)
         short_hull = _sides(with_hull)[0]
         short_rim = _sides(without, 1.25)[0]

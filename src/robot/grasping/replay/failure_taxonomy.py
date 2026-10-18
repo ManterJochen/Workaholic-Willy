@@ -1,8 +1,8 @@
 """Replay-only failure taxonomy and recommendation engine.
 
 This module is read-only with respect to the runtime. It operates
-offline on :class:`GraspAttemptRecord` instances (typically loaded from
-canonical JSONL packs) and produces a deterministic taxonomy verdict
+offline on :class:`GraspAttemptRecord` instances (loaded from the JSONL
+logs a cell or a simulation run writes) and produces a deterministic taxonomy verdict
 per record plus an aggregate JSON report carrying static
 per-root-cause recommendations.
 
@@ -48,16 +48,11 @@ Design contract:
   :class:`TaxonomyReport` is built by :func:`build_taxonomy_report` and
   refuses any version but the current one at construction, so an
   older report on disk stays a file, and its recommendations are the
-  old wording. Re-run ``--failure-taxonomy`` over the same packs for the
-  current ones. Outside this module, the adaptation planner
-  (``--adaptation-plan --taxonomy-in``) reads a report's
-  ``counts_by_cause`` back from disk without checking
-  ``taxonomy_version``; an older report is valid input there because
-  the counts did not change. That makes ``counts_by_cause`` a key another
-  module reads: until 2026-09-29 the planner looked under a key this
-  report never wrote and its taxonomy rules never fired, and
-  ``tests/test_u11_safe_adaptation.py`` now feeds it a built report so a
-  rename cannot silence them again.
+  old wording. Re-run ``--failure-taxonomy`` over the same logs for the
+  current ones. The adaptation planner, the one reader of a report's
+  ``counts_by_cause``, left on 2026-10-16 with the keys it adapted, and
+  the synthetic labeled pack the classifier was graded against left with
+  the synthetic soak.
 
 * The JSON report is byte-stable: keys are sorted and lists are
   ordered by impact (count desc, then enum order tie-break).
@@ -65,7 +60,6 @@ Design contract:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -78,7 +72,6 @@ from src.robot.grasping.constants import (
 )
 from src.robot.grasping.telemetry.outcome_logging import (
     GraspAttemptRecord,
-    iter_jsonl,
 )
 
 #: The CLI records the coverage number; what only exists here is which root cause
@@ -147,9 +140,9 @@ RECOMMENDATIONS: Mapping[FailureRootCause, str] = {
     ),
     FailureRootCause.OCCLUSION_MISREAD: (
         "Give the grasp a view the clutter does not hide: add a second "
-        "camera and fuse it (robot.grasping.fusion.enabled with "
-        "fusion.geometry.enabled), or declare a wrist camera's looks "
-        "(in the program, or robot.look_joint_positions_deg) from the "
+        "calibrated camera, which the cell then fuses by itself, or "
+        "declare a wrist camera's looks "
+        "(in the program, or robot.motion.look_deg) from the "
         "sides the clutter leaves open. A wrist pick visits its declared "
         "looks in order, fuses each with the ones before, and stops at "
         "the first whose grasp is valid and certain; one generated view "
@@ -544,381 +537,4 @@ __all__ = [
     "build_taxonomy_report",
     "render_report_json",
     "write_report",
-    "LABELED_PACK_RELATIVE_PATH",
-    "LABELED_PACK_MANIFEST_RELATIVE_PATH",
-    "generate_labeled_records",
-    "render_labeled_pack_jsonl",
-    "write_labeled_pack",
-    "build_labeled_pack_manifest",
-    "write_labeled_pack_manifest",
-    "load_labeled_pack",
-    "evaluate_labeled_pack",
-    "LABEL_AGREEMENT_GATE",
-    "LABEL_COVERAGE_GATE",
 ]
-
-
-# Labeled pack: synthetic, deterministic on-disk ground truth. Mirrors the
-# canonical-pack pattern (byte-stable JSONL + sha256 manifest) but uses a
-# separate sidecar manifest so the canonical MANIFEST.json bytes stay frozen.
-
-#: Manifest version for the taxonomy-labeled pack. Independent of the
-#: canonical-pack manifest version.
-LABELED_PACK_MANIFEST_VERSION: int = 1
-
-LABELED_PACK_RELATIVE_PATH: str = (
-    "tests/data/replay/replay_failure_taxonomy_v1.jsonl"
-)
-LABELED_PACK_MANIFEST_RELATIVE_PATH: str = (
-    "tests/data/replay/MANIFEST_failure_taxonomy.json"
-)
-LABELED_PACK_NAME: str = "replay_failure_taxonomy_v1"
-
-
-def _labeled_record(
-    *,
-    index: int,
-    final_outcome: str,
-    expected: FailureRootCause,
-    extras_extra: Mapping[str, Any] | Sequence[tuple[str, Any]] = (),
-    multi_evidence: Sequence[str] = (),
-) -> GraspAttemptRecord:
-    """Construct one deterministic labeled record for the on-disk pack (``expected`` is ground truth; the classifier never reads it)."""
-
-    extra: dict[str, Any] = {
-        "cycle_time_s": 2.0 + (index % 5) * 0.1,
-        "expected_root_cause": expected.value,
-    }
-    for key in multi_evidence:
-        extra[key] = True
-    extra.update(dict(extras_extra))
-    return GraspAttemptRecord.new(
-        timestamp=float(index),
-        attempt_id=f"{LABELED_PACK_NAME}-{index:06d}",
-        mode="auto",
-        final_outcome=final_outcome,
-        extra=extra,
-    )
-
-
-#: Static recipe driving :func:`generate_labeled_records`. Each entry
-#: is ``(count, final_outcome, expected_cause, symptom_flags)``.
-#:
-#: Coverage target: classified / failures >= 0.95.
-_LABELED_RECIPE: tuple[tuple[int, str, FailureRootCause, tuple[str, ...]], ...] = (
-    # Successes (excluded from coverage denominator).
-    (5, "succeeded", FailureRootCause.UNCLASSIFIED, ()),
-    # Collision rejections.
-    (
-        8,
-        "execution_failed",
-        FailureRootCause.COLLISION_REJECTION,
-        ("collision_evidence",),
-    ),
-    (
-        4,
-        "unsafe_recovery_refused",
-        FailureRootCause.COLLISION_REJECTION,
-        (),
-    ),
-    # Calibration drift.
-    (
-        10,
-        "decision_fail_closed",
-        FailureRootCause.CALIBRATION_DRIFT_SUSPECTED,
-        ("calibration_drift_evidence",),
-    ),
-    # Slip after grasp.
-    (
-        10,
-        "verification_failed",
-        FailureRootCause.SLIP_AFTER_GRASP,
-        ("slip_evidence",),
-    ),
-    # Empty air.
-    (
-        10,
-        "verification_failed",
-        FailureRootCause.EMPTY_AIR_GRASP,
-        ("empty_air_evidence",),
-    ),
-    # Deformable misclassification.
-    (
-        8,
-        "execution_failed",
-        FailureRootCause.DEFORMABLE_MISCLASSIFICATION,
-        ("deformable_misclass_evidence",),
-    ),
-    # Occlusion misread.
-    (
-        8,
-        "no_valid_grasp",
-        FailureRootCause.OCCLUSION_MISREAD,
-        ("occlusion_misread_evidence",),
-    ),
-    # Honest UNCLASSIFIED failures (no symptom flag set).
-    (2, "execution_failed", FailureRootCause.UNCLASSIFIED, ()),
-)
-
-#: Multi-match precedence cases: these set multiple symptom flags so
-#: the classifier must resolve via enum order. The ``expected_cause``
-#: is the highest-precedence match.
-_LABELED_MULTI_MATCH: tuple[
-    tuple[str, FailureRootCause, tuple[str, ...]], ...
-] = (
-    # Collision wins over calibration_drift.
-    (
-        "execution_failed",
-        FailureRootCause.COLLISION_REJECTION,
-        (
-            "collision_evidence",
-            "calibration_drift_evidence",
-        ),
-    ),
-    # Calibration drift wins over deformable.
-    (
-        "execution_failed",
-        FailureRootCause.CALIBRATION_DRIFT_SUSPECTED,
-        (
-            "calibration_drift_evidence",
-            "deformable_misclass_evidence",
-        ),
-    ),
-    # Slip wins over empty_air when both fire on verification_failed.
-    (
-        "verification_failed",
-        FailureRootCause.SLIP_AFTER_GRASP,
-        ("slip_evidence", "empty_air_evidence"),
-    ),
-)
-
-
-def generate_labeled_records() -> tuple[GraspAttemptRecord, ...]:
-    """Deterministically materialise the labeled taxonomy pack."""
-
-    records: list[GraspAttemptRecord] = []
-    index = 0
-    for count, outcome, expected, flags in _LABELED_RECIPE:
-        for _ in range(int(count)):
-            records.append(
-                _labeled_record(
-                    index=index,
-                    final_outcome=outcome,
-                    expected=expected,
-                    multi_evidence=flags,
-                )
-            )
-            index += 1
-    for outcome, expected, flags in _LABELED_MULTI_MATCH:
-        records.append(
-            _labeled_record(
-                index=index,
-                final_outcome=outcome,
-                expected=expected,
-                multi_evidence=flags,
-            )
-        )
-        index += 1
-    return tuple(records)
-
-
-def render_labeled_pack_jsonl() -> str:
-    """Return the byte-stable JSONL payload for the labeled pack."""
-
-    records = generate_labeled_records()
-    lines = [record.to_json() for record in records]
-    return "\n".join(lines) + ("\n" if lines else "")
-
-
-def _sha256_hex(data: str | bytes) -> str:
-    if isinstance(data, str):
-        data = data.encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
-
-
-def write_labeled_pack(repo_root: Path) -> Path:
-    """Render the labeled pack and write it to disk."""
-
-    payload = render_labeled_pack_jsonl()
-    out_path = (repo_root / LABELED_PACK_RELATIVE_PATH).resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # newline="" keeps the rendered line feeds out of os.linesep translation. The sidecar
-    # manifest hashes these bytes, so a CRLF write makes a pack disagree with the sha256
-    # stored beside it. MEASURED 2026-09-10: that is how the committed pack and its manifest
-    # drifted apart on this box.
-    out_path.write_text(payload, encoding="utf-8", newline="")
-    # The sha is the contract the sidecar manifest is checked against later.
-    logger.info(
-        "Wrote labeled taxonomy pack to %s (%d bytes, sha256 %s)",
-        out_path,
-        len(payload.encode("utf-8")),
-        _sha256_hex(payload)[:16],
-    )
-    return out_path
-
-
-def build_labeled_pack_manifest(repo_root: Path) -> dict[str, Any]:
-    """Build the sidecar manifest for the labeled pack."""
-
-    abs_path = (repo_root / LABELED_PACK_RELATIVE_PATH).resolve()
-    if not abs_path.exists():
-        raise FileNotFoundError(
-            f"labeled taxonomy pack missing on disk: {abs_path}"
-        )
-    raw = abs_path.read_bytes()
-    records = tuple(iter_jsonl(abs_path))
-    return {
-        "manifest_version": int(LABELED_PACK_MANIFEST_VERSION),
-        "taxonomy_version": int(TAXONOMY_VERSION),
-        "label_policy": (
-            "extra.expected_root_cause carries ground truth; "
-            "classifier reads only extra.*_evidence flags and "
-            "final_outcome. Successes excluded from coverage "
-            "denominator."
-        ),
-        "pack": {
-            "name": LABELED_PACK_NAME,
-            "path": LABELED_PACK_RELATIVE_PATH,
-            "capability_group": "failure_taxonomy",
-            "record_count": len(records),
-            "sha256": _sha256_hex(raw),
-            "generator": {
-                "module": "src.robot.grasping.replay.failure_taxonomy",
-                "callable": "generate_labeled_records",
-            },
-        },
-    }
-
-
-def write_labeled_pack_manifest(repo_root: Path) -> Path:
-    """Write the sidecar manifest to disk."""
-
-    manifest = build_labeled_pack_manifest(repo_root)
-    out_path = (repo_root / LABELED_PACK_MANIFEST_RELATIVE_PATH).resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    body = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    # LF on every platform, for the same reason the pack itself is written LF.
-    out_path.write_text(body, encoding="utf-8", newline="")
-    logger.info(
-        "Wrote labeled-pack manifest to %s (%d bytes)",
-        out_path,
-        len(body.encode("utf-8")),
-    )
-    return out_path
-
-
-def load_labeled_pack(repo_root: Path) -> tuple[GraspAttemptRecord, ...]:
-    """Read the on-disk labeled pack back as a tuple of records."""
-
-    abs_path = (repo_root / LABELED_PACK_RELATIVE_PATH).resolve()
-    if not abs_path.exists():
-        raise FileNotFoundError(
-            f"labeled taxonomy pack missing on disk: {abs_path}"
-        )
-    return tuple(iter_jsonl(abs_path))
-
-
-#: What the classifier must reproduce on the labeled pack. 1.0, not 0.99: every row of that pack was
-#: authored so exactly one cause is correct, and the pack is 68 rows, so a single wrong answer is 1.5
-#: percentage points and is a rule that changed meaning, not noise.
-LABEL_AGREEMENT_GATE: float = 1.0
-#: Classified over failures on the labeled pack. The recipe that generates it targets 0.95 and
-#: includes two deliberately unclassifiable failures, so the measurable ceiling is 61/63 = 0.968.
-LABEL_COVERAGE_GATE: float = 0.95
-
-
-def evaluate_labeled_pack(repo_root: Path) -> dict[str, Any]:
-    """Grade the classifier against the labeled pack own ``extra.expected_root_cause``.
-
-    Why this exists: the soak gate carried a failure-taxonomy section that could not fail. Measured
-    2026-09-10: the synthetic soak stream stamps no ``extra.*_evidence`` flag anywhere, so all 168 of
-    its failures classify as UNCLASSIFIED and the block reads ``coverage_fraction: 0.0``. A
-    classifier deleted down to ``return UNCLASSIFIED`` produces that same block byte for byte, and
-    the gate still passed. A leg that reports the same number whether the code under it works or not
-    is not evidence.
-
-    The labeled pack is the input that can answer: 68 deterministic rows, each carrying the root
-    cause it was authored to have, including three multi-flag rows whose answer is a question about
-    precedence rather than about one rule. ``expected_root_cause`` is a label the classifier never
-    reads, which is what makes agreeing with it a result.
-
-    Returns a report dict; ``passes_gate`` is the gate leg. A missing pack gives ``passes_gate``
-    False with a reason, never a silent skip: a gate whose evidence vanished has not been passed.
-    """
-
-    abs_path = (repo_root / LABELED_PACK_RELATIVE_PATH).resolve()
-    if not abs_path.is_file():
-        logger.warning(
-            "Taxonomy classifier gate FAILED for lack of a pack at %s", abs_path
-        )
-        return {
-            "capability_group": "failure_taxonomy",
-            "pack_path": LABELED_PACK_RELATIVE_PATH,
-            "records": 0,
-            "judged_failures": 0,
-            "classified": 0,
-            "coverage_fraction": 0.0,
-            "label_agreement": 0.0,
-            "mismatches": [],
-            "unreadable": f"labeled taxonomy pack missing on disk: {abs_path}",
-            "passes_gate": False,
-        }
-
-    records = tuple(iter_jsonl(abs_path))
-    judged = 0
-    agreed = 0
-    classified = 0
-    mismatches: list[dict[str, str]] = []
-    for record in records:
-        expected = (record.extra or {}).get("expected_root_cause")
-        if not isinstance(expected, str):
-            continue
-        got = classify_record(record).primary.value
-        # Successes are labeled UNCLASSIFIED and sit outside the coverage denominator, exactly as
-        # they do in the aggregate report; they still have to come back UNCLASSIFIED.
-        is_failure = record.final_outcome != _SUCCESS_OUTCOME
-        if is_failure:
-            judged += 1
-            if got != FailureRootCause.UNCLASSIFIED.value:
-                classified += 1
-        if got == expected:
-            agreed += 1
-        else:
-            mismatches.append(
-                {"attempt_id": record.attempt_id, "expected": expected, "got": got}
-            )
-
-    labeled = judged + sum(
-        1
-        for r in records
-        if isinstance((r.extra or {}).get("expected_root_cause"), str)
-        and r.final_outcome == _SUCCESS_OUTCOME
-    )
-    agreement = (agreed / labeled) if labeled else 0.0
-    coverage = (classified / judged) if judged else 0.0
-    passes = (
-        labeled > 0
-        and agreement >= LABEL_AGREEMENT_GATE
-        and coverage >= LABEL_COVERAGE_GATE
-    )
-    logger.info(
-        "Taxonomy classifier over %d labeled row(s): agreement %.4f, coverage %.4f, "
-        "%d mismatch(es): %s",
-        labeled, agreement, coverage, len(mismatches), "PASS" if passes else "FAIL",
-    )
-    return {
-        "capability_group": "failure_taxonomy",
-        "pack_path": LABELED_PACK_RELATIVE_PATH,
-        "records": len(records),
-        "judged_failures": judged,
-        "classified": classified,
-        "coverage_fraction": round(coverage, 6),
-        "label_agreement": round(agreement, 6),
-        "agreement_gate": LABEL_AGREEMENT_GATE,
-        "coverage_gate": LABEL_COVERAGE_GATE,
-        # The rows themselves, not a count: a gate that says "3 wrong" and not which three sends the
-        # next reader back to re-run what this already knew.
-        "mismatches": mismatches,
-        "unreadable": "",
-        "passes_gate": passes,
-    }

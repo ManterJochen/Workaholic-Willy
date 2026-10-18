@@ -320,8 +320,7 @@ def capture(camera: Any, robot: Any = None) -> CapturedFrame:
     The frame is a pick frame, taken through the ``Locator``'s source with no detector (``Locator.capture``). A camera
     on the wrist is placed by the TCP read just before its burst of grabs and held to the rig's shutter tolerance after
     it, and first the arm's own steady gate is asked whether it stands still (``wait_until_steady`` waiting for nothing:
-    on a UR whose ``safety.dwell.steady_signal`` is ``joint_speeds``, every joint slower than 0.01 rad/s on three reads
-    in a row). Nothing is commanded and nothing is said to the hand.
+    on a UR, every joint slower than 0.01 rad/s on three reads in a row). Nothing is commanded and nothing is said to the hand.
 
     A capture on the wrist needs the arm connected, and ``robot.connected()`` takes the cell's lock first (``CellLock``,
     the one the operator console, ``Cell`` and the command line runner take): while another process holds the cell, the
@@ -371,9 +370,7 @@ def capture(camera: Any, robot: Any = None) -> CapturedFrame:
             f"camera {rig_id!r} is on the wrist and the arm is not connected, so where the tool stands cannot be read: "
             "capture inside `with robot.connected():`")
     locator = Locator.from_parts(
-        camera=camera, backend=None, tool_pose=arm.get_tcp_pose,
-        attempts=int(section.safety.planning_world.perceived.fresh_frame_attempts),
-        tool_frame=section.gripper.tool_frame)
+        camera=camera, backend=None, tool_pose=arm.get_tcp_pose, tool_frame=section.gripper.tool_frame)
     # The arm's own steady gate, asked to wait for nothing, right before the burst: a look's "already there" asks the
     # same (``execution.looks``).
     steady = getattr(arm, "wait_until_steady", None)

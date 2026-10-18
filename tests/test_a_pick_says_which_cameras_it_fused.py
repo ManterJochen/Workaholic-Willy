@@ -6,11 +6,11 @@ datagen reference: top-1 43.5 % from one view, 55.9 % fused). The dangerous stat
 operator believes it is on": a camera that stopped delivering, an association that matched nothing, or a switch left
 off all produce a cell that grasps from one view and looks healthy from outside. Two things close that here:
 
-* **Asked before anything opens.** `CameraFusionPlan` reads the tree and names, in one sentence, every piece a cell is
-  missing to fuse: both switches (`fusion.enabled` builds the other cameras' CAMERA to BASE, `fusion.geometry.enabled`
-  hands the fused cloud to the generator), two or more cameras in `fusion.cameras` with the primary among them, and
-  each an enabled RGB-D rig that declares its calibration. The owner's cell today has one wrist camera and is refused
-  with what a fused cell needs and where the reference profile is.
+* **Asked before anything opens.** `CameraFusionPlan` reads the tree and names, in one sentence, what a cell lacks to
+  fuse. There is no switch since 2026-10-16: a cell fuses by itself wherever its camera section declares two or more
+  enabled rigs with their calibration, the primary among them, an RGB-D rig or, since 2026-10-17, a stereo pair whose
+  stereo calibration is on disk, and the plan names each rig that is not one of them and why. The owner's cell today
+  has one wrist camera and is refused with what a fused cell needs and where the reference profile is.
 * **Read off the attempt, not the configuration.** `fused_views` names the cameras behind the cloud the attempt's
   object was handed to the generator as, the camera it is grasped from first, and is empty whenever that cloud came
   from one camera. It is NOT the frame telemetry's `fused_views`, which lists every other camera that segmented
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import json
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -32,8 +33,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from src.config.loader import ConfigError
-from src.config.schema.robot.grasping_schema import FusionGeometryConfig
 from src.config.tree import LoadedTree, load_tree
 from src.geometry import Frame, Transform
 from src.robot.execution.autonomous_grasp.config import GraspMode, _profile_for
@@ -61,7 +60,7 @@ _ON_THE_WRIST = {"mounting_mode": "eye_in_hand", "artifact_path": "../calibratio
 
 
 def _eth2(**values: Any) -> LoadedTree:
-    """The reference profile, `config/robot/robot.eth2.yaml` with `config/camera/cam.eth2.yaml`, on the bench arm."""
+    """The reference profile, `config/camera/cam.eth2.yaml`, on the bench arm."""
     tree = load_tree("ur5e,eth2")
     return tree.with_values(values) if values else tree
 
@@ -119,55 +118,55 @@ class EachMissingPieceIsNamedTests(unittest.TestCase):
         self.assertTrue(refusal.isascii())
         return refusal
 
-    def test_geometry_fusion_switched_off(self) -> None:
-        self._refused(_eth2(**{"robot.grasping.fusion.geometry.enabled": False}),
-                      "robot.grasping.fusion.geometry.enabled is false")
+    def test_a_rig_switched_off(self) -> None:
+        self._refused(_eth2(**{"camera.cameras.rigs[1].enabled": False}),
+                      "camera.cameras.rigs declares one enabled, calibrated rig, 'cam_left'",
+                      "rig 'cam_right' is switched off")
 
-    def test_the_switch_that_builds_the_other_cameras_transforms_switched_off(self) -> None:
-        """`fusion.enabled` is a separate key from `fusion.geometry.enabled`, and the two are not independent for a
-        fused cell: `build_config_frame_resolvers` returns no resolver while it is off, so every other camera's view is
-        dropped at the pick with a warning. A plan that ignored it would pass a cell that runs single view."""
-        self._refused(_eth2(**{"robot.grasping.fusion.enabled": False}),
-                      "robot.grasping.fusion.enabled is false", "CAMERA to BASE")
-
-    def test_fewer_than_two_cameras_listed(self) -> None:
-        refusal = self._refused(_eth2(**{"robot.grasping.fusion.cameras.cam_right.enabled": False}),
-                                "robot.grasping.fusion.cameras lists one camera, 'cam_left'")
-        self.assertIn("2 enabled RGB-D rigs, 'cam_left', 'cam_right'", refusal, "and what the tree could list")
-
-    def test_the_primary_left_out_of_the_list(self) -> None:
-        self._refused(_eth2(**{"robot.grasping.fusion.cameras.cam_left.enabled": False}),
-                      "leaves out the primary rig 'cam_left'")
-
-    def test_a_listed_rig_switched_off(self) -> None:
-        self._refused(_eth2(**{"camera.cameras.rigs[1].enabled": False}), "rig 'cam_right' is switched off")
-
-    def test_a_listed_rig_with_no_calibration(self) -> None:
+    def test_a_rig_with_no_calibration(self) -> None:
         self._refused(_eth2(**{"camera.cameras.rigs[1].extrinsics": None}),
                       "rig 'cam_right' declares no calibration")
 
-    def test_a_listed_rig_with_no_depth(self) -> None:
+    def test_a_primary_that_is_not_one_of_them(self) -> None:
+        """Two rigs can fuse and the primary cannot: a grasp is synthesised in the primary's view, so nothing fuses."""
+        placed = SimpleNamespace(mounting_mode="eye_to_hand")
+        rigs = [SimpleNamespace(rig_id=name, enabled=True, source="rgbd", extrinsics=placed) for name in ("a", "b")]
+        rigs.append(SimpleNamespace(rig_id="w", enabled=True, source="webcam_pair", extrinsics=None))
+        plan = CameraFusionPlan.from_config(rigs, primary_rig_id="w")
+
+        self.assertEqual((), plan.cameras)
+        self.assertIn("the primary rig 'w' is not one of them: rig 'w' declares no calibration", str(plan.refusal()))
+
+    def test_an_uncalibrated_stereo_pair_is_left_out_as_any_uncalibrated_rig(self) -> None:
+        """Since 2026-10-17 a stereo pair fuses as an RGB-D rig does once it is placed, its depth read through its
+        stereo calibration: the base tree's webcam pair is left out for its missing calibration, not for being a pair."""
         tree = load_tree(None).with_values({
-            "robot.grasping.fusion.enabled": True,
-            "robot.grasping.fusion.geometry.enabled": True,
-            "robot.grasping.fusion.cameras": {"webcam_main": {"enabled": True}, "realsense_d435": {"enabled": True}},
             "camera.cameras.rigs[3].enabled": True,
             "camera.cameras.rigs[3].extrinsics": {"mounting_mode": "eye_to_hand",
                                                   "artifact_path": "../calibration/real/eth_d435.json"},
         })
-        self._refused(tree, "rig 'webcam_main' is a webcam_pair rig, with no depth of its own")
+        self._refused(tree, "rig 'webcam_main' declares no calibration, camera.cameras.rigs['webcam_main'].extrinsics")
 
-    def test_a_camera_that_names_no_rig_is_the_loader_s_refusal(self) -> None:
-        """Refused where the tree loads, as the multiview README says; the plan passes the tree's own refusal on."""
-        tree = _eth2(**{"robot.grasping.fusion.cameras": {"cam_x": {"enabled": True}}})
+    def test_a_calibrated_stereo_pair_fuses_beside_an_rgbd_rig(self) -> None:
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        written = folder / "stereoMap.json"
+        written.write_text("{}", encoding="utf-8")  # the plan asks only that it is there; the camera reads it
+        placed = SimpleNamespace(mounting_mode="eye_to_hand")
+        rigs = [SimpleNamespace(rig_id="overhead", enabled=True, source="rgbd", extrinsics=placed),
+                SimpleNamespace(rig_id="pair", enabled=True, source="webcam_pair", extrinsics=placed,
+                                calibration_paths=SimpleNamespace(stereo_map_file=str(written)))]
+        plan = CameraFusionPlan.from_config(rigs, primary_rig_id="overhead")
+        self.assertEqual(("overhead", "pair"), plan.cameras)
+        self.assertIsNone(plan.refusal())
 
-        self.assertFalse(tree.ok)
-        with self.assertRaises(ConfigError):
-            CameraFusionPlan.from_tree(tree)
+        written.unlink()  # placed against the robot once, its stereo calibration gone since: it gives no depth
+        plan = CameraFusionPlan.from_config(rigs, primary_rig_id="overhead")
+        self.assertEqual((), plan.cameras)
+        self.assertIn("rig 'pair' gives no depth: its stereo calibration, camera.cameras.rigs['pair']."
+                      "calibration_paths.stereo_map_file, is not on disk", str(plan.refusal()))
 
     def test_the_refusal_is_one_sentence_of_what_is_missing_then_what_a_fused_cell_needs(self) -> None:
-        plan = _plan(_eth2(**{"robot.grasping.fusion.geometry.enabled": False,
-                              "camera.cameras.rigs[1].extrinsics": None}))
+        plan = _plan(_eth2(**{"camera.cameras.rigs[1].extrinsics": None}))
         refusal = plan.refusal()
         assert refusal is not None
 
@@ -175,12 +174,11 @@ class EachMissingPieceIsNamedTests(unittest.TestCase):
         self.assertEqual(2, len(plan.missing))
         for clause in plan.missing:
             self.assertIn(clause, missing)
-        self.assertIn("config/robot/robot.eth2.yaml", needs)
         self.assertIn("config/camera/cam.eth2.yaml", needs)
 
 
 class TheOwnersCellTodayTests(unittest.TestCase):
-    """One camera, on the wrist, and no fusion block: refused cleanly, with what a fused cell needs."""
+    """One camera, on the wrist: refused cleanly, with what a fused cell needs."""
 
     def test_it_is_refused_with_what_it_has_and_what_a_fused_cell_needs(self) -> None:
         plan = _plan(_one_wrist_camera())
@@ -188,12 +186,10 @@ class TheOwnersCellTodayTests(unittest.TestCase):
 
         assert refusal is not None
         self.assertEqual((), plan.cameras)
-        self.assertIn("robot.grasping.fusion.enabled and robot.grasping.fusion.geometry.enabled are false", refusal)
-        self.assertIn("robot.grasping.fusion.cameras lists no camera", refusal)
-        self.assertIn("one enabled RGB-D rig, 'realsense_d435' (on the wrist)", refusal)
+        self.assertIn("one enabled, calibrated rig, 'realsense_d435' (on the wrist)", refusal)
         self.assertIn("two or more", refusal)
-        self.assertIn("config/robot/robot.eth2.yaml", refusal)
-        self.assertNotIn("leaves out the primary", refusal, "nothing is listed, so the primary is not news")
+        self.assertIn("config/camera/cam.eth2.yaml", refusal)
+        self.assertNotIn("is not one of them", refusal, "the primary is the one rig, so it is not news")
         self.assertIn("no camera fusion", str(plan))
 
     def test_the_base_tree_is_refused_as_well(self) -> None:
@@ -271,8 +267,8 @@ def _cell(primary: PerceptionFrame, *others: tuple[str, PerceptionFrame], fused:
         max_attempts=1,
         primary_camera_id="left",
         multi_camera_perception=_Rig(*(CameraObservation(camera_id=name, frame=frame) for name, frame in others)),
-        camera_frame_resolvers={name: _Resolver() for name, _frame_in in others},  # type: ignore[misc]
-        fusion_geometry_config=FusionGeometryConfig(enabled=True, **overrides.pop("geometry", {})) if fused else None,
+        camera_frame_resolvers=({name: _Resolver() for name, _frame_in in others}  # type: ignore[misc]
+                                if fused else None),
         **overrides,
     )
 
@@ -292,7 +288,7 @@ class TheLoopAttemptTests(unittest.TestCase):
         self.assertEqual(1, attempt.fused_objects)
         self.assertIsNotNone(calculator.clouds[0], "the fused cloud reached the generator, which is what is named")
 
-    def test_fusion_switched_off_names_nothing(self) -> None:
+    def test_a_cell_that_fuses_no_camera_names_nothing(self) -> None:
         attempt = _last_attempt(_cell(_frame(_A), ("right", _frame(_A)), fused=False))
 
         self.assertEqual((), attempt.fused_views)
@@ -341,17 +337,6 @@ class TheLoopAttemptTests(unittest.TestCase):
         self.assertEqual((), attempt.fused_views)
         self.assertEqual(1, attempt.fused_objects, "the frame still fused it; this grasp did not use it")
         self.assertEqual(4, len(calculator.clouds[0]))
-
-    def test_an_object_only_other_cameras_saw_names_those_cameras(self) -> None:
-        """`promote_unmatched`: `right` and `far` both see `b`, the primary does not, and the grasp is planned from
-        `right` on both surfaces."""
-        attempt = _last_attempt(_cell(_frame(_A), ("right", _frame(_B)), ("far", _frame(_B)),
-                                      calculator=_Calculator({"a": 0.5, "b": 0.9}),
-                                      geometry={"promote_unmatched": True}))
-
-        self.assertEqual(1, attempt.target_index, "the promoted object follows the primary's own")
-        self.assertEqual(("right", "far"), attempt.fused_views)
-        self.assertEqual(1, attempt.fused_objects)
 
     def test_an_attempt_that_found_no_segmentation_says_nothing(self) -> None:
         attempt = _last_attempt(_cell(_frame(), ("right", _frame(_A))))

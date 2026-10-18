@@ -457,23 +457,25 @@ class MediaTests(unittest.TestCase):
 
         from tests._speech_fakes import FakeSileroModel, whisper_directory, whisper_parts
 
-        whisper = self.tmp.parent / "whisper"
+        weights_root = self.tmp.parent / "weights"
+        whisper = weights_root / "speech" / "openai--whisper-large-v3-turbo"
         if weights:
             whisper_directory(whisper, without=without)
-        vad = self.tmp.parent / "silero_vad.jit"
+        vad = weights_root / "speech" / "silero-vad-6.2.1" / "silero_vad.jit"
+        vad.parent.mkdir(parents=True, exist_ok=True)
         vad.write_bytes(b"stand-in")
-        stt = self.tmp / "models" / "stt.yaml"
-        text, hits = re.subn(r"(?m)^(\s*)model_path:.*$", rf'\g<1>model_path: "{whisper.as_posix()}"',
-                             stt.read_text(encoding="utf-8"))
-        text, vad_hits = re.subn(r"(?m)^(\s*)vad_model_path:.*$",
-                                 rf'\g<1>vad_model_path: "{vad.as_posix()}"', text)
-        assert (hits, vad_hits) == (1, 1), "the shipped stt.yaml stopped naming its two model paths"
-        stt.write_text(text, encoding="utf-8")
+        folder = self.tmp / "models" / "weights.yaml"
+        text, hits = re.subn(r"(?m)^weights_root:.*$", f'weights_root: "{weights_root.as_posix()}"',
+                             folder.read_text(encoding="utf-8"))
+        assert hits == 1, "the shipped weights.yaml stopped naming the weights folder"
+        folder.write_text(text, encoding="utf-8")
         self.addCleanup(self._forget_speech_engine)
         processor, model = whisper_parts()
         silero = FakeSileroModel(speech=speech)
         with contextlib.ExitStack() as stack:
             stack.enter_context(unittest.mock.patch.dict(os.environ, {"WILLY_DEVICE": "cpu"}))
+            # The Hugging Face cache of the machine running the tests is no part of the tree.
+            stack.enter_context(unittest.mock.patch("src.models.weights._in_the_cache", return_value=False))
             yield {
                 "processors": stack.enter_context(unittest.mock.patch.object(
                     transformers.WhisperProcessor, "from_pretrained", return_value=processor)),

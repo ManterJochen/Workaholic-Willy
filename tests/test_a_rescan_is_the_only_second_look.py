@@ -6,17 +6,17 @@ into ``RESCAN`` (with the viewpoint planners gone nothing moved the camera for i
 service (``recovery_policy``, ``recovery_strategy``), which no pick consulted; the strategies only it built
 (``ActivePerceptionRecoveryStrategy``, ``NextTargetRecoveryStrategy``, ``NoRecoveryStrategy``); the
 ``recovery_fixture`` argument; and the effective keys ``dense_recovery_enabled`` and
-``dense_recovery_allowed_actions``. The recovery a pick runs is ``robot.grasping.recovery``, unchanged.
+``dense_recovery_allowed_actions``. The recovery a pick runs is fixed since 2026-10-16 at the values the owner's cell
+ran, and a tree that still writes ``robot.grasping.recovery`` is refused at the block with its sentence.
 
 What must hold after the removal, and is pinned here:
 
-* a tree or a preset that still names ``next_viewpoint`` is refused with ``removed on purpose: use rescan``, and so
-  is an effective config built by hand, when the service builds its recovery policy from it;
-* a tree, a preset or ``explain`` that still names the ``dense_recovery`` block or one of its keys is answered
+* an effective config built by hand, or a campaign, that still names ``next_viewpoint`` is refused with
+  ``removed on purpose: use rescan`` when the service builds its recovery policy from it;
+* a tree or ``explain`` that still names the ``dense_recovery`` block or one of its keys is answered
   with the sentence that says what to do;
-* ``auto`` allows ``rescan`` and ``dense_clutter`` allows ``rescan`` and ``nudge_target`` (and both allow
-  ``next_target`` since the owner's recovery decisions of the same day), and every failure class that tried
-  ``NEXT_VIEWPOINT`` tries ``RESCAN``;
+* ``auto`` allows ``rescan`` and ``dense_clutter`` allows ``rescan`` and ``nudge_target``, and every failure class
+  that tried ``NEXT_VIEWPOINT`` tries ``RESCAN``;
 * a record logged before the merge still audits and round-trips, the offline recovery trainer still reads its
   ``next_viewpoint``, and the canonical replay packs, synthesised in that shape, still regenerate as committed;
 * nothing still builds or accepts a dense-recovery policy or strategy.
@@ -27,13 +27,9 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import inspect
-import json
-import math
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 import yaml
 
@@ -62,43 +58,7 @@ def _write_grasping(root: Path, **blocks: dict) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
-class NextViewpointIsRefusedWhereverItIsNamedTests(_ScratchTree):
-    """Loads a copy of the shipped tree that still names it, as an operator's old file would."""
-
-    def _refusal(self, recovery: dict) -> str:
-        _write_grasping(self.root, recovery=recovery)
-        with self.assertRaises(ConfigError) as caught:
-            load_robot_section(self.root, profile=None)
-        return " ".join(str(caught.exception).split())
-
-    def test_an_allow_list_that_names_it_is_refused_with_the_sentence(self) -> None:
-        said = self._refusal({"enabled": True, "allowed_actions": ["rescan", "next_viewpoint"]})
-        self.assertIn("recovery.allowed_actions names the recovery action 'next_viewpoint'", said)
-        self.assertIn(_USE_RESCAN, said)
-        self.assertIn(REMOVED_RECOVERY_ACTIONS["next_viewpoint"], said)
-
-    def test_a_budget_that_names_it_is_refused_with_the_sentence(self) -> None:
-        said = self._refusal({"enabled": True, "allowed_actions": ["rescan"],
-                              "per_action_budget": [["next_viewpoint", 1]]})
-        self.assertIn("recovery.per_action_budget names the recovery action 'next_viewpoint'", said)
-        self.assertIn(_USE_RESCAN, said)
-
-    def test_the_tree_without_it_still_loads(self) -> None:
-        self._assert_loads(load_robot_section)
-
-
-class NextViewpointIsRefusedByTheSchemaAndThePresetTests(unittest.TestCase):
-
-    def test_the_schema_refuses_it_in_any_spelling_and_names_rescan(self) -> None:
-        for written in ("next_viewpoint", "NEXT_VIEWPOINT", " next_viewpoint "):
-            with self.subTest(written=written):
-                with self.assertRaises(ValueError) as caught:
-                    RobotGraspingConfig.model_validate({"recovery": {"allowed_actions": [written]}})
-                self.assertIn(_USE_RESCAN, " ".join(str(caught.exception).split()))
-        self.assertEqual(
-            RobotGraspingConfig.model_validate({"recovery": {"allowed_actions": ["rescan"]}}).recovery.allowed_actions,
-            ("rescan",),
-        )
+class TheNextViewpointSentenceTests(unittest.TestCase):
 
     def test_the_sentence_is_one_sentence_that_names_rescan(self) -> None:
         said = REMOVED_RECOVERY_ACTIONS["next_viewpoint"]
@@ -106,28 +66,6 @@ class NextViewpointIsRefusedByTheSchemaAndThePresetTests(unittest.TestCase):
         self.assertIn("2026-09-29", said)
         self.assertTrue(said.endswith("."))
         self.assertEqual(said.rstrip(".").count(". "), 0, said)
-
-    def test_a_preset_that_names_it_is_refused_by_its_validation(self) -> None:
-        from pydantic import ValidationError
-
-        from src.robot.grasping.replay import presets
-
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "old.yaml").write_text(yaml.safe_dump(
-                {"grasping": {"default_mode": "dense_clutter",
-                              "recovery": {"enabled": True, "allowed_actions": ["next_viewpoint"]}}}),
-                encoding="utf-8")
-            with mock.patch.object(presets, "_PRESETS_DIR", Path(tmp)):
-                with self.assertRaises(ValidationError) as caught:
-                    presets.validate_preset("old", base={"vendor": "dummy", "gripper": {"vendor": "none"}})
-        self.assertIn(_USE_RESCAN, " ".join(str(caught.exception).split()))
-
-    def test_the_shipped_dense_clutter_preset_allows_rescan_and_validates(self) -> None:
-        from src.robot.grasping.replay.presets import apply_preset, validate_preset
-
-        validate_preset("dense_clutter", base={"vendor": "dummy", "gripper": {"vendor": "none"}})
-        merged = apply_preset({"vendor": "dummy", "gripper": {"vendor": "none"}}, "dense_clutter")
-        self.assertEqual(merged["grasping"]["recovery"]["allowed_actions"], ["rescan"])
 
 
 class AHandBuiltSnapshotThatNamesItIsRefusedTests(unittest.TestCase):
@@ -190,12 +128,12 @@ class TheDenseRecoveryBlockIsRefusedTests(_ScratchTree):
 
 class TheDenseRecoverySentenceSaysWhatToDoTests(unittest.TestCase):
 
-    def test_the_block_and_every_key_have_one_sentence_that_names_the_recovery_block(self) -> None:
+    def test_the_block_and_every_key_have_one_sentence_that_says_what_recovery_runs(self) -> None:
         for dotted in (_DENSE, *(f"{_DENSE}.{key}" for key in _DENSE_KEYS)):
             with self.subTest(key=dotted):
                 said = REMOVED_KEYS[dotted]
                 self.assertIn("delete this block", said)
-                self.assertIn("robot.grasping.recovery", said)
+                self.assertIn("the recovery a pick runs is fixed since 2026-10-16", said)
                 self.assertIn("2026-09-29", said)
                 self.assertTrue(said.endswith("."))
                 self.assertEqual(said.rstrip(".").count(". "), 0, said)
@@ -210,21 +148,6 @@ class TheDenseRecoverySentenceSaysWhatToDoTests(unittest.TestCase):
                 self.assertFalse(answer.known)
                 self.assertEqual(answer.removed, REMOVED_KEYS[dotted])
 
-    def test_a_preset_that_still_writes_it_is_refused_with_the_sentence(self) -> None:
-        from pydantic import ValidationError
-
-        from src.robot.grasping.replay import presets
-
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "old.yaml").write_text(
-                yaml.safe_dump({"grasping": {"dense_recovery": {"enabled": True}}}), encoding="utf-8")
-            with mock.patch.object(presets, "_PRESETS_DIR", Path(tmp)):
-                with self.assertRaises(ValidationError) as caught:
-                    presets.validate_preset("old", base={"vendor": "dummy", "gripper": {"vendor": "none"}})
-        said = " ".join(str(caught.exception).split())
-        self.assertEqual(said.count("removed on purpose"), 1)
-        self.assertIn(REMOVED_KEYS[_DENSE], said)
-
 
 class RescanTakesNextViewpointsPlaceTests(unittest.TestCase):
 
@@ -232,9 +155,8 @@ class RescanTakesNextViewpointsPlaceTests(unittest.TestCase):
         from src.robot.execution.autonomous_grasp.config import GraspMode, _profile_for
 
         self.assertEqual(_profile_for(GraspMode.EASY).recovery_allowed_actions, ())
-        self.assertEqual(_profile_for(GraspMode.AUTO).recovery_allowed_actions, ("rescan", "next_target"))
-        self.assertEqual(_profile_for(GraspMode.DENSE_CLUTTER).recovery_allowed_actions,
-                         ("rescan", "next_target", "nudge_target"))
+        self.assertEqual(_profile_for(GraspMode.AUTO).recovery_allowed_actions, ("rescan",))
+        self.assertEqual(_profile_for(GraspMode.DENSE_CLUTTER).recovery_allowed_actions, ("rescan", "nudge_target"))
 
     def test_the_action_is_gone_from_the_vocabulary(self) -> None:
         from src.robot.grasping.recovery.policy import SceneRecoveryAction, SceneRecoveryPolicy
@@ -255,11 +177,12 @@ class RescanTakesNextViewpointsPlaceTests(unittest.TestCase):
             R.LOW_MASK_CONFIDENCE: (A.RESCAN,), R.EMPTY_MASK: (A.RESCAN,), R.MASK_TOO_SMALL: (A.RESCAN,),
             R.NO_VALID_DEPTH: (A.RESCAN,), R.ACTIVE_PERCEPTION_RECOMMENDED: (A.RESCAN,),
             R.HEAVY_OCCLUSION: (A.RESCAN,),
-            # The push left the no-candidate rows and NEXT_TARGET joined the refusal row the same day (owner).
-            R.NO_CANDIDATES_GENERATED: (A.NEXT_TARGET, A.RESCAN),
-            R.ALL_COLLIDED: (A.NEXT_TARGET, A.NUDGE_TARGET, A.CONTAINER_AGITATE, A.RESCAN),
-            R.NO_VALID_GRASP: (A.NEXT_TARGET, A.RESCAN),
-            R.MOTION_PLAN_REFUSED: (A.NEXT_TARGET, A.RESCAN),
+            # The push runs inside the pick attempt, and NEXT_TARGET and the agitation left on 2026-10-16: every row
+            # that offered them rescans.
+            R.NO_CANDIDATES_GENERATED: (A.RESCAN,),
+            R.ALL_COLLIDED: (A.RESCAN,),
+            R.NO_VALID_GRASP: (A.RESCAN,),
+            R.MOTION_PLAN_REFUSED: (A.RESCAN,),
         }
         for reason, actions in expected.items():
             with self.subTest(reason=reason.value):
@@ -286,9 +209,8 @@ class RescanTakesNextViewpointsPlaceTests(unittest.TestCase):
                                      max_recovery_actions=2)
         final, trail = run_recovery_loop(
             pick=lambda: next(reports), profile=_profile_for(GraspMode.AUTO), policy=policy,
-            orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher(), strategies={},
-                                              bypass_strategies=True),
-            frame_acquirer=lambda: looked.append(1), arm=None,
+            orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher()),
+            frame_acquirer=lambda: looked.append(1),
         )
         self.assertIs(final.outcome, AutonomousGraspOutcome.SUCCEEDED)
         self.assertEqual(trail.terminal_reason, "recovered_success")
@@ -319,43 +241,6 @@ class OldRecordsStillReadTests(unittest.TestCase):
         self.assertEqual(audit_record(record), ())
         self.assertEqual(GraspAttemptRecord.from_json(record.to_json()), record)
 
-    def test_the_recovery_trainer_still_reads_a_logged_next_viewpoint(self) -> None:
-        from src.robot.grasping.rl.recovery_policy import RECOVERY_ACTION_REOBSERVE
-        from src.robot.grasping.rl.train_recovery import RECOVERY_TOKEN_MAP
-
-        self.assertEqual(RECOVERY_TOKEN_MAP["next_viewpoint"], RECOVERY_ACTION_REOBSERVE)
-
-    def test_the_canonical_packs_still_regenerate_as_committed(self) -> None:
-        """The packs were synthesised with ``next_viewpoint`` and a ``verification`` block, and their bytes are a
-        signed-off contract. Compared as values, so a platform's decimal spelling of a float does not decide it."""
-        from src.robot.grasping.replay.canonical_datasets import (
-            CANONICAL_PACKS,
-            render_pack_jsonl,
-            repo_root_from_module,
-        )
-
-        def same(a: Any, b: Any) -> bool:
-            if isinstance(a, float) or isinstance(b, float):
-                return (isinstance(a, (int, float)) and isinstance(b, (int, float))
-                        and math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12))
-            if isinstance(a, dict):
-                return isinstance(b, dict) and a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
-            if isinstance(a, list):
-                return isinstance(b, list) and len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
-            return bool(a == b)
-
-        root = repo_root_from_module()
-        saw_next_viewpoint = False
-        for pack in CANONICAL_PACKS:
-            with self.subTest(pack=pack.name):
-                disk = (root / pack.relative_path).read_text(encoding="utf-8").splitlines()
-                made = render_pack_jsonl(pack).splitlines()
-                self.assertEqual(len(disk), len(made))
-                for index, (a, b) in enumerate(zip(disk, made)):
-                    self.assertTrue(same(json.loads(a), json.loads(b)), f"{pack.name} line {index}")
-                saw_next_viewpoint = saw_next_viewpoint or '"next_viewpoint"' in "".join(made)
-        self.assertTrue(saw_next_viewpoint, "the dense pack no longer carries the retired action it was made with")
-
 
 class NothingBuildsADenseRecoveryPolicyTests(unittest.TestCase):
 
@@ -371,11 +256,11 @@ class NothingBuildsADenseRecoveryPolicyTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(module, name))
-        # The agitate strategy stays. The scene-blind nudge left too (2026-09-29): the push runs inside the pick
-        # attempt, planned from what the camera saw.
+        # The scene-blind nudge left too (2026-09-29): the push runs inside the pick attempt, planned from what the
+        # camera saw. The agitate strategy followed on 2026-10-16 with container_agitate.
         self.assertFalse(hasattr(policy, "SmallNudgeStrategy"))
         self.assertFalse(hasattr(grasping, "SmallNudgeStrategy"))
-        self.assertTrue(hasattr(policy, "ContainerAgitateStrategy"))
+        self.assertFalse(hasattr(policy, "ContainerAgitateStrategy"))
 
     def test_no_service_takes_or_carries_one(self) -> None:
         from src.robot.execution.autonomous_grasp import AutonomousGraspService

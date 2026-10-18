@@ -5,14 +5,16 @@
 ⛔ **THE PYTEST SUITE DOES NOT ANSWER THIS.** `test_safety_workspace`, `_joint_limits`, `_payload`,
 `_ik_quality` and `_continuity` all exist and all pass, and every one of them runs against a fixture.
 None of them loads the tree this box loads, so none of them can tell you that YOUR workspace box,
-YOUR joint-limit table and YOUR payload ceiling produce a refusal. A guard family whose `enforce` is
-false is silently absent from the pipeline, and that is a config decision no fixture can see.
+YOUR arm's joint-limit table and YOUR payload ceiling produce a refusal. Every guard family is in every
+pipeline since 2026-10-17 (the owner's cleanup took the `enforce` switches), so a family missing from
+this cell's is a defect, and this check fails on it.
 
-Each violation below is derived from the operator's own YAML rather than hardcoded: the workspace
-box plus `safety.limits.workspace_margin_mm`, the resolved joint-limit table plus 10 degrees,
-`ik_quality.max_jump_rad` plus 1.0, `motion_continuity.max_tcp_step_mm` doubled, and
-`payload.max_mass_kg` plus 2.5 kg. So a cell that widens a limit is checked against its own new
-limit, and the check cannot go stale against a config it has never seen.
+Each violation below is derived from the cell's own tree and its arm's numbers rather than hardcoded:
+the workspace box plus the 20 mm margin every cell keeps (`WORKSPACE_MARGIN_MM`), the arm's own
+joint-limit table plus 10 degrees, the IK jump bound plus 1.0 and the TCP step bound doubled (every
+real arm's, `guard_numbers.CELL`), and `payload.max_mass_kg` plus 2.5 kg. So a cell that changes its
+box or its payload ceiling is checked against its own new value, and the check cannot go stale against
+a config it has never seen.
 
 The coverage is derived as well, and it was not always. Measured on this tree 2026-09-10: the
 attestation printed "6 guard(s)" and named six families, and the verdict under it read "OK: every
@@ -25,9 +27,9 @@ now checked against `preflight.guards` and a wired family with no case fails thi
 being skipped. That costs whoever wires the next guard family one case here, which is the point: a
 safety check that silently covers less than it claims is worse than one that refuses.
 
-Exit codes: 0 every wired guard refused for its own reason, 1 a guard accepted a violation of its
-own family, refused with the wrong reason, or is wired with no case here, 2 this cell has no guard
-pipeline to interrogate.
+Exit codes: 0 every guard refused for its own reason, 1 a guard accepted a violation of its own
+family, refused with the wrong reason, is missing from the pipeline, or is wired with no case here,
+2 this cell has no guard pipeline to interrogate.
 """
 
 from __future__ import annotations
@@ -54,6 +56,8 @@ from src.robot.safety import (  # noqa: E402
     SafetyReason,
     resolve_joint_limits_deg,
 )
+from src.robot.safety.guard_numbers import CELL  # noqa: E402
+from src.robot.safety.workspace import WORKSPACE_MARGIN_MM  # noqa: E402
 
 EXIT_OK, EXIT_FAILED, EXIT_NOT_READY = 0, 1, 2
 
@@ -97,7 +101,7 @@ def main() -> int:
             "point this at a cell whose driver carries one: WILLY_PROFILE=ur5e, or ur3e")
 
     guards = {guard.name: guard for guard in preflight.guards}
-    box = config.workspace_limits
+    box = config.motion.workspace
     centre = ((box.x_min + box.x_max) / 2.0, (box.y_min + box.y_max) / 2.0,
               (box.z_min + box.z_max) / 2.0)
     dof = arm.capabilities.dof
@@ -116,9 +120,9 @@ def main() -> int:
 
     # One axis past the box AND past the margin the preflight shrinks it by. The guard owns a
     # shrunk copy, so the number in the YAML is not the number that refuses.
-    margin = float(config.safety.limits.workspace_margin_mm)
+    margin = WORKSPACE_MARGIN_MM
     here = JointPositions([0.0] * dof)
-    step = float(config.safety.motion_continuity.max_tcp_step_mm)
+    step = CELL.max_tcp_step_mm
 
     # The payload guard is built here rather than taken from the pipeline, and that is the point of
     # it: the schema already refuses an over-ceiling mass at load, so the guard in the pipeline can
@@ -148,7 +152,7 @@ def main() -> int:
         ("workspace", SafetyReason.WORKSPACE,
          moving(pose(box.x_max + margin + 100.0, centre[1], centre[2], "past the box")), None),
         ("ik_quality", SafetyReason.IK_QUALITY,
-         joints(JointPositions([float(config.safety.ik_quality.max_jump_rad) + 1.0]
+         joints(JointPositions([CELL.max_jump_rad + 1.0]
                                + [0.0] * (dof - 1)), here), None),
         ("payload", SafetyReason.PAYLOAD, joints(here), overweight),
         ("motion_continuity", SafetyReason.CONTINUITY,
@@ -156,10 +160,9 @@ def main() -> int:
                 previous=pose(*centre, "the last accepted target")), None),
     ]
 
-    # The same table `JointLimitGuard` consults: the operator's static lists first, then the
-    # envelope the arm registry describes for the model the arm reports. `None` means neither answered
-    # and the guard is UNAVAILABLE, which is a legitimate state rather than a failure.
-    limits = resolve_joint_limits_deg(config.safety.joint_limits, model=arm.capabilities.model)
+    # The same table `JointLimitGuard` consults: the envelope the arm registry describes for the model
+    # the arm reports. `None` means none answered and the guard is UNAVAILABLE, which the build refuses.
+    limits = resolve_joint_limits_deg(model=arm.capabilities.model)
     if limits is not None:
         values = [0.0] * dof
         values[0] = math.radians(limits[1][0] + 10.0)
@@ -186,9 +189,9 @@ def main() -> int:
     for name, expected, context, own in cases:
         guard = own if own is not None else guards.get(name)
         if guard is None:
-            # `enforce: false` removes the family from the pipeline entirely. Reported, not failed:
-            # it is a decision the operator made and this check's job is to make it visible.
-            print(f"  {name:20s} NOT WIRED   safety.{name}.enforce is false")
+            # Every cell wires every family: one missing from this pipeline is a defect, not a decision.
+            wrong.append(f"{name} is not in the pipeline, where every cell wires it")
+            print(f"  {name:20s} NOT WIRED   <- every cell wires this guard")
             continue
         decision = guard.evaluate(context)
         if decision.accepted:

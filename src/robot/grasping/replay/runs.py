@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from src.contracts import UNSET, Maybe, chosen
 
@@ -28,18 +28,14 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
 
 __all__ = [
-    "Baseline",
-    "BaselineMeasurement",
     "GateKeyStatus",
     "KpiRollup",
-    "PACK_DEPENDENT_GATE_KEYS",
     "RecordLog",
     "SoakGate",
     "SoakSource",
     "SoakVerdict",
     "TelemetryOffender",
     "TelemetryVerdict",
-    "committed_baseline_pick_rate",
 ]
 
 
@@ -280,7 +276,7 @@ class RecordLog:
 
 
 # =============================================================================================
-# The gate, and the baseline it measures against
+# The gate
 # =============================================================================================
 
 
@@ -288,9 +284,9 @@ class SoakSource(StrEnum):
     """What a soak verdict was computed over, which is what it is and is not evidence of.
 
     `evaluate_soak_gate_over_records` returns the same `dict[str, bool]` whether it ran over a
-    real log, a sim log or a generated stream, and nothing in that return value says which. The
-    population is recorded here instead: a green gate over the wrong population is how a stack
-    gets credited with work it did not do.
+    real log or a sim log, and nothing in that return value says which. The population is recorded
+    here instead: a green gate over the wrong population is how a stack gets credited with work it
+    did not do. The synthetic stream and the canonical packs left on 2026-10-16 with the synthetic soak.
     """
 
     #: A captured `GraspAttemptRecord` log from a real cell. Can fail, and is meant to.
@@ -299,42 +295,14 @@ class SoakSource(StrEnum):
     #: `false_positive_grasp_rate` is structurally 0: no secondary verifier exists, in sim or on a
     #: cell, since the post-grasp verification stage left on 2026-09-29.
     SIM_RECORDS = "sim_records"
-    #: Records generated on the spot from scenario specs. Proves telemetry and KPI consistency, and
-    #: says nothing about grasp quality.
-    SYNTHETIC_STREAM = "synthetic_stream"
-    #: The canonical packs on disk, as written by ``--regenerate-canonical``. The U12 contract
-    #: self-check, which passes by construction: a regression tripwire, not a quality measurement.
-    CANONICAL_PACKS = "canonical_packs"
 
 
 class GateKeyStatus(StrEnum):
-    """One gate key's outcome.
-
-    Three states, not two. A key that could not be judged is not a key that passed, and folding
-    them together is how a gate reports a clean bill of health over four checks it never ran.
-    """
+    """One gate key's outcome. Every key of the gate is judged from the records alone."""
 
     PASSED = "passed"
     FAILED = "failed"
-    #: The check needs context this door does not have. Over a bare record log there are no on-disk
-    #: canonical packs, so the pack-dependent keys have nothing to judge.
-    NOT_APPLICABLE = "not_applicable"
 
-
-#: The five keys that are judged against something other than the records in front of the door.
-#: Both record-facing CLI modes overwrite exactly these with ``"not_applicable"`` after the gate has
-#: run, and the doors here read this same tuple.
-#:
-#: `failure_taxonomy_classifier_pass` joined them on 2026-09-10. It grades the classifier against the
-#: committed labeled pack, so like the other four it says nothing about the log a record door was
-#: handed; reporting it as passed there would credit a real log with a check run on other data.
-PACK_DEPENDENT_GATE_KEYS: tuple[str, ...] = (
-    "slo_packs_pass",
-    "drift_gate_pass",
-    "ood_gate_pass",
-    "failure_taxonomy_classifier_pass",
-    "easy_attempt_wall_time_within_budget",
-)
 
 #: What each door's verdict is evidence of, in one line, for `render()`.
 #:
@@ -343,18 +311,11 @@ PACK_DEPENDENT_GATE_KEYS: tuple[str, ...] = (
 #: the other, and neither replaces the other.
 _MEASURES: dict[SoakSource, str] = {
     SoakSource.REAL_RECORDS: (
-        "record-intrinsic integrity over a real log. This can fail, unlike the canonical self-check."
+        "record-intrinsic integrity over a real log. This can fail."
     ),
     SoakSource.SIM_RECORDS: (
-        "record-intrinsic integrity over real sim picks. pick_success_rate is reported, not gated: "
-        "there is no comparable sim baseline yet. Not hardware-representative."
-    ),
-    SoakSource.SYNTHETIC_STREAM: (
-        "telemetry and KPI consistency over a generated stream. Says nothing about grasp quality."
-    ),
-    SoakSource.CANONICAL_PACKS: (
-        "the U12 contract self-check over the committed packs. Passes by construction: a regression "
-        "tripwire, not a quality measurement."
+        "record-intrinsic integrity over real sim picks. pick_success_rate is reported, not gated. "
+        "Not hardware-representative."
     ),
 }
 
@@ -369,12 +330,6 @@ class SoakVerdict:
     violations: tuple[str, ...] = ()
     attempts: int = 0
     kpi: Mapping[str, Any] = field(default_factory=dict)
-    #: The rate this gate compared against, or ``None`` when no comparison was made. `None` here
-    #: is a real value meaning "deliberately not compared", not an absent argument.
-    baseline_pick_rate: float | None = None
-    #: The door's own full machine payload, where it has one beyond the fields above. The canonical
-    #: door carries the whole soak report here; the others carry nothing.
-    report: Mapping[str, Any] = field(default_factory=dict)
     #: Why the input could not be read at all, empty when it could. Not the same as a failed gate,
     #: and that is the whole reason it is a separate field: a gate that ran and refused judged
     #: something, a gate handed a path that does not exist judged nothing. Measured: both record
@@ -395,7 +350,7 @@ class SoakVerdict:
     @property
     def exit_code(self) -> int:
         """Derived from the violations, never stored beside them: ``0 if not violations else 1``,
-        which is what all four CLI modes return. A stored copy could disagree with the list it
+        which is what both CLI modes return. A stored copy could disagree with the list it
         summarises.
 
         An unreadable input exits 2, not 1, matching `KpiRollup.exit_code` for that same condition:
@@ -406,27 +361,14 @@ class SoakVerdict:
             return 2
         return 0 if self.passes else 1
 
-    @property
-    def judged(self) -> int:
-        """How many keys were actually decided. A gate whose keys are all not_applicable passes
-        loudly while judging nothing, and this is the number that gives that away.
-        """
-        return sum(1 for s in self.keys.values() if s is not GateKeyStatus.NOT_APPLICABLE)
-
     def gate_wire(self) -> dict[str, Any]:
-        """The gate in the exact shape the CLI prints: ``True`` / ``False`` /
-        ``"not_applicable"``, plus the derived ``passes``.
+        """The gate in the exact shape the CLI prints: ``True`` / ``False``, plus the derived ``passes``.
 
         One stored fact, two views. `keys` is the truth; this is the wire projection and
         :meth:`to_dict` is the Python one. Neither can drift from the other, because neither is
         stored.
         """
-        wire: dict[str, Any] = {}
-        for name, status in self.keys.items():
-            if status is GateKeyStatus.NOT_APPLICABLE:
-                wire[name] = GateKeyStatus.NOT_APPLICABLE.value
-            else:
-                wire[name] = status is GateKeyStatus.PASSED
+        wire: dict[str, Any] = {name: status is GateKeyStatus.PASSED for name, status in self.keys.items()}
         wire["passes"] = self.passes
         return wire
 
@@ -440,11 +382,7 @@ class SoakVerdict:
             f"    measures: {self.measures}",
         ]
         if self.keys:
-            skipped = len(self.keys) - self.judged
-            tail = f", {skipped} not applicable" if skipped else ""
-            lines.append(f"    {self.judged} of {len(self.keys)} gate key(s) judged{tail}")
-        if self.baseline_pick_rate is not None:
-            lines.append(f"    baseline pick rate: {self.baseline_pick_rate:.4f}")
+            lines.append(f"    {len(self.keys)} gate key(s) judged")
         for name, status in sorted(self.keys.items()):
             if status is GateKeyStatus.FAILED:
                 lines.append(f"      FAILED  {name}")
@@ -461,10 +399,9 @@ class SoakVerdict:
             "passes": self.passes,
             "exit_code": self.exit_code,
             "attempts": self.attempts,
-            "judged_keys": self.judged,
+            "judged_keys": len(self.keys),
             "keys": {name: status.value for name, status in self.keys.items()},
             "violations": list(self.violations),
-            "baseline_pick_rate": self.baseline_pick_rate,
             "kpi": dict(self.kpi),
             "unreadable": self.unreadable,
         }
@@ -480,76 +417,41 @@ class SoakGate:
         print(verdict.render())
         raise SystemExit(verdict.exit_code)
 
-    Four named doors, never a flag: the four populations differ in what they are evidence of, not
+    Two named doors, never a flag: the two populations differ in what they are evidence of, not
     in a parameter. The door a caller typed is recorded on the verdict as `SoakSource` and printed
     by `render()`.
     """
 
     source: SoakSource
     records_path: Path | None = None
-    thresholds_path: Path | None = None
-    #: Not defaulted here. `evaluate_soak_gate_over_records` declares ``min_attempts=2000`` and
-    #: `build_soak_report` declares ``total_attempts=2400``; a copy of either number in this class
-    #: would be a second declaration of one fact, agreeing today and silently diverging later.
+    #: Not defaulted here. `evaluate_soak_gate_over_records` declares ``min_attempts=2000``; a copy of the number in
+    #: this class would be a second declaration of one fact, agreeing today and silently diverging later.
     min_attempts: "Maybe[int]" = UNSET
-    total_attempts: "Maybe[int]" = UNSET
 
-    # --- the four doors ------------------------------------------------------------------------
+    # --- the two doors -------------------------------------------------------------------------
 
     @classmethod
     def over_records(cls, path: str | Path) -> "SoakGate":
-        """A captured log from a real cell, judged against the committed baseline pick rate.
-
-        `evaluate_soak_gate_over_records` takes ``baseline_pick_rate`` as a required keyword and
-        does not know where one comes from; `committed_baseline_pick_rate` reads it from
-        `docs/baselines/u_plus_baseline_v1.json` under the repo root. `None` there is legal and
-        silently skips the non-regression check.
-        """
+        """A captured log from a real cell."""
         return cls(source=SoakSource.REAL_RECORDS, records_path=Path(path))
 
     @classmethod
     def over_sim_records(
         cls, path: str | Path, *, min_attempts: "Maybe[int]" = UNSET
     ) -> "SoakGate":
-        """An Isaac-physics log: real picks, not hardware-representative.
-
-        No baseline comparison, on purpose. The committed baseline is a synthetic distribution, so
-        comparing sim pick rate against it would be a cross-population claim. `pick_success_rate` is
-        reported and not gated, and the verdict says so.
-        """
+        """An Isaac-physics log: real picks, not hardware-representative. `pick_success_rate` is reported and not
+        gated, and the verdict says so."""
         return cls(
             source=SoakSource.SIM_RECORDS, records_path=Path(path), min_attempts=min_attempts
         )
-
-    @classmethod
-    def over_synthetic(cls, thresholds_path: str | Path) -> "SoakGate":
-        """Records generated at evaluation time, against a KPI thresholds YAML.
-
-        Judges telemetry and KPI consistency. It cannot judge grasp quality, because it invented the
-        grasps.
-        """
-        return cls(source=SoakSource.SYNTHETIC_STREAM, thresholds_path=Path(thresholds_path))
-
-    @classmethod
-    def over_canonical_packs(cls, *, total_attempts: "Maybe[int]" = UNSET) -> "SoakGate":
-        """The canonical packs on disk: the U12 contract self-check.
-
-        It passes by construction: a tripwire that fires when the telemetry contract changes
-        underneath the packs. It is not a statement about how well the stack grasps anything.
-        """
-        return cls(source=SoakSource.CANONICAL_PACKS, total_attempts=total_attempts)
 
     # --- the verb ------------------------------------------------------------------------------
 
     def evaluate(self) -> SoakVerdict:
         """Run the gate. Reads; writes nothing, anywhere."""
-        if self.source is SoakSource.SYNTHETIC_STREAM:
-            return self._evaluate_synthetic()
-        if self.source is SoakSource.CANONICAL_PACKS:
-            return self._evaluate_canonical()
         return self._evaluate_records()
 
-    # --- the three shapes behind the four doors ------------------------------------------------
+    # --- the shape behind both doors -----------------------------------------------------------
 
     def _evaluate_records(self) -> SoakVerdict:
         from src.robot.grasping.replay.kpi import compute_kpis  # noqa: PLC0415
@@ -582,29 +484,16 @@ class SoakGate:
                 violations=("record log unreadable",),
                 unreadable=f"{type(exc).__name__}: {exc}",
             )
-        baseline = (
-            committed_baseline_pick_rate()
-            if self.source is SoakSource.REAL_RECORDS
-            else None
-        )
         # Forwarded only when chosen, so an unspecified floor reaches the callee's own 2000 rather
         # than a copy of it made here.
         extra: dict[str, Any] = {}
         if chosen(self.min_attempts):
             extra["min_attempts"] = self.min_attempts
-        gate, violations = evaluate_soak_gate_over_records(
-            records, baseline_pick_rate=baseline, **extra
-        )
-        # The pack-dependent keys are added here, not filtered out of the result:
-        # `evaluate_soak_gate` returns the seven record-intrinsic keys only, and the
-        # pack-dependent ones never appear in `gate`. Adding them is what makes this door report
-        # the twelve keys the CLI reports.
+        gate, violations = evaluate_soak_gate_over_records(records, **extra)
         keys = {
             name: (GateKeyStatus.PASSED if value else GateKeyStatus.FAILED)
             for name, value in gate.items()
         }
-        for name in PACK_DEPENDENT_GATE_KEYS:
-            keys[name] = GateKeyStatus.NOT_APPLICABLE
         return SoakVerdict(
             source=self.source,
             origin=str(self.records_path),
@@ -612,298 +501,4 @@ class SoakGate:
             violations=tuple(violations),
             attempts=len(records),
             kpi=compute_kpis(records).to_dict(),
-            baseline_pick_rate=baseline,
         )
-
-    def _evaluate_synthetic(self) -> SoakVerdict:
-        from src.robot.grasping.replay.kpi import compute_kpis  # noqa: PLC0415
-        from src.robot.grasping.replay.telemetry_catalog import (  # noqa: PLC0415
-            audit_records,
-        )
-
-        assert self.thresholds_path is not None
-        thresholds = _load_kpi_thresholds(self.thresholds_path)
-        records = _synthetic_soak_stream(int(thresholds.soak.min_attempts))
-        summary = compute_kpis(records)
-        offenders = audit_records(records)
-        untyped = _untyped_outcomes(records)
-
-        # The key names are the real gate's names, not new ones. All three predicates are the same
-        # predicates `evaluate_soak_gate` applies; only the dead-loop threshold differs, because it
-        # comes from the YAML rather than the locked constant. Reusing the names is what lets a
-        # caller compare this door against the others key by key.
-        dead_loop_ok = summary.dead_loop_rate <= thresholds.soak.dead_loop_rate_max
-        keys = {
-            "dead_loop_rate_within_gate": (
-                GateKeyStatus.PASSED if dead_loop_ok else GateKeyStatus.FAILED
-            ),
-            "telemetry_offenders_zero": (
-                GateKeyStatus.PASSED if not offenders else GateKeyStatus.FAILED
-            ),
-            "untyped_outcomes_zero": (
-                GateKeyStatus.PASSED if not untyped else GateKeyStatus.FAILED
-            ),
-        }
-        violations: list[str] = []
-        if not dead_loop_ok:
-            violations.append(
-                f"dead_loop_rate {summary.dead_loop_rate:.4f} > "
-                f"{thresholds.soak.dead_loop_rate_max:.4f}"
-            )
-        if offenders:
-            violations.append(f"telemetry_offenders={len(offenders)}")
-        if untyped:
-            violations.append(f"untyped_outcomes={len(untyped)}")
-        return SoakVerdict(
-            source=self.source,
-            origin=str(self.thresholds_path),
-            keys=keys,
-            violations=tuple(violations),
-            attempts=len(records),
-            kpi=summary.to_dict(),
-        )
-
-    def _evaluate_canonical(self) -> SoakVerdict:
-        from src.robot.grasping.replay.canonical_datasets import (  # noqa: PLC0415
-            repo_root_from_module,
-        )
-        from src.robot.grasping.replay.soak import build_soak_report  # noqa: PLC0415
-
-        extra: dict[str, Any] = {}
-        if chosen(self.total_attempts):
-            extra["total_attempts"] = self.total_attempts
-        repo_root = repo_root_from_module()
-        payload, violations = build_soak_report(repo_root, **extra)
-        # `build_soak_report` is typed `dict[str, object]`, so both reads need a cast. Narrowed
-        # here rather than loosening the builder, which every other caller relies on as it is.
-        gate = dict(cast("Mapping[str, Any]", payload.get("gate") or {}))
-        gate.pop("passes", None)  # derived on the verdict, never stored beside the violations
-        keys = {
-            name: (
-                GateKeyStatus.NOT_APPLICABLE
-                if value == GateKeyStatus.NOT_APPLICABLE.value
-                else (GateKeyStatus.PASSED if value else GateKeyStatus.FAILED)
-            )
-            for name, value in gate.items()
-        }
-        return SoakVerdict(
-            source=self.source,
-            origin=str(repo_root),
-            keys=keys,
-            violations=tuple(violations),
-            attempts=int(cast("int", payload.get("total_attempts") or 0)),
-            report=payload,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class BaselineMeasurement:
-    """The KPI / SLO / telemetry baseline over the canonical packs, as measured now."""
-
-    #: The builder's payload verbatim. Not reshaped, not re-derived: this dict is compared against
-    #: a committed one, so a view that rearranged it would make the comparison meaningless.
-    report: Mapping[str, Any]
-    audit_offenders: int
-
-    @property
-    def clean(self) -> bool:
-        return self.audit_offenders == 0
-
-    @property
-    def exit_code(self) -> int:
-        """2 for a dirty audit, not 1: `--baseline-report` answers a different question from the
-        soak gates, whose 1 means a violated threshold. CI reads the number.
-        """
-        return 0 if self.clean else 2
-
-    def write(self, path: str | Path) -> Path:
-        """Write the report where the CLI writes it: sorted keys, indent 2, one trailing newline.
-
-        Serialises the report already built by :meth:`Baseline.measure`. `write_baseline_report`
-        rebuilds it from the packs instead, which is a second build and a second chance to differ.
-        """
-        import json  # noqa: PLC0415
-
-        out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        # newline="" so the rendered line feed reaches the file as a line feed. MEASURED
-        # 2026-09-10: this is the writer --baseline-report actually reaches, and without it
-        # the command wrote 25074 CRLF bytes where it renders 24375 LF bytes, so the operator
-        # command named in CLAUDE.md could not reproduce its own committed golden off Windows.
-        # write_baseline_report, the library twin, had the same defect and was repaired with it.
-        out.write_text(
-            json.dumps(dict(self.report), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-            newline="",
-        )
-        return out
-
-    def render(self) -> str:
-        """The packs, their record counts and their audit offenders. ASCII, no trailing newline."""
-        packs = list(self.report.get("packs") or [])
-        head = "CLEAN" if self.clean else f"{self.audit_offenders} AUDIT OFFENDER(S)"
-        lines = [f"  {head}: {len(packs)} canonical pack(s)"]
-        for pack in packs:
-            kpi = dict(pack.get("kpi") or {})
-            lines.append(
-                f"    {str(pack.get('name', '?')):<32}"
-                f"{int(pack.get('record_count', 0)):>6} record(s)  "
-                f"pick {float(kpi.get('pick_success_rate', 0.0)):.4f}"
-            )
-        return "\n".join(lines)
-
-    def to_dict(self) -> dict[str, Any]:
-        """The report verbatim, with the offender total the CLI derives beside it."""
-        return {"report": dict(self.report), "total_audit_offenders": self.audit_offenders}
-
-
-@dataclass(frozen=True, slots=True)
-class Baseline:
-    """The committed KPI / SLO / telemetry baseline, and the packs it is measured over.
-
-        from src.robot.grasping.replay.runs import Baseline
-
-        measured = Baseline.canonical().measure()
-        print(measured.render())
-
-    One door only: the baseline is defined as the canonical packs in this repository, and a door
-    taking arbitrary packs would let a caller produce a file called a baseline that measures
-    something else.
-    """
-
-    @classmethod
-    def canonical(cls) -> "Baseline":
-        """The canonical packs under this repository, as written by `--regenerate-canonical`."""
-        return cls()
-
-    def measure(self) -> BaselineMeasurement:
-        """Build the report. Reads the packs; writes nothing until
-        :meth:`BaselineMeasurement.write` is called.
-        """
-        from src.robot.grasping.replay.baseline_report import (  # noqa: PLC0415
-            build_baseline_report,
-        )
-        from src.robot.grasping.replay.canonical_datasets import (  # noqa: PLC0415
-            repo_root_from_module,
-        )
-
-        report = build_baseline_report(repo_root_from_module())
-        offenders = sum(
-            int(pack["telemetry_offender_count"]) + int(pack["extra_type_offender_count"])
-            for pack in cast("list[dict[str, Any]]", report["packs"])
-        )
-        return BaselineMeasurement(report=report, audit_offenders=int(offenders))
-
-
-# --- shared helpers ----------------------------------------------------------------------------
-
-
-def committed_baseline_pick_rate() -> float | None:
-    """The aggregate pick success rate from the committed baseline, or ``None`` if unreadable.
-
-    Reads `docs/baselines/u_plus_baseline_v1.json` under the repo root and aggregates it.
-    ``None`` comes back when that file is absent, malformed or not a dict. ``None`` reaching
-    `evaluate_soak_gate_over_records` is a legal value meaning the non-regression check is
-    skipped, so the gate stays green without making the comparison.
-    """
-    import json  # noqa: PLC0415
-
-    from src.robot.grasping.replay.canonical_datasets import (  # noqa: PLC0415
-        repo_root_from_module,
-    )
-    from src.robot.grasping.replay.soak import (  # noqa: PLC0415
-        _aggregate_baseline_pick_success_rate,
-    )
-
-    path = repo_root_from_module() / "docs" / "baselines" / "u_plus_baseline_v1.json"
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return _aggregate_baseline_pick_success_rate(payload)
-
-
-def _load_kpi_thresholds(path: Path) -> Any:
-    import yaml  # noqa: PLC0415
-
-    from src.config.schema.robot.kpi_schema import KpiThresholdsConfig  # noqa: PLC0415
-
-    with path.open() as fh:
-        return KpiThresholdsConfig.model_validate(yaml.safe_load(fh))
-
-
-def _untyped_outcomes(records: "Sequence[GraspAttemptRecord]") -> list[str]:
-    from src.robot.execution.autonomous_grasp import (  # noqa: PLC0415
-        AutonomousGraspOutcome,
-    )
-
-    valid = frozenset(v.value for v in AutonomousGraspOutcome)
-    return [r.attempt_id for r in records if r.final_outcome not in valid]
-
-
-def _synthetic_soak_stream(total_attempts: int) -> "tuple[GraspAttemptRecord, ...]":
-    """The three scenarios `--soak` generates, at the thresholds file's attempt count.
-
-    The seeds and weights are the CLI's, digit for digit. Changing one changes which records are
-    generated, which changes the KPIs, which changes whether the gate passes. There is no
-    "reasonable default" available here: the only correct values are the ones already in use.
-    """
-    from src.robot.grasping.replay.soak import (  # noqa: PLC0415
-        SoakScenarioSpec,
-        generate_soak_records,
-    )
-
-    per = total_attempts // 3
-    remainder = total_attempts - per * 3
-    return (
-        *generate_soak_records(
-            SoakScenarioSpec(
-                name="easy",
-                mode="easy",
-                attempts=per,
-                failure_class_weights={"succeeded": 19.0, "no_valid_grasp": 1.0},
-                recovery_success_rate=0.0,
-                cycle_time_mean_s=1.5,
-                cycle_time_jitter_s=0.2,
-                seed=11,
-            )
-        ),
-        *generate_soak_records(
-            SoakScenarioSpec(
-                name="auto",
-                mode="auto",
-                attempts=per,
-                failure_class_weights={
-                    "succeeded": 14.0,
-                    "execution_failed": 2.0,
-                    "no_valid_grasp": 2.0,
-                    "decision_fail_closed": 1.0,
-                },
-                recovery_success_rate=0.5,
-                cycle_time_mean_s=2.5,
-                cycle_time_jitter_s=0.5,
-                seed=22,
-            )
-        ),
-        *generate_soak_records(
-            SoakScenarioSpec(
-                name="dense",
-                mode="dense_clutter",
-                attempts=per + remainder,
-                failure_class_weights={
-                    "succeeded": 990.0,
-                    "execution_failed": 5.0,
-                    "no_valid_grasp": 4.0,
-                    "recovery_exhausted": 1.0,
-                },
-                recovery_success_rate=0.6,
-                cycle_time_mean_s=3.5,
-                cycle_time_jitter_s=0.7,
-                seed=33,
-            )
-        ),
-    )

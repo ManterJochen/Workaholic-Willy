@@ -32,7 +32,8 @@ The controller's own chain. A calibrated arm's controller solves on its own DH r
 (:class:`~src.robot.safety._ur_kinematics.URDhChain`), and :func:`ur_chain_ik_nearest` answers what its
 ``getInverseKinematics(pose, qnear)`` answers: the closed form on the table for the configuration nearest ``qnear``, then
 Newton on the controller's rows. A line judged sample by sample is solved here rather than by one round trip per sample
-where ``robot.safety.ik_quality.line_ik`` says so, and the controller is asked at two of its samples whether it agrees.
+on every cell since 2026-10-17 (the owner's ``line_ik: local``), and the controller is asked at two of its samples
+whether it agrees.
 """
 
 from __future__ import annotations

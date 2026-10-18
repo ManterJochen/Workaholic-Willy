@@ -5,7 +5,7 @@ tool frame says; the calculator's jaw stood its grasp centre at the TCP. On the 
 out and the guard's grasp centre stands at 23 + 136.2 = 159.2 mm, so its fingertips stood 2.2 mm further than the
 calculator planned them, and grasp after grasp in a pile was refused 2.3 to 2.96 mm from a neighbour against the guard's
 3 (the grasp bench, 2026-10-06). ``planning.hand.hand_past_the_tcp_mm`` says how far, and the calculator's jaw stands
-there (``builders.build_gripper_geometry``, ``SupportFootprintJaw.from_robot_config``), never shorter than it was and
+there (``gripper_model.jaw_envelope``, ``SupportFootprintJaw.from_robot_config``), never shorter than it was and
 never by more than the tool frame's tolerance.
 """
 
@@ -16,6 +16,8 @@ from functools import lru_cache
 from typing import Any
 
 import numpy as np
+
+from src.robot.grasping.collision.support_resolver import TABLE_CLEARANCE_MM
 
 
 @lru_cache(maxsize=None)
@@ -60,11 +62,11 @@ class HowFarPastTheTcpTests(unittest.TestCase):
 
 class TheJawStandsWhereTheGuardHoldsItTests(unittest.TestCase):
     def test_every_box_moves_along_the_approach_by_that_much(self) -> None:
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
 
-        geometry = _hande().grasping.gripper_geometry
-        plain = build_gripper_geometry(geometry)
-        moved = build_gripper_geometry(geometry, past_the_tcp_mm=2.2)
+        geometry = _hande()
+        plain = jaw_envelope(geometry)
+        moved = jaw_envelope(geometry, past_the_tcp_mm=2.2)
         width = float(_hande().gripper.max_width_mm)
         for before, after in zip(plain.collision_boxes(width), moved.collision_boxes(width)):
             with self.subTest(box=before.label):
@@ -77,15 +79,15 @@ class TheJawStandsWhereTheGuardHoldsItTests(unittest.TestCase):
     def test_the_palm_is_as_wide_as_the_registrys_housing(self) -> None:
         """The Hand-E's housing is 75.0 mm across the closing axis, its open fingers' outer faces 71.6: the palm box is
         the housing's (the guard held it 1.7 mm past the box on either side, the grasp bench, 2026-10-06)."""
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
         from src.robot.execution.autonomous_grasp.service import _registry_palm_thickness_mm
 
         cfg = _hande()
         self.assertEqual(75.0, _registry_palm_thickness_mm(cfg))
         width = float(cfg.gripper.max_width_mm)
-        plain = {b.label: b for b in build_gripper_geometry(cfg.grasping.gripper_geometry).collision_boxes(width)}
-        housed = {b.label: b for b in build_gripper_geometry(
-            cfg.grasping.gripper_geometry, palm_thickness_mm=75.0).collision_boxes(width)}
+        plain = {b.label: b for b in jaw_envelope(cfg).collision_boxes(width)}
+        housed = {b.label: b for b in jaw_envelope(
+            cfg, palm_thickness_mm=75.0).collision_boxes(width)}
         self.assertAlmostEqual(float(plain["palm"].max_corner_mm[0]), width / 2.0 + 10.8, places=6)
         self.assertAlmostEqual(float(housed["palm"].max_corner_mm[0]), 37.5, places=6)
         self.assertAlmostEqual(float(housed["palm"].min_corner_mm[0]), -37.5, places=6)
@@ -93,29 +95,29 @@ class TheJawStandsWhereTheGuardHoldsItTests(unittest.TestCase):
             np.testing.assert_allclose(housed[label].min_corner_mm, plain[label].min_corner_mm)
             np.testing.assert_allclose(housed[label].max_corner_mm, plain[label].max_corner_mm)
         # Never narrower than the open fingers: a housing thinner than them leaves the palm as it was.
-        thin = {b.label: b for b in build_gripper_geometry(
-            cfg.grasping.gripper_geometry, palm_thickness_mm=40.0).collision_boxes(width)}
+        thin = {b.label: b for b in jaw_envelope(
+            cfg, palm_thickness_mm=40.0).collision_boxes(width)}
         np.testing.assert_allclose(thin["palm"].max_corner_mm, plain["palm"].max_corner_mm)
 
     def test_never_shorter_than_the_registry(self) -> None:
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
 
-        geometry = _hande().grasping.gripper_geometry
-        self.assertEqual(build_gripper_geometry(geometry), build_gripper_geometry(geometry, past_the_tcp_mm=-3.0))
+        geometry = _hande()
+        self.assertEqual(jaw_envelope(geometry), jaw_envelope(geometry, past_the_tcp_mm=-3.0))
 
     def test_sfe_plans_the_tree_jaw_the_calculator_plans(self) -> None:
         """``Scene`` and the locator build their jaw from the tree; it stands where the cell's calculator's does."""
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
-        from src.robot.grasping.generation.support_footprint import SupportFootprintJaw
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
+        from src.robot.grasping.generation.hand import SupportFootprintJaw
 
         from src.robot.safety.planning.hand import hand_past_the_tcp_mm
 
         cfg = _with_frame(154.0)
         from_tree = SupportFootprintJaw.from_robot_config(cfg)
         from_cell = SupportFootprintJaw.from_model(
-            build_gripper_geometry(cfg.grasping.gripper_geometry, past_the_tcp_mm=hand_past_the_tcp_mm(cfg)),
+            jaw_envelope(cfg, past_the_tcp_mm=hand_past_the_tcp_mm(cfg)),
             aperture_mm=float(cfg.gripper.max_width_mm), min_width_mm=float(cfg.gripper.min_width_mm),
-            table_clearance_mm=float(cfg.grasping.support.min_clearance_mm))
+            table_clearance_mm=TABLE_CLEARANCE_MM)
         self.assertEqual(from_cell, from_tree)
         self.assertAlmostEqual(float(from_tree.finger_ahead_mm), 10.45 + 2.2, places=6)
         self.assertEqual(SupportFootprintJaw.from_robot_config(_hande()).finger_ahead_mm, 10.45)

@@ -1,14 +1,14 @@
-"""A weak look sends a wrist pick on to its next look, where the cell turns the trigger on (the owner, 2026-10-08 night).
+"""A weak look sends a wrist pick on to its next look, in every cell (the owner, 2026-10-08 night).
 
 A valid grasp at the first look ended the looking on the owner's cell every time: a stacked pair or a shiny part was
-gripped on what one look showed of it. The automatic trigger (``robot.grasping.weak_look_trigger``, the map's change C)
+gripped on what one look showed of it. The automatic trigger (the map's change C)
 judges a look whose grasp is valid weak where its view of the part is: depth measured on less than 85 % of its own mask;
 a part standing more than one and a half times its footprint's short side over its support with no side of it seen; or
 two height plateaus in its cloud at least 15 mm apart. A weak look carries ``ACTIVE_PERCEPTION_RECOMMENDED``, so it is
 not safe to stop at, and the pick goes on to its next look. It is judged again on the views fused so far at every look,
 so it clears once a side or more depth was seen, and it only adds looks: the grasp the looks end on is gripped as before.
-A wrist pick handed looks only; a fixed camera, and a pick handed none, are never judged. Off by default; the cell's
-tree turns it on, and the service sets it on the pick loop where the cell is built.
+A wrist pick handed looks only; a fixed camera, and a pick handed none, are never judged. Off on a loop built by hand;
+the service sets it on the pick loop of every cell built from a tree.
 
 The scene is ``tests/_wrist_views.py``: parts on the bench, ray cast through the wrist D415 from the tool pose each look
 puts the arm at. The pick loop is the real one; the calculator grasps the part on every frame.
@@ -22,8 +22,8 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.config.schema.robot import RobotConfig
-from src.config.schema.robot.grasping_schema import GraspingSupportConfig, RobotGraspingConfig
 from src.geometry import Frame, Transform
 from src.robot.core import JointPositions
 from src.robot.execution.autonomous_grasp import AutonomousGraspService
@@ -128,7 +128,7 @@ def _loop(*, looks: tuple[JointPositions, ...], boxes: tuple[Box, ...] = (CUBE,)
         arm=arm, calculator=LookCalculator(camera), perception=camera,  # type: ignore[arg-type]
         frame_resolver=resolver, policy=policy,  # type: ignore[arg-type]
         max_attempts=1, primary_camera_id="wrist", gripper_model=HAND_E, looks=looks,
-        support_config=GraspingSupportConfig(), weak_look=weak_look,
+        declared_support=DeclaredSupport(), weak_look=weak_look,
     )
     return orchestrator, camera, policy
 
@@ -284,20 +284,14 @@ class TheShapeTriggersTests(unittest.TestCase):
         self.assertEqual(0.85, WEAK_LOOK_DEPTH_SHARE)
 
 
-class TheCellsKeyTests(unittest.TestCase):
-    def test_the_key_is_off_by_default_and_can_be_switched_on(self) -> None:
-        self.assertIs(False, RobotGraspingConfig().weak_look_trigger)
-        self.assertIs(True, RobotGraspingConfig.model_validate({"weak_look_trigger": True}).weak_look_trigger)
-
-    def test_a_cell_built_from_its_tree_judges_weak_looks_as_its_key_says(self) -> None:
-        def built(**grasping: object) -> Any:
-            config = RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping=grasping)
-            return AutonomousGraspService.from_robot_config(
-                config, calculator=_ScriptedCalculator([]),  # type: ignore[arg-type]
-                perception=_FakePerception([_perception_frame()])).runtime.orchestrator
-
-        self.assertIs(False, built().weak_look)
-        self.assertIs(True, built(weak_look_trigger=True).weak_look)
+class EveryCellJudgesItsLooksTests(unittest.TestCase):
+    def test_a_loop_built_by_hand_judges_none_and_a_cell_built_from_its_tree_judges_every_look(self) -> None:
+        self.assertIs(False, BinPickingOrchestrator.__dataclass_fields__["weak_look"].default)
+        built = AutonomousGraspService.from_robot_config(
+            RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping={}),
+            calculator=_ScriptedCalculator([]),  # type: ignore[arg-type]
+            perception=_FakePerception([_perception_frame()])).runtime.orchestrator
+        self.assertIs(True, built.weak_look)
 
 
 if __name__ == "__main__":

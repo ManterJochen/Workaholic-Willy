@@ -2,14 +2,15 @@
 
 Readiness has to have one definition. Two of them disagree in both directions: a table
 whose `ready` means registered and every SDK importable, and a gate whose `ready` means
-every SDK importable, with a mock-mode escape the table has no concept of. Measured:
+every SDK importable, with a mock-mode escape the table has no concept of. Measured on
+2026-09-10, when ``franka`` was a reserved name with no driver (it was removed on 2026-10-17):
 
     require_arm_vendor_ready(franka)             passes     `--require franka`  exits 1
     require_arm_vendor_ready(SIM, mock_mode=True) passes     `--require sim`     exits 1
 
-The first is the dangerous one. Franka has no registered driver and no SDK entry, so no
-modules are missing is trivially true and a startup gate reading only that waves it
-through; the build then fails later, deeper, with a worse message. The second is the
+The first is the dangerous one. A vendor with no registered driver and no SDK entry has no
+modules missing, trivially, and a startup gate reading only that waves it through; the
+build then fails later, deeper, with a worse message. The second is the
 gate being right and the terminal having no way to say that mock mode is intended. One
 set of rows answers both questions here, and `require()` is a query over those rows
 rather than a second implementation.
@@ -50,9 +51,6 @@ class ReadinessReport:
     #: same interpreter twice per invocation, and gives a table and a verdict printed
     #: together two chances to disagree.
     rows: tuple["VendorReadiness", ...]
-    #: The `sys.platform` these rows were composed for. Empty where nobody said, and the platform
-    #: half of `require` then stays quiet rather than refusing on an answer it does not have.
-    platform: str = ""
 
     @property
     def ready(self) -> tuple["VendorReadiness", ...]:
@@ -82,7 +80,7 @@ class ReadinessReport:
         path drives no real device.
 
         It does not skip the `registered` half. A vendor with no driver cannot be built
-        in mock mode either, and pretending otherwise is what passes franka.
+        in mock mode either, and pretending otherwise passes a vendor that has none.
         """
         from src.robot.drivers.doctor import _MOCKABLE_ARM_VENDORS  # noqa: PLC0415
 
@@ -108,18 +106,9 @@ class ReadinessReport:
         if self.ready_for(vendor, mock_mode=mock_mode):
             return
         row = self.row_for("arm", name)
-        # The system first, because nothing on this box fixes it. An operator told "no driver is
-        # registered" looks for a version of this repository that has one; the true answer is that
-        # this vendor is driven from another machine, and no install here changes that.
-        if row is not None and self.platform and not row.runs_on(self.platform):
-            raise RobotConnectionError(
-                f"host not ready for arm vendor {name!r}: {row.note}. Drive it from that system, or "
-                f"run the arm server there and reach it from here."
-            )
         if row is not None and not row.registered:
             raise RobotConnectionError(
-                f"host not ready for arm vendor {name!r}: no driver is registered for it. It is a "
-                f"reserved slot in the vendor enum, not an implemented driver. "
+                f"host not ready for arm vendor {name!r}: no driver is registered for it. "
                 f"Run `python -m src.robot.drivers.doctor` for the full table."
             )
         # The reason per module, rather than a list of names. Since the probe imports for
@@ -176,23 +165,11 @@ class Host:
     #: therefore still seen, where freezing a copy here would ignore it silently.
     arm_sdks: "Mapping[Any, Sequence[str]] | None" = None
     gripper_sdks: "Mapping[Any, Sequence[str]] | None" = None
-    #: The `sys.platform` this host is asked about. `None` means this interpreter's.
-    platform: str | None = None
 
     @classmethod
     def local(cls) -> "Host":
         """This interpreter, with the vendor maps this checkout ships."""
         return cls()
-
-    @classmethod
-    def running(cls, platform: str) -> "Host":
-        """The same checkout asked about another system: "could a Linux box drive this vendor?"
-
-        A question, not a monkeypatch: several vendors drive from one system only, so "what would the
-        other box say" is a thing an operator and a test both ask, and neither should have to reach
-        into a module global to ask it.
-        """
-        return cls(platform=platform)
 
     @classmethod
     def from_sdk_map(
@@ -209,13 +186,7 @@ class Host:
         return cls(arm_sdks=dict(arm_sdks), gripper_sdks=dict(gripper_sdks))
 
     def readiness(self) -> ReadinessReport:
-        """Probe the host: one import per SDK module and two registry lookups. Isaac is spec-only.
-
-        A vendor this checkout declares Linux-only is not probed on another system at all: the row says
-        which system drives it instead of naming a module that has no wheel here.
-        """
-        import sys  # noqa: PLC0415
-
+        """Probe the host: one import per SDK module and two registry lookups. Isaac is spec-only."""
         from src.robot.core.gripper_vendor import GripperVendor  # noqa: PLC0415
         from src.robot.core.vendor import RobotVendor  # noqa: PLC0415
         from src.robot.drivers import doctor  # noqa: PLC0415
@@ -224,13 +195,8 @@ class Host:
         grip_map = (
             self.gripper_sdks if self.gripper_sdks is not None else doctor._gripper_vendor_sdks()
         )
-        platform = self.platform if self.platform is not None else sys.platform
-
         rows: list[VendorReadiness] = [
-            doctor._readiness(
-                v.value, "arm", tuple(arm_map.get(v, ())), doctor._is_arm_registered(v),
-                tuple(sorted(doctor._ARM_VENDOR_PLATFORMS.get(v, ()))), platform,
-            )
+            doctor._readiness(v.value, "arm", tuple(arm_map.get(v, ())), doctor._is_arm_registered(v))
             for v in RobotVendor
         ]
         # Derived from the registry rather than from membership in the SDK map. That
@@ -244,7 +210,7 @@ class Host:
             )
             for v in GripperVendor
         )
-        return ReadinessReport(rows=tuple(rows), platform=platform)
+        return ReadinessReport(rows=tuple(rows))
 
 
 def _registered_gripper_names() -> frozenset[str]:

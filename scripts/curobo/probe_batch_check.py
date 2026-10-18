@@ -15,17 +15,20 @@ as proven is one it called and got an answer from; a call that raised is listed 
 
 What it does, in order:
 
-  1. builds the planner as ``curobo_planner_server.py`` does (same descriptor, same derived margin and
-     payload link, same boot world, same cuboid cache, same warm-up), and a ``RobotCollisionChecker`` on
-     the planner's own ``scene_collision_checker``;
+  1. builds the planner as ``curobo_planner_server.py`` does (same descriptor, same derived margin, same
+     boot world, same cuboid cache, same warm-up), and a ``RobotCollisionChecker`` on the planner's own
+     ``scene_collision_checker``;
   2. checks a straight joint path through a wall and a clear one, through ``validate``, through
      ``get_scene_self_collision_distance_from_joints``, and through a planner-sphere variant;
   3. moves the wall with the planner's ``update_world`` and checks again;
-  4. attaches a payload to the planner and checks whether each variant sees it;
-  5. sweeps a wall a few millimetres either side of the arm to settle what "valid" means;
-  6. settles which self-collision config the checker uses (derived file against raw descriptor);
-  7. times batches of 1, 50, 200 and 800 configurations after warm-up;
-  8. restores the boot world and plans once more, to show the probe left the planner working.
+  4. sweeps a wall a few millimetres either side of the arm to settle what "valid" means;
+  5. settles which self-collision config the checker uses (derived file against raw descriptor);
+  6. times batches of 1, 50, 200 and 800 configurations after warm-up;
+  7. restores the boot world and plans once more, to show the probe left the planner working.
+
+Until 2026-10-17 it also attached a payload to the planner and asked whether each variant saw it, which is why the
+sidecar judges on the planner's own spheres: the separately built checker was blind to an attached part. No cell
+models a carried part since (the owner's cleanup), so that section left with the attach.
 
 It writes ``logs/curobo/batch_check_probe_<model>.json`` and prints a short summary. Exit code 0 when
 every section ran without a failed call, 1 otherwise; the JSON names each failure with its message.
@@ -55,8 +58,6 @@ sys.path.insert(0, str(PLANNING_DIR))
 #: The planner margin each model's cell config carries (robot.sim.yaml and robot.ur3e.yaml, planner_margin_mm),
 #: the same 4.0 for the whole family on the refitted sphere map.
 CONFIG_MARGIN_MM = {"ur5e": 4.0, "ur3e": 4.0}
-#: robot.yaml payload.sphere_slots, the value a cell that declares a carried part length hands the sidecar.
-PAYLOAD_SPHERE_SLOTS = 16
 #: Mirrors of the sidecar's module constants in curobo_planner_server.py.
 PLAN_MAX_ATTEMPTS = int(os.environ.get("WILLY_CUROBO_MAX_ATTEMPTS", "16"))
 PLAN_GRAPH_FROM = int(os.environ.get("WILLY_CUROBO_GRAPH_FROM_ATTEMPT", "1"))
@@ -113,18 +114,6 @@ def _quat_wxyz_to_matrix(q: "np.ndarray") -> "np.ndarray":
     )
 
 
-def _quat_x_onto(axis: "np.ndarray") -> "list[float]":
-    """The WXYZ rotation that turns the box's local x axis onto ``axis``."""
-    a = axis / np.linalg.norm(axis)
-    x = np.array([1.0, 0.0, 0.0])
-    d = float(np.dot(x, a))
-    if d < -0.999999:
-        return [0.0, 0.0, 0.0, 1.0]
-    c = np.cross(x, a)
-    q = np.array([1.0 + d, c[0], c[1], c[2]])
-    return (q / np.linalg.norm(q)).tolist()
-
-
 def _min_clearance_to_aabb_mm(spheres: "np.ndarray", centre: "list[float]", dims: "list[float]") -> float:
     """Smallest sphere surface to box distance, negative when a sphere penetrates. Axis-aligned box."""
     c = np.asarray(centre, dtype=np.float64)
@@ -155,10 +144,9 @@ def _stats_ms(samples: "list[float]") -> dict:
 class Probe:
     """Holds the planner, the checkers and every measurement, so a failed section cannot hide."""
 
-    def __init__(self, model: str, margin_mm: float, attach_spheres: int, repeats: int) -> None:
+    def __init__(self, model: str, margin_mm: float, repeats: int) -> None:
         self.model = model
         self.margin_mm = float(margin_mm)
-        self.attach_spheres = int(attach_spheres)
         self.repeats = int(repeats)
         self.proven: "list[str]" = []
         self.failures: "list[dict]" = []
@@ -239,15 +227,11 @@ class Probe:
         self.raw_descriptor = raw
         info["descriptor"] = robot
         info["raw_descriptor_path"] = raw
-        # The one dict the sidecar composes (curobo_planner_server.py, _curobo_body_links): the margin, then
-        # the payload link, with every consumer built from its own deep copy.
-        composed, adjusted, added = compose_with_counts(
-            resolve_config(raw), margin_mm=self.margin_mm, attach_spheres=self.attach_spheres,
-        )
+        # The one dict the sidecar composes (curobo_planner_server.py, _curobo_body_links): the margin, with every
+        # consumer built from its own deep copy.
+        composed, adjusted = compose_with_counts(resolve_config(raw), margin_mm=self.margin_mm)
         if self.margin_mm > 0.0:
             info["margin_links_adjusted"] = adjusted
-        if self.attach_spheres > 0:
-            info["attach_link_added"] = bool(added)
         info["robot_in_use"] = f"{robot} composed in memory"
         info["composed_sha256"] = canonical_sha256(composed)
         self.robot_in_use = composed
@@ -559,68 +543,6 @@ class Probe:
         }
         return out
 
-    # 3 and caveat 1: a carried part
-
-    def payload_views(self, q: "list[float]") -> dict:
-        views = self.all_three([q])
-        _p, _o, live = self.tool_and_spheres(q)
-        views["planner_live_spheres"] = int(live.shape[0])
-        state = self.call("RobotCollisionChecker.get_kinematics", self.checker.get_kinematics, self.q3([q]))
-        radii = state.robot_spheres.reshape(-1, 4)[:, 3]
-        views["checker_live_spheres"] = int((radii > 0.0).sum().item())
-        return views
-
-    def payload(self) -> dict:
-        from curobo._src.geom.types import Cuboid  # type: ignore[import-not-found]
-
-        from _curobo_attach import ATTACHED_LINK_NAME  # type: ignore[import-not-found]
-
-        torch = self.torch
-        q0 = self.default_q
-        pos, quat, spheres = self.tool_and_spheres(q0)
-        axis = _quat_wxyz_to_matrix(quat)[:, 2]
-        # Every sphere of the arm and hand ends this far along the tool axis; the wall starts 30 mm
-        # beyond that, so the empty hand is clear and only a part hanging from the flange reaches it.
-        reach = float(np.max((spheres[:, :3] - pos) @ axis + spheres[:, 3]))
-        face = reach + 0.03
-        centre = pos + axis * (face + 0.05)
-        wall = {"wall": {"dims": [0.10, 0.5, 0.5], "pose": [*centre.tolist(), *_quat_x_onto(axis)]}}
-        length = face + 0.05
-        out: dict = {
-            "tool_axis": [round(float(v), 4) for v in axis],
-            "arm_reach_along_tool_axis_mm": round(reach * 1000.0, 2),
-            "wall_face_beyond_flange_mm": round(face * 1000.0, 2),
-            "payload_dims_mm": [40.0, 40.0, round(length * 1000.0, 2)],
-            "payload_pose_tool_frame": [0.0, 0.0, round(length / 2.0, 4), 1, 0, 0, 0],
-            "attach_sphere_slots": self.attach_spheres,
-        }
-        self.set_world(wall)
-        out["before_attach"] = self.payload_views(q0)
-        # As the sidecar's attach branch in curobo_planner_server.py does it.
-        state = self.JointState.from_position(
-            torch.tensor(q0, device="cuda", dtype=torch.float32).unsqueeze(0),
-            joint_names=self.planner.joint_names)
-        box = Cuboid(name="payload", pose=[0.0, 0.0, length / 2.0, 1, 0, 0, 0], dims=[0.04, 0.04, length])
-        self.call("MotionPlanner.attachment_manager.attach", self.planner.attachment_manager.attach,
-                  state, [box], link_name=ATTACHED_LINK_NAME, num_spheres=self.attach_spheres)
-        try:
-            out["after_attach"] = self.payload_views(q0)
-            self.set_world(FAR_WORLD)
-            out["after_attach_wall_far"] = self.payload_views(q0)
-            self.set_world(wall)
-        finally:
-            self.call("MotionPlanner.attachment_manager.detach", self.planner.attachment_manager.detach,
-                      link_name=ATTACHED_LINK_NAME)
-        out["after_detach"] = self.payload_views(q0)
-        b, a, f, d = out["before_attach"], out["after_attach"], out["after_attach_wall_far"], out["after_detach"]
-        out["holds"] = {
-            "separate_checker_validate_sees_payload": b["validate"]["valid"] and not a["validate"]["valid"],
-            "separate_checker_distance_sees_payload": b["distance"]["valid"] and not a["distance"]["valid"],
-            "planner_spheres_sees_payload": (b["planner_spheres"]["valid"] and not a["planner_spheres"]["valid"]
-                                             and f["planner_spheres"]["valid"] and d["planner_spheres"]["valid"]),
-        }
-        return out
-
     # caveat 3: which self-collision config the checker judges with
 
     def self_config(self) -> dict:
@@ -763,7 +685,6 @@ class Probe:
     def decide(self) -> dict:
         s = self.result["sections"]
         paths = s.get("paths_and_world", {}).get("holds", {})
-        payload = s.get("payload", {}).get("holds", {})
         after = s.get("plan_after", {}).get("holds", {})
 
         def holds(method: str) -> bool:
@@ -774,21 +695,17 @@ class Probe:
             "validate_checks_1_and_2": holds("validate"),
             "distance_checks_1_and_2": holds("distance"),
             "planner_spheres_checks_1_and_2": holds("planner_spheres"),
-            "separate_checker_sees_payload": bool(payload.get("separate_checker_validate_sees_payload")),
-            "planner_spheres_sees_payload": bool(payload.get("planner_spheres_sees_payload")),
             "planner_still_plans_after_probe": bool(after.get("planner_still_plans")),
         }
-        if inputs["validate_checks_1_and_2"] and inputs["separate_checker_sees_payload"]:
+        if inputs["validate_checks_1_and_2"]:
             choice = "proven_names"
             text = ("3b uses the proven names: RobotCollisionChecker.validate on a checker built by "
                     "RobotCollisionCheckerCfg.load_from_config with the robot in use and the planner's "
                     "scene_collision_checker.")
-        elif (inputs["planner_spheres_checks_1_and_2"] and inputs["planner_spheres_sees_payload"]
-              and inputs["planner_still_plans_after_probe"]):
+        elif inputs["planner_spheres_checks_1_and_2"] and inputs["planner_still_plans_after_probe"]:
             choice = "planner_sphere_variant"
-            text = ("3b uses the planner-sphere variant: the separately built checker is blind to an "
-                    "attached payload, so the spheres come from MotionPlanner.compute_kinematics and are "
-                    "judged by the checker's get_bound, get_self_collision and get_collision_constraint.")
+            text = ("3b uses the planner-sphere variant: the spheres come from MotionPlanner.compute_kinematics "
+                    "and are judged by the checker's get_bound, get_self_collision and get_collision_constraint.")
         else:
             choice = "q2_refuse"
             text = "No batch query works: the owner's Q2 applies and the path verbs refuse on curobo cells."
@@ -807,12 +724,6 @@ class Probe:
             for path in ("through", "clear"):
                 cells = ", ".join(f"{m} {word(v)}" for m, v in row[path].items())
                 lines.append(f"  {world:30s} {path:8s} {cells}")
-        pay = s.get("payload", {})
-        if "after_attach" in pay:
-            lines.append("  payload attached: " + ", ".join(
-                f"{m} {word(pay['after_attach'][m])}" for m in ("validate", "distance", "planner_spheres"))
-                + f"; live spheres planner {pay['after_attach']['planner_live_spheres']}, "
-                  f"checker {pay['after_attach']['checker_live_spheres']}")
         for row in s.get("activation", {}).get("sweep", []):
             lines.append(f"  gap {row['gap_mm']:+5.1f} mm (spheres {row['sphere_clearance_mm']:+.3f} mm): "
                          f"validate {row['validate']['valid']}, planner_spheres {row['planner_spheres']['valid']}, "
@@ -842,20 +753,17 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("model", choices=sorted(CONFIG_MARGIN_MM))
     parser.add_argument("--margin-mm", type=float, default=None,
                         help="guard margin handed to the planner; defaults to the cell config figure")
-    parser.add_argument("--attach-spheres", type=int, default=PAYLOAD_SPHERE_SLOTS,
-                        help="payload sphere slots the planner is derived with (robot.yaml payload.sphere_slots)")
     parser.add_argument("--repeats", type=int, default=30, help="timed calls per batch size and method")
     parser.add_argument("--out", default=None, help="result file (default logs/curobo/batch_check_probe_<model>.json)")
     args = parser.parse_args(argv)
 
     margin = CONFIG_MARGIN_MM[args.model] if args.margin_mm is None else float(args.margin_mm)
-    probe = Probe(args.model, margin, args.attach_spheres, args.repeats)
+    probe = Probe(args.model, margin, args.repeats)
     started = time.perf_counter()
     if probe.section("build", probe.build):
         for name, fn in (
             ("paths_and_world", probe.paths_and_world),
             ("activation", probe.activation),
-            ("payload", probe.payload),
             ("self_config", probe.self_config),
             ("timings", probe.timings),
             ("plan_after", probe.plan_after),

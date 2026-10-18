@@ -42,10 +42,10 @@ describe('the jaws question round trip', () => {
     expect(openNow.question?.choices).toEqual(['open_now', 'abort'])
   })
 
-  it('ends open, with the planner told the hand is empty', () => {
+  it('ends open', () => {
     const view = replayCell(jaws)
     expect(view.question).toBeNull()
-    expect(view.lastEnded).toMatchObject({ id: 'q-8a2071', outcome: 'open', detached: true })
+    expect(view.lastEnded).toMatchObject({ id: 'q-8a2071', outcome: 'open' })
     expect(view.lines.map((l) => l.msg.key)).toEqual([
       'event.cell.jaws_question',
       'event.cell.jaws_answered',
@@ -59,7 +59,7 @@ describe('the jaws question round trip', () => {
     const view = reduceCell(replayCell(jaws.slice(0, 1)), {
       ...jaws[4],
       seq: 2,
-      data: { question_id: 'q-5d1e0c', outcome: 'no_answer', refusal: 'nobody answered', detached: false },
+      data: { question_id: 'q-5d1e0c', outcome: 'no_answer', refusal: 'nobody answered' },
     })
     expect(view.question).toBeNull()
     expect(view.lastEnded?.outcome).toBe('no_answer')

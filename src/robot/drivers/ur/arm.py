@@ -99,33 +99,29 @@ class URRobotArm(
         description = load_arm(capabilities.model)
 
         # The halt latch lives on this connection, which the arm keeps for its life, so a disconnect and a connect of
-        # the same arm keep it; brake_on_halt decides whether a halt also brakes the move in flight.
+        # the same arm keep it, and a halt brakes the move in flight.
         # The address the tree declares, or none: there is no placeholder any more (2026-10-13). A driver with no
         # address builds, so a desk can read this cell and say what it lacks, and refuses at `connect`, the first thing
         # that needs a controller to exist.
         connection = URConnection(
             ip=config.ur.ip or "",
-            vel=config.motion_limits.max_velocity,
-            acc=config.motion_limits.max_acceleration,
+            vel=config.motion.max_velocity,
+            acc=config.motion.max_acceleration,
             frequency=config.ur.rtde_frequency,
-            brake_on_halt=config.ur.brake_on_halt,
-            # How "the arm stands still" is read: the controller's is_steady() or the joint speeds (2026-10-09).
-            steady_signal=config.safety.dwell.steady_signal,
         )
-        guard = WorkspaceGuard(config.workspace_limits)
+        guard = WorkspaceGuard(config.motion.workspace)
         # The controller below the planning half (P0e E7): RTDE and the UR motion controller behind the verbs of
         # ``robot.core.transport``. ``_conn`` and ``_motion`` read and write through it.
         transport = URTransport(connection, MotionController(
             connection,
             guard,
-            max_velocity=config.motion_limits.max_velocity,
-            max_acceleration=config.motion_limits.max_acceleration,
-            # The line's singularity check on the controller's FK or on the arm's own chain (2026-10-09).
-            singularity_fk=config.safety.ik_quality.singularity_fk,
+            max_velocity=config.motion.max_velocity,
+            max_acceleration=config.motion.max_acceleration,
+            # The line's singularity check runs on the arm's own chain where it can be read (the owner's dh, 2026-10-09).
             arm_model=capabilities.model,
         ))
         # The vendor-neutral safety preflight pipeline. It owns its own WorkspaceGuard,
-        # shrunk by the configured ``limits.workspace_margin_mm``, so the typed
+        # shrunk by every cell's 20 mm (``workspace.WORKSPACE_MARGIN_MM``), so the typed
         # ``move()`` path enforces the tighter operator-defined margin while
         # ``MotionController`` keeps the full-box guard as a backstop for the bool path.
         # The tool on the flange, read once (P0i i5): the guard models its hand, and the arm reads its tool frame
@@ -133,7 +129,7 @@ class URRobotArm(
         # refused here.
         tool = MountedTool.from_config(config)
         preflight = SafetyPreflight.from_safety_config(
-            config.safety, config.workspace_limits,
+            config.safety, config.motion.workspace,
             # The hand the cell names and the arm the guard places it on. An exact mesh guard with no
             # hand named refuses here, at build, rather than checking whatever hand the arm bundle carries.
             hand=tool.hand, arm_model=capabilities.model,
@@ -151,15 +147,11 @@ class URRobotArm(
             # real cell that declares nothing still gets a home pose, and move_home boxes it before it moves.
             home_joints=(
                 list(home_joints) if home_joints
-                else list(config.home_joint_positions or [joint.home_rad for joint in description.joints])
+                else list(config.motion.home_rad or [joint.home_rad for joint in description.joints])
             ),
             curobo_client_factory=curobo_client_factory,
             tool=tool,
         )
-        if self._next_leg_mode == "in_settles_and_motion" and not bool(config.ur.brake_on_halt):
-            self.logger.warning("robot.motion.judge_next_leg is 'in_settles_and_motion' and robot.ur.brake_on_halt is "
-                                "false: a leg is judged during the line before it only where a halt brakes that line, "
-                                "so this arm judges ahead in the jaws' strokes alone ('in_settles')")
 
     # ------------------------------------------------------------------
     # Tool frame (flange <-> TCP)
@@ -509,7 +501,7 @@ class URRobotArm(
                                f"{exc})") from exc
 
     def _controller_chain(self) -> "tuple[Any, np.ndarray, str] | None":
-        """The controller's own kinematics, for a line solved here (``robot.safety.ik_quality.line_ik: local``): its DH
+        """The controller's own kinematics, for a line solved here (every cell's since 2026-10-17): its DH
         rows (a :class:`~src.robot.safety._ur_kinematics.URDhChain`), the inverse of its active TCP, and the model
         whose nominal table the closed form starts from; ``None`` where the rows or the TCP cannot be read, and the
         controller solves the line as before.
@@ -560,7 +552,7 @@ class URRobotArm(
             if table is not None:
                 cosine = (float(np.trace(ours[:3, :3].T @ table[:3, :3])) - 1.0) / 2.0
                 self.logger.info(
-                    "lines are solved here on the controller's own kinematics (robot.safety.ik_quality.line_ik: local) "
+                    "lines are solved here on the controller's own kinematics "
                     "and checked against the controller at two samples each; at the joints the arm stands at, its rows "
                     "put the flange %.2f mm and %.3f deg from the nominal %s table",
                     1000.0 * float(np.linalg.norm(ours[:3, 3] - table[:3, 3])),
@@ -580,7 +572,7 @@ class URRobotArm(
     # --- SupportsRobotStatus + enriched errors ---
     def _controller_goal_m(self, tcp: Pose) -> np.ndarray:
         """The pose the controller is told for ``tcp`` (:meth:`_pose_to_controller`), as a 4x4 in metres through the
-        UR's axis-angle, the goal a line solved here reads (``line_ik: local``)."""
+        UR's axis-angle, the goal a line solved here reads."""
         from src.robot.safety._ur_ik import ur_pose_matrix_m
 
         return ur_pose_matrix_m(self._pose_to_controller(tcp).to_ur_list())

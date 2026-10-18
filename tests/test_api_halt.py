@@ -2,8 +2,8 @@
 
 Build plan item 1 and 1.3.5, the halt-now design A: the route tells the run to halt and latches the arm through the
 library's own halt (``SupportsHalt``) BEFORE it tells the run, so from then on every motion and output switch of the arm
-is refused before anything is sent; with ``robot.ur.brake_on_halt`` off, as shipped (Q1), the move in flight runs to its
-end and nothing after it is sent. A halt reads ``halted`` everywhere, never ``controller_stopped``, and only "the cell is
+is refused before anything is sent; on an arm that does not brake the move in flight runs to its end, on a UR it is
+braked, and nothing after it is sent. A halt reads ``halted`` everywhere, never ``controller_stopped``, and only "the cell is
 clear" (``POST /v1/cell/acknowledge``) ends the latch. What this file pins:
 
 * the brake answers while a connect holds the session lock: it takes none;
@@ -192,7 +192,7 @@ class AnArmWithNoLatchTests(ConsoleCase):
         from tests._task_fakes import TaskArm
 
         class LatchlessArm(TaskArm):
-            """An arm with no halt latch (a sim or KUKA arm): it stops only before its next motion."""
+            """An arm with no halt latch (a sim arm): it stops only before its next motion."""
 
             def connect(self) -> None:
                 self.is_connected = True
@@ -270,30 +270,27 @@ class TheCellIsClearRefusesTests(ConsoleCase):
         refused = self.refused(self.client.post("/v1/cell/acknowledge", json={"cell_clear": True, "jaws_empty": True}),
                                409, "jaws_not_open")
         self.assertEqual("unknown", refused["detail"]["jaws"])
-        self.assertNotIn("detach_payload", cell.arm.calls)
         self.assertNotIn("cell.acknowledged", event_types(self.cell, "cell"))
 
     def test_backen_leer_on_a_hand_that_measures_a_part(self) -> None:
         from tests._task_fakes import MeasuringHand
 
         hand = MeasuringHand(holding=True)
-        cell = self.scripted(hand=hand)
+        self.scripted(hand=hand)
         refused = self.refused(self.client.post("/v1/cell/acknowledge", json={"cell_clear": True, "jaws_empty": True}),
                                409, "jaws_not_open")
         self.assertIn("measures a part", refused["message"])
-        self.assertNotIn("detach_payload", cell.arm.calls)
+        self.assertNotIn("cell.acknowledged", event_types(self.cell, "cell"))
         hand.holding = False
         emptied = self.client.post("/v1/cell/acknowledge", json={"cell_clear": True, "jaws_empty": True})
         self.assertEqual(200, emptied.status_code, emptied.text)
 
-    def test_backen_leer_tells_the_planner_the_hand_is_empty(self) -> None:
-        cell = self.scripted()
-        cell.arm.attach_payload(40.0)
-        self.assertEqual("planner_and_filter", self.client.get("/v1/cell").json()["payload_model"])
+    def test_backen_leer_is_said_on_the_cell_s_stream(self) -> None:
+        """The person's word that the hand holds nothing, and nothing more: no planner holds a part to forget since
+        2026-10-17, so nothing is told to the arm."""
+        self.scripted()
         emptied = self.client.post("/v1/cell/acknowledge", json={"cell_clear": True, "jaws_empty": True})
         self.assertEqual(200, emptied.status_code, emptied.text)
-        self.assertEqual("none", emptied.json()["payload_model"])
-        self.assertIn("detach_payload", cell.arm.calls)
         self.assertTrue(wait_for_event(self.cell, "cell", "cell.acknowledged").data["jaws_emptied"])
 
 

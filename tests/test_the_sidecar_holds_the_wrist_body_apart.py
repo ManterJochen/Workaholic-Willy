@@ -4,7 +4,7 @@ As the owner decided, the evidence stays keyed by arm, hand, plate, placement an
 without the camera. So the camera travels in its own variable, ``compose_for_cell`` composes the evidence config
 exactly as a cell without a camera does and the loaded config on top of it, and refuses unless removing the camera's
 links gives the evidence config back. The planner start then proves the sidecar holds exactly this cell's camera, with
-a complete cover (``body_link.wrist_body_refusal``). The camera stays checked against a carried part.
+a complete cover (``body_link.wrist_body_refusal``).
 
 The sidecar runs in the cuRobo environment, so its half is read as source, as test_sidecar_composes_one_dict.py does.
 """
@@ -17,7 +17,6 @@ from pathlib import Path
 from unittest import mock
 
 from src.contracts import UNSET
-from src.robot.safety.planning._curobo_attach import ATTACHED_LINK_NAME
 from src.robot.safety.planning._curobo_body_links import (
     ENV_BODY_LINKS,
     ENV_WRIST_BODY_LINKS,
@@ -52,10 +51,9 @@ def _hand() -> dict:
             "ignore": ["tool0", "wrist_3_link", "wrist_2_link"]}
 
 
-def _loaded_rows(wrist: dict, *, margin_mm: float = 10.0, attach: int = 16) -> tuple[list, list]:
+def _loaded_rows(wrist: dict, *, margin_mm: float = 10.0) -> tuple[list, list]:
     """What a sidecar composing this cell reports: its body rows and its wrist rows."""
-    loaded, _, _, _, links = compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist], margin_mm=margin_mm,
-                                              attach_spheres=attach)
+    loaded, _, _, links = compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist], margin_mm=margin_mm)
     rows = [{**row, **{key: wrist.get(key) for key in ("rig_id", "model", "margin_mm", "boxes")}}
             for row in body_report(loaded, links)]
     return body_report(loaded, ["hand"]), rows
@@ -63,35 +61,32 @@ def _loaded_rows(wrist: dict, *, margin_mm: float = 10.0, attach: int = 16) -> t
 
 class TheEvidenceConfigIsTheCameraFreeConfigTests(unittest.TestCase):
     def test_without_a_camera_the_evidence_config_is_what_a_cell_composed_before(self) -> None:
-        before, _, _ = compose_with_counts(_arm(), bodies=[_hand()], margin_mm=10.0, attach_spheres=16)
-        loaded, evidence, _, _, links = compose_for_cell(_arm(), bodies=[_hand()], margin_mm=10.0, attach_spheres=16)
+        before, _ = compose_with_counts(_arm(), bodies=[_hand()], margin_mm=10.0)
+        loaded, evidence, _, links = compose_for_cell(_arm(), bodies=[_hand()], margin_mm=10.0)
         self.assertEqual(links, [])
         self.assertEqual(evidence, before)
         self.assertIs(loaded, evidence)
 
     def test_with_a_camera_the_loaded_config_without_it_is_the_evidence_config(self) -> None:
         wrist = wrist_body().link(arm="ur5e")
-        for margin, attach in ((0.0, 0), (10.0, 16)):
-            with self.subTest(margin=margin, attach=attach):
-                loaded, evidence, _, _, links = compose_for_cell(
-                    _arm(), bodies=[_hand()], wrist_bodies=[wrist], margin_mm=margin, attach_spheres=attach)
+        for margin in (0.0, 10.0):
+            with self.subTest(margin=margin):
+                loaded, evidence, _, links = compose_for_cell(
+                    _arm(), bodies=[_hand()], wrist_bodies=[wrist], margin_mm=margin)
                 self.assertEqual(links, ["wrist_camera_wrist"])
                 self.assertEqual(without_links(loaded, links), evidence)
                 self.assertEqual(canonical_sha256(evidence),
-                                 canonical_sha256(compose_with_counts(_arm(), bodies=[_hand()], margin_mm=margin,
-                                                                      attach_spheres=attach)[0]))
+                                 canonical_sha256(compose_with_counts(_arm(), bodies=[_hand()], margin_mm=margin)[0]))
                 self.assertNotEqual(canonical_sha256(loaded), canonical_sha256(evidence))
 
-    def test_the_camera_takes_the_guards_half_margin_and_stays_checked_against_the_part_and_the_wrist(self) -> None:
-        loaded, _, _, _, _ = compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist_body().link(arm="ur5e")],
-                                              margin_mm=10.0, attach_spheres=16)
+    def test_the_camera_takes_the_guards_half_margin_and_stays_checked_against_the_wrist(self) -> None:
+        loaded, _, _, _ = compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist_body().link(arm="ur5e")],
+                                           margin_mm=10.0)
         kinematics = loaded["robot_cfg"]["kinematics"]
         self.assertAlmostEqual(kinematics["self_collision_buffer"]["wrist_camera_wrist"], 0.005)
         ignored = kinematics["self_collision_ignore"]["wrist_camera_wrist"]
-        for checked in (ATTACHED_LINK_NAME, "wrist_1_link", "wrist_2_link"):
+        for checked in ("wrist_1_link", "wrist_2_link"):
             self.assertNotIn(checked, ignored)
-        self.assertIn(ATTACHED_LINK_NAME, kinematics["self_collision_ignore"]["hand"],
-                      "the hand holding the part still ignores it: only the camera is exempted")
 
     def test_a_step_that_writes_outside_the_camera_link_is_refused(self) -> None:
         """The control: a composition that touches another link's entries is caught, not cleaned away."""
@@ -206,7 +201,7 @@ class ThePlannerStartProvesTheCameraTests(unittest.TestCase):
             "parent": ({"parent": "hand"}, "with parent 'hand'"),
             "fixed_transform": ({"fixed_transform": [0.0] * 7}, "with fixed_transform"),
             "spheres_sha256": ({"spheres_sha256": "e" * 64}, "with spheres_sha256 eeeeeeeeeeee"),
-            "ignore": ({"ignore": ["tool0", "wrist_3_link", "hand", "coupling", ATTACHED_LINK_NAME]},
+            "ignore": ({"ignore": ["tool0", "wrist_3_link", "hand", "coupling", "wrist_2_link"]},
                        "the planner skips a pair this camera must be checked against"),
         }
         for field, (change, said) in cases.items():

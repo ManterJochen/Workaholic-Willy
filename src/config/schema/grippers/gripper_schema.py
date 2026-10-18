@@ -3,9 +3,9 @@
 A registry file holds, for one hand, the numbers the labeller's ``JawModel``
 (``datagen/grasps/verdict.py``), the network's ``JAW_GEOMETRY``
 (``src/robot/grasping/deep/net/gripper.py``), the runtime envelope
-``grasping.gripper_geometry.parallel_jaw`` and the actuation widths in ``robot.gripper`` state, and
-``robot.gripper.model`` names the file. The loader fills the widths and the envelope from it
-(``src/config/hand_numbers.py``), and the guard, the planner bundles, the deep calculator and the sim's
+(``gripper_model.jaw_envelope``) and the actuation widths in ``robot.gripper`` state, and
+``robot.gripper.model`` names the file. The loader fills the widths from it
+(``src/config/hand_numbers.py``), and the envelope, the guard, the planner bundles, the deep calculator and the sim's
 mount take the hand from it. The sim gripper profile does not: it opens the 2F-85 to 87.1 mm where the
 registry file says 85.0.
 
@@ -40,8 +40,8 @@ _PAD_TOLERANCE_MM = 1e-6
 class ParallelJawSpec(StrictModel):
     """A two-finger parallel jaw, in millimetres, in the grasp frame.
 
-    The upper bounds on the fields the runtime collision envelope carries are that schema's own
-    (``GraspingParallelJawGeometryConfig``), and the widths relate to the aperture the way the actuation
+    The upper bounds on the fields the runtime collision envelope carries are the ones that envelope's config
+    block held until 2026-10-17, and the widths relate to the aperture the way the actuation
     block (``robot.gripper``) requires, so a registry file cannot hold a number a consumer built from it
     would refuse. The relations below say that the numbers describe one finger: the pad sits on it, and
     the envelope's length is at least the reach it was measured to have.

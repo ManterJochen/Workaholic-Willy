@@ -1,6 +1,6 @@
 """A part goes into a box below its rim, not dropped over it (the owner, 2026-10-08 night).
 
-"Bei so kleinen Kisten ... 1-5 cm unter dem Kistenrand": with ``robot.place.release_in_a_box: below_the_rim`` the jaws
+"Bei so kleinen Kisten ... 1-5 cm unter dem Kistenrand": with ``robot.motion.place.release_in_a_box: below_the_rim`` the jaws
 open ``below_the_rim_mm`` (30 mm unless the cell says 10 to 50) under the rim, never lower than 10 mm over what the camera
 reads inside the box: its floor, or the parts already in it, read again on the frame of every check before a drop
 (``recheck(..., inside=True)``), one measure with the rim band, so no extra frame and no detector. Where that leaves less

@@ -47,9 +47,10 @@ class TheDefaultLadderIsUnchangedTests(unittest.TestCase):
         self.assertIs(select_configurations(None), CONFIGURATIONS)
 
     def test_the_default_tuple_still_holds_the_rungs_the_arc_quotes(self) -> None:
-        """A rename here would silently orphan every number in the plan."""
+        """A rename here would silently orphan every number in the plan. (``default``, the silhouette's rung, left
+        with that stage on 2026-10-16.)"""
         names = {config.name for config in CONFIGURATIONS}
-        for expected in ("default", "sfe", "sfe_fused", "floor_topdown"):
+        for expected in ("sfe", "sfe_fused", "floor_topdown"):
             self.assertIn(expected, names, expected)
 
 
@@ -89,7 +90,7 @@ class TheDeepRungIsPairedHonestlyTests(unittest.TestCase):
 
     def test_deep_matches_sfe_fused_on_every_observation_flag(self) -> None:
         deep, analytic = self._by_name("deep"), self._by_name("sfe_fused")
-        for flag in ("neighbours", "fused_geometry", "fused_neighbours", "dense_sampling"):
+        for flag in ("neighbours", "fused_geometry", "fused_neighbours"):
             self.assertEqual(getattr(deep, flag), getattr(analytic, flag), flag)
 
     def test_deep_scene_matches_sfe_fused_scene(self) -> None:

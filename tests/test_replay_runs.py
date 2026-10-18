@@ -1,4 +1,4 @@
-"""The replay nouns: the roll-up, the gate and the baseline.
+"""The replay nouns: the roll-up and the gate.
 
 Every assertion here corresponds to something that was actually wrong at some point while this
 module was written, or to a rule the convention would be pointless without. Nothing is here to hold
@@ -13,31 +13,24 @@ from tempfile import TemporaryDirectory
 
 from src.robot.grasping.replay.runs import (
     GateKeyStatus,
-    PACK_DEPENDENT_GATE_KEYS,
     RecordLog,
     SoakGate,
     SoakSource,
     TelemetryVerdict,
 )
-from src.robot.grasping.replay.soak import (
-    SoakScenarioSpec,
-    generate_soak_records,
-)
+from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
 
 
-def _records(attempts: int = 12, seed: int = 7):
-    return generate_soak_records(
-        SoakScenarioSpec(
-            name="unit",
-            mode="easy",
-            attempts=attempts,
-            failure_class_weights={"succeeded": 9.0, "no_valid_grasp": 1.0},
-            recovery_success_rate=0.0,
-            cycle_time_mean_s=1.5,
-            cycle_time_jitter_s=0.2,
-            seed=seed,
+def _records(attempts: int = 12) -> list[GraspAttemptRecord]:
+    """A clean log: one attempt in ten found no grasp, every other one succeeded and carries its execution block."""
+    return [
+        GraspAttemptRecord.new(
+            attempt_id=f"unit-{index:04d}", mode="easy", timestamp=float(index),
+            final_outcome="no_valid_grasp" if index % 10 == 9 else "succeeded",
+            execution=None if index % 10 == 9 else {"outcome": "executed"},
         )
-    )
+        for index in range(attempts)
+    ]
 
 
 class TestRecordLog(unittest.TestCase):
@@ -81,19 +74,10 @@ class TestSoakGate(unittest.TestCase):
         """
         self.assertIs(SoakGate.over_records("x.jsonl").source, SoakSource.REAL_RECORDS)
         self.assertIs(SoakGate.over_sim_records("x.jsonl").source, SoakSource.SIM_RECORDS)
-        self.assertIs(SoakGate.over_synthetic("t.yaml").source, SoakSource.SYNTHETIC_STREAM)
-        self.assertIs(SoakGate.over_canonical_packs().source, SoakSource.CANONICAL_PACKS)
 
-    def test_the_pack_dependent_keys_are_present_and_not_applicable(self) -> None:
-        """⛔ THE OTHER DEFECT THIS CAUGHT. `evaluate_soak_gate` returns the seven record-intrinsic
-        keys ONLY; both CLI modes then write the pack-dependent ones in. My first version
-        filtered them out of the result instead of adding them, so the filter could never fire and
-        the gate reported seven keys where the CLI reports twelve.
-
-        ⚠ THE COUNT MOVES WHEN A LEG IS ADDED, and it is asserted against the tuple rather than a
-        literal for that reason: `failure_taxonomy_classifier_pass` became the fifth pack-dependent
-        key on 2026-09-10 and a hard-coded 11 would have failed here for being right.
-        """
+    def test_every_key_is_judged_from_the_records(self) -> None:
+        """The pack-dependent keys left with the synthetic soak on 2026-10-16: the six keys a door reports are the six
+        the gate judges, each passed or failed."""
         with TemporaryDirectory() as tmp:
             log = Path(tmp) / "r.jsonl"
             log.write_text(
@@ -101,15 +85,9 @@ class TestSoakGate(unittest.TestCase):
             )
             verdict = SoakGate.over_records(log).evaluate()
 
-        for key in PACK_DEPENDENT_GATE_KEYS:
-            self.assertIn(key, verdict.keys)
-            self.assertIs(verdict.keys[key], GateKeyStatus.NOT_APPLICABLE)
-        self.assertEqual(len(verdict.keys), 7 + len(PACK_DEPENDENT_GATE_KEYS))
-        # ⚠ A gate whose keys are all not_applicable passes loudest. This is the number that says so.
-        self.assertEqual(verdict.judged, 7)
-
+        self.assertEqual(6, len(verdict.keys))
+        self.assertTrue(all(status in (GateKeyStatus.PASSED, GateKeyStatus.FAILED) for status in verdict.keys.values()))
         wire = verdict.gate_wire()
-        self.assertEqual(wire["slo_packs_pass"], "not_applicable")
         self.assertIs(wire["passes"], verdict.passes)
 
     def test_exit_code_is_derived_from_the_violations(self) -> None:
@@ -138,8 +116,6 @@ class TestSoakGate(unittest.TestCase):
             text = SoakGate.over_sim_records(log, min_attempts=1).evaluate().render()
         self.assertFalse(text.endswith("\n"))
         text.encode("ascii")
-        # runs.py:310 now says "pick_success_rate is reported, not gated: there is no
-        # comparable sim baseline yet"; the migration lower-cased the shout.
         self.assertIn("not gated", text)
 
 

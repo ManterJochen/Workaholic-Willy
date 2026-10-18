@@ -1,33 +1,30 @@
-"""What SFE asks of many builds at once answers what it answers of one, and says "unsure" only on a threshold.
+"""What the part's body asks of many grasps at once answers what it answers of one, and says "unsure" only on a limit.
 
-``support_footprint._build_many`` (``robot.grasping.batched_builds``) asks the guard's floor (``HandFloor.under_many``),
-the camera's boxes (``SeenEnvelope.refuses_many``), the seen test (``SeenInTheFrame.unseen_many``), the obstacle grids
-(``_ObstacleSet.met_many``), the room (``_Room.least_many``) and the part (``_inside_many``) for every build of a
-closing line at once. Each answers what the one-build call answers for the same points: the grids and the room
-exactly, the rest, made over many points whose products may round their last bit another way, wherever no number lies
-within 1e-6 of its threshold, and "unsure" (2) only there, where SFE asks the one-build call instead.
+The body (``body_grasps``) asks the guard's floor (``HandFloor.under_many``) and the camera's boxes
+(``SeenEnvelope.refuses_many``) for a batch of its grasps at once. Each answers what the one-grasp call answers for the
+same points wherever no number lies within 1e-6 of its threshold, made over many points whose products may round their
+last bit another way, and "unsure" (2) only there, where the body asks the one-grasp call instead.
 
 The camera's boxes are measured only where they could refuse: a pair whose gap along a face normal stands at the limit
 is never nearer (a projection never lengthens a distance, checked on 200,000 random pairs), and a pair whose hand point
-nearest the box stands nearer than the limit surely is. And where this machine's numpy would round a stacked product
-otherwise, or making the builds at once fails, SFE makes them one at a time and says so once: the same grasps.
+nearest the box stands nearer than the limit surely is. (The other batched answers, the seen test, the obstacle grids,
+the room and the part, were SFE's batched builds' alone and left with its search on 2026-10-16.)
 """
 
 from __future__ import annotations
 
 import math
 import unittest
-from typing import Any
-from unittest import mock
 
 import numpy as np
 
 from src.robot.grasping.generation import scene_obstacles as so
-from src.robot.grasping.generation import support_footprint as sf
-from src.robot.grasping.generation.scene_obstacles import SeenEnvelope, SeenInTheFrame, box_distances_mm
-from tests.test_a_lines_builds_made_at_once_answer_to_the_bit import _grasps, _same
-from tests.test_sfe_units_in_any_order_give_the_search_its_answer import scenes
+from src.robot.grasping.generation.hand import HandFloor
+from src.robot.grasping.generation.scene_obstacles import SeenEnvelope, box_distances_mm
 from tests.test_the_cheaper_builds_answer_to_the_bit import _solid
+
+#: What a batched answer says where only the one-grasp call decides.
+UNSURE = 2
 
 
 def _turns(rng: np.random.Generator, count: int) -> np.ndarray:
@@ -43,9 +40,9 @@ def _turns(rng: np.random.Generator, count: int) -> np.ndarray:
 def _agrees(test: unittest.TestCase, many: np.ndarray, one: list[bool], what: str) -> int:
     """Where the many-at-once answer is sure, it is the one-at-a-time answer; how many it was unsure of."""
     for k, (said_many, said_one) in enumerate(zip(many.tolist(), one)):
-        if said_many != sf._UNSURE:
+        if said_many != UNSURE:
             test.assertEqual(int(said_one), said_many, f"{what} {k}")
-    return int((many == sf._UNSURE).sum())
+    return int((many == UNSURE).sum())
 
 
 class TheCameraBoxesTests(unittest.TestCase):
@@ -72,12 +69,12 @@ class TheCameraBoxesTests(unittest.TestCase):
     def test_many_hands_at_once_are_refused_where_one_is(self) -> None:
         """Seeded hands with rolls among whole, soft, turned and tipped boxes, as ``refuses`` judges them one at a
         time; the cull by face normals and by the nearest point changes no answer."""
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
         from src.robot.safety.planning.perceived import SeenBox
         from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
 
         cfg = hande_cell()
-        hand = build_gripper_geometry(cfg.grasping.gripper_geometry)
+        hand = jaw_envelope(cfg)
         rng = np.random.default_rng(20261009)
         unsure, refused = 0, 0
         for scene in range(12):
@@ -128,32 +125,14 @@ class TheCameraBoxesTests(unittest.TestCase):
         _agrees(self, many, [envelope.refuses(at[k], hands[k]) for k in range(400)], "hand")
 
 
-class TheSeenTestTests(unittest.TestCase):
-    def test_many_builds_at_once_are_seen_where_one_is(self) -> None:
-        rng = np.random.default_rng(5)
-        to_camera = np.eye(4)
-        to_camera[:3, :3] = _turns(rng, 1)[0]
-        to_camera[:3, 3] = [10.0, -20.0, 600.0]
-        depth = rng.uniform(450.0, 800.0, (240, 320))
-        depth[rng.random((240, 320)) < 0.1] = 0.0
-        depth[rng.random((240, 320)) < 0.05] = np.nan
-        seen = SeenInTheFrame(depth_mm=depth, to_camera=to_camera, fx=280.0, fy=280.0, cx=160.0, cy=120.0)
-        points = rng.uniform(-150.0, 150.0, (500, 12, 3))
-        asked = rng.random((500, 12)) < 0.8
-        many = seen.unseen_many(points, asked)
-        one = [not bool(seen(points[k][asked[k]]).all()) for k in range(500)]
-        self.assertEqual(0, _agrees(self, many, one, "build"))
-        self.assertTrue(any(one) and not all(one), "the frame sees some builds whole and misses some")
-
-
 class TheFloorTests(unittest.TestCase):
     def test_many_builds_at_once_stand_over_the_floor_where_one_does(self) -> None:
         rng = np.random.default_rng(13)
-        floors = [sf.HandFloor(solids=(), distance_mm=3.0)]
+        floors = [HandFloor(solids=(), distance_mm=3.0)]
         for fingers_to_the_reading in (False, True):
             for drop in (0.0, 1.0):
                 solids = tuple(_solid(rng, tilt_deg=tilt) for tilt in (0.0, 2.0, 12.0, 95.0))
-                floors.append(sf.HandFloor(solids=solids, distance_mm=float(rng.uniform(1.0, 5.0)),
+                floors.append(HandFloor(solids=solids, distance_mm=float(rng.uniform(1.0, 5.0)),
                                            fingers_to_the_reading=fingers_to_the_reading, finger_floor_drop_mm=drop))
         for floor in floors:
             points = rng.uniform([-250.0, -250.0, 0.0], [250.0, 250.0, 120.0], (200, 20, 3))
@@ -162,78 +141,6 @@ class TheFloorTests(unittest.TestCase):
                 many = floor.under_many(points, asked, fingers=fingers)
                 one = [floor.under(points[k][asked[k]], fingers=fingers) for k in range(200)]
                 self.assertEqual(0, _agrees(self, many, one, "build"))
-
-
-class TheGridsTheRoomAndThePartTests(unittest.TestCase):
-    def test_the_grids_the_room_and_the_part_answer_exactly_what_they_answer_one_build_at_a_time(self) -> None:
-        rng = np.random.default_rng(17)
-        for name, (cloud, keywords) in scenes().items():
-            plan = sf.plan_support_footprint(sf.SfeInputs(cloud, counting=True, **keywords))
-            assert plan is not None
-            obstacles, _side, _every = plan.grids()
-            lo, hi = cloud.min(axis=0) - 40.0, cloud.max(axis=0) + 40.0
-            points = rng.uniform(lo, hi, (150, 30, 3))
-            asked = rng.random((150, 30)) < 0.8
-            with self.subTest(scene=name):
-                for counting in (False, True):
-                    hit, sets = obstacles.met_many(points, asked, counting=counting)
-                    for k in range(150):
-                        mine = points[k][asked[k]]
-                        self.assertEqual(obstacles.hits(mine), bool(hit[k]))
-                        if counting:
-                            self.assertEqual(obstacles.met(mine),
-                                             tuple(n for n, on in zip(("seen", "declared", "own"), sets[k]) if on))
-                for tree in (True, False):
-                    room = sf._Room(keywords.get("obstacle_points_base_mm"), plan.rigid)
-                    if not tree:
-                        room.tree = None
-                    least = room.least_many(points, asked)
-                    for k in range(150):
-                        self.assertEqual(np.float64(room.least_mm(points[k][asked[k]])).tobytes(),
-                                         np.float64(least[k]).tobytes())
-                margin = -1.0 - plan.prism.inflate
-                inside = sf._inside_many(plan.prism, plan.prism.normals.T, points, asked, margin)
-                one = [bool(plan.prism.contains(points[k][asked[k]], margin_mm=margin).any()) for k in range(150)]
-                self.assertEqual(0, _agrees(self, inside, one, "build"))
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# One at a time where at once cannot be had
-# ---------------------------------------------------------------------------------------------------------------------
-
-
-class OneAtATimeWhereAtOnceCannotBeHadTests(unittest.TestCase):
-    def test_this_machines_numpy_answers_to_the_bit(self) -> None:
-        from tests.test_sfe_says_why_it_refused import default_jaw, hande_jaw
-
-        self.assertEqual("", sf.batched_builds_hold())
-        self.assertEqual("", sf.batched_builds_hold(hande_jaw()))
-        self.assertEqual("", sf.batched_builds_hold(default_jaw()))
-
-    def _one_at_a_time(self, patch: Any, said: str) -> None:
-        cloud, keywords = scenes()["a bar boxed in"]
-        expected = _grasps(cloud, keywords, batched=False)
-        with patch, mock.patch.object(sf, "_SAID", set()), \
-                self.assertLogs("src.robot.grasping.generation.support_footprint", "WARNING") as told:
-            got = _grasps(cloud, keywords, batched=True)
-            again = _grasps(cloud, keywords, batched=True)
-        _same(self, expected, got, "the first part")
-        _same(self, expected, again, "the next")
-        self.assertEqual(1, len(told.records), "said once")
-        self.assertIn(said, told.output[0])
-        self.assertIn("the grasps are the same", told.output[0])
-
-    def test_a_numpy_whose_stacked_products_round_otherwise_has_every_build_made_alone(self) -> None:
-        sf._stacked_products_hold.cache_clear()
-        self.addCleanup(sf._stacked_products_hold.cache_clear)
-        self._one_at_a_time(mock.patch.object(sf, "_stacked_products_hold", return_value="a reason of this machine"),
-                            "a reason of this machine")
-
-    def test_a_pass_that_fails_has_every_build_made_alone_and_counts_nothing_twice(self) -> None:
-        def broken(*args: Any, **keywords: Any) -> Any:
-            raise MemoryError("no room for the line")
-
-        self._one_at_a_time(mock.patch.object(sf, "_build_many", side_effect=broken), "MemoryError: no room")
 
 
 if __name__ == "__main__":  # pragma: no cover

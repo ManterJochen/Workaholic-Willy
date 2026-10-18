@@ -18,7 +18,6 @@ const de = {
   'pf.check.payload': 'Nutzlast der Steuerung',
   'pf.check.cameraBase': 'Kamera → Basis (Kalibrierung)',
   'pf.check.cameraWorld': 'Live-Welt der Kameras für den Planer',
-  'pf.check.carriedPart': 'Getragenes Teil im Planer',
   'pf.check.controllerState': 'Zustand der Steuerung',
   'pf.check.curobo': 'cuRobo-Umgebung',
   'pf.check.endEffectorWiring': 'Anschluss der Hand',
@@ -143,7 +142,7 @@ const de = {
   'cl.tel.notAsked':
     'Modus und Sicherheitszustand der Steuerung wurden in diesem Takt nicht gelesen. Sie kosten eine Rundreise über den Dashboard-Socket und sind darum zuschaltbar: leer heißt hier „nicht gefragt“, nie „in Ordnung“.',
   'cl.tel.caveat':
-    'Eine fehlende Messung oben heißt: Dieser Treiber bietet die Fähigkeit nicht an (Sim, Dummy und KUKA haben keine Kraft- und Momentmessung). Das ist kein Fehler und keine Null.',
+    'Eine fehlende Messung oben heißt: Dieser Treiber bietet die Fähigkeit nicht an (Sim und Dummy haben keine Kraft- und Momentmessung). Das ist kein Fehler und keine Null.',
 
   // ── what is on the other end (provenance) ──────────────────────────────────────────────────────────────────
   'pv.label.sim-driver': 'simulierter Arm',
@@ -210,8 +209,6 @@ const de = {
   'cf.key.enabled.hint': 'Ob diese Kamera zur Zelle gehört; gilt ab dem nächsten Aufbau.',
   'cf.key.urIp.label': 'Adresse der UR-Steuerung',
   'cf.key.urIp.hint': 'Am Handbediengerät unter Einstellungen › Netzwerk ablesen. Nur änderbar, solange nichts verbunden ist.',
-  'cf.key.kukaIp.label': 'Adresse der KUKA-Steuerung',
-  'cf.key.kukaIp.hint': 'Die Adresse der Steuerung im Netz. Nur änderbar, solange nichts verbunden ist.',
 
   // ── the preferences ────────────────────────────────────────────────────────────────────────────────────────
   'st.page.lede': 'Wie diese Konsole spricht und aussieht, und die Konfiguration der Zelle: erklärt und gezielt geschrieben.',
@@ -240,7 +237,9 @@ const de = {
   'st.talk.applies': 'Gilt ab dem nächsten Öffnen des Cockpits.',
   'st.task.title': 'Auftrag',
   'st.task.lede':
-    'Wie ein getippter oder gesprochener Auftrag startet, für diesen Browser. Was gegriffen wird und wohin, sagt der Satz; diese Einstellungen gelten, wo er nichts sagt. Den Modus legen sie fest.',
+    'Wie ein getippter oder gesprochener Auftrag startet, für die ganze Zelle: Jeder Browser sieht dieselben Einstellungen, und jede Wahl wird gleich in die eigene Ebene der Zelle geschrieben. Was gegriffen wird und wohin, sagt der Satz; diese Einstellungen gelten, wo er nichts sagt. Den Modus legen sie fest.',
+  'st.task.what': 'die Einstellungen der Zelle',
+  'st.task.target': 'Gespeichert für die Zelle in {file}',
   'st.task.start': 'Start',
   'st.task.start.enter': 'Enter startet sofort',
   'st.task.start.card': 'Erst die Karte',
@@ -256,12 +255,18 @@ const de = {
   'st.task.place.camera': 'Kamera sucht …',
   'st.task.place.phrase': 'Was die Kamera sucht',
   'st.task.place.placeholder': 'englisch, z. B. yellow bin',
-  'st.task.place.hint': 'Nennt der Satz keinen Ort, legt Willy das Teil hier ab.',
+  'st.task.place.hint': 'Nennt der Satz keinen Ort, legt Willy das Teil hier ab. Was die Kamera sucht, gilt, sobald das Feld verlassen wird.',
   'st.task.anything': 'Kein Teil genannt',
   'st.task.anything.ask': 'Karte fragt',
   'st.task.anything.all': 'Alles',
   'st.task.anything.hint':
     '„Alles“ setzt auf der Karte das Häkchen „alles, was die Kamera sieht, auch Kistenwände“. Ein solcher Auftrag startet nie auf Enter: Start auf der Karte.',
+  'st.task.critical': 'Kritische Teile',
+  'st.task.critical.no': 'Nein',
+  'st.task.critical.yes': 'Ja',
+  'st.task.critical.hint':
+    'Ja: Nichts wird geschoben, ein Blocker wird gegriffen und weggelegt. Nein: Schieben darf die Szene umbauen; wo kein Schub geht, wird weggeräumt. Die Karte kann es für ihren Auftrag ändern. Die Zelle liest es beim Aufbauen.',
+  'st.task.critical.built': 'Die aufgebaute Zelle läuft noch mit „{state}“: Die neue Wahl gilt ab dem nächsten Aufbau.',
 
   // ── the history ────────────────────────────────────────────────────────────────────────────────────────────
   'hs.lede':

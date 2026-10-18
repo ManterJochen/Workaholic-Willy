@@ -28,8 +28,8 @@ and byte-identical otherwise. Its design:
     model is built per link once, and each evaluate updates only the CollisionObject
     transform rather than rebuilding.
   * The world transform of link L at joints q is ``R_base(yaw) @ T_dh[L.frame](q)``,
-    the same ``kinematics_base_yaw_deg`` reconcile the capsule path uses, so meshes,
-    fixtures and tool agree.
+    the same base yaw reconcile the capsule path uses (``SelfCollisionGuard.base_yaw_deg``:
+    0 on a real arm, the Isaac arm's 180), so meshes, fixtures and tool agree.
   * Pairwise self-collision skips only links within one DH frame of each other, which
     are the adjacent ones and the rigid wrist cluster that always touch by
     construction. Every farther pair is checked exactly, which covers the wrist pairs
@@ -72,7 +72,7 @@ from .planning.environment import (
 
 _LOGGER = logging.getLogger(__name__)
 
-#: Mirrors ``self_collision._DEFAULT_LINK_RADIUS_MM``. The fallback warning quotes it,
+#: Mirrors ``self_collision._LINK_RADIUS_MM``. The fallback warning quotes it,
 #: so an operator sees how much coarser the capsule guard is without reading the other
 #: module.
 _CAPSULE_FALLBACK_RADIUS_HINT_MM = 60.0
@@ -140,7 +140,7 @@ def _finger_top_of(adapter: Any, fixture: Any, drop_mm: float) -> Any:
 
 
 def _yaw_matrix(yaw_deg: float) -> np.ndarray:
-    """The 3x3 rotation about +Z by ``yaw_deg``, which is the kinematics_base_yaw_deg reconcile."""
+    """The 3x3 rotation about +Z by ``yaw_deg``, which is the base yaw reconcile (``SelfCollisionGuard.base_yaw_deg``)."""
     import math
     c, s = math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
@@ -490,6 +490,38 @@ class MeshSelfCollisionBackend:
             self._a.set_transform(self._models[name], rotation @ frame[:3, :3], rotation @ frame[:3, 3])
         return self._a.distance(self._models[part_a], self._models[part_b])
 
+    def placed_hulls(self, transforms_dh_mm: list[np.ndarray], yaw_deg: float) -> dict[str, np.ndarray]:
+        """Each part's convex hull vertices where the part stands, in the system base frame, millimetres: the body
+        another arm of the cell keeps its distance from (owner, 2026-10-15). The fingers stand where the hand was told
+        to open them (:meth:`set_finger_opening`), fully open as baked where it was told nothing."""
+        rb = _yaw_matrix(yaw_deg)
+        placed: dict[str, np.ndarray] = {}
+        for name in self._names:
+            frame = transforms_dh_mm[self._frame[name]]
+            turn, origin = rb @ frame[:3, :3], rb @ frame[:3, 3]
+            placed[name] = self._hull[name] @ turn.T + origin
+        return placed
+
+    def swept_corners(self, transforms_dh_mm: np.ndarray, yaw_deg: float) -> dict[str, np.ndarray]:
+        """Each part's swept space over a path as points: the eight corners of the part's box in its own link frame,
+        stood at every sample, ``(samples * 8, 3)`` in the system base frame, millimetres. The box holds the part, so
+        the convex hull of these points holds every place the part passes through at the samples (owner,
+        2026-10-15: the space a moving arm reserves in the cell). ``transforms_dh_mm`` is ``(samples, frames, 4, 4)``.
+        """
+        rb = _yaw_matrix(yaw_deg)
+        frames = np.asarray(transforms_dh_mm, dtype=np.float64)
+        swept: dict[str, np.ndarray] = {}
+        for name in self._names:
+            hull = self._hull[name]
+            low, high = hull.min(axis=0), hull.max(axis=0)
+            corners = np.array([[x, y, z] for x in (low[0], high[0]) for y in (low[1], high[1])
+                                for z in (low[2], high[2])], dtype=np.float64)
+            frame = frames[:, self._frame[name]]
+            turns = np.einsum("ij,sjk->sik", rb, frame[:, :3, :3])
+            origins = frame[:, :3, 3] @ rb.T
+            swept[name] = (np.einsum("sij,cj->sci", turns, corners) + origins[:, None, :]).reshape(-1, 3)
+        return swept
+
     def lowest_mm(self, transforms_dh_mm: list[np.ndarray], yaw_deg: float, *, from_frame: int = 2) -> float:
         """The lowest point of every part hanging from DH frame ``from_frame`` or past it, at one placement: z in the
         system base frame, mm, exact (the lowest vertex of each part's hull; ``inf`` where no part hangs there).
@@ -672,7 +704,12 @@ class MeshSelfCollisionBackend:
             centres[column] = fc
             radii[column] = float(np.linalg.norm(np.asarray(fx.half_extents_mm, dtype=np.float64)))
             turned = getattr(fx, "turned", None)
-            if turned is None:
+            hull = getattr(fx, "hull_mm", None)
+            # Another arm's part as its hull, where the engine builds one; its enclosure where it does not.
+            body = None if hull is None else getattr(a, "convex_object", lambda _v: None)(hull)
+            if body is not None:
+                boxes.append(body)
+            elif turned is None:
                 boxes.append(a.box_object(np.asarray(fx.half_extents_mm, dtype=np.float64), fc))
             else:
                 boxes.append(a.box_object(np.asarray(turned.half_extents_mm, dtype=np.float64), fc,
@@ -694,7 +731,7 @@ class MeshSelfCollisionBackend:
         return probes
 
     # ------------------------------------------------------------------
-    # A whole path at once (safety.self_collision.whole_path_judge)
+    # A whole path at once (``SafetyPreflight._first_suspect``)
     # ------------------------------------------------------------------
 
     def first_suspect(

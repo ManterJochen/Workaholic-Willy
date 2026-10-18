@@ -1,4 +1,5 @@
-"""The VLM route: a vision-language model used as the detector, then SAM2 for masks; and the command reader.
+"""The VLM: a vision-language model used as the detector of every free-text prompt, then SAM2 for masks; and the
+command reader.
 
     from src.models.vlm import Qwen3VLGrounder
     from src.models.perception_backend import TwoStageBackend
@@ -15,7 +16,6 @@ from __future__ import annotations
 
 from .availability import (
     CommandRefused,
-    GuardedVlmBackend,
     ReaderAvailability,
     VlmAnswerFailedError,
     VlmCopyConflictError,
@@ -39,7 +39,6 @@ from .qwen import GROUNDING_INSTRUCTION, Qwen3VLGrounder
 __all__ = [
     "Qwen3VLGrounder",
     "GROUNDING_INSTRUCTION",
-    "GuardedVlmBackend",
     "VlmUnavailableError",
     "parse_grounding_response",
     "extract_json_payload",

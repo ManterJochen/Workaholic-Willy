@@ -56,7 +56,7 @@ from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.perception import PerceptionFrame
 from src.robot.perception.locator import Locator
 from tests._helpers import _FakeArm, _FakePerception, _perception_frame, _ScriptedCalculator
-from tests._wrist_views import HEIGHT, WIDTH, camera_looking_at, render
+from tests._wrist_views import CUBE, HEIGHT, WIDTH, X_BAR, Box, camera_looking_at, render
 from tests.test_a_located_part_is_looked_at_from_every_look import (
     EAST,
     NORTH,
@@ -420,43 +420,24 @@ class ThePickLoopTakesOnlyThoseGraspsTests(unittest.TestCase):
         self.assertEqual(("no_valid_grasp",), tuple(no_candidate.reasons))
 
     def test_every_step_after_the_calculator_sees_only_the_kept_grasps_turned_the_wanted_way_round(self) -> None:
-        """The reranks, the deep ranker's shadow and the approach check are handed only the grasps that close along -y,
-        each already turned: the approach check falls back to the second of them, never to the x grasp."""
+        """The deep ranker's shadow is handed only the grasps that close along -y, each already turned, and the best of
+        them is gripped, never the x grasp. The reranks and the approach check handed them too left on 2026-10-16 with
+        the success model, the uncertainty layer and approach validation (the owner's cleanup)."""
         candidates = (_grasp(0.0, score=0.97), _grasp(90.0, score=0.95), _grasp(0.0, score=0.93),
                       _grasp(-80.0, score=0.9))
-        orchestrator, arm, _ = _loop(candidates, "-y", ranking_blend_config=object(),
-                                     uncertainty_rerank_config=object(), approach_path_policy=object(),
-                                     mode_label="dense_clutter", _approach_path_modes=frozenset({"dense_clutter"}))
-        handed: dict[str, list[Any]] = {"blend": [], "rerank": [], "deep": [], "sweep": []}
-
-        def blend(candidates: Any, **_: Any) -> Any:
-            handed["blend"].extend(candidates)
-            return candidates, None
-
-        def rerank(candidates: Any, **_: Any) -> Any:
-            handed["rerank"].extend(candidates)
-            return candidates, None
+        orchestrator, arm, _ = _loop(candidates, "-y")
+        handed: list[Any] = []
 
         def deep(_self: Any, result: Any, *_args: Any) -> None:
-            handed["deep"].extend(result.candidates)
+            handed.extend(result.candidates)
 
-        def sweep(candidate: Any, _cloud: Any) -> bool:
-            handed["sweep"].append(candidate)
-            return len(handed["sweep"]) > 1
-
-        with mock.patch.object(pick_loop, "maybe_blend_rerank_candidates", side_effect=blend), \
-                mock.patch.object(pick_loop, "maybe_uncertainty_rerank_candidates", side_effect=rerank), \
-                mock.patch.object(BinPickingOrchestrator, "_stamp_deep_ranker", autospec=True, side_effect=deep), \
-                mock.patch.object(BinPickingOrchestrator, "_approach_sweep_is_clear", side_effect=sweep):
+        with mock.patch.object(BinPickingOrchestrator, "_stamp_deep_ranker", autospec=True, side_effect=deep):
             report = orchestrator.run()
 
         self.assertIs(PickOutcome.EXECUTED, report.outcome)
-        for step, grasps in handed.items():
-            with self.subTest(step=step):
-                self.assertTrue(grasps)
-                self.assertTrue(all(float(grasp.axis[1]) < -0.9 for grasp in grasps), [g.axis for g in grasps])
-        self.assertEqual([0.95, 0.9], [grasp.score for grasp in handed["blend"]])
-        self.assertAlmostEqual(-80.0, _closed_along(arm), places=6)
+        self.assertEqual([0.95, 0.9], [grasp.score for grasp in handed])
+        self.assertTrue(all(float(grasp.axis[1]) < -0.9 for grasp in handed), [g.axis for g in handed])
+        self.assertAlmostEqual(-90.0, _closed_along(arm), places=6)
 
     def test_the_simulators_twist_set_on_the_policy_later_is_refused_before_anything_moves(self) -> None:
         orchestrator, arm, (perception, events) = _loop((_grasp(-90.0),), "-y")
@@ -806,24 +787,25 @@ class _FixedAtEast(_Wrist):
 
 
 def _fixed_at_east(arm: Any) -> Locator:
-    camera = _FixedAtEast(arm)
+    camera = _FixedAtEast(arm, (CUBE,))
     return Locator.from_parts(camera=camera, backend=camera, attempts=1)
 
 
 class TheLocatorJudgesTheGraspsAlongTheAxisTests(unittest.TestCase):
     """A look around judges the grasp the program will grip: ``look_around(..., closing_axis=)`` as
     ``scene.grasps(closing_axis=)`` takes it. The 40 mm cube's x grasp closes on the faces its east and west looks show,
-    its y grasp on the ones its north and south looks show."""
+    its y grasp on the ones its north and south looks show. Either is the best of a symmetric cube, so a test that means
+    the x grasp names it, or grips a bar only x fits the Hand-E across (:data:`X_BAR`)."""
 
     @staticmethod
-    def _look(*looks: Any, **keywords: Any) -> tuple[Any, Any]:
+    def _look(*looks: Any, boxes: "tuple[Box, ...]" = (CUBE,), **keywords: Any) -> tuple[Any, Any]:
         built = _arm(*looks)
-        located = _locator(_Wrist(built)).look_around("a part", [look.joints for look in looks], robot=_robot(built),
-                                                      both_faces=True, **keywords)
+        located = _locator(_Wrist(built, boxes)).look_around("a part", [look.joints for look in looks],
+                                                             robot=_robot(built), both_faces=True, **keywords)
         return located, built
 
     def test_the_looks_go_on_until_both_faces_of_the_grasp_along_the_axis_were_seen(self) -> None:
-        control, built = self._look(EAST, WEST, NORTH, SOUTH)
+        control, built = self._look(EAST, WEST, NORTH, SOUTH, boxes=(X_BAR,))
         self.assertEqual([_key(EAST), _key(WEST)], _moved_to(built), "the control: the x grasp stops at the west look")
 
         located, built = self._look(EAST, WEST, NORTH, SOUTH, closing_axis="-y")
@@ -839,8 +821,8 @@ class TheLocatorJudgesTheGraspsAlongTheAxisTests(unittest.TestCase):
 
     def test_a_part_whose_grasp_along_the_axis_no_look_showed_both_faces_of_is_refused(self) -> None:
         """The east and west looks show both faces of the x grasp and neither of the y grasp's: asked for -y, the part is
-        refused, where without the axis it would be gripped on faces the -y grasp does not close on."""
-        control, _ = self._look(EAST, WEST)
+        refused, where asked for x it is gripped on the faces those looks showed."""
+        control, _ = self._look(EAST, WEST, closing_axis="x")
         self.assertEqual("", control.refused)
 
         located, _ = self._look(EAST, WEST, closing_axis="-y")
@@ -888,10 +870,10 @@ class TheLocatorJudgesTheGraspsAlongTheAxisTests(unittest.TestCase):
         self.assertEqual({"name": "-y", "heading_deg": None}, located.to_dict()["closing_axis"])
 
     def test_a_part_judged_along_any_axis_refuses_a_scene_asked_for_one(self) -> None:
-        """Without an axis the looks judge the best grasp of any: from east and west the x grasp, both its faces seen. A
-        scene of the part asked for -y would grip a grasp no look judged, neither of whose faces those looks showed:
-        refused, naming look_around. Asked for none, it takes the grasp the looks judged."""
-        located, _ = self._look(EAST, WEST)
+        """Without an axis the looks judge the best grasp of any: from east and west a bar's x grasp, both its faces
+        seen. A scene of the part asked for -y would grip a grasp no look judged, neither of whose faces those looks
+        showed: refused, naming look_around. Asked for none, it takes the grasp the looks judged."""
+        located, _ = self._look(EAST, WEST, boxes=(X_BAR,))
         self.assertEqual(((True, True), "", None), (located.jaw_faces_seen, located.refused, located.closing_axis))
         scene = located.scene(0, _cell())
 

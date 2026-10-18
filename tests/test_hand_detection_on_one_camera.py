@@ -32,7 +32,6 @@ import numpy as np
 from src.calibration.rig_calibration import RigCalibration, RigCalibrationError, RigNotCalibrated
 from src.calibration.serialization import FlangeToTcp
 from src.camera.setup.image_taking.frames import RGBDFrame
-from src.config.schema.models import HandDetectConfig
 from src.contracts import UNSET
 from src.geometry import Frame, Pose
 from src.geometry.transform import Transform
@@ -212,8 +211,8 @@ class _OneOpenHand:
 def _wrist_finder(camera: _Camera, *, tool_pose: Any = "still", tool_frame: Any = _TOOL_FRAME,
                   **kwargs: Any) -> Any:
     reader = _Reader(_tool()) if tool_pose == "still" else tool_pose
-    return build_hand_finder_on_camera(HandDetectConfig(model_path=__file__), camera, observer=_OneOpenHand(),
-                                       tool_pose=reader, tool_frame=tool_frame, **kwargs)
+    return build_hand_finder_on_camera(camera, observer=_OneOpenHand(), tool_pose=reader, tool_frame=tool_frame,
+                                       **kwargs)
 
 
 def _palm_in_base(tool: Pose, depth_mm: float = _PALM_DEPTH_MM) -> np.ndarray:
@@ -255,8 +254,7 @@ class OneCameraServesTheRigSurfaceTests(unittest.TestCase):
 class TheCameraDoorReadsTheCamerasOwnFactsTests(unittest.TestCase):
 
     def _finder(self, camera: Any) -> Any:
-        return build_hand_finder_on_camera(
-            HandDetectConfig(model_path=__file__), camera, observer=object())
+        return build_hand_finder_on_camera(camera, observer=object())
 
     def test_the_transform_is_the_rigs_declared_camera_to_base(self) -> None:
         finder = self._finder(_rgbd_camera())
@@ -270,11 +268,12 @@ class TheCameraDoorReadsTheCamerasOwnFactsTests(unittest.TestCase):
         self.assertEqual(["overhead"], finder.rig_ids)
         self.assertIsInstance(finder.provider, OneCamera)
 
-    def test_the_depth_knobs_still_travel(self) -> None:
-        config = HandDetectConfig(model_path=__file__, palm_patch_radius_px=33, min_depth_samples=7)
-        finder = build_hand_finder_on_camera(config, _rgbd_camera(), observer=object())
-        self.assertEqual(33, finder.palm_patch_radius_px)
-        self.assertEqual(7, finder.min_depth_samples)
+    def test_the_depth_numbers_still_travel_at_the_cells_values(self) -> None:
+        from src.models.handdetection.constants import MIN_DEPTH_SAMPLES, PALM_PATCH_RADIUS_PX
+
+        finder = build_hand_finder_on_camera(_rgbd_camera(), observer=object())
+        self.assertEqual(PALM_PATCH_RADIUS_PX, finder.palm_patch_radius_px)
+        self.assertEqual(MIN_DEPTH_SAMPLES, finder.min_depth_samples)
 
 
 class WhatTheCameraDoorRefusesTests(unittest.TestCase):
@@ -312,8 +311,7 @@ class WhatTheCameraDoorRefusesTests(unittest.TestCase):
         """A back-projection through an invented K completes and returns an unmeasured position."""
         camera = _rgbd_camera(intrinsics=None)
         with self.assertRaises(ValueError) as caught:
-            build_hand_finder_on_camera(HandDetectConfig(model_path=__file__), camera,
-                                        observer=object())
+            build_hand_finder_on_camera(camera, observer=object())
         self.assertIn("no intrinsics", str(caught.exception))
 
     def test_an_uncalibrated_rig_refuses_through_its_own_error(self) -> None:
@@ -323,8 +321,7 @@ class WhatTheCameraDoorRefusesTests(unittest.TestCase):
 
         camera = _rgbd_camera(calibration=_Uncalibrated())
         with self.assertRaises(RigNotCalibrated):
-            build_hand_finder_on_camera(HandDetectConfig(model_path=__file__), camera,
-                                        observer=object())
+            build_hand_finder_on_camera(camera, observer=object())
 
 
 class AWristCameraPlacesEachFrameByItsShutterTests(unittest.TestCase):
@@ -434,10 +431,9 @@ class AWristCameraPlacesEachFrameByItsShutterTests(unittest.TestCase):
         self.assertEqual(5, PICK_FRAME_WARMUP_GRABS, "the READMEs' five; with none, a frame queued in motion is kept")
 
     def test_the_attempts_are_the_locators_unless_given(self) -> None:
-        from src.config.schema.robot.safety_schema import PerceivedWorldConfig
-        from src.robot.core.shutter_motion import PICK_FRAME_WARMUP_GRABS
+        from src.robot.core.shutter_motion import FRESH_FRAME_ATTEMPTS, PICK_FRAME_WARMUP_GRABS
 
-        default = int(PerceivedWorldConfig.model_fields["fresh_frame_attempts"].default)
+        default = FRESH_FRAME_ATTEMPTS
         for label, kwargs, grabs in (("unset", {}, 1 + default), ("one", {"attempts": 1}, 2)):
             with self.subTest(label):
                 camera = _WristCamera()
@@ -457,8 +453,8 @@ class AWristCameraPlacesEachFrameByItsShutterTests(unittest.TestCase):
         reader = _Reader(_tool())
         camera = _rgbd_camera(frame=RGBDFrame(color=np.zeros((480, 640, 3), dtype=np.uint8),
                                               depth=np.full((480, 640), _PALM_DEPTH_MM, dtype=np.uint16)))
-        finder = build_hand_finder_on_camera(HandDetectConfig(model_path=__file__), camera, observer=_OneOpenHand(),
-                                             tool_pose=reader, tool_frame=_TOOL_FRAME)
+        finder = build_hand_finder_on_camera(camera, observer=_OneOpenHand(), tool_pose=reader,
+                                             tool_frame=_TOOL_FRAME)
         seen, _annotated = finder.find_hand()
 
         self.assertIs(OneCamera, type(finder.provider))

@@ -11,8 +11,9 @@ synthetic parts read as a camera straight above reads them:
   where a neighbour lies in the bore;
 * the stage and the ranking: every grasp from inside after every outer grasp, its margins saying so; off, nothing of it;
 * the switch: on as shipped, for a Robotiq hand alone;
-* the execution: narrow on the way in, the guard told the wall, the open at the close's force and speed, the part
-  attached at its own width; a wall nobody met is no hold; a hand that cannot say how it holds takes none;
+* the execution: narrow on the way in, the guard told the wall, the open at the close's force and speed (no part is
+  attached since 2026-10-17: no cell models one); a wall nobody met is no hold; a hand that cannot say how it holds
+  takes none;
 * the release: a hand that gripped from inside closes, and one whose release opened onto something opens again.
 """
 
@@ -27,7 +28,7 @@ import numpy as np
 
 from src.robot.grasping.generation.body_grasps import body_least_height_mm, body_map
 from src.robot.grasping.generation.inner_grasps import bores, inner_grasps
-from src.robot.grasping.generation.support_footprint import NARROW_ROOM_MM
+from src.robot.grasping.generation.hand import NARROW_ROOM_MM
 from src.robot.grasping.types.grasp_point import (
     INNER_GRASP_KEY,
     GraspFrame,
@@ -206,20 +207,16 @@ class EveryGraspFromInsideRanksLast(unittest.TestCase):
         self.assertEqual(["0.7False", "0.5False", "0.95True", "0.9True"], [g.label for g in ranked])
 
 
-class TheSwitch(unittest.TestCase):
-    def test_on_as_shipped_for_a_robotiq_hand_alone(self) -> None:
-        from src.config.schema.robot.grasping_schema import RobotGraspingConfig
+class TheHandTests(unittest.TestCase):
+    def test_a_robotiq_hand_alone_searches_the_bores(self) -> None:
         from src.robot.grasping.calculator_factory import inner_grasps as searched
 
-        self.assertTrue(RobotGraspingConfig().inner_grasps)
+        def cell(vendor: str) -> Any:
+            return SimpleNamespace(gripper=SimpleNamespace(vendor=vendor))
 
-        def cell(on: bool, vendor: str) -> Any:
-            return SimpleNamespace(grasping=SimpleNamespace(inner_grasps=on), gripper=SimpleNamespace(vendor=vendor))
-
-        self.assertTrue(searched(cell(True, "robotiq")))
-        self.assertFalse(searched(cell(False, "robotiq")))
+        self.assertTrue(searched(cell("robotiq")))
         for vendor in ("jaw_io", "onrobot", "vacuum", "dummy", "none", ""):
-            self.assertFalse(searched(cell(True, vendor)), vendor)
+            self.assertFalse(searched(cell(vendor)), vendor)
 
 
 class _BoreDriver:
@@ -279,7 +276,6 @@ class _Arm:
     def __init__(self) -> None:
         self.moves: list[Any] = []
         self.told: list[float | None] = []
-        self.attached: list[float] = []
 
     def move(self, pose: Any, *, linear: bool = False) -> Any:
         from src.robot.core import MotionCommand, MotionResult
@@ -289,21 +285,6 @@ class _Arm:
 
     def set_finger_opening(self, width: float | None) -> None:
         self.told.append(width)
-
-    def attach_payload(self, grip_width_mm: float) -> bool:
-        self.attached.append(float(grip_width_mm))
-        return True
-
-    def detach_payload(self) -> bool:
-        return True
-
-    def payload_declined_reason(self) -> str | None:
-        return None
-
-    def payload_model(self) -> Any:
-        from src.robot.core.arm_capabilities import PayloadModel
-
-        return PayloadModel.PLANNER_AND_FILTER
 
 
 _LINE_IN, _CONTACT, _PART = 16.9, 30.9, 92.0
@@ -327,7 +308,7 @@ def _policy(arm: Any, hand: Any) -> Any:
 
 
 class TheExecutionGripsFromInside(unittest.TestCase):
-    def test_narrow_in_the_guard_at_the_wall_the_open_at_the_close_s_force_the_part_at_its_width(self) -> None:
+    def test_narrow_in_the_guard_at_the_wall_and_the_open_at_the_close_s_force(self) -> None:
         from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
         from src.robot.grasping.motion.execution_policy import PolicyOutcome
 
@@ -347,7 +328,6 @@ class TheExecutionGripsFromInside(unittest.TestCase):
                                msg="and where the hand reads them at the wall, wider than planned")
         self.assertGreater(hand.get_width_mm(), _CONTACT)
         self.assertIsNone(arm.told[-1], "fully open again once the pick's motions end")
-        self.assertEqual([_PART], arm.attached)
         self.assertTrue(hand.holds_from_inside())
 
     def test_a_wall_nobody_met_is_no_hold(self) -> None:
@@ -357,7 +337,6 @@ class TheExecutionGripsFromInside(unittest.TestCase):
         arm = _Arm()
         report = _policy(arm, hand).execute(_inner_grasp())
         self.assertIs(PolicyOutcome.OBJECT_NOT_DETECTED, report.outcome)
-        self.assertEqual([], arm.attached)
         self.assertFalse(hand.holds_from_inside())
 
     def test_a_hand_that_cannot_say_how_it_holds_takes_none(self) -> None:
@@ -377,8 +356,7 @@ class TheExecutionGripsFromInside(unittest.TestCase):
                 report = policy.execute(grasp)
                 self.assertIs(PolicyOutcome.GRIPPER_FAULT, report.outcome)
                 self.assertEqual(said, report.motion_message)
-                self.assertEqual(([], [], [], []), (arm.moves, arm.told, arm.attached, sent()),
-                                 "nothing was commanded")
+                self.assertEqual(([], [], []), (arm.moves, arm.told, sent()), "nothing was commanded")
 
 
 class TheReleaseLetsGo(unittest.TestCase):

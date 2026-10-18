@@ -40,7 +40,6 @@ CAD files to a trained generator.
 | `PhysicsSampling` | `from_dataset(root, engine="mujoco")` | `sample`, `compare` | `PhysicsReport`: held of shaken, per stratum |
 | `GraspEvaluation` | `from_dataset(root)`, in `datagen.eval.service` | `evaluate`, `gate`, `approach_tilt` | the ladder, the regression gate, coverage by tilt |
 | `RankerCorpus`, `RankerFit`, `CorpusCheck` | `from_dataset`, `from_corpus`, in `datagen.corpus.service` | `build`, `fit`, `assess` | see [corpus/](corpus/README.md) |
-| `RecordCollection` | `from_dataset(root)`, in `datagen.rl.service` | `measure_occupancy`, `collect`, `prove` | RL training records from the real grasping stack |
 
 Six functions go with them. `layout_scene(config, index)` returns one scene's `SceneSpec` without rendering
 it, `engine_is_available(name)` returns `(ok, why not)`, `available_sources()` lists the public mesh
@@ -93,8 +92,7 @@ no parallel mode inside one run: shard it and give each shard its own `--corpus-
 ids count within one dataset and two shards in one directory overwrite each other silently.
 
 Grading a grasp in physics is a separate choice: `physics-sample` and `physics-compare` take
-`--physics-engine isaac|mujoco`, and `python -m datagen.rl.collect` takes `--engine isaac|mujoco`. MuJoCo
-needs no NVIDIA install. [grasps/](grasps/README.md) says what the referee measures.
+`--physics-engine isaac|mujoco`. MuJoCo needs no NVIDIA install. [grasps/](grasps/README.md) says what the referee measures.
 
 ## Getting the parts
 
@@ -195,7 +193,6 @@ three hundredth. `python -m datagen verify --name first` checks the labels, mask
 | [grasps/](grasps/README.md) | closed-form grasp labels and the physics referee |
 | [eval/](eval/) | the instruments that grade a generator: the ladder, its floors, the gate, the sweeps |
 | [corpus/](corpus/README.md) | the point clouds and ranker table a model trains on, and the gate that judges them |
-| [rl/](rl/) | scenes driven through the real grasping stack into RL records |
 | [prompts/](prompts/) | referring expressions in German and English, from `scene.json` alone |
 | [heldout.py](heldout.py) | which assets a model has never seen |
 | [verify.py](verify.py), [preview.py](preview.py), [verify_robot.py](verify_robot.py) | check a dataset, draw it for a person, check the posed arm in Isaac |

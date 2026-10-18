@@ -33,7 +33,7 @@ as spheres inside its bodies, every point of it within the maps' gap of one (``s
 same frames (:func:`mask_spheres`). A point within the gap and :data:`MASK_NOISE_MM` of one is the robot's whatever the
 padding, and nothing farther from the robot is.
 
-The padding is added where the world is built, from ``perceived.margin_mm``.
+The padding is added where the world is built, from the world's box margin (``WorldBuildTuning.margin_mm``).
 """
 
 from __future__ import annotations
@@ -64,8 +64,8 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from .hand import PlannerHand
 
 __all__ = [
-    "MASK_NOISE_MM", "ROBOT_BASES", "BaseShape", "arm_capsules", "base_capsule", "carried_part_box", "goal_keep_out",
-    "hand_spheres", "mask_spheres", "payload_capsule", "self_envelope", "yawed_link_transforms_mm",
+    "MASK_NOISE_MM", "ROBOT_BASES", "BaseShape", "arm_capsules", "base_capsule", "goal_keep_out", "hand_spheres",
+    "mask_spheres", "self_envelope", "yawed_link_transforms_mm",
 ]
 
 
@@ -99,13 +99,13 @@ ROBOT_BASES: Final[Mapping[str, BaseShape]] = MappingProxyType({
     ),
 })
 
-# The arm's links, the DH frame each is baked in, and the flange frame the hand, a camera and a carried part hang from
-# (its dof) are the arm description's since P0f F9: scripts/arms/bake.py bakes from the same rows.
+# The arm's links, the DH frame each is baked in, and the flange frame the hand and a camera hang from (its dof) are the
+# arm description's since P0f F9: scripts/arms/bake.py bakes from the same rows.
 #: Added to a fitted radius so a vertex exactly on the surface is not lost to rounding, millimetres.
 _ROUNDING_MM: Final = 1e-6
 #: How far any point of an arm link's surface lies at most from the nearest point laid over it,
 #: millimetres. The filter takes a point within the padding of the nearest laid point, so the link's
-#: own surface leaves the world wherever the padding (``perceived.margin_mm``, 15) is at least this, and
+#: own surface leaves the world wherever the padding (the box margin, at least 15) is at least this, and
 #: a point the camera placed up to the padding less this off the link leaves with it. A choice.
 _SURFACE_SPACING_MM: Final = 4.0
 #: The bundle arrays that are the hand, and the stamp that puts them one plate out, as the
@@ -397,13 +397,6 @@ def _mask_spheres(
     return tuple(spheres), gap + MASK_NOISE_MM
 
 
-def _approach(hand: PlannerHand) -> tuple[float, float, float]:
-    """The hand's approach in tool0 axes, as its placement derives it. A refused placement has none."""
-    if not chosen(hand.placement):
-        raise ValueError(f"{hand.model} has no placement on the flange: {hand.placement_refusal}")
-    return hand.placement.approach_in_tool0
-
-
 def hand_spheres(hand: PlannerHand, model: str) -> tuple[LinkCapsule, ...] | None:
     """The hand on the flange frame as its map's spheres, placed and grown to hold its mesh, or ``None``.
 
@@ -424,47 +417,6 @@ def hand_spheres(hand: PlannerHand, model: str) -> tuple[LinkCapsule, ...] | Non
     )
 
 
-def _tip_mm(spheres: tuple[LinkCapsule, ...], approach: tuple[float, float, float]) -> float:
-    """How far the hand reaches along ``approach`` from the flange, millimetres."""
-    axis = np.asarray(approach, dtype=np.float64)
-    return max(float(np.dot(np.asarray(s.start_mm), axis)) + s.radius_mm for s in spheres)
-
-
-def payload_capsule(
-    hand: PlannerHand, spheres: tuple[LinkCapsule, ...], *, length_mm: float, lateral_margin_mm: float,
-) -> LinkCapsule:
-    """A carried part: from the tip of ``spheres`` along the hand's approach, as wide as the jaws open plus the margin.
-
-    It hangs from the frame the hand's spheres hang from, the flange of the arm they were placed for.
-    """
-    approach = np.asarray(_approach(hand), dtype=np.float64)
-    tip = _tip_mm(spheres, _approach(hand))
-    return LinkCapsule(
-        frame=spheres[0].frame,
-        start_mm=_point(approach * tip),
-        end_mm=_point(approach * (tip + float(length_mm))),
-        radius_mm=(float(hand.jaw.aperture_mm) + float(lateral_margin_mm)) / 2.0,
-    )
-
-
-def carried_part_box(
-    hand: PlannerHand, spheres: tuple[LinkCapsule, ...], *, grip_width_mm: float, length_mm: float,
-    lateral_margin_mm: float,
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    """The box the planner hangs on tool0 for a carried part, as ``(dims_mm, centre_mm)`` in tool0's axes.
-
-    It is the part :func:`payload_capsule` takes out of the camera's view: ``length_mm`` along the
-    hand's approach from the tip of ``spheres``, and on the two other axes the width the jaws closed to
-    plus the lateral margin, the one measurement of the part there is. The approach follows the hand's
-    placement: a box hung ``length_mm`` along tool0 +Z from the flange would sit 90 degrees off the
-    measured hand and inside the wrist.
-    """
-    approach = np.asarray(_approach(hand), dtype=np.float64)
-    lateral = max(1.0, float(grip_width_mm) + float(lateral_margin_mm))
-    dims = np.where(np.abs(approach) > 0.5, float(length_mm), lateral)
-    return _point(dims), _point(approach * (_tip_mm(spheres, _approach(hand)) + float(length_mm) / 2.0))
-
-
 def yawed_link_transforms_mm(model: str, joints: Any, yaw_deg: float, *, arm: object = None) -> list[np.ndarray] | None:
     """Every frame of ``model``'s chain at ``joints`` as the guard places ``arm`` (``arm_link_transforms_mm``: the flange
     where its controller puts it, where it says), turned about the base by ``yaw_deg`` as the guard turns it."""
@@ -477,15 +429,13 @@ def yawed_link_transforms_mm(model: str, joints: Any, yaw_deg: float, *, arm: ob
     return [base @ transform for transform in transforms]
 
 
-def self_envelope(
-    preflight: SafetyPreflight, arm: Any, joints: Any, *, payload: tuple[float, float] | None = None,
-) -> SelfEnvelope | None:
+def self_envelope(preflight: SafetyPreflight, arm: Any, joints: Any) -> SelfEnvelope | None:
     """``arm``'s own body at ``joints``, or ``None`` where it cannot be described.
 
-    ``payload`` is ``(length_mm, lateral_margin_mm)`` while a part is attached. ``None`` comes back
-    when the guard resolves no model, the model has no committed bundle, no hand is named, or the
-    declared tool frame places no hand (``hand_spheres``): the world then refuses rather than
-    filtering a body it cannot place.
+    ``None`` comes back when the guard resolves no model, the model has no committed bundle, no hand
+    is named, or the declared tool frame places no hand (``hand_spheres``): the world then refuses
+    rather than filtering a body it cannot place. A part in the jaws is no part of it: no cell
+    models one (the owner, 2026-10-05, every cell since 2026-10-17).
     """
     kinematics = preflight.self_kinematics(arm)
     if kinematics is None:
@@ -511,8 +461,6 @@ def self_envelope(
         LinkCapsule(frame=spheres[0].frame, start_mm=centre, end_mm=centre, radius_mm=radius)
         for wrist in wrists for centre, radius in wrist.envelope_spheres_mm()  # type: ignore[attr-defined]
     )
-    if payload is not None:
-        body = body + (payload_capsule(hand, spheres, length_mm=payload[0], lateral_margin_mm=payload[1]),)
     mask = mask_spheres(hand, model, wrists)
     # The base's shape also rides on its own, so the support detection leaves the disc round the base out.
     return SelfEnvelope(frames_mm=tuple(frames), capsules=body, base=ROBOT_BASES.get(str(model).lower()),

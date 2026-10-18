@@ -38,14 +38,11 @@ Pinned:
   stop where the arm is: nothing more moves, nothing clears a stop, the service says ``unsafe_recovery_refused``
   (``controller_stopped`` for the stop), the campaign and the console run end there (``needs_person``), and the service
   starts no further pick until a person decides (a new campaign, or ``acknowledge_needs_person``);
-* budgets across picks: 1 per part, 2 per pick (over every re-pick of one pick), 5 per campaign; ``next_target``'s zones
-  live for the pick they were made in and the next two;
-* ``next_target`` skips the failed part, same label only, runs the looks again for the next part (the owner, 2026-09-30:
-  declared looks with the early stop), and stops with the zones' sentence when only skipped parts remain; a rescan of
-  the same part never repeats the looks; an empty bench is ``no_target`` whatever recovery tried;
-* ``push_mm``: 51 and 9 refused, 40 taken when the cell's ceiling allows it, refused where it does not; the config's
-  ``recovery.fixture.push_distance_mm`` when unset; through ``PickRun`` here, and through the console API in
-  ``tests/test_api_pick_push_distance.py`` (only a ``test_api_*`` file may import the web framework).
+* budgets across picks: 1 per part, 2 per pick (over every re-pick of one pick), 5 per campaign; an empty bench is
+  ``no_target`` whatever recovery tried;
+* ``push_mm``: 51 and 9 refused, 40 taken; the owner's 30 mm when unset; through ``PickRun`` here, and through the
+  console API in ``tests/test_api_pick_push_distance.py`` (only a ``test_api_*`` file may import the web framework).
+  ``next_target`` and the fixture box that narrowed a landing left on 2026-10-16 (the owner's cleanup).
 
 The re-pick after a push on the real ``GraspExecutionPolicy``, which opens nothing and closes the toggle once, is pinned in
 ``tests/test_a_push_and_its_re_pick_leave_the_toggle_alone.py``.
@@ -60,7 +57,7 @@ from unittest import mock
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import GraspingSupportConfig
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.geometry import Pose
 from src.robot.core import (
     JointPositions,
@@ -111,8 +108,6 @@ PUSH_HAND = PushHand(finger_thickness_mm=10.80, finger_width_mm=29.24, fingertip
                      finger_length_mm=36.53, palm_width_mm=75.0, open_width_mm=49.99, palm_thickness_mm=75.0)
 #: The workspace, its floor well under the bench: the shipped 100 mm z_min refuses every push, as it should.
 WORKSPACE = AxisBox((-800.0, -1000.0, -100.0), (800.0, 800.0, 600.0))
-#: The recovery fixture the config declares: the push box it only narrows, and the ceiling of a push, 50 mm.
-FIXTURE = ((0.0, -700.0, 100.0), (300.0, 300.0, 300.0), 50.0)
 #: A declared container's interior around the bench, the push box in place of the table the looks saw: what lets the
 #: one 45 degree view of a pick handed no look plan a push at all.
 CONTAINER = AxisBox((-200.0, -900.0, -10.0), (200.0, -500.0, 200.0))
@@ -315,17 +310,17 @@ class _Jammed:
 
 class _PushCell:
     """The service of the owner's dense_clutter cell on the pushing arm, the wrist D415, the jammed calculator, the
-    recording policy and the toggle hand, with recovery armed: ``allowed`` actions, two at most, the fixture declared.
+    recording policy and the toggle hand, with recovery armed: ``allowed`` actions, two at most.
 
     ``arm`` is the arm double's class; ``do0_high`` leaves tool DO0 HIGH with the jaws open at the connect, as the owner
-    leaves it after opening them at the pendant; ``push_distance_mm`` is the config's push; ``container`` a declared
+    leaves it after opening them at the pendant; ``workspace`` the box a push lands in; ``container`` a declared
     container's interior, which bounds a push in place of the table the looks saw."""
 
     def __init__(self, test: unittest.TestCase, *, mode: GraspMode = GraspMode.DENSE_CLUTTER,
-                 allowed: tuple[str, ...] = ("rescan", "next_target", "nudge_target"), boxes: tuple[Box, ...] = (
-                     CUBE, POST), answers: dict[str, Any] | None = None, fixture: Any = FIXTURE,
-                 approach_validation: bool = False, max_actions: int = 2, max_attempts: int = 3,
-                 arm: Any = None, do0_high: bool = False, push_distance_mm: float = 30.0,
+                 allowed: tuple[str, ...] = ("rescan", "nudge_target"), boxes: tuple[Box, ...] = (
+                     CUBE, POST), answers: dict[str, Any] | None = None,
+                 max_actions: int = 2, max_attempts: int = 3,
+                 arm: Any = None, do0_high: bool = False, workspace: AxisBox = WORKSPACE,
                  container: AxisBox | None = None, **calculator: Any) -> None:
         self.events: list[Any] = []
         self.jaws = _toggle(self.events, Person("open"))
@@ -348,14 +343,13 @@ class _PushCell:
         self.orchestrator = self.service.runtime.orchestrator
         self.orchestrator.gripper_model = HAND_E
         self.orchestrator.primary_camera_id = "wrist"
-        self.orchestrator.support_config = GraspingSupportConfig(height_mm=0.0, refine_from_target=False)
+        self.orchestrator.declared_support = DeclaredSupport()
         self.orchestrator.target_label = "part"
         self.service.effective_config = EffectiveGraspingConfig(
-            default_mode=mode, max_attempts=max_attempts, approach_validation_enabled=approach_validation,
+            default_mode=mode, max_attempts=max_attempts,
             recovery_orchestrator=EffectiveRecoveryOrchestratorConfig(
-                enabled=True, allowed_actions=allowed, max_actions=max_actions, fixture=fixture,
-                push_distance_mm=push_distance_mm))
-        self.service.push_cell = PushCell(hand=PUSH_HAND, workspace=WORKSPACE, hand_clearance_mm=25.0,
+                enabled=True, allowed_actions=allowed, max_actions=max_actions))
+        self.service.push_cell = PushCell(hand=PUSH_HAND, workspace=workspace, hand_clearance_mm=25.0,
                                           container_interior=container)
 
     def campaign(self, *, runs: int = 1, **keywords: Any) -> Any:
@@ -740,68 +734,6 @@ class TheServiceStartsNoPickAfterAPushStoppedTests(unittest.TestCase):
         self.assertTrue(run.attempts[0].passed, run.render())
 
 
-class ABlockedApproachTriggersThePushWhereApproachValidationRunsTests(unittest.TestCase):
-    """Every approach sweep of the part's grasp blocked (``approach_path_blocked``, nothing moved) is a trigger of the
-    push too, but only where approach validation runs (owner, 2026-09-29), under the same neighbour evidence."""
-
-    def _blocked_once(self, cell: _PushCell) -> list[Any]:
-        from src.robot.grasping.motion.execution_policy import PolicyOutcome, PolicyReport
-
-        executed = cell.orchestrator._execute  # noqa: SLF001 (the approach check's answer, scripted)
-        answers: list[Any] = []
-
-        def execute(result: Any) -> Any:
-            if not answers:
-                answers.append("blocked")
-                return PolicyReport(outcome=PolicyOutcome.APPROACH_PATH_BLOCKED)
-            answers.append("executed")
-            return executed(result)
-
-        cell.orchestrator._execute = execute  # type: ignore[method-assign]
-        return answers
-
-    def test_a_blocked_approach_pushes_the_part_and_picks_it_where_validation_runs(self) -> None:
-        # The grasp is uncertain at the first two looks, so all three are fused, and safe at the third.
-        cell = _PushCell(self, approach_validation=True, uncertain_on=(0, 1), freed_on=(2,))
-        answers = self._blocked_once(cell)
-
-        run = cell.campaign()
-
-        self.assertTrue(run.attempts[0].passed, run.render())
-        self.assertEqual(["blocked", "executed"], answers)
-        self.assertEqual(PUSH_LABELS, cell.arm.push_motions())
-        (push,) = run.last.telemetry["pushes"]
-        self.assertEqual(("approach_path_blocked", "pushed"), (push["trigger"], push["code"]))
-        self.assertEqual(_keys(*LOOKS, LOOK_PLUS_Y), cell.joint_moves(), "not back to the look it stood at")
-        cell.assert_the_jaws_untouched(self)
-
-    def test_a_blocked_approach_never_pushes_where_validation_does_not_run(self) -> None:
-        cell = _PushCell(self, approach_validation=False, uncertain_on=(0, 1), freed_on=(2,))
-        answers = self._blocked_once(cell)
-
-        run = cell.campaign()
-
-        self.assertEqual(["blocked"], answers)
-        self.assertEqual([], cell.arm.pushes)
-        self.assertIn("approach_path_blocked", str(run.last.telemetry["low_level_outcome"]).lower())
-
-    def test_a_blocked_approach_never_pushes_a_critical_part(self) -> None:
-        # The owner's switch (2026-10-03): critical parts are never pushed, a blocked approach no more than a collision.
-        cell = _PushCell(self, approach_validation=True, uncertain_on=(0, 1), freed_on=(2,))
-        config = cell.service.effective_config
-        cell.service.effective_config = replace(
-            config, recovery_orchestrator=replace(config.recovery_orchestrator, critical_parts=True))
-        answers = self._blocked_once(cell)
-
-        run = cell.campaign()
-
-        self.assertEqual(["blocked"], answers)
-        self.assertEqual([], cell.arm.pushes, "a critical part was pushed")
-        self.assertEqual((), cell.orchestrator.pushes)
-        self.assertIn("approach_path_blocked", str(run.last.telemetry["low_level_outcome"]).lower())
-        cell.assert_the_jaws_untouched(self)
-
-
 class WhatNeverPushesTests(unittest.TestCase):
     def test_auto_never_pushes(self) -> None:
         cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("rescan", "nudge_target"))
@@ -888,12 +820,12 @@ class WhatNeverPushesTests(unittest.TestCase):
 
 class ARefusalBeforeMotionFallsThroughTests(unittest.TestCase):
     def test_a_refusal_before_anything_moved_falls_through_to_rescan_with_no_motion(self) -> None:
-        """A pick handed no look rescans where it stands. The fixture box the cell declares round the part leaves it no
-        room to land (150 mm across, shrunk by 30 mm), so the planner refuses, nothing moves, and the pick goes on to
-        that rescan: a fresh frame from where the arm stands, and the same refusal. (Before 2026-10-03 the part's own
-        shadow refused the landing here; a shadow among seen table is ground now, the owner's rule.)"""
-        cell = _PushCell(self, allowed=("rescan", "nudge_target"), fixture=((0.0, -700.0, 100.0), (75.0, 75.0, 300.0),
-                                                                            50.0))
+        """A pick handed no look rescans where it stands. The workspace round the part leaves it no room to land (150
+        mm across, shrunk by 30 mm), so the planner refuses, nothing moves, and the pick goes on to that rescan: a
+        fresh frame from where the arm stands, and the same refusal. (Before 2026-10-03 the part's own shadow refused
+        the landing here; a shadow among seen table is ground now, the owner's rule.)"""
+        cell = _PushCell(self, allowed=("rescan", "nudge_target"),
+                         workspace=AxisBox((-75.0, -775.0, -100.0), (75.0, -625.0, 600.0)))
         cell.arm.move_to_joints(LOOK_PLUS_X)  # where the arm stands; the pick is handed no look
         cell.arm.motions.clear()
         where = cell.arm.get_tcp_pose()
@@ -913,11 +845,10 @@ class ARefusalBeforeMotionFallsThroughTests(unittest.TestCase):
         self.assertEqual([], cell.policy.executed)
         cell.assert_the_jaws_untouched(self)
 
-    def test_a_refusal_before_anything_moved_goes_on_to_the_next_action_with_no_motion(self) -> None:
+    def test_a_refusal_before_anything_moved_ends_a_pick_handed_looks_with_no_motion(self) -> None:
         """A pick handed looks has had its rescans (its looks). Its push refused before anything moved (the campaign's
         pushes spent: no call to the arm at all; P0 refused before anything was sent: the one call, refused) moves
-        nothing, and the pick goes on to its next action, which next_target is here: the looks again, for another part
-        of the label, and none is left."""
+        nothing, and with no other action left the pick ends there, nothing more driven."""
         spent = PushCampaign(distance_mm=30.0, budgets=PushBudgets(per_campaign=0))
         for name, answers, campaign, code in (
                 ("budget", {}, spent, "campaign_budget_spent"),
@@ -931,8 +862,8 @@ class ARefusalBeforeMotionFallsThroughTests(unittest.TestCase):
                 report = cell.service.pick(look=list(LOOKS))
 
                 self.assertEqual([] if name == "budget" else ["push_p0"], cell.arm.push_motions())
-                self.assertEqual(_keys(*LOOKS, *LOOKS), cell.joint_moves(), "the arm was sent back or somewhere else")
-                self.assertEqual(["next_target"], report.telemetry["recovery_trail_actions"])
+                self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "the arm was sent back or somewhere else")
+                self.assertEqual([], report.telemetry.get("recovery_trail_actions", []))
                 self.assertEqual(code, report.telemetry["pushes"][0]["code"])
                 self.assertFalse(report.telemetry["pushes"][0]["motion_started"])
                 self.assertFalse(report.needs_person)
@@ -998,8 +929,8 @@ class ARefusalBeforeMotionFallsThroughTests(unittest.TestCase):
 
     def test_a_stop_asked_for_while_the_push_is_planned_moves_nothing(self) -> None:
         """The operator's Stop (``should_cancel``) arrives after the looks asked for it the last time, while the push
-        is planned: the push is refused before its first motion, and the pick ends ``cancelled`` with nothing more
-        moved, as a stop between two attempts ends it."""
+        is planned: the push is refused before its first motion, and the pick ends there with nothing more moved. Its
+        looks were its rescans, so nothing picks again; a campaign stops on the Stop before its next pick."""
         from src.robot.grasping.recovery import push_planner
 
         cell = _PushCell(self)
@@ -1016,7 +947,7 @@ class ARefusalBeforeMotionFallsThroughTests(unittest.TestCase):
 
         self.assertEqual([], cell.arm.pushes, "the push began after the Stop")
         self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "the arm moved after the Stop")
-        self.assertIs(AutonomousGraspOutcome.CANCELLED, report.outcome)
+        self.assertIs(AutonomousGraspOutcome.NO_VALID_GRASP, report.outcome)
         self.assertEqual("refused_stop_requested", report.telemetry["pushes"][0]["code"])
         self.assertFalse(report.needs_person)
         cell.assert_the_jaws_untouched(self)
@@ -1311,96 +1242,6 @@ class TheBudgetsTests(unittest.TestCase):
         self.assertEqual(PUSH_LABELS, cell.arm.push_motions())
 
 
-class NextTargetTests(unittest.TestCase):
-    """``next_target`` is a rescan that skips the part that failed: same label only, this pick and the next two. The
-    owner (2026-09-30): it runs the look sequence again for the new part, declared looks with the early stop; a rescan
-    of the same part never repeats the looks."""
-
-    #: A second part of the label 80 mm along +x of the first, which no grasp can take in the first pick.
-    OTHER = Box((60.0, -720.0, 0.0), (100.0, -680.0, 40.0), "part")
-
-    def test_next_target_runs_the_looks_again_for_another_part_of_the_label(self) -> None:
-        cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("next_target",), boxes=(self.OTHER, CUBE))
-        # The other part gets a grasp from the second pick's first frame on; the first never does.
-        calculator = cell.calculator
-
-        def compute(seg: Any, *args: Any, **kwargs: Any) -> GraspResult:
-            number = len(cell.camera.taken) - 1
-            centre = _centre_of_mask(seg, cell)
-            calculator.calls.append((number, str(seg.label), dict(kwargs)))
-            if centre[0] > 40.0 and number >= 3:
-                grasp = GraspPoint(position=centre, approach=np.array([0.0, 0.0, -1.0]), axis=np.array([1.0, 0.0, 0.0]),
-                                   grip_width_mm=40.0, score=0.9, frame=GraspFrame.BASE, label="part")
-                return GraspResult(candidates=(grasp,), top_score=0.9)
-            return GraspResult(reasons=(GraspFailureReason.ALL_COLLIDED, GraspFailureReason.RESCAN_RECOMMENDED))
-
-        calculator.compute_result = compute  # type: ignore[method-assign]
-
-        report = cell.service.pick(look=list(LOOKS))
-
-        self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.render())
-        # The first pick drives every look; next_target runs them again and stops at the first safe grasp.
-        self.assertEqual(_keys(*LOOKS, LOOK_PLUS_X), cell.joint_moves())
-        (grasp,) = cell.policy.executed
-        self.assertGreater(float(grasp.position[0]), 40.0, "not the other part of the label")
-        self.assertEqual(["next_target"], report.telemetry["recovery_trail_actions"])
-        (zone,) = cell.service.campaign.zones.zones("part")
-        self.assertLess(float(np.hypot(zone.centre_xy_mm[0], zone.centre_xy_mm[1] + 700.0)), 10.0)
-        self.assertEqual([], cell.arm.pushes)
-
-    def test_only_skipped_parts_left_stops_with_the_sentence(self) -> None:
-        cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("next_target",))
-
-        run = cell.campaign()
-
-        self.assertEqual(_keys(*LOOKS, *LOOKS), cell.joint_moves(), "next_target did not run the looks again")
-        self.assertEqual([0, 1, 2], cell.calculator.frames_asked_about("part"), "a skipped part was ranked again")
-        (attempt,) = run.attempts
-        self.assertFalse(attempt.passed)
-        self.assertIn("is being skipped, so the pick stops here", attempt.detail)
-        self.assertEqual([], cell.policy.executed)
-        last = run.last.pick_report.attempts[-1]
-        self.assertEqual(("exhausted", ()), (last.action, last.reasons))
-        self.assertIn("'part'", last.excluded)
-
-    def test_a_skipped_part_is_of_one_label_only(self) -> None:
-        """A zone applies only to parts of the label it was made for: a post standing where the skipped part stood is no
-        more a target than before, and never picked in its place."""
-        cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("next_target",))
-        cell.service.start_campaign()
-        cell.service.campaign.start_pick()
-        cell.service.campaign.zones.exclude(label="post", centre_mm=(0.0, -700.0, 20.0))
-
-        cell.service.pick(look=list(LOOKS))
-
-        self.assertIn(0, cell.calculator.frames_asked_about("part"), "a zone of another label skipped the part")
-        self.assertEqual([], cell.calculator.frames_asked_about("post"), "the post became a target")
-
-    def test_a_skipped_part_is_skipped_in_its_pick_and_the_next_two_and_not_after(self) -> None:
-        """A zone lives for the pick it was made in and the next two (the owner, 2026-09-29): the part skipped in the
-        first pick of a campaign is not ranked in the second or the third, which stop with the zones' sentence, and is
-        ranked again in the fourth."""
-        cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("next_target",))
-
-        run = cell.campaign(runs=4)
-
-        self.assertEqual(4, len(run.attempts), run.render())
-        # Pick 1 ranks it on its three looks and skips it on the looks next_target runs again (frames 3 to 5); picks 2
-        # and 3 skip it (6 to 11); pick 4 ranks it again (12 to 14).
-        self.assertEqual([0, 1, 2, 12, 13, 14], cell.calculator.frames_asked_about("part"))
-        for attempt in run.attempts[1:3]:
-            self.assertIn("is being skipped", attempt.detail)
-
-    def test_a_rescan_of_the_same_part_never_repeats_the_looks(self) -> None:
-        cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("rescan",))
-
-        report = cell.service.pick(look=list(LOOKS))
-
-        self.assertEqual(_keys(*LOOKS), cell.joint_moves())
-        self.assertEqual(3, len(cell.camera.taken))
-        self.assertNotIn("rescan", report.telemetry["recovery_trail_actions"])
-
-
 class ThePushDistanceTests(unittest.TestCase):
     def test_push_mm_51_and_9_are_refused_and_40_is_taken_where_the_ceiling_allows(self) -> None:
         cell = _PushCell(self)
@@ -1419,44 +1260,26 @@ class ThePushDistanceTests(unittest.TestCase):
         (push,) = run.last.telemetry["pushes"]
         self.assertEqual(40.0, push["distance_mm"])
 
-    def test_the_config_s_push_distance_is_the_push_when_nobody_asks(self) -> None:
-        """``recovery.fixture.push_distance_mm`` reaches the service through the builders, and a campaign that names no
-        distance pushes that far."""
+    def test_the_owners_push_distance_is_the_push_when_nobody_asks(self) -> None:
+        """30 mm reaches a config-built service, and a campaign that names no distance pushes that far; a request up to
+        the cap is taken as asked."""
         from src.config.schema.robot import RobotConfig
         from src.robot.grasping.recovery import push_planner
         from tests.test_grasping_config_wiring import _calc_and_perception
 
-        cfg = RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping={
-            "default_mode": "dense_clutter",
-            "recovery": {"enabled": True, "allowed_actions": ["rescan", "nudge_target"], "fixture": {
-                "center_mm": [0.0, -700.0, 150.0], "half_extents_mm": [300.0, 300.0, 300.0], "max_nudge_mm": 50.0,
-                "push_distance_mm": 20.0}}})
+        cfg = RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping={"default_mode": "dense_clutter"})
         calculator, perception = _calc_and_perception()
         service = AutonomousGraspService.from_robot_config(cfg, calculator=calculator, perception=perception)
 
-        self.assertEqual(20.0, service.effective_config.recovery_orchestrator.push_distance_mm)
-        self.assertEqual(20.0, service.push_distance())
-        self.assertEqual(20.0, service.start_campaign().distance_mm)
-        self.assertEqual(40.0, service.push_distance(40.0), "a request up to the ceiling is taken as asked")
+        self.assertEqual(30.0, service.push_distance())
+        self.assertEqual(30.0, service.start_campaign().distance_mm)
+        self.assertEqual(40.0, service.push_distance(40.0), "a request up to the cap is taken as asked")
 
-        # The owner's cell, its config pushing 20 mm, and a campaign that asks for no distance.
-        cell = _PushCell(self, push_distance_mm=20.0)
+        cell = _PushCell(self)
         with mock.patch("src.robot.grasping.recovery.push_planner.plan_push", wraps=push_planner.plan_push) as planned:
             cell.campaign()
-        self.assertEqual(20.0, cell.service.campaign.distance_mm)
-        self.assertEqual(20.0, planned.call_args.kwargs["push_distance_mm"])
-
-    def test_a_push_above_the_cells_ceiling_is_refused_before_anything_moves(self) -> None:
-        cell = _PushCell(self, fixture=(FIXTURE[0], FIXTURE[1], 30.0))
-
-        run = cell.campaign(push_mm=40.0)
-
-        self.assertEqual((), run.attempts)
-        self.assertIn("push_mm refused", run.error)
-        self.assertIn("the cell allows 30 mm", run.error)
-        self.assertEqual(1, run.exit_code)
-        self.assertEqual([], cell.arm.motions)
-        self.assertEqual(30.0, cell.service.push_distance())
+        self.assertEqual(30.0, cell.service.campaign.distance_mm)
+        self.assertEqual(30.0, planned.call_args.kwargs["push_distance_mm"])
 
 
 class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
@@ -1486,10 +1309,11 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
         self.assertIs(AutonomousGraspOutcome.NO_VALID_GRASP, report.outcome)
 
     def test_the_planner_keeps_the_hand_the_clearance_the_arm_s_line_judge_keeps(self) -> None:
-        """The cell's clearance reaches the planner: the camera world's margin_mm plus line_clearance_mm, 11 mm on the
-        owner's config since 2026-10-05 (8 + 3; 25 mm before, 15 + 10). A push whose finger passes 15 mm from a post
-        is planned at 11 mm and refused at 25 mm, inside the box a 15 mm margin grows around the post, where the arm's
-        line judge at those numbers would refuse it: the planner keeps whatever the cell keeps."""
+        """The cell's clearance reaches the planner: the camera world's box margin plus the line clearance, 9 mm on every
+        cell since 2026-10-17 (the owner's cell's 6 + 3; 11 with the 8 the shipped tree grew its boxes by, 25 mm before
+        2026-10-05, 15 + 10). A push whose finger passes 15 mm from a post is planned at 9 mm and refused at 25 mm,
+        inside the box a 15 mm margin grows around the post, where the arm's line judge at those numbers would refuse
+        it: the planner keeps whatever the cell keeps."""
         from src.config.loader import load_robot_config, reload_config
         from src.robot.grasping.recovery import push_planner
         from tests.test_a_push_moves_only_when_every_guard_holds import HAND_E as BLOCK_HAND
@@ -1501,7 +1325,7 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
         self.addCleanup(reload_config)
         owners = PushCell.from_robot_config(load_robot_config(None, profile="ur10,hande"))
         assert isinstance(owners, PushCell), owners
-        self.assertEqual(11.0, owners.hand_clearance_mm)
+        self.assertEqual(9.0, owners.hand_clearance_mm)
         self.assertEqual(75.0, owners.hand.palm_thickness_mm)
 
         def plan(clearance: float) -> Any:
@@ -1524,7 +1348,7 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
             cell.campaign()
         self.assertEqual(25.0, planned.call_args.kwargs["hand_clearance_mm"])
         self.assertEqual(30.0, planned.call_args.kwargs["push_distance_mm"])
-        self.assertIsNotNone(planned.call_args.kwargs["operator_box"])
+        self.assertNotIn("operator_box", planned.call_args.kwargs)
 
     def test_a_neighbour_only_another_look_saw_is_evidence_too(self) -> None:
         """The trigger's neighbour evidence is read off what every look saw (the fused neighbour cloud the candidate
@@ -1546,26 +1370,26 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
 
 class TheServiceSaysWhatTheRecoveryCameToTests(unittest.TestCase):
     def test_a_loop_that_ran_out_of_actions_is_recovery_exhausted(self) -> None:
-        other = Box((60.0, -720.0, 0.0), (100.0, -680.0, 40.0), "part")
-        cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("next_target",), boxes=(other, CUBE), max_actions=1)
+        """A pick handed no look rescans where it stands: in auto, which never pushes, the jammed part fails again after
+        the one rescan the loop may run, and the loop ends for want of another action."""
+        cell = _PushCell(self, mode=GraspMode.AUTO, allowed=("rescan",), max_actions=1)
+        cell.arm.move_to_joints(LOOK_PLUS_X)  # where the arm stands; the pick is handed no look
 
-        run = cell.campaign()
+        report = cell.service.pick()
 
-        report = run.last
-        self.assertIs(AutonomousGraspOutcome.RECOVERY_EXHAUSTED, report.outcome)
+        self.assertIs(AutonomousGraspOutcome.RECOVERY_EXHAUSTED, report.outcome, report.render())
         self.assertEqual("exhausted_budget", report.telemetry["recovery_trail_terminal_reason"])
-        self.assertEqual([("next_target", "completed")],
+        self.assertEqual([("rescan", "completed")],
                          [(row["action"], row["outcome"]) for row in report.recovery_actions])
-        self.assertEqual("recovery_exhausted", run.attempts[0].reported)
         self.assertFalse(report.needs_person)
+        self.assertEqual([], cell.arm.pushes)
 
     def test_an_empty_bench_is_no_target_whatever_recovery_tried(self) -> None:
         """Nothing perceived is no dead loop: a pick that finds nothing reports ``no_target`` once its recovery
-        rescanned or skipped, as a pick without recovery does (the KPI roll-up counts ``recovery_exhausted`` as a dead
-        loop, and a campaign that empties the bench is not one)."""
+        rescanned, as a pick without recovery does (the KPI roll-up counts ``recovery_exhausted`` as a dead loop, and a
+        campaign that empties the bench is not one)."""
         for mode, allowed, looks in ((GraspMode.AUTO, ("rescan",), False),
-                                     (GraspMode.AUTO, ("rescan", "next_target"), False),
-                                     (GraspMode.DENSE_CLUTTER, ("rescan", "next_target", "nudge_target"), True)):
+                                     (GraspMode.DENSE_CLUTTER, ("rescan", "nudge_target"), True)):
             with self.subTest(allowed=allowed, looks=looks):
                 cell = _PushCell(self, mode=mode, allowed=allowed, boxes=())
                 if looks:

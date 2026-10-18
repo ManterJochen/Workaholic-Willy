@@ -1,4 +1,4 @@
-"""Which cameras a cell fuses into each object's cloud before it grasps, or what the tree is missing to fuse any.
+"""Which cameras a cell fuses into each object's cloud before it grasps, or why it fuses none.
 
 One depth view sees one side of a part, and a parallel jaw closes on two opposite faces. A cell with two or more
 calibrated cameras fuses each object's surface across them into one cloud in BASE and plans the grasp on that
@@ -6,22 +6,17 @@ calibrated cameras fuses each object's surface across them into one cloud in BAS
 ranked grasp is graspable for 43.5 % of objects from one view and 55.9 % fused. Never run on hardware: no physical
 multi-camera cell has been built with this code.
 
-Whether a tree can do that is spread over two sections and two switches, and a cell that cannot does not refuse: it
-grasps from one view, with a warning in its log. :class:`CameraFusionPlan` reads the tree, opens nothing, and names
-every piece that is missing in one sentence, so a program asks before a camera opens or a model loads:
+There is no switch for it (the owner, 2026-10-16): a cell fuses by itself wherever ``camera.cameras.rigs`` declares
+two or more enabled rigs with their calibration, the primary among them (:func:`fused_cameras`), and grasps from one
+view where it does not. A stereo rig is one of them as an RGB-D rig is: its depth is read through its stereo
+calibration (2026-10-17), and its owner refuses to open before that calibration is written. :class:`CameraFusionPlan`
+reads the tree, opens nothing, and says which cameras it fuses, or what it lacks to fuse any, so a program asks before a
+camera opens or a model loads.
 
-* ``robot.grasping.fusion.geometry.enabled``, the switch that hands the fused cloud to the grasp generator;
-* ``robot.grasping.fusion.enabled``, the switch the other cameras' CAMERA to BASE are built under
-  (``build_config_frame_resolvers`` returns none while it is off), so with it off every other camera's view is dropped
-  at the pick. It fuses nothing on its own; a fused cell needs both;
-* two or more cameras in ``robot.grasping.fusion.cameras``, keyed by rig id, the primary among them;
-* each of them an enabled RGB-D rig in ``camera.cameras.rigs`` that declares its calibration (``extrinsics``).
-
-A camera on the wrist is one of the views, not a refusal: the builders count an eye-in-hand rig, its resolver places
-each of its frames by the arm's pose at the shutter (``EyeInHandFrameResolver``), and the cell stamps its frames as it
-stamps the primary's. What is measured in simulation is a wrist primary with fixed cameras fused onto it
-(``run_multiview_pick``); the shipped reference is two fixed cameras, ``config/robot/robot.eth2.yaml`` with
-``config/camera/cam.eth2.yaml``.
+A camera on the wrist is one of the views, not a refusal: its resolver places each of its frames by the arm's pose at
+the shutter (``EyeInHandFrameResolver``), and the cell stamps its frames as it stamps the primary's. What is measured in
+simulation is a wrist primary with fixed cameras fused onto it (``run_multiview_pick``); the shipped reference is two
+fixed cameras, ``config/camera/cam.eth2.yaml``.
 
 Beside :class:`~src.robot.execution.camera_world_wiring.CameraWorldPlan`, which answers the other question a
 multi-camera cell raises: which rigs feed the live planner world.
@@ -31,21 +26,64 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from src.config.schema.robot import RobotConfig
     from src.config.tree import LoadedTree
 
-__all__ = ["CameraFusionPlan"]
+__all__ = ["CameraFusionPlan", "fused_cameras", "gives_depth"]
+
+#: The rig sources whose depth is matched from a pair through its stereo calibration (``StereoDepthStreamer``).
+_STEREO_SOURCES = frozenset({"webcam_pair", "single_device"})
 
 #: What a fused cell needs, said after what this one is missing, with where the reference cell is written down.
 _A_FUSED_CELL = (
-    "A fused cell lists two or more enabled RGB-D rigs that declare their calibration under "
-    "robot.grasping.fusion.cameras, by rig id and the primary among them, with robot.grasping.fusion.enabled and "
-    "robot.grasping.fusion.geometry.enabled on: the reference is config/robot/robot.eth2.yaml with "
-    "config/camera/cam.eth2.yaml, loaded as the profile chain <your arm>,eth2"
+    "A cell fuses by itself wherever camera.cameras.rigs declares two or more enabled rigs with their calibration, "
+    "the primary among them: the reference is config/camera/cam.eth2.yaml, loaded as the profile chain "
+    "<your arm>,eth2"
 )
+
+
+def fused_cameras(rigs: Sequence[Any], primary_rig_id: str) -> tuple[str, ...]:
+    """The rig ids a cell fuses, the primary first and then the others in id order, or ``()`` where it fuses none.
+
+    Every enabled rig that declares its calibration takes part, an RGB-D rig or a stereo one whose stereo calibration
+    is on disk (:func:`gives_depth`), where two or more do and the primary is one of them: one camera has nothing to
+    fuse with, and a grasp is synthesised in the primary's view.
+
+    Args:
+        rigs (Sequence[Any]): The camera section's rigs, ``camera.cameras.rigs``.
+        primary_rig_id (str): ``camera.cameras.primary_rig_id``.
+
+    Returns:
+        tuple[str, ...]: The fused rig ids; empty where the cell grasps from one view.
+    """
+    primary = str(primary_rig_id or "")
+    fusable = sorted(str(rig.rig_id) for rig in rigs if not _why_not_fused(str(rig.rig_id), rig))
+    if len(fusable) < 2 or primary not in fusable:
+        return ()
+    return (primary, *(rig_id for rig_id in fusable if rig_id != primary))
+
+
+def gives_depth(rig: Any) -> bool:
+    """Whether a rig hands out depth: an RGB-D rig its own, a stereo rig once its stereo calibration is written.
+
+    Read as the camera's own refusal reads it (``stereo_depth.stereo_calibration_refusal``), by duck typing and the
+    file's presence, because this module is handed to ``Robot`` and its guard forbids the camera package. A stereo rig
+    without it is no camera a cell fuses or was meant to fuse: the base profile's webcam pair is one.
+
+    Args:
+        rig (Any): One entry of ``camera.cameras.rigs``.
+
+    Returns:
+        bool: ``False`` for a ``webcam_pair`` or ``single_device`` rig whose ``calibration_paths.stereo_map_file`` is
+            not a file; ``True`` for every other rig.
+    """
+    if getattr(rig, "source", None) not in _STEREO_SOURCES:
+        return True
+    written = getattr(getattr(rig, "calibration_paths", None), "stereo_map_file", None)
+    return bool(written) and Path(str(written)).is_file()
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,56 +125,34 @@ class CameraFusionPlan:
             ConfigError: The tree did not load.
         """
         cameras = tree.app_config.camera.cameras
-        return cls.from_config(tree.robot, cameras.rigs, primary_rig_id=cameras.primary_rig_id)
+        return cls.from_config(cameras.rigs, primary_rig_id=cameras.primary_rig_id)
 
     @classmethod
-    def from_config(
-        cls, robot_cfg: "RobotConfig", rigs: Sequence[Any], *, primary_rig_id: str,
-    ) -> "CameraFusionPlan":
-        """The fusion plan of a robot section and the camera section's rigs.
+    def from_config(cls, rigs: Sequence[Any], *, primary_rig_id: str) -> "CameraFusionPlan":
+        """The fusion plan of the camera section's rigs.
 
         Args:
-            robot_cfg (RobotConfig): The cell's robot section, ``tree.robot``.
             rigs (Sequence[Any]): The camera section's rigs, ``tree.app_config.camera.cameras.rigs``.
             primary_rig_id (str): ``camera.cameras.primary_rig_id``: the camera each grasp is synthesised in.
 
         Returns:
             CameraFusionPlan: The plan.
         """
-        fusion = getattr(getattr(robot_cfg, "grasping", None), "fusion", None)
-        geometry = getattr(fusion, "geometry", None)
         primary = str(primary_rig_id or "")
         by_id = {str(rig.rig_id): rig for rig in rigs}
-        listed = [str(cam_id) for cam_id, cam in (getattr(fusion, "cameras", None) or {}).items()
-                  if bool(getattr(cam, "enabled", True))]
-
+        fused = fused_cameras(rigs, primary)
+        if fused:
+            return cls(cameras=fused, on_the_wrist=tuple(cam_id for cam_id in fused if _on_the_wrist(by_id[cam_id])),
+                       primary_rig_id=primary)
+        fusable = [rig_id for rig_id, rig in sorted(by_id.items()) if not _why_not_fused(rig_id, rig)]
         missing: list[str] = []
-        switches = [key for key, on in (("robot.grasping.fusion.enabled", getattr(fusion, "enabled", False)),
-                                        ("robot.grasping.fusion.geometry.enabled", getattr(geometry, "enabled", False)))
-                    if not bool(on)]
-        if len(switches) == 2:
-            missing.append(f"{switches[0]} and {switches[1]} are false")
-        elif switches == ["robot.grasping.fusion.geometry.enabled"]:
-            missing.append(f"{switches[0]} is false, so no second view reaches the grasp generator")
-        elif switches:
-            missing.append(f"{switches[0]} is false, and the other cameras' CAMERA to BASE are built only while it "
-                           "is on")
-        if len(listed) < 2:
-            declared = [rig_id for rig_id, rig in by_id.items() if _gives_depth(rig)]
-            missing.append(f"robot.grasping.fusion.cameras lists {_named(listed, 'camera', by_id)}, and "
-                           f"camera.cameras.rigs declares {_named(declared, 'enabled RGB-D rig', by_id)}")
-        if listed and primary not in listed:
-            missing.append(f"robot.grasping.fusion.cameras leaves out the primary rig {primary!r}")
-        for cam_id in listed:
-            refused = _why_not_fused(cam_id, by_id.get(cam_id))
-            if refused:
-                missing.append(refused)
-
-        if missing:
-            return cls(missing=tuple(missing), primary_rig_id=primary)
-        fused = (primary, *sorted(cam_id for cam_id in listed if cam_id != primary))
-        return cls(cameras=fused, on_the_wrist=tuple(cam_id for cam_id in fused if _on_the_wrist(by_id[cam_id])),
-                   primary_rig_id=primary)
+        if len(fusable) < 2:
+            missing.append(f"camera.cameras.rigs declares {_named(fusable, 'enabled, calibrated rig', by_id)}")
+            missing.extend(why for rig_id, rig in sorted(by_id.items()) if (why := _why_not_fused(rig_id, rig)))
+        else:
+            missing.append(f"the primary rig {primary!r} is not one of them: "
+                           f"{_why_not_fused(primary, by_id.get(primary))}")
+        return cls(missing=tuple(missing), primary_rig_id=primary)
 
     def refusal(self) -> str | None:
         """Why this cell cannot fuse its cameras.
@@ -179,11 +195,6 @@ class CameraFusionPlan:
         return f"{cam_id!r}" + (f" ({', '.join(notes)})" if notes else "")
 
 
-def _gives_depth(rig: Any) -> bool:
-    """An enabled RGB-D rig: the only kind whose frames carry the depth a surface is built from."""
-    return bool(getattr(rig, "enabled", False)) and getattr(rig, "source", None) == "rgbd"
-
-
 def _on_the_wrist(rig: Any) -> bool:
     """Whether the arm carries this rig: its calibration says eye in hand, or it declares the body the arm carries."""
     mounting = getattr(getattr(rig, "extrinsics", None), "mounting_mode", None)
@@ -191,16 +202,17 @@ def _on_the_wrist(rig: Any) -> bool:
 
 
 def _why_not_fused(cam_id: str, rig: Any) -> str:
-    """Why the rig a fusion camera names cannot give a fused view, or ``""`` when it can."""
+    """Why a rig gives no fused view, or ``""`` when it does: an enabled rig that declares its calibration and gives
+    depth, a stereo rig through its stereo calibration."""
     if rig is None:
-        return f"fusion camera {cam_id!r} names no rig in camera.cameras.rigs"
+        return f"no rig {cam_id!r} in camera.cameras.rigs"
     if not bool(getattr(rig, "enabled", False)):
         return f"rig {cam_id!r} is switched off"
-    source = getattr(rig, "source", None)
-    if source != "rgbd":
-        return f"rig {cam_id!r} is a {source} rig, with no depth of its own"
     if getattr(rig, "extrinsics", None) is None:
         return f"rig {cam_id!r} declares no calibration, camera.cameras.rigs[{cam_id!r}].extrinsics"
+    if not gives_depth(rig):
+        return (f"rig {cam_id!r} gives no depth: its stereo calibration, camera.cameras.rigs[{cam_id!r}]."
+                "calibration_paths.stereo_map_file, is not on disk")
     return ""
 
 

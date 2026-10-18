@@ -3,7 +3,7 @@
 On the owner's cell every drop stood 85 to 92 mm over the rim: the hang was the grasp's height less the declared
 support, the bench at 0, while the part stood on a 55 mm mat. Wherever the cell declares how far its parts hang
 (``safety.planning_world.payload.length_mm``), the hang is measured part by part (the owner, 2026-10-14; the switch
-``robot.place.part_bottom`` is gone): the grasp's height less the lowest reading of a surface the pick's own looks found
+``robot.motion.place.part_bottom`` is gone): the grasp's height less the lowest reading of a surface the pick's own looks found
 under the part's cloud (``SupportModel.local_plane_under``), or the cloud's lowest point where that is lower: a lower
 bound on where the part's bottom stood either way, so every error still goes toward more air. A part on another part
 hangs from the surface under both. The declared support stands where the pick kept no cloud, its looks found no surface

@@ -3,7 +3,9 @@
 The owner decided on 2026-09-11 that text stays in the language it was spoken in: German stays German,
 English stays English, and under `auto` the engine picks between exactly those two from Whisper's
 language scores. The shipped tree said `task: translate` and `language: german`, so a German command
-reached the prompt box as English text and an English command was decoded as if it were German.
+reached the prompt box as English text and an English command was decoded as if it were German. The
+`task` key, which then held only `transcribe`, left on 2026-10-17 (the owner's cleanup): the engine
+transcribes, and a tree that still writes the key is refused naming it.
 
 transformers 5.5.4 ignores `forced_decoder_ids` whenever `task` or `language` is passed to `generate`,
 and warns that the old flag is deprecated in favour of those two
@@ -57,7 +59,7 @@ def _generate_kwargs(language: str) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as weights:
         whisper_directory(Path(weights))
         config = SpeechToTextConfig.model_validate(
-            {**_shipped_stt(), "language": language, "task": "transcribe", "model_path": weights}
+            {**_shipped_stt(), "language": language, "model_id": weights}
         )
         with patch.object(transformers.WhisperProcessor, "from_pretrained", return_value=processor), \
                 patch.object(transformers.WhisperForConditionalGeneration, "from_pretrained",
@@ -69,24 +71,21 @@ def _generate_kwargs(language: str) -> dict[str, Any]:
 
 
 class TheTaskIsTranscribeTests(unittest.TestCase):
-    def test_a_block_that_says_translate_is_refused_with_a_sentence_naming_the_key(self) -> None:
-        with self.assertRaises(ValidationError) as caught:
-            SpeechToTextConfig.model_validate({**_shipped_stt(), "task": "translate"})
-        message = str(caught.exception)
-        self.assertIn("models.stt.task", message, "the refusal must name the key")
-        self.assertIn("transcribe", message, "and say what to write instead")
+    def test_a_block_that_names_a_task_is_refused(self) -> None:
+        for task in ("translate", "transcribe"):
+            with self.subTest(task=task), self.assertRaises(ValidationError):
+                SpeechToTextConfig.model_validate({**_shipped_stt(), "task": task})
 
-    def test_a_tree_that_says_translate_is_refused_by_the_loader(self) -> None:
+    def test_a_tree_that_says_translate_is_refused_by_the_loader_naming_the_key(self) -> None:
         """The operator meets this through the loader, so the sentence has to survive it."""
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         root = tmp / "data"
         shutil.copytree(_SHIPPED, root)
         stt = root / "models" / "stt.yaml"
-        text, hits = re.subn(
-            r'(?m)^(\s*)task:.*$', r'\g<1>task: "translate"', stt.read_text(encoding="utf-8")
-        )
-        self.assertEqual(hits, 1, "the shipped stt.yaml stopped writing a task")
+        text, hits = re.subn(r'(?m)^(\s*)language:(.*)$', r'\g<1>language:\g<2>\n\g<1>task: "translate"',
+                             stt.read_text(encoding="utf-8"))
+        self.assertEqual(hits, 1, "the shipped stt.yaml stopped writing a language")
         stt.write_text(text, encoding="utf-8")
         reload_config()
         self.addCleanup(reload_config)
@@ -94,13 +93,14 @@ class TheTaskIsTranscribeTests(unittest.TestCase):
             load_config(root, profile=None)
         message = str(caught.exception)
         self.assertIn("models.stt.task", message)
+        self.assertIn("transcribes and never translates", message, "and say why the key left")
         self.assertIn("stt.yaml", message, "and point at the file the key was written in")
 
-    def test_the_shipped_tree_transcribes_and_detects_the_language(self) -> None:
+    def test_the_shipped_tree_detects_the_language(self) -> None:
         reload_config()
         self.addCleanup(reload_config)
         stt = load_config(_SHIPPED, profile=None).models.stt
-        self.assertEqual((stt.task, stt.language), ("transcribe", "auto"))
+        self.assertEqual(("openai/whisper-large-v3-turbo", "auto"), (stt.model_id, stt.language))
 
 
 class TheLanguageIsTypedTests(unittest.TestCase):

@@ -28,12 +28,11 @@ def wrist_cell(*, source: str = "willy", planner: str = "curobo", backend: str =
     return RobotConfig.model_validate({
         "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": planner},
         "safety": {
-            "payload": {"enforce": False},
+            # What the flange carries, as every cell that connects says (``_arm_kit.WEIGHED_PAYLOAD``).
+            "payload": {"mass_kg": 1.3, "cog_mm": [0.0, 0.0, 65.0]},
             "self_collision": {"backend": backend},
             "planning_world": {
-                "enabled": True,
                 "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                "perceived": {"enabled": True, "voxel_field_mm": 0.0, "max_age_ms": 5000.0},
             },
         },
         "gripper": {"model": "robotiq_2f85", "tool_frame": {

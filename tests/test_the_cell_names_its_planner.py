@@ -29,7 +29,14 @@ from src.robot.execution.real_cell.preflight import CheckStatus, run_config_pref
 _DATA = Path(__file__).resolve().parents[1] / "config"
 
 
+#: A vendor this layer has no block for. No RobotVendor names one since kuka, franka and ros2 were removed
+#: (2026-10-17), so its tree is set past validation, as a driver package not written yet would name its own.
+_FOREIGN = "acme"
+
+
 def _tree(vendor: str, planner: str = "curobo") -> RobotConfig:
+    if vendor == _FOREIGN:
+        return _tree("ur", planner).model_copy(update={"vendor": vendor})
     return RobotConfig.model_validate({"vendor": vendor, "motion": {"planner": planner}})
 
 
@@ -87,7 +94,7 @@ class TheSelectionAnswersForTheSelectedDriverTests(unittest.TestCase):
 
     def test_a_driver_that_does_not_read_the_key_states_nothing_although_the_key_says_curobo(self) -> None:
         """The key is loadable on every tree; what changes is that the selection does not quote it back."""
-        for vendor in ("sim", "dummy", "franka"):
+        for vendor in ("sim", "dummy", _FOREIGN):
             with self.subTest(vendor=vendor):
                 tree = _tree(vendor)
                 self.assertEqual("curobo", tree.motion.planner, "the key itself is unchanged and still loadable")
@@ -99,7 +106,7 @@ class TheSelectionAnswersForTheSelectedDriverTests(unittest.TestCase):
 
         self.assertTrue(_plans_with_curobo(_tree("ur")))
         self.assertFalse(_plans_with_curobo(_tree("ur", "ik")))
-        for vendor in ("sim", "dummy", "franka"):
+        for vendor in ("sim", "dummy", _FOREIGN):
             with self.subTest(vendor=vendor):
                 self.assertFalse(_plans_with_curobo(_tree(vendor)))
 
@@ -117,9 +124,8 @@ class TheSelectionAnswersForTheSelectedDriverTests(unittest.TestCase):
 class TheDeskStopsJudgingOneVendorByAnothersBlockTests(unittest.TestCase):
     """A real non-UR cell was judged on the UR block's ``curobo`` default.
 
-    ``franka`` is a reserved vendor name that passes config validation and has no block of its own, which is the case
-    the checklist got wrong: it is real, so every ``is_real`` row ran, and the only planner key belonged to a vendor
-    it does not use.
+    A vendor with no block of its own is the case the checklist got wrong (``franka`` was one until 2026-10-17): it is
+    real, so every ``is_real`` row ran, and the only planner key belonged to a vendor it does not use.
     """
 
     @staticmethod
@@ -128,14 +134,14 @@ class TheDeskStopsJudgingOneVendorByAnothersBlockTests(unittest.TestCase):
         return {check.name: check.status for check in report.checks}
 
     def test_a_missing_curobo_environment_does_not_block_a_cell_that_never_plans_with_it(self) -> None:
-        rows = self._rows(_tree("franka"))
+        rows = self._rows(_tree(_FOREIGN))
 
         self.assertIs(CheckStatus.WARN, rows["cuRobo environment"])
         self.assertIs(CheckStatus.BLOCK, self._rows(_tree("ur"))["cuRobo environment"],
                       "the control: a UR cell on the same box still blocks, so this is not a row that stopped firing")
 
     def test_a_planner_margin_is_not_demanded_of_a_cell_with_no_planner(self) -> None:
-        rows = self._rows(_tree("franka"))
+        rows = self._rows(_tree(_FOREIGN))
 
         self.assertIs(CheckStatus.WARN, rows["planner margin"])
         self.assertIs(CheckStatus.BLOCK, self._rows(_tree("ur"))["planner margin"],
@@ -143,10 +149,10 @@ class TheDeskStopsJudgingOneVendorByAnothersBlockTests(unittest.TestCase):
 
     def test_the_row_names_the_driver_rather_than_quoting_an_empty_key(self) -> None:
         """'robot.motion.planner is None' reads as a broken tree; the truth is that this driver does not read it."""
-        report = run_config_preflight(_tree("franka"), curobo_available=False, collision_engine="coal")
+        report = run_config_preflight(_tree(_FOREIGN), curobo_available=False, collision_engine="coal")
         detail = next(check.detail for check in report.checks if check.name == "cuRobo environment")
 
-        self.assertIn("franka", detail)
+        self.assertIn(_FOREIGN, detail)
         self.assertNotIn("None", detail)
 
 

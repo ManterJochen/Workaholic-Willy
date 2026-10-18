@@ -109,7 +109,7 @@
     },
     {
      "id": "p1-control-gate-bytes",
-     "run": "$PY -c \"import filecmp, sys; print('same', filecmp.cmp(sys.argv[1], sys.argv[2], shallow=False))\" $LOGS/control/ur10e_robotiq_hande_c0mm_+Z+X_m4mm_a0.json src/robot/safety/planning/robot/evidence/ur10e_robotiq_hande_c0mm_+Z+X_m4mm_a0.json",
+     "run": "$PY -c \"import filecmp, sys; print('same', filecmp.cmp(sys.argv[1], sys.argv[2], shallow=False))\" $LOGS/control/ur10e_robotiq_hande_c0mm_+Z+X_m4mm.json src/robot/safety/planning/robot/evidence/ur10e_robotiq_hande_c0mm_+Z+X_m4mm.json",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -344,7 +344,7 @@
        " 0 attribution disagreements"
       ],
       "files_exist": [
-       "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+       "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm.json"
       ]
      }
     },
@@ -384,7 +384,7 @@
        "[BLOCK] camera -> base",
        "[BLOCK] camera world",
        "2 blocking,",
-       "ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json admits",
+       "ur10e_acme_dims_c0mm_+Z+X_m4mm.json admits",
        "inflated 10 mm",
        "origin flange, coupling 0 mm"
       ]
@@ -397,7 +397,7 @@
       "exit": 0,
       "stdout_has": [
        "retract row",
-       "ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+       "ur10e_acme_dims_c0mm_+Z+X_m4mm.json"
       ],
       "stdout_lacks": [
        "[missing]",
@@ -413,12 +413,12 @@
       "exit": 0,
       "stdout_has": [
        "STARTED and stopped",
-       "admitted by ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+       "admitted by ur10e_acme_dims_c0mm_+Z+X_m4mm.json"
       ]
      }
     },
     {
-     "hide": "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+     "hide": "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm.json"
     },
     {
      "id": "p2-planner-start-without-its-evidence",
@@ -428,12 +428,12 @@
       "exit": 1,
       "stdout_has": [
        "REFUSED",
-       "ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+       "ur10e_acme_dims_c0mm_+Z+X_m4mm.json"
       ]
      }
     },
     {
-     "restore": "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+     "restore": "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm.json"
     },
     {
      "runbook": "ik-layer",
@@ -645,7 +645,7 @@
        " 0 attribution disagreements"
       ],
       "files_exist": [
-       "src/robot/safety/planning/robot/evidence/ur10e_acme_mesh_c0mm_+Z+X_m4mm_a0.json"
+       "src/robot/safety/planning/robot/evidence/ur10e_acme_mesh_c0mm_+Z+X_m4mm.json"
       ]
      }
     },
@@ -685,7 +685,7 @@
        "[BLOCK] camera -> base",
        "[BLOCK] camera world",
        "2 blocking,",
-       "ur10e_acme_mesh_c0mm_+Z+X_m4mm_a0.json admits",
+       "ur10e_acme_mesh_c0mm_+Z+X_m4mm.json admits",
        "origin mounting_face, coupling 0 mm"
       ]
      }
@@ -697,7 +697,7 @@
       "exit": 0,
       "stdout_has": [
        "STARTED and stopped",
-       "admitted by ur10e_acme_mesh_c0mm_+Z+X_m4mm_a0.json"
+       "admitted by ur10e_acme_mesh_c0mm_+Z+X_m4mm.json"
       ]
      }
     }

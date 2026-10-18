@@ -18,9 +18,13 @@ from typing import Any, Literal, Optional
 import numpy as np
 
 from src.models.handdetection.constants import (
+    DETECTION_THRESHOLD,
     HAND_LANDMARK_MODEL_URL,
+    MAX_HANDS,
     MODELS_LOG_DIR,
     PALM_DETECTOR_LOG_FILE,
+    PRESENCE_THRESHOLD,
+    TRACKING_THRESHOLD,
 )
 from src.models.handdetection.landmarks import calculate_palm_center
 from src.models.handdetection.model_files import require_mediapipe, resolve_model_file
@@ -59,20 +63,20 @@ def handedness_of(categories: Any) -> tuple[Handedness, float]:
 class PalmDetector:
     """Detect hands in a BGR frame and report each palm centre in pixels.
 
-    Parameters mirror the `models.handdetect` config keys one-for-one, and `build_palm_detector` in
-    `factory.py` is the config-driven constructor. Every threshold here reaches MediaPipe; none is
-    stored and ignored.
+    The parameters are MediaPipe's, defaulted to the owner's cell's numbers (`constants.py`), and
+    `build_palm_detector` in `factory.py` builds one with those and the catalogue's bundle. Every
+    threshold here reaches MediaPipe; none is stored and ignored.
     """
 
     def __init__(
         self,
         model_path: str,
         *,
-        max_hands: int = 2,
-        threshold: float = 0.5,
-        tracking_threshold: float = 0.5,
-        presence_threshold: float = 0.5,
-        config_key: str = "models.handdetect.model_path",
+        max_hands: int = MAX_HANDS,
+        threshold: float = DETECTION_THRESHOLD,
+        tracking_threshold: float = TRACKING_THRESHOLD,
+        presence_threshold: float = PRESENCE_THRESHOLD,
+        config_key: str = "the hand-landmark bundle (mediapipe-hand) under models.weights_root",
     ) -> None:
         require_mediapipe("palm/hand detection")
         resolved = resolve_model_file(

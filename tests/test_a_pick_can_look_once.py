@@ -196,7 +196,7 @@ class TheServiceSaysWhatATaskReadsTests(unittest.TestCase):
         self.assertEqual(0, cell.service.detector_failures(), "a flag is no count")
 
     def test_found_nothing_and_only_excluded_read_what_the_pick_said(self) -> None:
-        from src.robot.execution.autonomous_grasp.service import found_nothing, only_excluded, only_kept_out
+        from src.robot.execution.autonomous_grasp.service import found_nothing, only_excluded
 
         cell = _Cell(grasps_on=())
         nothing = _Cell(grasps_on=())
@@ -209,8 +209,6 @@ class TheServiceSaysWhatATaskReadsTests(unittest.TestCase):
         self.assertTrue(found_nothing(empty))
         self.assertFalse(only_excluded(failed))
         self.assertFalse(only_excluded(empty))
-        self.assertFalse(only_kept_out(failed))
-        self.assertFalse(only_kept_out(empty))
 
 
 if __name__ == "__main__":  # pragma: no cover

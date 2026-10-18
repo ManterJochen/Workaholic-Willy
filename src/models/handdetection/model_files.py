@@ -8,9 +8,10 @@ both. Left to the libraries, either absence reports poorly:
 * the `.task` file missing raises from inside MediaPipe's C++ graph, naming neither the config key
   that supplied the path nor where the file comes from.
 
-Both are therefore checked here, up front, and the message names the config key, the resolved
-absolute path and the download URL. The check is fail-closed: a missing hand reads exactly like an
-absent hand, so a detector that silently does not run is worse than one that refuses to start.
+Both are therefore checked here, up front, and the message names where the path came from (the weights
+catalogue's bundle under ``models.weights_root``), the resolved absolute path, the fetch that writes it
+and the download URL. The check is fail-closed: a missing hand reads exactly like an absent hand, so a
+detector that silently does not run is worse than one that refuses to start.
 """
 
 from __future__ import annotations
@@ -54,16 +55,17 @@ def require_mediapipe(what: str) -> None:
 
 
 def resolve_model_file(path: str, *, config_key: str, download_url: str) -> str:
-    """Return `path` as an absolute string, or raise naming the key, the path and the download.
+    """Return `path` as an absolute string, or raise naming where it came from, the path and the download.
 
-    A path read from a config tree arrives absolute: the loader read it against the config folder
-    (`src.config.paths`). A relative one, which only a caller that built the block in code passes, is
-    read against the process working directory.
+    ``config_key`` names where the path came from: the weights catalogue's bundle under
+    ``models.weights_root`` for a detector the factory builds, or whatever a caller that built one
+    itself passes. A path from the catalogue arrives absolute; a relative one, which only such a caller
+    passes, is read against the process working directory.
     """
     if not path or not path.strip():
         raise FileNotFoundError(
             f"{config_key} is empty, so there is no MediaPipe model to load.\n"
-            f"  Set it to the path of the downloaded bundle.\n"
+            f"  Name the path of the downloaded bundle.\n"
             f"  Download: {download_url}"
         )
 
@@ -72,14 +74,14 @@ def resolve_model_file(path: str, *, config_key: str, download_url: str) -> str:
         resolved = Path.cwd() / resolved
 
     if not resolved.is_file():
-        from src.config.paths import path_note
+        from src.models.weights import weights_note
 
-        note = path_note(path)
+        note = weights_note(path)
         raise FileNotFoundError(
             f"MediaPipe model file not found: {resolved}\n"
-            f"  Configured by: {config_key} = {path!r}\n"
+            f"  Named by: {config_key} = {path!r}\n"
             + (f"  {note.strip()}\n" if note else "")
-            + f"  Download it and put it there:\n"
+            + f"  Fetch it with `python scripts/model_weights/fetch.py --mediapipe`, or download it and put it there:\n"
             f"    {download_url}\n"
             f"  The bundles are NOT committed to this repository (they are binaries, and the\n"
             f"  operator chooses which revision to run)."

@@ -2,8 +2,9 @@
 
 Silero runs as TorchScript on the torch this interpreter already has, with no new package: ONNX would
 need onnxruntime, and the silero-vad package adds nothing the model file does not carry. The file is
-`silero_vad.jit` from the silero-vad 6.2.1 wheel (MIT), pinned by the wheel's sha256 and by its own in
-`scripts/model_weights/fetch.py`; `models.stt.vad_model_path` names where it lies.
+`silero_vad.jit` from the silero-vad 6.2.1 wheel (MIT), pinned by the wheel's sha256 and by its own in the weights
+catalogue (`src/models/weights.py`), and read from where `scripts/model_weights/fetch.py silero-vad` writes it under
+`models.weights_root`.
 
 It is called the way the package's own `VADIterator` and `get_speech_timestamps` call it
 (`silero_vad/utils_vad.py`): windows of 512 samples at 16 kHz, ``model(window, 16000).item()`` per window,
@@ -23,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Final
 from src.config.schema.models.models_schema import SpeechToTextConfig
 from src.contracts import UNSET, Maybe, chosen
 from src.models.speech.engine import SpeechModelMissing, SpeechStackUnavailable
+from src.models.weights import fixed_file
 
 if TYPE_CHECKING:  # pragma: no cover, typing only
     import numpy as np
@@ -53,9 +55,11 @@ class SileroVoiceActivityDetector:
         self._lock = threading.Lock()
 
     @classmethod
-    def from_config(cls, *, config: SpeechToTextConfig) -> SileroVoiceActivityDetector:
-        """The YAML door: `models.stt.vad_model_path`. Loads nothing."""
-        return cls.from_parts(model_path=config.vad_model_path)
+    def from_config(cls, *, config: SpeechToTextConfig,
+                    weights_root: str | Path | None = None) -> SileroVoiceActivityDetector:
+        """The speech section's door: the catalogue's ``silero-vad`` file under ``weights_root``
+        (``models.weights_root``; ``None`` is the repository's folder). Loads nothing."""
+        return cls.from_parts(model_path=fixed_file("silero-vad", root=weights_root))
 
     @classmethod
     def from_parts(cls, *, model_path: str | Path, model: Maybe[Any] = UNSET) -> SileroVoiceActivityDetector:
@@ -94,8 +98,9 @@ class SileroVoiceActivityDetector:
             torch = _import_torch()
             if not self._model_path.is_file():
                 raise SpeechModelMissing(
-                    key="models.stt.vad_model_path", path=str(self._model_path), kind="file",
-                    fetch="fetch it with `python scripts/model_weights/fetch.py silero-vad`",
+                    key="the voice detector (silero-vad)", path=str(self._model_path), kind="file",
+                    fetch="fetch it with `python scripts/model_weights/fetch.py silero-vad`, which writes it under "
+                          "models.weights_root",
                 )
             model = torch.jit.load(str(self._model_path), map_location="cpu")
             model.eval()

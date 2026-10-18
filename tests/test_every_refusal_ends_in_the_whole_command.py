@@ -84,8 +84,7 @@ class AnEvidenceRefusalParsesBackTests(unittest.TestCase):
                         "tool_frame": {"source": "controller", "offset_mm": [0.0, 0.0, 175.75],
                                        "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
             "safety": {"self_collision": {"planner_margin_mm": 4.0},
-                       "planning_world": {"enabled": True, "support_plane": {"height_mm": 0.0},
-                                          "payload": {"enabled": True, "sphere_slots": 4, "length_mm": 60.0}}},
+                       "planning_world": {"support_plane": {"height_mm": 0.0}}},
         })
 
     def test_a_missing_evidence_file_names_the_gate_command_for_this_cell(self) -> None:
@@ -97,11 +96,11 @@ class AnEvidenceRefusalParsesBackTests(unittest.TestCase):
         args = _script("gate").parser().parse_args(_after(refused, "scripts/arms/gate.py"))
         self.assertEqual((args.arm, args.hand), ("ur5e", "robotiq_hande"))
         self.assertEqual(args.plate, self._PLATE)
-        self.assertEqual((args.planner_margin_mm, args.guard_margin_mm, args.attach), (4.0, 3.0, 4))
+        self.assertEqual((args.planner_margin_mm, args.guard_margin_mm), (4.0, 3.0))
         self.assertEqual(list(args.tool_rotation_xyzw), [0.0, 0.0, 0.0, 1.0])
         self.assertTrue(args.write)
         looked_for = evidence_path(arm="ur5e", hand="robotiq_hande", coupling_mm=20.0, approach="+Z", closing="+X",
-                                   planner_margin_mm=4.0, attach_spheres=4, evidence_dir=empty)
+                                   planner_margin_mm=4.0, evidence_dir=empty)
         self.assertIn(looked_for.name, refused)
 
     def test_the_desk_fix_names_the_command(self) -> None:

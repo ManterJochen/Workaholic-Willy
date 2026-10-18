@@ -54,8 +54,8 @@ class TheUrArmReadsItsDescriptionTests(unittest.TestCase):
         self.assertEqual(_ur()._home_joints, [0.0, half, 0.0, half, 0.0, 0.0])
 
     def test_a_home_the_tree_declares_outranks_the_description(self) -> None:
-        declared = [0.1, -1.2, 1.3, -1.4, -1.5, 0.6]
-        self.assertEqual(_ur(home_joint_positions=declared)._home_joints, declared)
+        declared_deg = [5.0, -70.0, 75.0, -80.0, -85.0, 35.0]
+        self.assertEqual(_ur(motion={"home_deg": declared_deg})._home_joints, [math.radians(v) for v in declared_deg])
 
     def test_an_unaddressed_cell_owns_a_controller_and_names_none(self) -> None:
         caps = _ur(ip=None).capabilities

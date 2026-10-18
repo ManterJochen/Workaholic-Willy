@@ -3,21 +3,20 @@
  * where from the sentence, the settings only where it says nothing).
  *
  * `doubts` says why a reading needs a person's look; `draftFromReading` fills what the sentence did not say from the
- * settings; `cellOffOf` is the one rule of the card's Start and of Enter; `modelToLoad` keeps a task from loading the
- * language model inside its first look; `readTask` reads the settings back, each the default where nothing readable is
- * stored. The one part a sentence singles out (`which`) and where the parts lie (`source`) go from the reading onto the
- * card and into the task, and a selection starts once. `cockpit.test.tsx` pins the same through the screen.
+ * cell's settings (`runtime.task`, the cell's since 2026-10-17), and where none are read, from nothing but the sentence;
+ * `cellOffOf` is the one rule of the card's Start and of Enter; `modelToLoad` keeps a task from loading the language
+ * model inside its first look. The one part a sentence singles out (`which`) and where the parts lie (`source`) go from
+ * the reading onto the card and into the task, and a selection starts once. `cockpit.test.tsx` pins the same through
+ * the screen.
  */
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import type { CellFactsOut, CellOut, CommandOut, ReadinessOut, TaskPlanOut } from '../api/client'
-import { DEFAULT_TASK, placeOf, readTask, type TaskPrefs } from '../model/prefs'
+import type { CellFactsOut, CellOut, CommandOut, ReadinessOut, TaskPlanOut, TaskSettingsOut } from '../api/client'
 import {
   doubts,
   draftFromPlan,
   draftFromReading,
-  groundedOf,
   KNOWN_SENTENCE_MODEL,
   looksOfPlan,
   looksOptions,
@@ -33,8 +32,8 @@ function reading(over: Partial<CommandOut> = {}): CommandOut {
   return {
     understood: true,
     intent: 'task',
-    object: { phrase: 'gray cube', said: 'grauen Würfel', verified: true, route: null },
-    place: { phrase: 'yellow bin', said: 'in die Gelbe Kiste', verified: true, route: null },
+    object: { phrase: 'gray cube', said: 'grauen Würfel', verified: true },
+    place: { phrase: 'yellow bin', said: 'in die Gelbe Kiste', verified: true },
     place_pose: null,
     scope: 'until_empty',
     count: null,
@@ -49,11 +48,18 @@ function reading(over: Partial<CommandOut> = {}): CommandOut {
   }
 }
 
-const ENTER: TaskPrefs = { ...DEFAULT_TASK, start: 'enter', scope: 'once' }
-
-afterEach(() => {
-  localStorage.clear()
-})
+/** The cell's task settings as shipped: Enter starts, once, the default place, the card asking for a part. */
+const ENTER: TaskSettingsOut = {
+  start: 'enter',
+  scope: 'once',
+  place: { kind: 'default' },
+  anything: false,
+  looks: 'when_needed',
+  critical_parts: false,
+  target_file: 'config/app/runtime.cell.yaml',
+  why_not: '',
+  why_not_code: '',
+}
 
 describe('doubts: why a reading waits for the card', () => {
   it('has none for a clean reading', () => {
@@ -62,9 +68,9 @@ describe('doubts: why a reading waits for the card', () => {
 
   it('names each note, a part not found, a place not found, and no part at all', () => {
     expect(doubts(reading({ notes: ['retried'], startable: false }))).toEqual([{ key: 'note.retried' }])
-    expect(doubts(reading({ object: { phrase: 'gray cube', said: null, verified: false, route: null }, startable: false })))
+    expect(doubts(reading({ object: { phrase: 'gray cube', said: null, verified: false }, startable: false })))
       .toEqual([{ key: 'ck.doubt.object' }])
-    expect(doubts(reading({ place: { phrase: 'yellow bin', said: null, verified: false, route: null }, startable: false })))
+    expect(doubts(reading({ place: { phrase: 'yellow bin', said: null, verified: false }, startable: false })))
       .toEqual([{ key: 'ck.doubt.place' }])
     expect(doubts(reading({ object: null, startable: false }))).toEqual([{ key: 'ck.doubt.noPart' }])
   })
@@ -82,15 +88,21 @@ describe('draftFromReading: the settings where the sentence says nothing', () =>
     expect(draftFromReading(reading(), SAID).scope).toBe('until_empty')
   })
 
+  it('holds what the sentence says alone where the cell\'s settings are not read', () => {
+    const card = draftFromReading(reading({ place: null, object: null }), SAID, null)
+    expect([card.scope, card.place, card.pickAnything, card.options.looks]).toEqual(['until_empty', { kind: 'default' }, false, 'when_needed'])
+    expect(manualDraft(SAID, 'vlm_not_loaded', 'load it first', null).options.looks).toBe('when_needed')
+  })
+
   it('keeps the sentence\'s place over the settings\' place', () => {
-    const task: TaskPrefs = { ...ENTER, place: { kind: 'pose', pose: 'park' } }
+    const task: TaskSettingsOut = { ...ENTER, place: { kind: 'pose', pose: 'park' } }
     expect(draftFromReading(reading(), SAID, task).place).toEqual({ kind: 'camera', phrase: 'yellow bin', said: 'in die Gelbe Kiste' })
     expect(draftFromReading(reading({ place: null, place_pose: 'drop_left' }), SAID, task).place).toEqual({ kind: 'pose', pose: 'drop_left' })
     expect(draftFromReading(reading({ place: null }), SAID, task).place).toEqual({ kind: 'pose', pose: 'park' })
   })
 
   it('ticks "anything" only for a sentence that names no part, and only where the settings say so', () => {
-    const anything: TaskPrefs = { ...ENTER, anything: true }
+    const anything: TaskSettingsOut = { ...ENTER, anything: true }
     expect(draftFromReading(reading({ object: null }), SAID, anything).pickAnything).toBe(true)
     expect(draftFromReading(reading(), SAID, anything).pickAnything).toBe(false)
     expect(draftFromReading(reading({ object: null }), SAID, ENTER).pickAnything).toBe(false)
@@ -141,13 +153,6 @@ describe('the one part singled out and where the parts lie, from the reading to 
     const kept = { ...plan, which: undefined, source: undefined } as unknown as TaskPlanOut
     expect(taskOfPlan(kept)).toMatchObject({ which: '', source: '' })
   })
-
-  it('route the pick as the server\'s guard judges it: the one part alone, else the object where the parts lie', () => {
-    expect(groundedOf({ object: 'gray cube', which: ' the upper gray cube ', source: 'on the black mat' })).toBe('the upper gray cube')
-    expect(groundedOf({ object: ' gray cube ', which: '', source: ' on the black mat' })).toBe('gray cube on the black mat')
-    expect(groundedOf({ object: 'gray cube', which: '  ', source: '' })).toBe('gray cube')
-    expect(groundedOf({ object: '', which: '', source: '' })).toBe('')
-  })
 })
 
 describe('cellOffOf and modelToLoad: whether the cell lets a task start', () => {
@@ -167,41 +172,8 @@ describe('cellOffOf and modelToLoad: whether the cell lets a task start', () => 
     const commands = (code: string) => ({ ...READY, lights: [{ id: 'commands', state: 'info', code, message: '', blocks: false }] }) as unknown as ReadinessOut
     expect(modelToLoad(vlm, commands('idle'))).toBe(true)
     expect(modelToLoad(vlm, commands('ready'))).toBe(false)
-    expect(modelToLoad({ detector: { backend: 'grounded_sam' } } as unknown as CellFactsOut, commands('idle'))).toBe(false)
+    expect(modelToLoad({ detector: { backend: 'rtdetr' } } as unknown as CellFactsOut, commands('idle'))).toBe(false)
     expect(modelToLoad(null, commands('idle'))).toBe(false)
-  })
-})
-
-describe('the task\'s settings, as this browser keeps them', () => {
-  it('start with Enter, once, the default place, the card asking for a part, and the looks when needed', () => {
-    expect(readTask()).toEqual({ start: 'enter', scope: 'once', place: { kind: 'default' }, anything: false, looks: 'when_needed' })
-  })
-
-  it('read back what was stored, and the default for anything they cannot read', () => {
-    localStorage.setItem('willy.taskStart', 'card')
-    localStorage.setItem('willy.taskScope', 'until_empty')
-    localStorage.setItem('willy.taskPlace', 'pose:park')
-    localStorage.setItem('willy.taskAnything', 'anything')
-    localStorage.setItem('willy.taskLooks', 'every')
-    expect(readTask()).toEqual({
-      start: 'card',
-      scope: 'until_empty',
-      place: { kind: 'pose', pose: 'park' },
-      anything: true,
-      looks: 'every',
-    })
-    localStorage.setItem('willy.taskStart', 'now')
-    localStorage.setItem('willy.taskScope', 'twice')
-    localStorage.setItem('willy.taskLooks', 'all of them')
-    expect(readTask()).toMatchObject({ start: 'enter', scope: 'once', looks: 'when_needed' })
-  })
-
-  it('take a camera place with a phrase only, and never longer than a card\'s field', () => {
-    expect(placeOf('camera:yellow bin')).toEqual({ kind: 'camera', phrase: 'yellow bin' })
-    expect(placeOf('camera:   ')).toEqual({ kind: 'default' })
-    expect(placeOf('pose:')).toEqual({ kind: 'default' })
-    expect(placeOf(`camera:${'y'.repeat(300)}`)).toEqual({ kind: 'camera', phrase: 'y'.repeat(200) })
-    expect(placeOf('somewhere')).toEqual({ kind: 'default' })
   })
 })
 

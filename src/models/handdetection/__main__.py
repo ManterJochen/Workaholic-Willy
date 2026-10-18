@@ -3,7 +3,7 @@
 Three modes, in increasing order of what they need:
 
     --check                 nothing but the config. Reports whether mediapipe and each `.task`
-                            bundle are present, and exits non-zero if not.
+                            bundle are present under `models.weights_root`, and exits non-zero if not.
     --frame IMAGE           one image file. Detects hands and gestures in image space; needs no
                             camera, no calibration and no robot.
     --rig RIG_ID            live camera. Adds depth and, given `--transform`, the base frame.
@@ -27,13 +27,16 @@ import numpy as np
 
 from src.config import load_config
 from src.models.handdetection.constants import (
+    GESTURE_BUNDLE,
     GESTURE_MODEL_URL,
+    HAND_BUNDLE,
     HAND_LANDMARK_MODEL_URL,
 )
 from src.models.handdetection.model_files import (
     MEDIAPIPE_AVAILABLE,
     MEDIAPIPE_INSTALL_HINT,
 )
+from src.models.weights import fixed_file
 
 _OK, _NOTHING_FOUND, _SETUP_PROBLEM = 0, 1, 2
 
@@ -75,14 +78,11 @@ def _check(config: Any, as_json: bool) -> int:
         "mediapipe_installed": MEDIAPIPE_AVAILABLE,
         "models": {},
     }
-    for name, block, url in (
-        ("handdetect", config.models.handdetect, HAND_LANDMARK_MODEL_URL),
-        ("gesturedetect", config.models.gesturedetect, GESTURE_MODEL_URL),
-    ):
-        path = Path(block.model_path)
-        resolved = path if path.is_absolute() else Path.cwd() / path
+    root = config.models.weights_root
+    for name, url in ((HAND_BUNDLE, HAND_LANDMARK_MODEL_URL), (GESTURE_BUNDLE, GESTURE_MODEL_URL)):
+        resolved = Path(fixed_file(name, root=root))
         report["models"][name] = {
-            "config_key": f"models.{name}.model_path",
+            "weights_root": str(root),
             "path": str(resolved),
             "present": resolved.is_file(),
             "download": url,
@@ -100,10 +100,11 @@ def _check(config: Any, as_json: bool) -> int:
         if not MEDIAPIPE_AVAILABLE:
             print(f"                      {MEDIAPIPE_INSTALL_HINT}")
         for name, entry in report["models"].items():
-            print(f"models.{name}:")
+            print(f"{name}:")
             print(f"  path    : {entry['path']}")
             print(f"  present : {'yes' if entry['present'] else 'NO'}")
             if not entry["present"]:
+                print("  fetch   : python scripts/model_weights/fetch.py --mediapipe")
                 print(f"  download: {entry['download']}")
         print(f"\nready: {'yes' if ready else 'NO'}")
     return _OK if ready else _SETUP_PROBLEM
@@ -125,11 +126,12 @@ def _observe_frame(config: Any, image_path: str, use_gestures: bool, as_json: bo
         print(f"could not read image: {image_path}", file=sys.stderr)
         return _SETUP_PROBLEM
 
+    root = config.models.weights_root
     if use_gestures:
-        with build_gesture_recognizer(config.models.gesturedetect) as recognizer:
+        with build_gesture_recognizer(weights_root=root) as recognizer:
             observations = recognizer.observe(frame)
     else:
-        with build_palm_detector(config.models.handdetect) as detector:
+        with build_palm_detector(weights_root=root) as detector:
             observations = detector.observe(frame)
 
     payload = [
@@ -229,9 +231,8 @@ def _locate_on_rig(config: Any, args: argparse.Namespace) -> int:
         matrix, _dist = load_intrinsics(args.intrinsics)
         camera_matrices[args.rig] = matrix
 
-    observer = (
-        build_gesture_recognizer(config.models.gesturedetect) if args.gestures else None
-    )
+    root = config.models.weights_root
+    observer = build_gesture_recognizer(weights_root=root) if args.gestures else None
     # `FrameProvider` wants the list of rigs, which is what `.rigs` supplies. Handing it
     # `config.camera.cameras`, the `CameraSystemConfig` model, gets past the provider's own
     # `if not rigs` guard, because a Pydantic model is truthy; iterating a model then yields
@@ -253,12 +254,12 @@ def _locate_on_rig(config: Any, args: argparse.Namespace) -> int:
     provider.open_rig(rig.rig_id)
     try:
         finder = build_hand_finder(
-            config.models.handdetect,
             provider=provider,
             transforms=transforms,
             observer=observer,
             camera_matrices=camera_matrices,
             rig_ids=[rig.rig_id],
+            weights_root=root,
         )
         located, _annotated = finder.find_hand()
     finally:

@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import GraspingSupportConfig
+from src.robot.grasping.collision.support_resolver import DeclaredSupport
 from src.geometry import Frame, Pose, Transform
 from src.robot.grippers.jaw_io import JawIOGripper
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
@@ -115,7 +115,7 @@ def _pick(
     service = AutonomousGraspService.from_components(
         arm=arm, calculator=calculator, perception=source, mode=GraspMode.EASY,  # type: ignore[arg-type]
         gripper=jaws, policy=policy, frame_resolver=resolver, max_attempts=1)
-    service.runtime.orchestrator.support_config = GraspingSupportConfig(height_mm=0.0)
+    service.runtime.orchestrator.declared_support = DeclaredSupport()
     service.runtime.orchestrator.target_label = "grey cube"
     events: list[Any] = []
     service.attach_progress_listener(events.append)

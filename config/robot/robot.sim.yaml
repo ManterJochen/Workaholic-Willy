@@ -100,73 +100,20 @@ robot:
       gate:     { lift_threshold_mm: 50.0, pass_fraction: 0.8 }
       render_warmup_steps: 20
 
-  # Cartesian workspace box (mm) for this cell. It has to span both the calibration viewpoints, the
-  # tool held high over the table, and the low grasp poses: a top-down grasp on the cube puts the
-  # TCP near z=37, and the SafetyPreflight WorkspaceGuard rejects every motion whose target falls
-  # outside this box. z_min 0.0 is the table top, and `safety.limits.workspace_margin_mm`, 20 mm in
-  # robot.yaml, then floors the guard at z=20.
-  workspace_limits:
-    x_min: 100.0
-    x_max: 700.0
-    y_min: -350.0
-    y_max: 350.0
-    z_min: 0.0
-    z_max: 600.0
-
-  # Retreat pose, and it must sit inside workspace_limits: `_check_safe_pose_in_workspace` refuses
-  # the tree at config load otherwise, because the WorkspaceGuard would reject a retreat motion
-  # aimed outside that box. Nothing moves to the pose today: its only reader is the willy_sim
-  # reach doctor (`harness/reach.py`). The production default (0, -300, 400) is outside this cell's
-  # x[100, 700], hence the override: tool high, off the -Y side, clear of the picks at x=450.
-  safe_pose:
-    x: 450.0
-    y: -300.0
-    z: 400.0
-
-  # SafetyPreflight is wired into the sim pick path. The built-in joint-limit table is keyed on a
-  # Universal Robots vendor and this cell's vendor is `sim`, so without explicit limits the guard
-  # reports UNAVAILABLE and fails closed. The arm is physically a UR5e, so these are its factory
-  # +/-360 deg per-axis envelope: valid grasps pass and out-of-envelope joints are still caught.
+  # SafetyPreflight is wired into the sim pick path, every guard, at the Isaac arm's own numbers:
+  # its whole +-360 deg joint envelope with no window about home, and IK and continuity limits
+  # sized for a position-controlled drive (src/willy_sim/guard_numbers.py, why each).
   safety:
-    joint_limits:
-      min_deg: [-360.0, -360.0, -360.0, -360.0, -360.0, -360.0]
-      max_deg: [360.0, 360.0, 360.0, 360.0, 360.0, 360.0]
-    # ik_quality and motion_continuity are sized for a servo drive, where an IK jump is an
-    # unfollowable discontinuity and a near-singular configuration amplifies joint velocity. The
-    # Isaac drive has neither failure mode: `move_joint` is position-controlled and walks the move
-    # in 0.03 rad waypoints, up to 250 of them and so about 7.5 rad in one command, and `move()`
-    # verifies the achieved TCP by FK. The jump, step and singularity limits are therefore widened
-    # to what this drive can really follow, which passes a large single-move reconfiguration and an
-    # awkward but valid near-singular grasp while still rejecting IK garbage: a condition number
-    # above 1000, a smallest singular value under 1e-4, a wildly wrong branch. Deep-merge leaves
-    # every unlisted field, the enforce flags included, at the robot.yaml value, and the widening
-    # is per-cell: the UR thresholds and the workspace, joint-limit, self-collision and payload
-    # guards are untouched.
-    ik_quality:
-      max_jump_rad: 3.5
-      max_condition_number: 1000.0
-      min_singular_value: 0.0001
-    motion_continuity:
-      max_joint_step_deg: 180.0
-      max_orientation_step_deg: 180.0
-      max_tcp_step_mm: 1000.0
-    dwell:
-      # The sim's `wait_until_steady` steps the physics itself, so as a pre-move gate inside the
-      # pick loop it fights the loop's own stepping and the picks fail. It is off for this cell.
-      # On real hardware the same call reads a controller steady signal and steps nothing, so the
-      # gate works there and robot.yaml leaves it on.
-      require_steady_before_motion: false
     # The arm is physically a UR5e and reports it (`sim.robot_model`, P0d D5), so the guard measures
     # arm against arm and arm against gripper with the UR DH chain, not base, tool and fixture
-    # capsules alone; no safety key names the arm a second time. The bundled DH base frame is rotated 180 deg about Z from the Isaac UR5e USD
-    # `base_link`, and `kinematics_base_yaw_deg` is what turns the arm capsules back into the frame
-    # the base, tool and fixture capsules already use. `backend: fcl` is the vertex-exact mesh
+    # capsules alone; no safety key names the arm a second time. The bundled DH base frame is
+    # rotated 180 deg about Z from the Isaac UR5e USD `base_link`, a fact of the asset the sim
+    # harness states in code (src/willy_sim/guard_numbers.py) and hands to the guard. `backend: fcl` is the vertex-exact mesh
     # check, Coal preferred with python-fcl as the fallback; it needs one of those engines plus the
     # model's mesh bundle, and without them the guard logs the degradation and drops back to the
     # capsule proxy, which over-rejects the reach-down grasps this cell makes.
     self_collision:
       backend: "fcl"
-      kinematics_base_yaw_deg: 180.0
       min_distance_mm: 3.0
       # The same clearance handed to the trajectory planner, so it stops returning paths this guard
       # would then reject: cuRobo plans against a sphere model while the guard re-checks the exact
@@ -219,6 +166,19 @@ robot:
       excellent: 1.0
       good:      2.5
       marginal:  5.0
+  motion:
+    # Cartesian workspace box (mm) for this cell. It has to span both the calibration viewpoints, the
+    # tool held high over the table, and the low grasp poses: a top-down grasp on the cube puts the
+    # TCP near z=37, and the SafetyPreflight WorkspaceGuard rejects every motion whose target falls
+    # outside this box. z_min 0.0 is the table top, and the guard's 20 mm margin, every cell's
+    # (`workspace.WORKSPACE_MARGIN_MM`), then floors the guard at z=20.
+    workspace:
+      x_min: 100.0
+      x_max: 700.0
+      y_min: -350.0
+      y_max: 350.0
+      z_min: 0.0
+      z_max: 600.0
 
   # The Isaac cameras declare no calibration here. Under the sim profile they are not rigs of the
   # camera section, and `camera.cameras.rigs[<id>].extrinsics` is where a real cell declares one, so

@@ -32,7 +32,6 @@ from ._provenance import comment_above, index_chains, nearest_keys, read_value
 from ._tiers import TIERS, gate_state, tier_for
 from .schema._removed import removed_key_sentence
 from ._schema_index import (
-    alias_for,
     field_default,
     field_doc,
     model_doc,
@@ -45,25 +44,10 @@ __all__ = ["KeyExplanation", "Layer", "decisions", "explain", "explain_in", "exp
 _INDENT = "      "
 
 
-def _yaml_path(path: str) -> str:
-    """The spelling the YAML (and therefore the provenance index) uses for ``path``.
-
-    The index is keyed by what is written in the file, so an aliased field has to be looked up under
-    its alias. Without this the 7 camelCase stereomatcher keys report "no YAML sets this" while the
-    file plainly sets them.
-    """
-    return alias_for(path) or path
-
-
 def _schema_lookup(index: dict[str, Any], path: str) -> Any:
     field = index.get(path)
     if field is not None:
         return field
-    # The stereomatcher block keeps OpenCV's camelCase in YAML behind snake_case attributes, so a
-    # question asked by attribute name must still find the field the schema knows by its alias.
-    aliased = alias_for(path)
-    if aliased is not None and aliased in index:
-        return index[aliased]
     # Try replacing each segment with `*` (left to right) to hit a dict-of-models entry.
     parts = path.split(".")
     for i in range(len(parts)):
@@ -213,12 +197,12 @@ def explain(
     # A dict[str, Model] block (e.g. robot.sim.cameras.overhead) is indexed once under `*`, so a
     # concrete key finds the shared shape rather than reporting "unknown".
     field = _schema_lookup(index, path)
-    chain = index_chains(root, layers).get(_yaml_path(path), [])
+    chain = index_chains(root, layers).get(path, [])
     shown = (value is not None) if has_value is None else has_value
 
     if field is None:
         # A key removed on purpose is answered with what to write instead, never with a near miss:
-        # the nearest living key of `robot.grasping.closed_loop` is `robot.grasping.occlusion`.
+        # the nearest living key of `robot.grasping.closed_loop` is `robot.grasping.record_log_path`.
         removed = removed_key_sentence(path) or ""
         return KeyExplanation(
             path=path, value=value, has_value=shown, known=False, removed=removed,
@@ -370,10 +354,10 @@ def decisions(
             continue  # a dict key the schema does not describe (e.g. a user-named camera id)
         if same_value(value, field_default(path, field.default)):
             continue
-        chain = chains.get(_yaml_path(path), [])
+        chain = chains.get(path, [])
         where = (chain[-1].location(root) if chain
                  else hand_source(cfg, path) or "(not in any YAML: set by a validator or code)")
-        if given and any(_within(p, given) or _holds(p, given) for p in (path, _yaml_path(path))):
+        if given and (_within(path, given) or _holds(path, given)):
             where = _IN_MEMORY_ORIGIN
         # `decided=True` by construction: everything reaching here differs from its default. The
         # gate state uses the loaded values, so a sim cell's own fields are not called "advanced"

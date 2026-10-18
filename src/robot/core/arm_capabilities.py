@@ -3,9 +3,9 @@
 :class:`~src.robot.core.RobotArm` stays a small, strictly vendor-neutral Protocol
 with a contract-locked member set. The extras a controller can offer (digital and
 analog I/O, live force and torque, live robot and safety status, what a straight line
-keeps, a model of the carried part, a move home that says why it was refused, the
-configuration a pose goes to, a joint move on its straight joint line and nothing else, a line judged as if the
-jaws held a part, where the controller puts its flange, and what a UR cell judges and holds ahead of its motions) are
+keeps, a move home that says why it was refused, the configuration a pose goes to, a joint
+move on its straight joint line and nothing else, a grasp's lift judged before the jaws close, where the controller
+puts its flange, what a UR cell judges and holds ahead of its motions, and a cell shared with other arms) are
 declared here as separate ``runtime_checkable`` Protocols,
 mirroring :class:`~src.robot.core.gripper.ObjectDetectingGripper`. Hand guiding follows the same
 pattern from its own module, :mod:`~src.robot.core.freedrive`: an arm a person may move by
@@ -25,7 +25,7 @@ sends nothing and switches no output until a person says the cell is clear. It f
 Units follow the rest of the ``robot`` layer: forces in newtons, torques in
 newton-metres, every wrench frame-tagged with :class:`~src.geometry.Frame`. The enums
 are the vendor-neutral projection of a controller native mode, such as the UR
-``getRobotMode`` and ``getSafetyMode`` integers, so a KUKA or Franka driver can
+``getRobotMode`` and ``getSafetyMode`` integers, so another vendor's driver can
 implement the same Protocols against its own controller.
 """
 
@@ -50,6 +50,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.geometry import Pose
 
     from .camera_world import CameraWorldDecline
+    from .cell_gate import CellGate
     from .errors import ArmFault
     from .joint_positions import JointPositions
     from .motion_result import MotionResult
@@ -58,7 +59,6 @@ __all__ = [
     "AppliesToolFrame",
     "BrakesWhenHalted",
     "ArmHalted",
-    "CarriesPayload",
     "CarriesWristBodies",
     "ChoosesConfigurations",
     "ControllerProvenance",
@@ -82,7 +82,6 @@ __all__ = [
     "KnowsItsHand",
     "LineMotion",
     "LineReading",
-    "PayloadModel",
     "ReadsItsStatusQuickly",
     "ReportsControllerProvenance",
     "ReportsWristBodies",
@@ -91,6 +90,8 @@ __all__ = [
     "RobotStatus",
     "SafetyMode",
     "ScreensConfigurations",
+    "SharesItsCell",
+    "StepsItsOwnPhysics",
     "SupportsDigitalIO",
     "SupportsForceTorque",
     "SupportsHalt",
@@ -98,7 +99,6 @@ __all__ = [
     "SupportsWatching",
     "Wrench",
     "brakes_in_motion_of",
-    "chose_no_carried_part",
     "controller_flanges_of",
     "end_pulse",
     "halt_state_of",
@@ -431,9 +431,9 @@ class HaltState:
     """The arm's halt latch while it is set: why, when, and what became of the move that was in flight.
 
     ``requested_at`` is Unix seconds. ``in_motion`` says a move was in flight when the halt was requested. ``braked``
-    says that move was braked under control (``stopJ``/``stopL`` on a UR with ``robot.ur.brake_on_halt``), and
+    says that move was braked under control (``stopJ``/``stopL`` on a UR), and
     ``brake_s`` how long from the request until the arm stood still; ``False`` and ``None`` where no move was braked,
-    because none was in flight or because the arm lets the move in flight run to its end (brakes off, the dummy).
+    because none was in flight or because the arm lets the move in flight run to its end (the dummy).
     ``brake`` says what became of that move as far as it is known now (:data:`HALT_BRAKE_OUTCOMES`), so a reader can
     tell a brake still in progress from one that failed and from a move that ended without one; left out, it follows
     from the other fields. The thread that moved the arm replaces the record once its move ended, so a reader never
@@ -519,8 +519,8 @@ class SupportsHalt(Protocol):
     the first record. :meth:`halt_state` is the latch while it is set: a lock-free read that never raises, because the
     console reads it on every poll.
 
-    What becomes of a move already in flight is the arm's: the UR arm brakes it under control where
-    ``robot.ur.brake_on_halt`` says so, and lets it run to its end otherwise; the dummy has nothing in flight.
+    What becomes of a move already in flight is the arm's: the UR arm brakes it under control; the dummy has nothing in
+    flight.
     :func:`brakes_in_motion_of` says which.
     """
 
@@ -593,8 +593,7 @@ class BrakesWhenHalted(Protocol):
     """Capability extension: the arm says whether a halt brakes the move in flight, or lets it run to its end.
 
     Beside :class:`SupportsHalt` and not in it, because a latch is the same question on every arm and what becomes of
-    the move in flight is not: the UR brakes it under control where ``robot.ur.brake_on_halt`` says so, the dummy has
-    nothing in flight. The console says which on its brake panel (:func:`brakes_in_motion_of`).
+    the move in flight is not: the UR brakes it under control, the dummy has nothing in flight. The console says which on its brake panel (:func:`brakes_in_motion_of`).
     """
 
     def brakes_in_motion(self) -> bool:
@@ -602,8 +601,23 @@ class BrakesWhenHalted(Protocol):
         ...
 
 
+@runtime_checkable
+class StepsItsOwnPhysics(Protocol):
+    """Capability extension: the arm's ``wait_until_steady`` steps its simulation itself (the Isaac sim).
+
+    Nothing waits on such an arm for rest before a motion (``execution.motion.steady_timeout_of``): as a gate inside the
+    pick loop the wait fights the loop's own stepping, and the picks fail. On a real arm the same call reads the
+    controller and steps nothing. The sim profile's ``safety.dwell`` said so until 2026-10-17 (the owner's cleanup).
+    """
+
+    @property
+    def steps_its_own_physics(self) -> bool:
+        """``True`` on such an arm."""
+        ...
+
+
 def brakes_in_motion_of(arm: object) -> bool:
-    """Whether ``arm`` brakes a move in flight when it is halted (the UR with ``robot.ur.brake_on_halt``).
+    """Whether ``arm`` brakes a move in flight when it is halted (every UR).
 
     ``False`` for an arm that latches and lets the move in flight run to its end, and for an arm with no latch.
     """
@@ -632,57 +646,6 @@ class SupportsWatching(Protocol):
     def watch(self) -> None:
         """Open the watch; a no-op on an arm that is connected or already watching."""
         ...
-
-
-class PayloadModel(StrEnum):
-    """What models the part the gripper carries now."""
-
-    #: The planner carries the part and the self filter takes it out of what the cameras see.
-    PLANNER_AND_FILTER = "planner_and_filter"
-    #: The self filter takes the part out and the planner declined to carry it, so it routes as if
-    #: the gripper were empty.
-    FILTER_ONLY = "filter_only"
-    #: Nothing models a part.
-    NONE = "none"
-
-
-@runtime_checkable
-class CarriesPayload(Protocol):
-    """Capability extension: the arm models a part in its gripper, and says why when it cannot.
-
-    ``payload_declined_reason`` is the static answer, read off the arm's configuration and hand
-    before any attach and without starting a planner. ``payload_model`` is what the last attach
-    left in force.
-    """
-
-    def attach_payload(self, grip_width_mm: float) -> bool:
-        """Model a part roughly ``grip_width_mm`` across. ``True`` when the planner carries it."""
-        ...
-
-    def detach_payload(self) -> bool:
-        """Forget the carried part."""
-        ...
-
-    def payload_declined_reason(self) -> str | None:
-        """Why this arm models no carried part, naming the key or the hand; ``None`` where it can."""
-        ...
-
-    def payload_model(self) -> PayloadModel:
-        """What models the part the gripper carries now."""
-        ...
-
-
-def chose_no_carried_part(arm: object) -> bool:
-    """Whether ``arm``'s cell chose to model no carried part: ``safety.planning_world.payload.enabled`` is false.
-
-    A closed hand is then judged as an empty one, by the exact guard at full stroke, and the part by nobody (the owner,
-    2026-10-05: "wir nehmen das, wo wir uns sicherer sind, dass wir mehr erhalten ... Also mehr Griffe"). A task and
-    the console accept that choice (the owner, 2026-10-07). A cell that leaves the model on and cannot model the part,
-    a length it never declared or a hand nothing places, chose nothing, and is refused where a part would be carried.
-    """
-    world = getattr(getattr(getattr(arm, "config", None), "safety", None), "planning_world", None)
-    payload = getattr(world, "payload", None)
-    return payload is not None and getattr(payload, "enabled", True) is False
 
 
 class LineMotion(StrEnum):
@@ -738,7 +701,7 @@ class HomesTyped(Protocol):
     @property
     def home_joint_positions(self) -> "Sequence[float]":
         """The joints :meth:`move_to_home` drives to, in radians. The joint-limit guard centres a cable's
-        half-turn window on them (``safety.joint_limits.within_half_turn_of_home``)."""
+        half-turn window on them (every real arm's)."""
         ...
 
 
@@ -753,7 +716,7 @@ class ScreensJointGoals(Protocol):
 
     @property
     def workspace_limits(self) -> Any:
-        """The box the workspace guard holds every grasp centre to (``robot.workspace_limits``), millimetres."""
+        """The box the workspace guard holds every grasp centre to (``robot.motion.workspace``), millimetres."""
         ...
 
     @property
@@ -864,25 +827,24 @@ class HoldsItsWorld(Protocol):
 
 @runtime_checkable
 class JudgesCarriedLines(Protocol):
-    """Capability extension: the arm judges a straight line as if its jaws held a part, before they close on one.
+    """Capability extension: the arm judges the lift a grasp will make, at the part, before the jaws close on it.
 
-    A grasp closes at the part, then lifts it on a straight line, and the lift is judged once the jaws hold the part. A
-    part changes what an arm allows: on the UR driver the carried part is the planner's alone, and nothing of the
-    camera's world is set aside while the hand holds one (Option 1). An empty hand admitted beside a bin the camera saw
-    that closed there would hold the arm there, the part in its jaws, every way out refused at its first sample. So a
-    grasp asks first, at the part with its jaws still open, whether the lift would run with the part in them, and
-    closes only where it would; where not, it backs out empty-handed on the line it came in on (the owner, 2026-10-01).
-    Asking moves nothing and commands nothing. It carries the decline the lift would carry (``camera_world``), as every
-    motion of the grasp does.
+    A grasp closes at the part, then lifts it on a straight line. A lift refused once the jaws hold the part would hold
+    the arm there, the part in its jaws, every way out refused at its first sample. So a grasp asks first, at the part
+    with its jaws still open, whether the lift would run, and closes only where it would; where not, it backs out
+    empty-handed on the line it came in on (the owner, 2026-10-01). No part in the jaws is modelled (the owner,
+    2026-10-05, every cell since 2026-10-17): a closed hand is judged as an empty one, so the lift is judged as it will
+    run. Asking moves nothing and commands nothing. It carries the decline the lift would carry (``camera_world``), as
+    every motion of the grasp does.
 
     It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. A grasp on an arm
     that does not implement it (the dummy, the sim) closes and lifts as before.
     """
 
-    def carried_line_refusal(self, pose: "Pose", *, grip_width_mm: float,
+    def carried_line_refusal(self, pose: "Pose", *,
                              camera_world: "Maybe[CameraWorldDecline]" = UNSET) -> "MotionResult | None":
-        """The refusal ``move(pose, linear=True, camera_world=camera_world)`` would meet from where the arm stands with a
-        part about ``grip_width_mm`` across in its jaws, judged now; ``None`` where that line would run. Nothing moves."""
+        """The refusal ``move(pose, linear=True, camera_world=camera_world)`` would meet from where the arm stands once
+        the jaws close there, judged now; ``None`` where that line would run. Nothing moves."""
         ...
 
 
@@ -894,20 +856,20 @@ class JudgesGraspsAhead(Protocol):
     grasp the guard or the planner refuses at the part has taken the arm there first. Asked ahead, each of the three is
     judged once, in the order that judges each once (the judge chain, 2026-10-08): the line down first, from the
     configuration the move to the standoff would end on (:class:`ChoosesConfigurations`), before any route is planned;
-    then the lift from the grasp as if the jaws held the part (:class:`JudgesCarriedLines`), in the world the line down
-    was judged in; the move to the standoff from where the arm stands last, because a route costs seconds and a line
-    refused at a part on the flange is every configuration's refusal. Where the route ends on the configuration the line
-    was judged from, each was judged once, and an arm may run that route as it was judged where nothing it was judged on
-    changed since (the UR driver does); where it ends anywhere else, the line and the lift are judged again from where it
-    ends, each from where the one before ends. A pick asks it of each grasp it may take, a blocker's (the owner,
-    2026-10-03) and the part's (URSim, 2026-10-03: a lift the cable window refused once the hand stood at the part), and
-    drives to the first every judgement admits. Asking moves nothing and commands nothing.
+    then the lift from the grasp (:class:`JudgesCarriedLines`), in the world the line down was judged in; the move to
+    the standoff from where the arm stands last, because a route costs seconds and a line refused at a part on the
+    flange is every configuration's refusal. Where the route ends on the configuration the line was judged from, each
+    was judged once, and an arm may run that route as it was judged where nothing it was judged on changed since (the UR
+    driver does); where it ends anywhere else, the line and the lift are judged again from where it ends, each from
+    where the one before ends. A pick asks it of each grasp it may take, a blocker's (the owner, 2026-10-03) and the
+    part's (URSim, 2026-10-03: a lift the cable window refused once the hand stood at the part), and drives to the first
+    every judgement admits. Asking moves nothing and commands nothing.
 
     It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. An arm that
     does not implement it has its grasps judged as they run, as before.
     """
 
-    def grasp_refusal_ahead(self, *, standoff: "Pose", grasp: "Pose", lift: "Pose", grip_width_mm: float) -> str:
+    def grasp_refusal_ahead(self, *, standoff: "Pose", grasp: "Pose", lift: "Pose") -> str:
         """Why the grasp would be refused before its jaws close, judged now from where the arm stands; ``""`` where every
         judgement passes, and where this arm cannot judge it ahead. Nothing moves."""
         ...
@@ -936,8 +898,8 @@ class JudgesLinesAhead(Protocol):
 class JudgesNextLegs(Protocol):
     """Capability extension: the arm judges the next leg while the jaws' stroke is waited out (2026-10-08).
 
-    A grasp closes, a place opens, and the jaws take their stroke while the arm stands. Where ``robot.motion.
-    judge_next_leg`` says so, a verb has the hand leave the stroke to it (``set_closed(wait=False)``) and asks the arm
+    A grasp closes, a place opens, and the jaws take their stroke while the arm stands. On an arm that judges the next
+    leg (every cuRobo arm), a verb has the hand leave the stroke to it (``set_closed(wait=False)``) and asks the arm
     meanwhile: the line out of a place (:meth:`judge_line_ahead`), and the joint move declared next
     (:meth:`expecting_next`, :meth:`judge_the_next_leg`), the carry to a bin's look after a pick and the return after a
     place. A leg judged ahead runs as it was judged where nothing it was judged on changed. Judging moves nothing. It is
@@ -968,10 +930,11 @@ class JudgesNextLegs(Protocol):
 @runtime_checkable
 class HoldsItsWorldAtJunctions(Protocol):
     """Capability extension: the arm holds its world across a junction of a grasp or a place, rather than taking a new
-    frame there (``safety.planning_world.hold``: ``standoff``, ``carry``, ``drop``; the owner's O2 of 2026-10-09).
+    frame there: at the ``standoff``, through the ``carry`` and through the ``drop`` (the owner's O2 of 2026-10-09, every
+    cell since 2026-10-17).
 
-    Beside :class:`HoldsItsWorld`, which holds the world for a block a caller names: these say where the cell's
-    switches hold it, and hold the approach a grasp judged ahead only where its route stands ready to run as judged. It
+    Beside :class:`HoldsItsWorld`, which holds the world for a block a caller names: these say where the arm holds it,
+    and hold the approach a grasp judged ahead only where its route stands ready to run as judged. It
     is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives; an arm that does not
     implement it refreshes at every junction, as before.
     """
@@ -1056,10 +1019,9 @@ class ReadsItsStatusQuickly(Protocol):
 class KnowsItsHand(Protocol):
     """Capability extension: the arm is handed the hand it carries, to read and never to command.
 
-    Where only the boxes a camera saw refuse the planner's world, the exact guard decides them alone while this hand
-    reads empty and open (``core.gripper.why_not_known_open``, the owner, 2026-10-01). ``connect_cell`` hands it once
-    both are up. An arm handed none, or one that does not implement this, keeps those boxes in, and the planner decides
-    as before.
+    What the arm judged ahead runs as it was judged only while this hand reads as it did then
+    (``core.gripper.why_not_known_open``). ``connect_cell`` hands it once both are up. The camera's boxes are set aside
+    whatever it reads: no cell models a part in the jaws (the owner, 2026-10-05; every cell since 2026-10-17).
     """
 
     def set_hand(self, gripper: object | None) -> None:
@@ -1115,6 +1077,37 @@ class KnowsItsFlange(Protocol):
         """The flange at every row of ``joints_rad``, ``(N, dof)`` radians, as the controller computes it: ``(N, 4, 4)``,
         the rotation unitless and the translation in millimetres, in the controller's base frame, each row answered alone
         as it is answered among others; ``None`` where this arm cannot say now."""
+        ...
+
+
+@runtime_checkable
+class SharesItsCell(Protocol):
+    """Capability extension: the arm shares its cell with other arms (owner, 2026-10-15).
+
+    The cell puts its sends behind a gate that reserves the space each send needs (``core.cell_gate``), hands it the
+    other arms where they stand or move, for its guard, its planner and its cameras' self filter, and reads its own body
+    for theirs: where it stands (no part in its jaws: no cell models one). An arm that does not implement it stays in a
+    cell of its own.
+    """
+
+    def join_cell(self, gate: "CellGate") -> None:
+        """Put every send of this arm behind ``gate``, before its planner is built."""
+        ...
+
+    def leave_cell(self) -> None:
+        """Take this arm out of its cell again: no gate before its sends, no other arm held."""
+        ...
+
+    def hold_partners(self, partners: Any) -> None:
+        """Hold the other arms of the cell (a ``safety.partner_arm.PartnerWorld``), or none for ``None``."""
+        ...
+
+    def reserve_partner_slots(self, count: int) -> None:
+        """Reserve room in the planner's world for ``count`` boxes of the other arms, before it starts."""
+        ...
+
+    def own_envelope(self) -> Any:
+        """This arm's own body where it stands, as a self filter takes it out of a view, or ``None``."""
         ...
 
 

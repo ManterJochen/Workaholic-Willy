@@ -1,4 +1,4 @@
-"""Tests for the IKQualityGuard."""
+"""Tests for the IKQualityGuard, at the arm's guard numbers (``GuardNumbers``; every real arm the owner's cell's)."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ import unittest
 import numpy as np
 
 from src.config.schema.robot import (
-    IkQualitySafetyConfig,
-    JointLimitSafetyConfig,
     RobotSafetyConfig,
     WorkspaceLimitsConfig,
 )
@@ -26,6 +24,8 @@ from src.robot.safety import (
     SafetyPreflight,
     SafetyReason,
 )
+from src.robot.safety.guard_numbers import CELL, GuardNumbers
+from src.robot.safety.ik_quality import LIMIT_PROXIMITY_DEG
 
 
 class _IdentityFkArm:
@@ -74,13 +74,16 @@ def _ctx(
 
 class IKQualityGuardTests(unittest.TestCase):
     def _guard(self, **overrides) -> IKQualityGuard:
-        cfg = IkQualitySafetyConfig(**overrides)
-        # Use ±360 deg envelope so the limit-proximity check doesn't
-        # trigger by accident on unrelated tests.
-        jl = JointLimitSafetyConfig(
-            min_deg=[-360.0] * 6, max_deg=[360.0] * 6,
-        )
-        return IKQualityGuard(cfg, joint_limits_config=jl)
+        # The stub arm's model is described by no registry file, so no envelope resolves and the limit-proximity
+        # check skips on unrelated tests, as a +-360 table about joints at 0 never trips it.
+        return IKQualityGuard(GuardNumbers(**overrides))
+
+    def test_every_real_arm_runs_the_cell_s_numbers(self) -> None:
+        self.assertEqual((1.0, 0.005, 250.0, 2.0), (CELL.max_jump_rad, CELL.min_singular_value,
+                                                    CELL.max_condition_number, LIMIT_PROXIMITY_DEG))
+        guard = IKQualityGuard()
+        self.assertEqual(1.0, guard._max_jump_rad)
+        self.assertEqual((0.005, 250.0), (guard._thresholds.min_singular_value, guard._thresholds.max_condition_number))
 
     def test_missing_target_joints_is_unavailable(self) -> None:
         guard = self._guard()
@@ -115,16 +118,16 @@ class IKQualityGuardTests(unittest.TestCase):
         self.assertTrue(d.accepted, msg=d.message)
 
     def test_limit_proximity_rejects(self) -> None:
-        # Custom joint-limit config: tight ±10 deg envelope.
-        cfg = IkQualitySafetyConfig(limit_proximity_deg=2.0)
-        jl = JointLimitSafetyConfig(
-            min_deg=[-10.0] * 6, max_deg=[10.0] * 6,
-        )
-        guard = IKQualityGuard(cfg, joint_limits_config=jl)
+        # An arm whose envelope is a tight ±10 deg: the arm's own table, as the joint-limit guard reads it.
+        from unittest import mock
+
+        guard = IKQualityGuard()
         arm = _IdentityFkArm()
         # 9 deg is only 1 deg from +10 limit; buffer is 2 deg.
         joints = JointPositions([math.radians(9.0), 0.0, 0.0, 0.0, 0.0, 0.0])
-        d = guard.evaluate(_ctx(joints, arm=arm))
+        with mock.patch("src.robot.safety.ik_quality.resolve_joint_limits_deg",
+                        return_value=([-10.0] * 6, [10.0] * 6)):
+            d = guard.evaluate(_ctx(joints, arm=arm))
         self.assertFalse(d.accepted)
         self.assertEqual(d.detail["reason"], "limit_proximity")
 
@@ -205,15 +208,16 @@ class IKQualityGuardTests(unittest.TestCase):
 
 
 class IKQualityWiringTests(unittest.TestCase):
-    def test_enforce_true_registers_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate({"ik_quality": {"enforce": True}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
+    def test_every_cell_wires_the_guard(self) -> None:
+        pf = SafetyPreflight.from_safety_config(RobotSafetyConfig(), WorkspaceLimitsConfig(), arm_model=None)
         self.assertIn("ik_quality", pf.guard_names)
 
-    def test_enforce_false_omits_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate({"ik_quality": {"enforce": False}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
-        self.assertNotIn("ik_quality", pf.guard_names)
+    def test_the_switch_that_left_it_out_is_refused(self) -> None:
+        """No cell switches a guard off since 2026-10-17 (the owner's cleanup)."""
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            RobotSafetyConfig.model_validate({"ik_quality": {"enforce": False}})
 
 
 if __name__ == "__main__":

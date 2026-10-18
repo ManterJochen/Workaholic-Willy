@@ -128,6 +128,8 @@
 /* ── the preferences and the config ───────────────────────────────────────────────────────────────────────────── */
 @layer components {
   .st-rows { display: grid; gap: 0; }
+  /* The cell's task settings sit in a fieldset, so one write in flight turns every row off at once. */
+  fieldset.st-rows { border: 0; margin: 0; padding: 0; min-width: 0; }
   .st-row {
     display: grid; grid-template-columns: minmax(9rem, 12rem) auto minmax(0, 1fr); align-items: center;
     gap: 0.4rem 1rem; padding: 0.7rem 0; border-top: 1px solid var(--line);

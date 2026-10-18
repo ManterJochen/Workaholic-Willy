@@ -1,0 +1,10 @@
+# ============================================================================
+# models/weights.yaml — every key, with what it does
+# ============================================================================
+
+# The folder every model's weights are read from, set once: a Hugging Face id is read from
+# <weights_root>/<kind>/<org>--<name>, the layout `scripts/model_weights/fetch.py` writes, and Silero and the two
+# MediaPipe bundles from their fixed places under it (speech/silero-vad-6.2.1/, mediapipe/).
+# ${WILLY_PROJECT_ROOT} is the repository; a relative path is read against the config folder.
+# [default: ${WILLY_PROJECT_ROOT}/assets/models/hf]
+weights_root: "${WILLY_PROJECT_ROOT}/assets/models/hf"

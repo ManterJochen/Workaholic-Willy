@@ -1,44 +1,6 @@
-# Segmentation models: the mask source of the perception stack, built by `src/models/factory.py`.
-# `segmenting.sim.yaml` overlays this file when WILLY_PROFILE includes sim.
-#
-# SAM2, prompted with one box and returning one mask. `local: True` reads the weights from
-# `model_path` and downloads nothing; `local: false` pulls `model_id` from the Hub. The path below
-# is what `python scripts/model_weights/fetch.py sam2` writes, so a fresh checkout reaches it with
-# one command and the weights leave with the checkout. ${WILLY_PROJECT_ROOT} is the repository, so
-# the path holds wherever this config folder lives.
+# SAM2, the mask source of every perception stack: one box in, one mask out, built by
+# `src/models/factory.py`. The id is read from <models.weights_root>/segmentation/<org>--<name>,
+# which `python scripts/model_weights/fetch.py sam2` writes, 0.9 GB; it loads with fp32 weights under
+# fp16 autocast, which keeps small parts whole (src/models/_inference.py).
 segmenter:
-  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/segmentation/facebook--sam2-hiera-large"
   model_id: "facebook/sam2-hiera-large"
-  local: True
-  optim:
-    # Unset on purpose (2026-09-29), as for the detector in object.yaml: fp32 weights with fp16
-    # autocast, which is what a cell picking small parts wants. `auto` means fp16 weights on CUDA,
-    # and fp16 costs recall on small objects.
-    torch_dtype: null
-    attn_implementation: sdpa
-    channels_last: true
-    compile: false
-    compile_mode: reduce-overhead
-
-# Which segmenter is built: "sam2" takes one box and cuts one object; "oneformer" segments the
-# whole image with its own trained vocabulary and the box then selects among the segments, for more
-# GPU time per frame.
-segmenter_backend: "sam2"
-
-# The OneFormer block, required when `segmenter_backend` is "oneformer": asking for that backend
-# without this block refuses the build instead of falling back to SAM2. Fetched by
-# `python scripts/model_weights/fetch.py oneformer`, 1.8 GB. It is the one model in the catalogue
-# that publishes no safetensors at all, so the fetch keeps its .bin files where every other entry
-# drops them.
-oneformer:
-  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large"
-  model_id: "shi-labs/oneformer_coco_swin_large"
-  local: true
-  # The only value the schema accepts and the only mode the wrapper implements.
-  task: "instance"
-  optim:
-    torch_dtype: auto
-    attn_implementation: "eager"
-    channels_last: true
-    compile: false
-    compile_mode: reduce-overhead

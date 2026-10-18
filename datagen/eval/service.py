@@ -157,8 +157,7 @@ class GraspEvaluation:
                  limit: int | None = None, model: "Maybe[JawModel | None]" = UNSET,
                  files: Maybe[Sequence[str]] = UNSET, scene_step: Maybe[int] = UNSET,
                  with_jaw: Maybe[bool] = UNSET, with_suction: Maybe[bool] = UNSET,
-                 suction_every: Maybe[int] = UNSET, progress_every: Maybe[int] = UNSET,
-                 support_cfg: Maybe[Any] = UNSET) -> EvaluationReport:
+                 suction_every: Maybe[int] = UNSET, progress_every: Maybe[int] = UNSET) -> EvaluationReport:
         """Run the ladder. CPU only, but minutes to hours: it re-runs the generator on every object
         in every view, in every configuration.
 
@@ -180,11 +179,10 @@ class GraspEvaluation:
         out_name = evaluation_output_name(mask_source=mask_source,
                                           mask_completion=mask_completion,
                                           selective=rungs is not None)
-        chosen_only = {name: value for name, value in (
+        chosen_only: dict[str, Any] = {name: value for name, value in (
             ("jobs", jobs), ("model", model), ("files", files), ("scene_step", scene_step),
             ("with_jaw", with_jaw), ("with_suction", with_suction),
-            ("suction_every", suction_every), ("progress_every", progress_every),
-            ("support_cfg", support_cfg)) if chosen(value)}
+            ("suction_every", suction_every), ("progress_every", progress_every)) if chosen(value)}
         raw = evaluate_dataset(self.dataset, mask_source=mask_source, out_name=out_name,
                                mask_completion=mask_completion, configs=configs, limit=limit,
                                **chosen_only)

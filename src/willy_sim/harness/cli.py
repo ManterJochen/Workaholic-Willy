@@ -37,13 +37,6 @@ def add_cell_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
              "layer, Lula/Isaac USD, cuRobo config and self-collision kinematics together.",
     )
     parser.add_argument(
-        "--radial-closing", action="store_true",
-        help="when a silhouette is near-isotropic its principal axis is numerically degenerate, so aim "
-             "the jaw along the RADIAL direction (base -> grasp) instead of following the noise. "
-             "MEASURED: a UR3e cannot plan a TANGENTIAL top-down close at any azimuth (0/4) while a "
-             "radial one plans 4/4; a UR5e absorbs both. Default off -> byte-identical.",
-    )
-    parser.add_argument(
         "--profile", action="append", default=None, metavar="LAYER",
         help="extra config layer stacked on top, repeatable (e.g. --profile tiltcam for the real "
              "cell's tilted D435 pair instead of the nadir camera).",

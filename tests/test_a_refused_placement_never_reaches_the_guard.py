@@ -37,7 +37,7 @@ def _cell(quaternion: "tuple[float, float, float, float]", planner: str = "ik") 
             "tool_frame": {"source": "willy", "offset_mm": [0.0, 132.0, 0.0],
                            "rotation_quat_xyzw": list(quaternion)},
         },
-        "safety": {"self_collision": {"enforce": True, "backend": "fcl"}},
+        "safety": {"self_collision": {"backend": "fcl"}},
     })
 
 
@@ -54,7 +54,7 @@ class TheCellRefusesAPlacementItCannotModelTests(unittest.TestCase):
         self.assertIs(hand.placement, UNSET, "the fixture must be a frame the derivation refuses")
         self.assertIsNotNone(hand.placement_refusal)
         with self.assertRaises(ConfigError) as ctx:
-            SafetyPreflight.from_safety_config(config.safety, config.workspace_limits, arm_model="ur5e", hand=hand)
+            SafetyPreflight.from_safety_config(config.safety, config.motion.workspace, arm_model="ur5e", hand=hand)
         self.assertIn("quarter turn", str(ctx.exception))
 
     def test_the_frame_the_cells_run_still_builds(self) -> None:
@@ -62,14 +62,14 @@ class TheCellRefusesAPlacementItCannotModelTests(unittest.TestCase):
         config = _cell(_SIM)
         hand = _hand(config)
         self.assertTrue(hand.placement is not UNSET)
-        preflight = SafetyPreflight.from_safety_config(config.safety, config.workspace_limits, arm_model="ur5e", hand=hand)
+        preflight = SafetyPreflight.from_safety_config(config.safety, config.motion.workspace, arm_model="ur5e", hand=hand)
         self.assertIn("self_collision", [guard.name for guard in preflight.guards])
 
     def test_an_ik_cell_is_refused_as_well(self) -> None:
         """The hole was widest here: an ik cell never starts a planner, so the planner's refusal never runs."""
         config = _cell(_CLOCKED_45, planner="ik")
         with self.assertRaises(ConfigError):
-            SafetyPreflight.from_safety_config(config.safety, config.workspace_limits, arm_model="ur5e", hand=_hand(config))
+            SafetyPreflight.from_safety_config(config.safety, config.motion.workspace, arm_model="ur5e", hand=_hand(config))
 
 
 class TheGuardRefusesAHandItCannotPlaceTests(unittest.TestCase):

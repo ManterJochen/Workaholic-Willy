@@ -1,5 +1,5 @@
-"""A line is solved on the controller's own kinematics where the cell asks, and the controller is asked at two samples
-(``robot.safety.ik_quality.line_ik: local``, the owner, 2026-10-09).
+"""A line is solved on the controller's own kinematics, and the controller is asked at two samples (the owner's
+``robot.safety.ik_quality.line_ik: local`` of 2026-10-09, every cell's since 2026-10-17).
 
 A line a cuRobo UR judges before a ``moveL`` has every sample solved by the controller's ``getInverseKinematics``, seeded
 on the one before, so the configurations judged are the ones the controller will pass through: 28 round trips for the
@@ -15,9 +15,9 @@ chain by a solver of its own (scipy's least squares from the closed form, neares
 * a line judged from where the arm stands and a line judged ahead hand the gate the controller's configurations to
   1e-9 rad, with two round trips instead of 28 and 8;
 * a wrong calibration, rows or a TCP that cannot be read, and a sample that cannot be vouched for here each leave the
-  line to the controller, configuration for configuration as without the switch;
+  line to the controller, configuration for configuration as the reference;
 * a line refused on its way is refused in the same words;
-* the controller solves every sample unless the cell asks, and the key loads;
+* the reference: the controller solves every sample, as where its rows cannot be read; the old key is refused;
 * the solver itself: the nominal chain is the guards' table, a calibrated chain is solved nearest the seed to a
   nanoradian (a chain holding frames metres along parallel axes as well), and a seed as near two configurations, a pose
   out of reach and a wrist at its singularity are not vouched for.
@@ -129,9 +129,13 @@ def _standing(arm: Any, rows: ControllerKinematics, joints: "list[float]") -> No
 
 
 def _asking(arm: Any, line_ik: str) -> None:
-    """The arm's config with ``robot.safety.ik_quality.line_ik`` at ``line_ik``."""
-    ik = arm.config.safety.ik_quality.model_copy(update={"line_ik": line_ik})
-    arm.config = arm.config.model_copy(update={"safety": arm.config.safety.model_copy(update={"ik_quality": ik})})
+    """The arm solving a line as the old key's ``line_ik`` said: ``local``, every cell's since 2026-10-17, on the
+    controller's own kinematics; ``controller``, the reference, every sample by the controller, as the arm does where
+    the controller's rows cannot be read (``_controller_chain`` answers none and reads nothing)."""
+    if line_ik == "controller":
+        arm._controller_chain = lambda: None
+    else:
+        arm.__dict__.pop("_controller_chain", None)
 
 
 class _Line:
@@ -261,23 +265,25 @@ class ALineIsSolvedOnTheControllersOwnKinematicsTests(unittest.TestCase):
         self.assertEqual(by_the_controller.message, here.message)
         self.assertLess(asked_here, asked)
 
-    def test_the_controller_solves_every_sample_unless_the_cell_asks(self) -> None:
+    def test_the_reference_has_the_controller_solve_every_sample(self) -> None:
         line = _Line()
         _, _, asked = line.judged("controller")
         self.assertEqual(28, asked)
         line.arm._conn.controller_kinematics.assert_not_called()
         line.arm._conn.active_tcp_offset.assert_not_called()
 
-    def test_the_key_loads_and_defaults_to_the_controller(self) -> None:
+    def test_every_cell_solves_here_and_the_old_key_is_refused(self) -> None:
         from pydantic import ValidationError
 
         from src.config.schema.robot import RobotConfig
 
-        self.assertEqual("controller", RobotConfig.model_validate({"vendor": "ur"}).safety.ik_quality.line_ik)
-        asked = RobotConfig.model_validate({"vendor": "ur", "safety": {"ik_quality": {"line_ik": "local"}}})
-        self.assertEqual("local", asked.safety.ik_quality.line_ik)
-        with self.assertRaises(ValidationError):
-            RobotConfig.model_validate({"vendor": "ur", "safety": {"ik_quality": {"line_ik": "closed_form"}}})
+        line = _Line()
+        line.arm._conn.controller_kinematics.reset_mock()
+        line.arm._judge_linear_move(_GRASP, command=MotionCommand.MOVE_TO, commanded=False)
+        line.arm._conn.controller_kinematics.assert_called()
+        for value in ("local", "controller"):
+            with self.subTest(line_ik=value), self.assertRaises(ValidationError):
+                RobotConfig.model_validate({"vendor": "ur", "safety": {"ik_quality": {"line_ik": value}}})
 
 
 def _random_configurations(count: int, seed: int) -> "list[np.ndarray]":

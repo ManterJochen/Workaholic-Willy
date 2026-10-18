@@ -410,9 +410,10 @@ if "default_joint_position" in cs:
     print(f"  default_joint_position {cs['default_joint_position']} becomes {default_q}")
     cs["default_joint_position"] = default_q
 # What keeps the planner inside the guard, written rather than inherited. cuRobo narrows every joint by this when it
-# loads (0.1 rad is 5.73 degrees), and the guard refuses outside the factory envelope less its margin_deg, 5 degrees by
-# default. The one number is wider than the other, and that is the whole reason the planner cannot offer a
-# configuration the guard then refuses. Inheriting it from whichever template the content holds is not a guarantee.
+# loads (0.1 rad is 5.73 degrees), and the guard refuses outside the factory envelope less its margin, 5 degrees on
+# every cell (joint_limits.JOINT_LIMIT_MARGIN_DEG). The one number is wider than the other, and that is the whole reason
+# the planner cannot offer a configuration the guard then refuses. Inheriting it from whichever template the content
+# holds is not a guarantee.
 cs["position_limit_clip"] = _arm_file.position_limit_clip_rad(MODEL)
 
 # --- provenance: which arm, and that no hand is in it -------------------------------------------

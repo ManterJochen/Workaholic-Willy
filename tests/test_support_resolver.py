@@ -60,12 +60,6 @@ class ResolverTests(unittest.TestCase):
         self.assertAlmostEqual(r.height_mm, 12.0,
                                msg="an observation below the declared floor must not lower it")
 
-    def test_refinement_can_be_switched_off(self) -> None:
-        r = resolve_support_plane(declared_height_mm=0.0, refine_from_target=False,
-                                  target_clouds_base_mm=[_cloud(40.0)])
-        self.assertEqual(r.height_mm, 0.0)
-        self.assertIsNone(r.observed_mm)
-
     def test_a_tilted_surface_measures_along_its_own_normal(self) -> None:
         """A tilted tray is a normal, not a special case."""
         normal = np.array([0.0, np.sin(np.radians(20.0)), np.cos(np.radians(20.0))])
@@ -96,6 +90,47 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(t["support_source"], "observed")
 
 
+class TheBenchIsThePlannerWorldsTests(unittest.TestCase):
+    """The table a cell's parts stand on is its planner world's bench, 0 mm where none is declared (2026-10-17)."""
+
+    def _on_a_bench(self, height_mm: float):  # noqa: ANN202
+        from src.config.schema.robot import RobotConfig
+        from src.config.schema.robot.safety_schema import SupportPlaneConfig
+
+        bare = RobotConfig()
+        world = bare.safety.planning_world.model_copy(update={"support_plane": SupportPlaneConfig(height_mm=height_mm)})
+        return bare.model_copy(update={"safety": bare.safety.model_copy(update={"planning_world": world})})
+
+    def test_the_bench_is_the_slabs_top_and_the_base_plate_where_none_is_declared(self) -> None:
+        from src.config.schema.robot import RobotConfig
+        from src.robot.grasping.collision.support_resolver import bench_height_mm
+
+        self.assertEqual(0.0, bench_height_mm(RobotConfig()))
+        self.assertEqual(0.0, bench_height_mm(None))
+        self.assertEqual(-12.5, bench_height_mm(self._on_a_bench(-12.5)))
+
+    def test_the_declared_support_is_the_bench_and_the_bin_level_with_the_guards_floor(self) -> None:
+        from src.robot.grasping.collision.support_resolver import DeclaredSupport
+
+        declared = DeclaredSupport.of(self._on_a_bench(-12.5))
+        self.assertEqual((-12.5, None, (0.0, 0.0, 1.0), 1.0),
+                         (declared.height_mm, declared.floor_mm, declared.normal, declared.min_clearance_mm))
+        self.assertEqual(-12.5, declared.resolve().height_mm, "the control: nothing seen, the bench stands")
+        self.assertEqual(30.0, declared.resolve([_cloud(30.0, 70.0)]).height_mm, "a part's own foot raises it")
+
+    def test_the_builder_hands_the_pick_loop_the_bench(self) -> None:
+        from types import SimpleNamespace
+
+        from src.robot.execution.autonomous_grasp.builders import apply_orchestrator_overlays
+        from src.robot.execution.autonomous_grasp.config import GraspMode
+
+        tree = self._on_a_bench(-12.5)
+        runtime = SimpleNamespace(orchestrator=SimpleNamespace())
+        apply_orchestrator_overlays(runtime, tree.grasping, resolved_mode=GraspMode.EASY,  # type: ignore[arg-type]
+                                    robot_cfg=tree)
+        self.assertEqual(-12.5, runtime.orchestrator.declared_support.height_mm)
+
+
 class OrchestratorSeamTests(unittest.TestCase):
     def test_both_seams_default_to_none_so_the_path_is_unchanged(self) -> None:
         """The keys are only added when configured; nothing existing moves."""
@@ -103,7 +138,7 @@ class OrchestratorSeamTests(unittest.TestCase):
 
         fields = BinPickingOrchestrator.__dataclass_fields__
         self.assertIsNone(fields["gripper_model"].default)
-        self.assertIsNone(fields["support_config"].default)
+        self.assertIsNone(fields["declared_support"].default)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ print(tree.explain("robot.gripper.model"))  # value, type, default, and the file
 
 At the end, your tree or profile layer passes `python -m src.config` with exit code 0, and you can
 justify every value in it that differs from the default. A green tree is not a running pick:
-[section 9](#9-what-a-config-actually-reaches) says what a config reaches.
+[section 8](#8-what-a-config-actually-reaches) says what a config reaches.
 
 This is the walkthrough. The reference is [`src/config/README.md`](../../src/config/README.md): the
 shipped layers, the merge rules, the safety block, the guided write path and the rules for adding a
@@ -76,7 +76,6 @@ another one.
 | File, relative to the tree | Required | Top-level key | Lands at |
 |---|---|---|---|
 | `camera/cam.yaml` | yes | `cameras:` | `camera.cameras` |
-| `camera/stereomatcher.yaml` | yes | `stereomatcher:` | `camera.stereomatcher` |
 | `camera/hand_eye.yaml` | no | `hand_eye:` | `camera.hand_eye` |
 | `models/*.yaml` | the directory, non-empty | each file's top-level keys | `models.*` |
 | `robot/robot.yaml` | no | `robot:` | `robot` |
@@ -101,8 +100,6 @@ a leaner config.
 |---|---|---|
 | `grippers/<model>.yaml` | the loader, for the hand `robot.gripper.model` names | a tree that names a hand needs this directory |
 | `cameras/<model>.yaml` | the tree check, and a cell that reads geometry | holds the housing a rig's `body` names; a tree without it reads the repository's |
-| `grasping_presets/*.yaml` | `apply_preset`, outside Pydantic | [section 8](#8-the-grasping-presets-a-schema-bypass) |
-| `robot/kpi_thresholds.yaml` | the soak and KPI gate | not part of `AppConfig` |
 | `all_keys/` | nothing by default | the reference tree, below |
 
 The gripper registry gives a named hand its widths and its collision envelope, and the
@@ -121,11 +118,6 @@ python -m src.config --data config/all_keys
 
 Read it to find out what exists. Do not copy it over your tree: a file that restates every default
 turns each of those lines into something a reader has to check against the schema.
-
-**One input is not a file in the tree.** If `WILLY_ADAPTATION_OVERLAY` is set, the loader deep-merges
-the `robot:` section of the YAML at that path before validation. It is unset by default. With it set,
-`explain` and `decisions` attribute an overlaid value to the base file, so unset it before you trust
-an explanation.
 
 **A relative path in the tree is read against the tree's folder.** That is the directory the tree was
 loaded from, `config/` for the shipped tree and whatever `--data` or `load_tree(root=...)` names for
@@ -150,7 +142,8 @@ keeps its calibration beside its config and names it relatively:
 | nothing, the schema default | the repository's file (every path default is `${WILLY_PROJECT_ROOT}/...`) or no file |
 
 `${WILLY_PROJECT_ROOT}` is for what the repository holds rather than the cell: the model weights
-`scripts/model_weights/fetch.py` writes, the committed success model and ranker, the RL baselines. The
+`scripts/model_weights/fetch.py` writes and the committed ranker (the success model and the RL baselines left
+on 2026-10-16). The
 shipped tree names those with it, so a copy of `config/` moved out of the repository still finds them,
 and names its cell data (`calibration/...`) with `../`, which from `config/` is the repository root.
 When you copy the tree out, rewrite those `../` paths to where the cell's files are now, relative to
@@ -184,10 +177,10 @@ cell has to state.
 
 | Chain | The cell it describes |
 |---|---|
-| `ur5e` | a real UR5e on a bench: workspace box, home and safe pose, bench fixture, planning world, four measurements to take |
+| `ur5e` | a real UR5e on a bench: workspace box, home, bench fixture, planning world, four measurements to take |
 | `ur3e` | the shorter arm's reach-anchored geometry and kinematics, under `sim` or on its own against a real UR |
 | `sim` | the simulated cell, with the camera inventory and the model overlays the simulator needs |
-| `ur5e,eth2` | the same bench with two fixed RGB-D cameras, fused; `eth2` alone is the fusion half and names no arm |
+| `ur5e,eth2` | the same bench with two fixed RGB-D cameras, fused; `eth2` alone is the camera half and names no arm |
 
 `console_dummy` is the desk profile: a dummy arm and a dummy hand that command nothing, and two poses written by
 hand, "Ablage links" (its default place) and "Parkposition", so the console's desk runs a task as shipped. The two
@@ -200,18 +193,13 @@ that fails open does not ship at all: a tool frame or a payload that is merely p
 into the bench and logs a success. So those are commented blocks, and the refusals in
 `run_config_preflight` and `URRobotArm.connect` stay armed.
 
-**Two things decide the two-camera cell.** Both are documented in place in
-[`config/robot/robot.eth2.yaml`](../../config/robot/robot.eth2.yaml) and
-[`config/camera/cam.eth2.yaml`](../../config/camera/cam.eth2.yaml).
-
-- **`fusion.cameras` names every camera the cell fuses, the primary included**, keyed by rig id, and
-  an entry holds `enabled` only. The code leaves the primary, `camera.cameras.primary_rig_id`, out of
-  the cameras a pick waits for, so listing it costs nothing. A fused id that names no rig in
-  `camera.cameras.rigs` is refused when the config loads.
-- **Each camera's calibration is declared on its rig**, as `camera.cameras.rigs[<id>].extrinsics`. The
-  pick service reads the primary's CAMERA to BASE transform there, and the second camera's resolver
-  reads its own. The calibration command prints that block after each camera, and a fused camera whose
-  rig declares none is refused when the cell is built.
+**One thing decides the two-camera cell**, documented in place in
+[`config/camera/cam.eth2.yaml`](../../config/camera/cam.eth2.yaml): **each camera's calibration is
+declared on its rig**, as `camera.cameras.rigs[<id>].extrinsics`. A cell fuses every enabled RGB-D rig
+that declares one, where two or more do and the primary, `camera.cameras.primary_rig_id`, is among
+them; there is no switch. The pick service reads the primary's CAMERA to BASE transform there, and the
+second camera's resolver reads its own. The calibration command prints that block after each camera,
+and a fused camera whose file does not load is refused when the cell is built.
 
 **Prefer the flag, because the variable is sticky and silent.** `WILLY_PROFILE` lives for the whole
 shell session and `load_tree()` honours it everywhere. A forgotten `sim` changes safety thresholds and
@@ -236,7 +224,8 @@ rules to remember:
 - A `null` overlay leaf keeps the base value, so a partial overlay cannot wipe a field by accident.
 - Scalars and lists replace. There is no list-append merge.
 - `"__null__"` is the only way to unset, resolved to `None` after the merge, because of the first
-  rule. `config/models/object.sim.yaml` uses it, and [02 section 6](02-models.md) says why it matters.
+  rule. `src/config/loader.py` defines it; no shipped overlay needs it since the model overlays left on
+  2026-10-17.
 
 **`${ENV}`.** `${VAR}` and `${VAR:-default}` are substituted in the raw text before the YAML is parsed,
 so the result must still be valid YAML. Quote anything that could contain a `:` or a `#`. An unset
@@ -289,8 +278,9 @@ which is why this beats grep.
 On a key no YAML mentions, it says so and still gives the type, the default and the meaning. That is
 most of the schema: someone reading `robot.yaml` cannot otherwise discover `robot.ur.model`, the field
 that decides which robot they are configuring. On an unknown key it says so and offers near misses
-from the schema, which is the reliable way to find a typo. Ask with the snake_case attribute name and
-an alias resolves: `camera.stereomatcher.num_disparities` finds the YAML's `numDisparities`.
+from the schema, which is the reliable way to find a typo. Every key is asked as the file writes it:
+no field has a YAML spelling of its own since the stereo matcher block, whose keys kept OpenCV's
+camelCase, left the tree on 2026-10-17.
 
 ### 4.3 `where <substring>`: what am I allowed to set
 
@@ -319,10 +309,12 @@ python -m src.config decisions --section robot.safety --profile sim,ur3e
 ```
 
 Scoped, it is short enough to read line by line, and that is how to use it. Read which way each entry
-goes. On the simulator chain some entries loosen a guard a real arm keeps tight, because the simulator
-has no controller-side safety to lean on; others tighten one. `kinematics_base_yaw_deg` does neither:
-it states which base frame the guard checks against. Which robot it checks is not a safety key: the arm
-reports the model its vendor block names, `sim.robot_model` on the simulator chain.
+goes. The numbers the guards hold an arm to are no keys since 2026-10-17: every real arm runs the owner's
+cell's, and the simulator's arm, which loosens some of them because the simulator has no controller-side
+safety to lean on and turns its base half a turn, states its own in code
+([`src/willy_sim/guard_numbers.py`](../../src/willy_sim/guard_numbers.py)), so `decisions` lists none of them.
+Which robot it checks is not a safety key either: the arm reports the model its vendor block names,
+`sim.robot_model` on the simulator chain.
 
 ### 4.5 From Python
 
@@ -354,8 +346,6 @@ section as a program.
 `src.config` keeps the lower-level loaders. `load_config()` returns the cached `AppConfig` alone.
 `load_robot_section`, `load_camera_section`, `load_speech_section` and `load_perception_section` each
 validate one section through the same chain, uncached, so a broken camera file does not refuse an arm.
-A caller that combines the camera and robot sections runs the one rule that spans them,
-`src.config.schema.camera_calibration_conflict`.
 
 For a simulated cell, `load_sim_config` in [`src/willy_sim/config.py`](../../src/willy_sim/README.md)
 builds the `sim` chain, forces it for the load, and restores the previous `WILLY_PROFILE` afterwards.
@@ -371,8 +361,8 @@ addresses refuse a write while the cell is connected. Ask it what it accepts:
 python -c "from src.config.edit import WRITABLE; print([w.path for w in WRITABLE])"
 ```
 
-**A taught pose has a door of its own.** `robot.named_poses` and `robot.default_place_pose` are never in
-`WRITABLE` and never a `PATCH`: `set_named_pose` and `set_default_place_pose` (`ConfigTree.write_named_pose`,
+**A taught pose has a door of its own.** `robot.motion.named_poses` and `robot.motion.default_place_pose` are never
+in `WRITABLE` and never a `PATCH`: `set_named_pose` and `set_default_place_pose` (`ConfigTree.write_named_pose`,
 `write_default_place_pose`) write them, all or nothing, into the **last layer** of the chain only, and refuse a
 chain whose last layer git does not keep out (`no_layer`). Clearing the default place writes `"__null__"`.
 
@@ -391,7 +381,7 @@ stays stated once, and this is the shipped pattern. If it shares nothing, make a
 
 A tree given to a simulator runner's `--data-dir` loads under the `sim` profile, so it must carry
 `*.sim.yaml` overlays or the load fails. Without them the simulated cell would run the production
-values, the real vendor and the detector's higher threshold among them.
+values, the real vendor among them.
 
 ### Step 1: the required half, and a first green run
 
@@ -401,7 +391,7 @@ Copy and edit rather than write from nothing: the required fields live in these 
 ```powershell
 $Cell = "C:/cells/mycell"
 New-Item -ItemType Directory -Force "$Cell/camera", "$Cell/models", "$Cell/robot" | Out-Null
-Copy-Item config/camera/cam.yaml, config/camera/stereomatcher.yaml "$Cell/camera/"
+Copy-Item config/camera/cam.yaml "$Cell/camera/"
 Get-ChildItem config/models/*.yaml | Where-Object Name -notlike "*.sim.yaml" | Copy-Item -Destination "$Cell/models/"
 Copy-Item -Recurse config/grippers "$Cell/"
 python -m src.config --data $Cell
@@ -410,7 +400,7 @@ python -m src.config --data $Cell
 ```bash
 CELL=~/cells/mycell
 mkdir -p $CELL/camera $CELL/models $CELL/robot
-cp config/camera/cam.yaml config/camera/stereomatcher.yaml $CELL/camera/
+cp config/camera/cam.yaml $CELL/camera/
 cp $(ls config/models/*.yaml | grep -v '\.sim\.yaml$') $CELL/models/
 cp -r config/grippers $CELL/
 python -m src.config --data $CELL
@@ -440,11 +430,19 @@ robot:
     model: robotiq_2f85
 ```
 
-**The workspace box.** This tree writes no `workspace_limits`, so the schema default box is in force.
+**The workspace box.** This tree writes no `robot.motion.workspace`, so the schema default box is in force.
 It is a symmetric placeholder with corners a UR3e cannot reach; see it with
-`python -m src.config explain robot.workspace_limits.z_max --data $CELL`. Write your own box, and put
-`safe_pose` inside it with margin: the workspace guard also subtracts
-`safety.limits.workspace_margin_mm` from every face.
+`python -m src.config explain robot.motion.workspace.z_max --data $CELL`. Write your own box, with margin about
+every pose the cell drives to: the workspace guard also subtracts 20 mm from every face, every cell's
+since 2026-10-17 (the key `safety.limits.workspace_margin_mm` left that day).
+
+**How the cell moves is one block.** Every key of it stands under `robot.motion` since 2026-10-17: the planner,
+`max_velocity` and `max_acceleration`, the `workspace` box, home (`home_deg`, in degrees as the pendant shows the
+joints; there is no radians twin), the looks (`look_deg`), the `natural_closing_axis`, the taught poses
+(`named_poses`, `default_place_pose`) and how a task sets its parts down (`place`). A tree that still writes one of
+them straight under `robot` is refused at load, naming where it went, and
+`python -m src.config migrate PATH --write` moves it there, comments and all. `robot.safe_pose` left the same day:
+nothing moved to it.
 
 **The hand.** `robot.gripper.model` names a file in the gripper registry, and the hand brings its
 widths and its collision envelope from it:
@@ -454,14 +452,15 @@ the Robotiq 2F-85. The Robotiq driver anchors its count map on that value, so it
 physical open width, not a policy ceiling. `python -m src.config where gripper` lists the rest.
 
 **Where the camera looks from.** A wrist camera sees what the arm points it at, so a wrist cell names its
-**looks**: `robot.look_joint_positions_deg`, one list of joint degrees per look, as the pendant shows them
+**looks**: `robot.motion.look_deg`, one list of joint degrees per look, as the pendant shows them
 and `python -m src.robot.execution.io_bench --where` prints them, visited in this order.
 
 ```yaml
 robot:
-  look_joint_positions_deg:
-    - [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0]    # the part's open side first
-    - [-70.0, -100.0, -110.0, -60.0, 90.0, 0.0]
+  motion:
+    look_deg:
+      - [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0]    # the part's open side first
+      - [-70.0, -100.0, -110.0, -60.0, 90.0, 0.0]
 ```
 
 **Degrees only**, with no radians twin: a look is where the arm goes next, so its unit is said. The load
@@ -473,7 +472,7 @@ console send every pick whose program names no look to these, a fixed camera's a
 them until its grasp is safe, and a fixed camera stops at the first look that finds something
 ([05](05-pick-loop.md)). Unset, a wrist camera looks from home and a fixed camera does not move to look.
 
-**How the hand naturally stands.** `robot.natural_closing_axis` names the way round the jaws close where
+**How the hand naturally stands.** `robot.motion.natural_closing_axis` names the way round the jaws close where
 nothing else says: a name (`x`, `-x`, `y`, `-y`, `radial`, `-radial`, `tangential`, `-tangential`, a
 leading `+` allowed; `radial` and `tangential` are read at each place), the names `Pose.tool_down` takes,
 or a taught pose's quaternion `[x, y, z, w]`, of which only the heading of its tool +X on the base XY plane
@@ -481,7 +480,8 @@ counts, not its pitch.
 
 ```yaml
 robot:
-  natural_closing_axis: "-y"    # the tool +X along base -y: the owner's cell, where its wrist D415's image stands upright
+  motion:
+    natural_closing_axis: "-y"    # the tool +X along base -y: the owner's cell, where its wrist D415's image stands upright
 ```
 
 **Camera grasps stay free**, any closing direction and any tilt: of a grasp's two equivalent wrist turns,
@@ -496,22 +496,23 @@ sets `"-y"` in its own profile on the cell PC.
 
 **Poses taught at the cell.** The operator console teaches a pose by hand (Setup, "Pose einlernen"): a person
 guides the arm there, the exact guard and the planner screen it while it holds, and only a clear pose, or one in
-the planner's band, is written, under `robot.named_poses`:
+the planner's band, is written, under `robot.motion.named_poses`:
 
 ```yaml
 robot:
-  named_poses:
-    drop_left:                              # the NAME: what the YAML and the command reader answer with
-      joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
-      label: "Ablage links"                 # what the chat, the cards and a spoken command say
-      taught_at: "2026-10-01T09:12:00+02:00"
-      screen: clear                         # clear | band; an unscreened or refused pose is never written
-      note: ""
-  default_place_pose: drop_left             # where a task sets its part down when its command names no target
+  motion:
+    named_poses:
+      drop_left:                              # the NAME: what the YAML and the command reader answer with
+        joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
+        label: "Ablage links"                 # what the chat, the cards and a spoken command say
+        taught_at: "2026-10-01T09:12:00+02:00"
+        screen: clear                         # clear | band; an unscreened or refused pose is never written
+        note: ""
+    default_place_pose: drop_left             # where a task sets its part down when its command names no target
 ```
 
 - **The name** is an ASCII identifier of at most 32 characters: no Python keyword, never `home` (Home stays
-  `robot.home_joint_positions`), no word YAML reads as true, false or null, no `__dunder__`.
+  `robot.motion.home_deg`), no word YAML reads as true, false or null, no `__dunder__`.
 - **The label** is free text, Unicode and spaces allowed, at most 40 characters, with no newline and no `" #"`.
   A pose answers to its name and its label, and the load refuses two poses that share a word, whatever the case.
 - **The joints** are degrees, under the looks' rules. Layers merge a pose key by key, so a pose a later layer
@@ -525,18 +526,24 @@ robot:
   not ignore, is refused before the arm is freed (`no_layer`). The console never renames or deletes a pose: edit
   the YAML. A joint list written by hand as a block cannot be rewritten in place; write it as a flow list.
 
-**The carried part.** `robot.safety.planning_world.payload.length_mm` is how far the longest part hangs past the
-fingertips. It ships `null`, and with no length every lift, carry and place is planned as if the hand were empty:
-between the close and the release only the planner holds the part. So the desk check's `carried part` row blocks
-a real cuRobo UR tree, and **the console refuses every task** (`carried_part_not_modelled`) until it is declared;
-a cell that carries nothing says `enabled: false` instead
-([hande_gripper_bringup.md](../runbooks/hande_gripper_bringup.md), step 6).
+**How far the parts hang.** `robot.motion.place.part_hang_mm` is how far the longest part hangs past the fingertips:
+a place sets the part's bottom down where the taught fingertips stood, raised by it, and keeps it over a box's rim.
+It ships `null`, which hangs the part from the TCP; the owner's cell sets 1. It was
+`robot.safety.planning_world.payload.length_mm` until 2026-10-17, when the carried part left the planner (no cell
+modelled it: a closed hand is judged as an empty one, by the exact guard at full stroke); the load refuses the old
+key and names this one, the migrate command moves it, and no task waits on it.
 
-**Halt now.** `robot.ur.brake_on_halt` decides what the console's "Sofort anhalten" does to a move already in
-flight. **Off, as shipped**, every move is sent exactly as it always was: the halt latches the arm, the move in
-flight runs to its end, and nothing after it is sent. On, the move in flight is also braked under control.
-Either way it is not an emergency stop. Switch it on in the cell's own profile only once the URSim measurements
-have passed ([04](04-robot-and-safety.md), section 8).
+**The place's numbers are the owner's cell's**, fixed in
+[`src/robot/execution/place_target.py`](../../src/robot/execution/place_target.py) since 2026-10-17: a part set into
+a box goes 30 mm under the rim and keeps 10 mm inside its opening, the jaws open 20 mm over a box's rim (a task may
+give its own, 0 to 50), parts side by side lie 20 mm apart, and a carry over the rim keeps the part's bottom 15 mm
+over the rim beyond the rim air. A bin the check before a drop lost is always looked for again. What stays under
+`robot.motion.place` is what a cell chooses or measures: `release_in_a_box`, `side_by_side` with its `grid`, `carry`,
+and `part_hang_mm`.
+
+**Halt now.** The console's "Sofort anhalten" latches the arm, so nothing after the move in flight is sent, and
+on every UR that move is braked under control (since 2026-10-17, as the owner's cell ran it; the key
+`robot.ur.brake_on_halt` left then). It is not an emergency stop ([04](04-robot-and-safety.md), section 8).
 
 **Suction.** A vacuum end-effector uses `robot.gripper.vacuum.*`, read only when `robot.gripper.vendor`
 is `"vacuum"`. Under any other vendor that block validates green and is ignored, and every field in it
@@ -545,8 +552,9 @@ is a number somebody has to measure.
 **Safety bounds stay written even at their default**, so an auditor can read the guard envelope out of
 the file. The guards themselves belong to [04-robot-and-safety.md](04-robot-and-safety.md).
 
-A validator on `RobotConfig` keeps `safe_pose` inside the workspace box, because the workspace guard
-would otherwise refuse the retreat itself. Three more stood beside it until 2026-10-13 (P0d D5) and coupled
+A validator on `RobotConfig` kept `safe_pose` inside the workspace box until 2026-10-17, when the safe pose left:
+nothing moved to it, and its one reader, the simulator's reach doctor, only asked whether it lay in reach. Three
+more stood beside it until 2026-10-13 (P0d D5) and coupled
 `safety.self_collision.kinematics_model` to `sim.robot_model`, to `ur.model`, and to nothing at all on any
 other vendor, because that key picked the DH chain the self-collision guard evaluates, and a UR5e's
 upper-arm and forearm links are roughly 425 mm and 392 mm against a UR3e's 244 mm and 213 mm. They went
@@ -558,18 +566,19 @@ and `sim.robot_model` each refuse an arm the registry does not admit. A tree tha
 
 Run `python -m src.config decisions --data $CELL --section robot` and read it line by line. An entry
 you did not intend is a bug in the YAML. An entry you intended that is missing means you wrote a value
-equal to the default, which is correct and not listed: `ip: 192.168.1.100` does not appear, because
+equal to the default, which is correct and not listed: `planner: curobo` does not appear, because
 that is the schema default. Lines from a profile layer carry their layer name and file.
 
 ---
 
 ## 6. Enabling a default-off feature
 
-**Find the gate first.** Most `robot.grasping.*` blocks carry `enabled: false`, but not all, and
-writing `enabled: true` under a block that has no such field fails the load. `watchdog` is gated by
-`mode`, `occlusion` by two separate flags, `gripper_geometry` by nothing, and `robot.rl` by `mode`. So
-ask first: `explain robot.grasping.watchdog.enabled` answers that the key is not known, and
-`where watchdog` shows you the real gate.
+**Find the gate first.** Few `robot.grasping.*` blocks carry `enabled: false` since the cleanup of
+2026-10-16 and 2026-10-17 (`deep_ranker` does), and writing `enabled: true` under a block that has no such
+field fails the load: `support` has none,
+and a declared container's walls are switched by `support.container.wall_collision_enabled`. So ask
+first: `explain robot.grasping.support.enabled` answers that the key is not known, and
+`where support` shows you what the block holds.
 
 **One gate is a string.** `robot.grasping.calculator` is `geometric` or `deep`, and it selects the grasp
 generator the cell runs. Every calculator the cell builds goes through `build_calculator`
@@ -582,52 +591,48 @@ builds from your weights only once their proof has passed, which nothing can iss
 
 The workflow is three steps, and the file edit is the last one:
 
-1. **Find** the key: `python -m src.config where fusion`.
-2. **Read** it: `python -m src.config explain robot.grasping.fusion.enabled`.
+1. **Find** the key: `python -m src.config where container`.
+2. **Read** it: `python -m src.config explain robot.grasping.support.container.wall_collision_enabled`.
 3. **Write** the block with only the keys you change, and put the reason in a comment directly above
    the line. `explain` shows that comment to the next person who asks.
 
 Then run the bare command, `explain`, and `decisions --section robot.grasping` again. If the block lands
 under the wrong parent, `extra="forbid"` catches it, and the dotted path in the message says where it
-went: `robot.rl.fusion` means you wrote it under `rl:`, not under `grasping:`.
+went: `robot.safety.support` means you wrote it under `safety:`, not under `grasping:`.
 
-**Some shapes are refused before they can mislead you.** A switch in
-`RobotGraspingConfig.UNWIRED_SWITCHES` would land in the cell's telemetry while nothing reads it, so
-setting one is refused at load; it holds `occlusion.hard_reject_enabled` until the occlusion score is
-trusted. A block removed on purpose, such as `verification` or `dense_recovery` (both 2026-09-29), is
-refused at load with the sentence that says what to do instead. And
+**Some shapes are refused before they can mislead you.** A block removed on purpose, such as
+`verification` or `dense_recovery` (both 2026-09-29) or `decision` and the eight blocks that left with it
+on 2026-10-16, and a switch fixed at the owner's cell's value (2026-10-17), is refused at load with the
+sentence that says what to do instead. And
 `robot.grasping.support.container.wall_collision_enabled` without both `interior_min_mm` and
 `interior_max_mm` is refused at load, rather than running a cell that believes a bin protects it when
 it cannot locate the walls.
 
-**Recovery refuses what it cannot keep.** `container_agitate` in `recovery.allowed_actions` needs a
-`recovery.fixture`, or the load refuses it. **The push (`nudge_target`) needs none** since 2026-10-01: it
-lands inside the automatic push box, and a declared fixture only narrows that box. `container_agitate`,
-named in `allowed_actions` or `per_action_budget`, is refused at load unless `support.container`
-declares its interior box (`interior_min_mm` and `interior_max_mm`; a floor height alone does not
-count): a container is agitated only where one is declared. **The push distance** is two keys:
-`recovery.fixture.push_distance_mm`, how far a push moves the part when nobody asks (30 mm), and
-`recovery.fixture.max_nudge_mm`, the longest push the cell allows (50 mm); a cell with no fixture takes
-both defaults. **Both keys live in the fixture block**: to change either, declare its box too
-(`center_mm`, `half_extents_mm`), and that box then also narrows where a push lands (one around the
-whole workspace narrows nothing). Without a fixture, `push_mm` on a `PickRun` or a console run still
-asks for 10 to 50 mm. Each key lies between 10 and 50 mm, and a `push_distance_mm` longer than
-`max_nudge_mm` is refused with the sentence that says which to change. A local tree that still writes
-the old `max_nudge_mm: 5`, or a `max_nudge_mm` under 30 with no `push_distance_mm`, no longer loads, on
-purpose: 5 mm allowed no push a finger fits, and a ceiling under 30 mm now sits below the 30 mm default
-`push_distance_mm`. Delete the line to take 50 mm, or write 10 to 50 mm with a `push_distance_mm` no
-longer than it.
+**Recovery has no block to write.** Every cell runs the recovery the owner's cell ran, fixed since
+2026-10-16: a rescan once a pick in `auto` and `dense_clutter`, and in `dense_clutter` the push and the
+clearing of a blocker inside the pick attempt. A tree that still writes `robot.grasping.recovery` is refused
+at load with the sentence that says to delete the block. **The push** needs no fixture: it lands inside the
+automatic push box. It moves the part 30 mm unless a run asks otherwise (`push_mm` on a `PickRun` or a
+console run, 10 to 50 mm).
 
-**Whether a push may change the scene** is one key, `recovery.critical_parts` (the owner, 2026-10-03).
-`false`, the default: a boxed-in part is pushed first, and the push may shove and brush its neighbours; a
-blocker is set aside where no push plans. `true`: nothing is pushed, and a blocker is set aside instead.
-A console run can set it for itself (*Kritische Teile*). `recovery.blocker_grasp_tries` (3, from 1 to 6)
-is how many of a blocker's grasps the clearing tries, best first.
+**Whether a push may change the scene** is one key, `runtime.task.critical_parts` in `app/runtime.yaml`
+(the owner, 2026-10-03; under `robot.grasping.recovery` until 2026-10-16). `false`, the default: a boxed-in
+part is pushed first, and the push may shove and brush its neighbours; a blocker is set aside where no push
+plans. `true`: nothing is pushed, and a blocker is set aside instead. A console run can set it for itself
+(*Kritische Teile*). A clearing tries three of a blocker's grasps, best first. The cell reads it when it is
+built.
 
-Several blocks can fire only in some grasp modes, and several ship their operative weight at `0.0`,
-so `enabled: true` alone does nothing. Read
-[`docs/grasping-config-reference.md`](../grasping-config-reference.md) before you enable or measure
-any of them.
+**How the console starts a task is the cell's too**, beside it in `runtime.task` (the owner, 2026-10-16; until
+then each browser kept its own): `start` (`enter`, Enter starts a clean reading at once, or `card`), `scope`
+(`once` or `until_empty`), `place` (`default`, `pose:<name>` or `camera:<phrase>`, where a sentence names no
+place), `anything` (a card whose sentence names no part comes ticked for anything the camera sees) and `looks`
+(`first`, `when_needed`, `every`). The console's Settings page (*Auftrag*) writes all six into the cell's own
+layer, `app/runtime.cell.yaml` under `--profile <your cell>,cell`, as it writes a taught pose
+([`src/config/README.md`](../../src/config/README.md)); none of them starts a task.
+
+The recovery acts in `auto` and `dense_clutter` alone, and `deep_ranker`, switched on, changes no grasp: a
+shadow by design. Read [`docs/grasping-config-reference.md`](../grasping-config-reference.md) before you
+enable or measure any of them.
 
 ---
 
@@ -654,33 +659,14 @@ The failures that need a word:
   instead of a second base file.
 - **A profile-layer error**: the tree has no `*.<layer>.yaml` for that layer.
 - **`Extra inputs are not permitted`**: a typo, a wrong indentation level, or a renamed key.
+- **`removed on purpose`**: a key that left the schema on purpose, with the sentence that names what replaced
+  it or the value it is fixed at. `python -m src.config migrate PATH --write` brings a whole old tree to the keys
+  this Willy reads.
 - **You edited a YAML and nothing changed**: the load is cached. Call `reload_config()`.
 
 ---
 
-## 8. The grasping presets, a schema bypass
-
-The files in [`config/grasping_presets/`](../../config/grasping_presets/) are not part of `AppConfig`,
-not read by the loader, and not covered when `python -m src.config` validates green. Each is a partial
-`grasping:` block that `apply_preset` in
-[`src/robot/grasping/replay/`](../../src/robot/grasping/replay/README.md) merges onto an already-loaded
-`robot` mapping. They are not part of your tree either: the presets directory is the repository's, not
-`--data`'s, so a YAML you drop into your own `grasping_presets/` is ignored. You can still apply a
-shipped preset to your own cell, because `apply_preset(base, name)` takes any base mapping.
-
-The merge runs outside Pydantic, so a typo in a preset survives and does nothing. The check is opt-in.
-Run it whenever you add or edit a preset:
-
-```bash
-python -c "from src.robot.grasping.replay.presets import validate_all_presets; print(validate_all_presets())"
-```
-
-What each preset holds, and what its `default_mode` does to a `pick()`, is in
-[05-pick-loop.md](05-pick-loop.md).
-
----
-
-## 9. What a config actually reaches
+## 8. What a config actually reaches
 
 **The real-cell path reads the whole tree.** `Cell.from_tree(load_tree())` builds a cell from it and
 runs the steps in a fixed order: preflight, build, safety attestation, then connect (lock, arm, then
@@ -695,36 +681,39 @@ camera and picked by camera, through the examples; the console has not run there
 [`docs/runbooks/real_cell_first_pick.md`](../runbooks/real_cell_first_pick.md).
 
 **The default pick is open-loop.** Perceive, generate and score candidates on a deterministic
-geometric rank, run the safety preflight and IK, move and close, log. The decision gate, the
-recover path, multi-camera fusion, the rerank stage, the learned success model and the
-reinforcement-learning layer are all built and all default to `enabled: false`. The hold is
+geometric rank, run the safety preflight and IK, move and close, log. The recover path runs on every cell
+and multi-camera fusion on every cell of two calibrated RGB-D rigs, with no switch since 2026-10-16; the
+learned ranker's shadow is built and defaults to `enabled: false`; the decision gate, the rerank stage, the
+learned success model and the reinforcement-learning layer left on 2026-10-16 with their code. The hold is
 checked after every close by the execution policy itself, wherever the gripper can report one; the
 separate post-grasp verification stage, which no pick path ran, was removed on 2026-09-29 with its
 `verification` block. **The looks of a wrist camera need no switch**: a pick handed looks goes through
 them and fuses what it saw, and `PickRun` and the console hand every wrist pick its looks, the
-program's, else `robot.look_joint_positions_deg`, else home ([05](05-pick-loop.md)). Check the
+program's, else `robot.motion.look_deg`, else home ([05](05-pick-loop.md)). Check the
 switches against the tree rather than this page:
 
 ```bash
-python -c "from willy import load_tree; g = load_tree(None).robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'recovery', 'success_model')})"
+python -c "from willy import load_tree; g = load_tree(None).robot.grasping; print({n: getattr(g, n).enabled for n in ('deep_ranker',)})"
 ```
 
 **Most simulator runners take a separate path.** They build the service through `from_components`
 and turn the config-driven overlays back on in runner code, taking the mode from a flag and fixing the
-attempt count. So `grasping.default_mode` and `grasping.max_attempts` are ignored there, while every
+attempt count. So `grasping.default_mode` is ignored there, while every
 `grasping:` sub-block the runner does not override reaches a simulated pick. `run_multiview_pick`
 builds through `from_robot_config` by default (`--boot config`).
 
-**Record logging is opt-in.** `from_robot_config` reads `grasping.record_log_path` and stamps the
-robot's vendor and model, so setting it makes every `pick()` append one record, which the soak, KPI
-and learning tools read. Features per candidate are written only while `rl.mode` is `rl_shadow`. Left
-null, nothing is recorded. The shipped KPI gate is a synthetic contract self-check: it proves the
-telemetry and KPI plumbing agree with each other, not that any grasp is good, and its own provenance
-block says so.
+**Record logging is on.** `from_robot_config` reads `grasping.record_log_path` and stamps the
+robot's vendor and model, and every `pick()` appends one record, which the KPI tools read: to that file,
+or, left null, to `grasp_records.jsonl` in the log folder (since 2026-10-17). `--records-gate` judges such a
+log and can fail; the synthetic soak
+that passed by construction left on 2026-10-16.
 
-**Two required sections have few live readers.** `camera.cameras` and `camera.stereomatcher` are
-required at load and hold most of the schema's required fields, but the simulated cell authors its
-cameras from `robot.sim.cameras`. A green `cam.yaml` is not evidence that a camera works.
+**A required section with few live readers in simulation.** `camera.cameras` is required at load
+and holds most of the schema's required fields, but the simulated cell authors its cameras from
+`robot.sim.cameras`. A green `cam.yaml` is not evidence that a camera works. The stereo matcher block
+that stood beside it, `camera/stereomatcher.yaml`, left on 2026-10-17: a stereo rig's matcher is derived
+from its calibration and fixed in code, and a tree that still carries the file is refused at load,
+saying so.
 
 ---
 
@@ -736,17 +725,20 @@ cameras from `robot.sim.cameras`. A green `cam.yaml` is not evidence that a came
 - `--print` belongs to the bare command and is refused on a subcommand.
 - Unset an overlay value with `"__null__"`, never `null`.
 - Call `reload_config()` after editing a file in a running process.
-- Unset `WILLY_ADAPTATION_OVERLAY` before trusting an explanation.
 - A tree of your own that names a hand carries an unchanged copy of `grippers/`.
 - A relative path in the tree is read against the tree's folder, never the working directory; a
   copied tree's `../` paths need rewriting, its `${WILLY_PROJECT_ROOT}` paths do not.
-- A green `python -m src.config` says nothing about the presets.
-- `robot.look_joint_positions_deg` is degrees; radians there read as small degrees, and only the desk
+- Every key of how a cell moves is under `robot.motion` since 2026-10-17, and home is `robot.motion.home_deg`, in
+  degrees alone; `migrate` (below) writes a radians home given on one line in degrees, and one written over several
+  lines is converted by hand.
+- `robot.motion.look_deg` is degrees; radians there read as small degrees, and only the desk
   check's `looks` row says so.
-- A taught pose is written into the chain's last layer only, and that layer must be git-ignored: end the
-  console's chain in `cell`.
-- A task needs `robot.safety.planning_world.payload.length_mm`; the console refuses every task without it.
-- `robot.ur.brake_on_halt` ships `false`: leave it until the URSim measurements have passed.
+- A taught pose, and a task setting the console's Settings page chooses, are written into the chain's last
+  layer only, and that layer must be git-ignored: end the console's chain in `cell`.
+- The parts' hang past the fingertips is `robot.motion.place.part_hang_mm` since 2026-10-17; a tree that still writes
+  `robot.safety.planning_world.payload.length_mm` is refused at load, naming it.
+- A tree that still writes a key removed on purpose is refused at load, naming what replaced it;
+  `python -m src.config migrate PATH --write` brings an old tree to the keys this Willy reads, every comment kept.
 
 **Adding a new field?** The rules are in [`src/config/README.md`](../../src/config/README.md): a
 schema field with a default that changes no behaviour, its documentation on the schema field rather

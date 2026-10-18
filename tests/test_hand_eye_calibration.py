@@ -199,8 +199,23 @@ class CheckTouchesNothingTests(unittest.TestCase):
         self.assertIn("produces an artifact nothing consumes", check.refusal)
         self.assertTrue(check.render().startswith("[config] REFUSED: rig 'realsense_d435' has"), check.render())
 
-    def test_a_webcam_rig_is_refused_before_it_can_fail_about_aruco(self) -> None:
-        self.assertIn("not an RGB-D device", self._shipped("webcam_main").refusal)
+    def test_a_webcam_rig_without_its_stereo_calibration_is_refused_before_it_can_fail_about_aruco(self) -> None:
+        refusal = self._shipped("webcam_main").refusal
+        self.assertIn("gives depth through its stereo calibration", refusal)
+        self.assertIn("19_calibrate_a_stereo_pair", refusal)
+
+    def test_a_calibrated_stereo_pair_is_swept_as_an_rgbd_rig_is(self) -> None:
+        """Since 2026-10-17 a pair whose stereo calibration is written is a camera like an RGB-D one: the sweep poses
+        the board on its left image rectified, with the rectified lens, through the same owner and marker source."""
+        from tests import _stereo_scene as scene
+
+        with tempfile.TemporaryDirectory() as folder:
+            rig = scene.webcam_rig(Path(folder) / "pair")
+            scene.write_calibration(rig, scene.calibration())
+            check = HandEyeCalibration.from_config(_app(rig), rig_id="pair", mode="eye_to_hand",
+                                                   options=SweepOptions(fixed_poses=_STATIONS)).check()
+        self.assertTrue(check.ok, check.refusal)
+        self.assertEqual("webcam_pair", check.rig_source)
 
     def test_an_unknown_rig_lists_the_configured_ones(self) -> None:
         refusal = self._shipped("front").refusal

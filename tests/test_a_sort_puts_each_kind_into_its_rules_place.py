@@ -407,10 +407,10 @@ class ASortsCellTests(unittest.TestCase):
 
         log: list[Any] = []
         arm = TaskArm(log, fk_table={_key(LY): AT_LY, _key(LB): AT_LB, _key(LE): AT_LE})
-        arm.config = SimpleNamespace(  # type: ignore[attr-defined]
-            place=RobotPlaceConfig(), grasping=SimpleNamespace(follow_parts=SimpleNamespace(
-                enabled=True, refresh_every_picks=0, max_shift_mm=10.0, max_creep_mm=20.0)))
-        with patch("src.robot.execution.motion.expecting_next", side_effect=declaring), \
+        arm.config = SimpleNamespace(motion=SimpleNamespace(place=RobotPlaceConfig()))  # type: ignore[attr-defined]
+        # On a cell that follows its parts, as every cell built from a tree does.
+        with patch("src.robot.execution.task._follows_parts", return_value=True), \
+                patch("src.robot.execution.motion.expecting_next", side_effect=declaring), \
                 self.assertLogs("src.robot.execution.task", "INFO") as said:
             ran = run_sort(_plan(), [SortPick("part", label="red part"), "empty", "empty"], arm=arm,
                            locators=[ClassListLocator(_scene(), arm=arm, log=log)], wrist=True, looks=LOOKS)

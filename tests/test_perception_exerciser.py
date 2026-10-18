@@ -31,7 +31,8 @@ from unittest import mock
 
 import numpy as np
 
-from src.robot.perception.__main__ import _find_rgbd_rig, _RawDepthTap
+from src.contracts import UNSET
+from src.robot.perception.__main__ import _find_depth_rig, _RawDepthTap
 
 
 class _Frame:
@@ -195,39 +196,40 @@ class TheTwoToolsNameTheSameCameraTests(unittest.TestCase):
     def test_the_default_is_the_key_the_cell_reads(self) -> None:
         second = self._rig("other")
         cfg = self._cfg("overhead", self._rig("overhead"), second)
-        self.assertEqual(_find_rgbd_rig(cfg, None).rig_id, "overhead")
+        self.assertEqual(_find_depth_rig(cfg, None).rig_id, "overhead")
         # And it is the key, not "the first" or "the only": with two candidates the old code demanded
         # --rig, and the key answers the question instead.
         self.assertEqual(
-            _find_rgbd_rig(self._cfg("other", self._rig("overhead"), second), None).rig_id, "other")
+            _find_depth_rig(self._cfg("other", self._rig("overhead"), second), None).rig_id, "other")
 
     def test_rig_overrides_the_key(self) -> None:
         cfg = self._cfg("overhead", self._rig("overhead"), self._rig("wrist"))
-        self.assertEqual(_find_rgbd_rig(cfg, "wrist").rig_id, "wrist")
+        self.assertEqual(_find_depth_rig(cfg, "wrist").rig_id, "wrist")
 
-    def test_a_non_rgbd_rig_is_refused_in_the_cells_own_terms(self) -> None:
+    def test_a_rig_without_depth_is_refused_in_the_cells_own_terms(self) -> None:
         """⭐ THE OPERATOR CARRIES THE SENTENCE BETWEEN TWO TOOLS. ``build_real_components`` refuses a
-        primary that is not RGB-D and points at this exerciser; if the exerciser then opened it
-        happily, the advice would contradict the refusal that produced it."""
+        primary that gives no depth, since 2026-10-17 a stereo pair whose stereo calibration is not
+        written, and points at this exerciser; if the exerciser then opened it happily, the advice
+        would contradict the refusal that produced it."""
         cfg = self._cfg(
             "webcam_main",
             self._rig("webcam_main", source="webcam_pair"),
             self._rig("realsense_d435"),
         )
         with self.assertRaises(SystemExit) as caught:
-            _find_rgbd_rig(cfg, None)
+            _find_depth_rig(cfg, None)
         message = str(caught.exception)
         self.assertIn("webcam_pair", message)
         self.assertIn("synthesised from depth", message)
         # And it names what would work, rather than the flag that would name it.
         self.assertIn("realsense_d435", message)
 
-    def test_a_config_with_no_rgbd_rig_at_all_says_so(self) -> None:
+    def test_a_config_with_no_rig_that_gives_depth_says_so(self) -> None:
         """A different problem from the wrong rig, and the empty list is what distinguishes them."""
         cfg = self._cfg("webcam_main", self._rig("webcam_main", source="webcam_pair"))
         with self.assertRaises(SystemExit) as caught:
-            _find_rgbd_rig(cfg, None)
-        self.assertIn("no RGB-D rig at all", str(caught.exception))
+            _find_depth_rig(cfg, None)
+        self.assertIn("No rig in this config gives depth yet", str(caught.exception))
 
     def test_a_disabled_rig_is_opened_with_a_note_rather_than_refused(self) -> None:
         """⚠ NOT THE SAME AS THE CASE ABOVE, AND THE DIFFERENCE IS NOT SEVERITY. ``enabled: false`` is
@@ -236,17 +238,17 @@ class TheTwoToolsNameTheSameCameraTests(unittest.TestCase):
         cfg = self._cfg("oblique_L", self._rig("oblique_L", enabled=False))
         out = io.StringIO()
         with redirect_stdout(out):
-            rig = _find_rgbd_rig(cfg, None)
+            rig = _find_depth_rig(cfg, None)
         self.assertEqual(rig.rig_id, "oblique_L")
         self.assertIn("enabled: false", out.getvalue())
         self.assertIn("A cell will refuse it", out.getvalue())
 
     def test_an_unnamed_rig_and_an_unset_key_both_say_what_to_do(self) -> None:
         with self.assertRaises(SystemExit) as missing:
-            _find_rgbd_rig(self._cfg("overhead", self._rig("overhead")), "nope")
+            _find_depth_rig(self._cfg("overhead", self._rig("overhead")), "nope")
         self.assertIn("nope", str(missing.exception))
         with self.assertRaises(SystemExit) as unset:
-            _find_rgbd_rig(self._cfg(None, self._rig("overhead")), None)
+            _find_depth_rig(self._cfg(None, self._rig("overhead")), None)
         self.assertIn("primary_rig_id", str(unset.exception))
 
     def test_over_the_shipped_profiles_the_two_tools_agree(self) -> None:
@@ -271,7 +273,7 @@ class TheTwoToolsNameTheSameCameraTests(unittest.TestCase):
                 out = io.StringIO()
                 try:
                     with redirect_stdout(out):
-                        chosen = _find_rgbd_rig(cfg.camera, None).rig_id
+                        chosen = _find_depth_rig(cfg.camera, None).rig_id
                 except SystemExit:
                     chosen = named  # a refusal is about the rig the cell named, which is agreement
                 self.assertEqual(chosen, named)
@@ -343,14 +345,15 @@ class TheExerciserOpensThroughTheNounTests(unittest.TestCase):
         out = io.StringIO()
         with mock.patch("src.config.load_config", return_value=cfg), \
                 mock.patch("src.camera.orchestration.camera.Camera", camera_cls), \
-                mock.patch("src.models.factory.build_object_detector"), \
-                mock.patch("src.models.factory.build_segmenter"), \
+                mock.patch("src.models.perception_spec.PerceptionSpec"), \
                 mock.patch("src.robot.perception.RealSenseVisionPerceptionSource",
                            return_value=source), \
                 redirect_stdout(out):
             code = exerciser.main([])
         self.assertEqual(code, 0)
-        camera_cls.from_config.assert_called_once_with(cfg.camera, rig_id="oblique_L", open_disabled=True)
+        # A tree with no robot section hands no workspace box: a stereo rig there searches from its near limit.
+        camera_cls.from_config.assert_called_once_with(cfg.camera, rig_id="oblique_L", open_disabled=True,
+                                                       workspace=UNSET)
         owner.open.assert_called_once_with()
         self.assertIn("opened rig 'oblique_L' although it has `enabled: false`", out.getvalue())
         owner.handle.return_value.release.assert_called_once_with()

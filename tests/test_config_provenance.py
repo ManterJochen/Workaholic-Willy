@@ -54,7 +54,7 @@ class _Tree(unittest.TestCase):
 class OriginIndexTests(_Tree):
     def test_a_base_value_is_traced_to_its_file_and_line(self) -> None:
         origins = index_origins(self.root)
-        origin = origins["robot.workspace_limits.z_max"]
+        origin = origins["robot.motion.workspace.z_max"]
         self.assertEqual(origin.file.name, "robot.yaml")
         self.assertEqual(origin.layer, "")
         self.assertGreater(origin.line, 0)
@@ -65,7 +65,7 @@ class OriginIndexTests(_Tree):
         """The question the merge could not answer. `robot.ur3e.yaml` narrows the workspace box; without
         provenance a reader sees only the merged number and cannot tell it came from the robot layer."""
         origins = index_origins(self.root, ("sim", "ur3e"))
-        origin = origins["robot.workspace_limits.x_max"]
+        origin = origins["robot.motion.workspace.x_max"]
         self.assertEqual(origin.file.name, "robot.ur3e.yaml")
         self.assertEqual(origin.layer, "ur3e")
 
@@ -78,13 +78,16 @@ class OriginIndexTests(_Tree):
         """An overlay for a profile that is not in the chain did not contribute the value, so claiming
         it did would be a lie in the most confusing possible place."""
         origins = index_origins(self.root, ("sim",))
-        self.assertNotEqual(origins["robot.workspace_limits.x_max"].layer, "ur3e")
+        self.assertNotEqual(origins["robot.motion.workspace.x_max"].layer, "ur3e")
 
     def test_models_files_are_indexed_under_models(self) -> None:
-        """models/*.yaml contribute their TOP-LEVEL keys directly, unlike every other section."""
+        """models/*.yaml contribute their TOP-LEVEL keys directly, unlike every other section. The shipped tree
+        carries no models overlay since 2026-10-17, so a cell's own is written here."""
+        (self.root / "models" / "object.sim.yaml").write_text("rtdetr:\n  threshold: 0.3\n", encoding="utf-8")
         origins = index_origins(self.root, ("sim",))
-        self.assertIn("models.objectdetector.optim.torch_dtype", origins)
-        self.assertEqual(origins["models.objectdetector.optim.torch_dtype"].layer, "sim")
+        self.assertEqual(origins["models.rtdetr.threshold"].layer, "sim")
+        self.assertEqual(origins["models.pipeline.kind"].layer, "")
+        self.assertEqual(origins["models.weights_root"].file.name, "weights.yaml")
 
     def test_an_unreadable_file_is_skipped_not_raised(self) -> None:
         """Indexing runs while an error is ALREADY being reported; an explainer that throws on the way
@@ -131,32 +134,38 @@ class ErrorMessageTests(_Tree):
 
     def test_it_still_rejects_everything_it_rejected_before(self) -> None:
         """Strictly more text, never more tolerance: the point is a better message, not a softer gate."""
-        self._break("robot/robot.yaml", "  workspace_limits:", "  workspace_limitz:")
+        self._break("robot/robot.yaml", "    workspace:            # Cartesian box in mm",
+                    "    workspacez:            # Cartesian box in mm")
         msg = self._load_error()
         self.assertIn("rejected on purpose", msg)
 
     def test_a_rule_over_a_block_several_files_write_names_every_one_of_them(self) -> None:
-        """A rule over a whole block has no line of its own, and when several files write the block the index cannot
-        tell which of them holds the value the rule rejected. Every one of them is named, never the one whose name
-        sorts first: that file may not hold the value, and a location sends the operator to edit it (robot.sim.yaml
-        was named for a value written in robot.decision.yaml).
+        """A rule over a whole block names no key of it, and when several files write the block the index cannot tell
+        which of them holds the value the rule rejected. Every one of them is named, never one of them alone: that file
+        may not hold the value, and a location sends the operator to edit it (robot.sim.yaml was named for a value
+        written in robot.decision.yaml).
 
-        The rule broken here is ``RobotConfig._check_safe_pose_in_workspace``: the sim layer's safe pose moves
-        to x=50, outside its own x[100, 700] box. Pydantic reports a model rule at the model, ``robot``, which
-        robot.yaml and the sim layer both write."""
-        self._break("robot/robot.sim.yaml", "  safe_pose:\n    x: 450.0\n", "  safe_pose:\n    x: 50.0\n")
+        The rule broken here is ``RobotMotionConfig._looks_are_joints_in_degrees``: the sim layer declares two looks of
+        different lengths. Pydantic reports a model rule at its model, ``robot.motion``, which robot.yaml and the sim
+        layer both write (until 2026-10-17 the looks' rule stood on ``robot`` itself)."""
+        self._break("robot/robot.sim.yaml", "    workspace:\n      x_min: 100.0\n",
+                    "    look_deg: [[0.0, -90.0, 90.0, -90.0, -90.0, 0.0], [0.0, -90.0]]\n"
+                    "    workspace:\n      x_min: 100.0\n")
         msg = self._load_error("sim")
-        self.assertIn("is outside workspace_limits", msg, "the rule this fixture breaks must be the one that fired")
+        self.assertIn("the looks name 2, 6 joints", msg, "the rule this fixture breaks must be the one that fired")
         self.assertIn("robot.sim.yaml:", msg)
         self.assertRegex(msg, r"[\\/]robot\.yaml:\d+", "the base file writes the block too, so it is named")
         self.assertNotIn("not written in any YAML", msg)
 
     def test_a_rule_over_a_block_one_file_writes_names_that_file_alone(self) -> None:
-        """The control: with no layer only robot.yaml writes ``robot``, so the same rule has one place to name."""
-        self._break("robot/robot.yaml", "    z_min:  100.0", "    z_min:  590.0")
+        """The control: with no layer only robot.yaml writes ``robot.motion``, so the same rule has one place to
+        name."""
+        self._break("robot/robot.yaml", '    planner: "curobo"\n',
+                    '    planner: "curobo"\n    look_deg: [[0.0, -90.0, 90.0, -90.0, -90.0, 0.0], [0.0, -90.0]]\n')
         msg = self._load_error()
-        self.assertIn("is outside workspace_limits", msg, "the rule this fixture breaks must be the one that fired")
-        self.assertRegex(msg, r"\(a rule over the block written at \S*robot\.yaml:\d+\)")
+        self.assertIn("the looks name 2, 6 joints", msg, "the rule this fixture breaks must be the one that fired")
+        self.assertRegex(msg, r"[\\/]robot\.yaml:\d+")
+        self.assertNotRegex(msg, r"robot\.\w+\.yaml", "no layer writes the block, so no layer is named")
 
     def test_a_valid_tree_still_loads(self) -> None:
         set_active_profile("sim,ur3e")
@@ -354,8 +363,8 @@ class TheIndexMergesAsTheLoaderMergesTests(_Tree):
 
     def test_a_null_leaf_over_a_written_value_keeps_the_written_line(self) -> None:
         """⛔ Measured by review: the tree kept the base value and the index named the empty line."""
-        self._layer("robot/robot.nullz.yaml", "robot:\n  workspace_limits:\n    z_max:\n")
-        origin = index_origins(self.root, ("nullz",))["robot.workspace_limits.z_max"]
+        self._layer("robot/robot.nullz.yaml", "robot:\n  motion:\n    workspace:\n      z_max:\n")
+        origin = index_origins(self.root, ("nullz",))["robot.motion.workspace.z_max"]
         self.assertEqual(("robot.yaml", ""), (origin.file.name, origin.layer))
 
     def test_a_null_the_earlier_layers_lack_is_the_layers_own_value(self) -> None:
@@ -393,16 +402,16 @@ class TheIndexMergesAsTheLoaderMergesTests(_Tree):
 
     def test_a_layer_that_replaces_a_whole_section_is_the_line_named(self) -> None:
         """⛔ Measured by review: the section's base keys stayed indexed, and the error named the base file."""
-        self._layer("camera/stereomatcher.l1.yaml", 'stereomatcher: "__null__"\n')
+        self._layer("camera/cam.l1.yaml", 'cameras: "__null__"\n')
         origins = index_origins(self.root, ("l1",))
-        self.assertEqual("stereomatcher.l1.yaml", origins["camera.stereomatcher"].file.name)
-        self.assertFalse(any(key.startswith("camera.stereomatcher.") for key in origins))
-        self.assertIn("stereomatcher.l1.yaml:1", self._load_error("l1"))
+        self.assertEqual("cam.l1.yaml", origins["camera.cameras"].file.name)
+        self.assertFalse(any(key.startswith("camera.cameras.") for key in origins))
+        self.assertIn("cam.l1.yaml:1", self._load_error("l1"))
 
     def test_a_key_written_twice_is_the_last_write(self) -> None:
         """As `yaml.safe_load` reads it: the second value is the one the tree holds."""
-        self._layer("robot/robot.twice.yaml", "robot:\n  workspace_limits:\n    z_max: 1.0\n    z_max: 2.0\n")
-        self.assertEqual(4, index_origins(self.root, ("twice",))["robot.workspace_limits.z_max"].line)
+        self._layer("robot/robot.twice.yaml", "robot:\n  motion:\n    workspace:\n      z_max: 1.0\n      z_max: 2.0\n")
+        self.assertEqual(5, index_origins(self.root, ("twice",))["robot.motion.workspace.z_max"].line)
 
 
 class TheIndexMatchesTheLoaderOnRandomTreesTests(unittest.TestCase):

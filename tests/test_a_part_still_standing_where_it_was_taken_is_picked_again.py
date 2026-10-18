@@ -3,7 +3,7 @@
 
 The owner's Hand-E switches on one tool output and reports nothing: a grip that closes on nothing carries nothing to the
 drop, the release is not measured, and the task counted the part placed. A task that follows its parts
-(``robot.grasping.follow_parts``) reads the spot the last pick took its part from on the next first look: where it still
+(every cell built from a tree) reads the spot the last pick took its part from on the next first look: where it still
 reads a part over the support (``KeptScene``, ``TAKEN_STILL_STANDS``), the last part was not taken.
 
 * the kept scene says so in the words a task reads, where the taken part still stands where it stood;

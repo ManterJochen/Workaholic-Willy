@@ -167,12 +167,8 @@ Used as an external simulation platform.
 
 ## Model Weights
 
-The following model weights may be fetched at runtime.
-
-IDEA-Research/grounding-dino-tiny
-IDEA-Research/grounding-dino-base
-Apache-2.0
-https://huggingface.co/IDEA-Research
+The following model weights are fetched once with scripts/model_weights/fetch.py; nothing is downloaded at
+run time.
 
 facebook/sam2-hiera-large
 Apache-2.0
@@ -185,10 +181,6 @@ https://huggingface.co/Qwen
 PekingU/rtdetr_r50vd
 Apache-2.0
 https://huggingface.co/PekingU
-
-shi-labs/oneformer_coco_swin_large
-MIT for code; see the model card for model-specific terms
-https://huggingface.co/shi-labs
 
 openai/whisper-large-v3-turbo
 MIT

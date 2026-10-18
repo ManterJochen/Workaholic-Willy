@@ -5,19 +5,19 @@ from .config import StereoRigConfig, CalibrationResult
 from .sub_modules.rectifier import StereoRectifier
 from .sub_modules.disparity import DisparityComputer
 from .sub_modules.pointcloud import PointCloudReconstructor
-from .sub_modules.extrinsics import ExtrinsicsTransformer
 
 __all__ = ["StereoRigRunTime"]
 
 
 @dataclass(slots=True)
 class StereoRigRunTime:
-    """One calibrated rig: rectification, disparity, reconstruction, extrinsics.
+    """One calibrated rig: rectification, disparity and reconstruction.
 
     Assembled by `StereoRigFactory`. Reconstruction is computed in millimetres and
     the `unit` argument scales it from there; these methods default to `mm`, where
-    `PointCloudReconstructor` underneath defaults to `cm`. `transform_cam_to_base`
-    raises while the rig has no CAMERA -> BASE matrix.
+    `PointCloudReconstructor` underneath defaults to `cm`. Where the rig stands in
+    the cell is its own calibration, `camera.cameras.rigs[<id>].extrinsics`, not
+    this runtime's.
     """
 
     config: StereoRigConfig
@@ -25,7 +25,6 @@ class StereoRigRunTime:
     rectifier: StereoRectifier
     disparity: DisparityComputer
     pointcloud: PointCloudReconstructor
-    extrinsics: ExtrinsicsTransformer
 
     def rectify(self, left_bgr, right_bgr):
         return self.rectifier.rectify(left_bgr, right_bgr)
@@ -50,9 +49,3 @@ class StereoRigRunTime:
         return self.pointcloud.representative_point(
             rect_left_bgr, rect_right_bgr, self.disparity, xi, yi, unit
         )
-
-    def set_extrinsics(self, T_cam_to_base_4x4):
-        self.extrinsics.set_matrix(T_cam_to_base_4x4)
-
-    def transform_cam_to_base(self, point_cam):
-        return self.extrinsics.transform(point_cam)

@@ -33,7 +33,7 @@ What is pinned (the synthesis' "Tests that must pin it" 1 to 3):
   the down leg refused before it was sent, the arm in the air at P0, is a refusal the loop falls through on too
   (``refused_down_not_sent``, the lead's ruling of 2026-09-29, pending the owner), and one that may have been sent is
   a stop;
-* the cell's steady gate (``safety.dwell``) before P0 and before every contact leg;
+* the arm's steady gate before P0 and before every contact leg, on every arm but one that steps its own physics;
 * the budget key: the same centre for ``check`` and ``record``, the landing the centre moved by the push.
 """
 
@@ -44,7 +44,6 @@ import dataclasses
 import json
 import math
 import unittest
-from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import patch
 
@@ -68,6 +67,7 @@ from src.robot.core.keep_out import SegmentationOffer
 from src.robot.grasping.recovery import push_planner
 from src.robot.grasping.recovery.policy import refused_before_motion
 from src.robot.grasping.recovery.push_budgets import BUDGET_ALLOWED, BUDGET_PART_SPENT, PushBudgets
+from src.robot.core.robot_arm import STEADY_TIMEOUT_S
 from src.robot.grasping.recovery.push_motion import (
     APPROACH_LEG,
     APPROACH_RISE_MM,
@@ -330,16 +330,13 @@ class _StatusNone(_UR):
 
 
 class _Steady(_UR):
-    """An arm whose tree asks for the steady gate (``safety.dwell``), as the owner's robot.yaml does; every wait is
-    on the log, and ``waits`` maps a wait's index to what it answers instead of True (False, or an exception)."""
+    """An arm that can be waited on for rest, as every arm is; every wait is on the log, and ``waits`` maps a wait's
+    index to what it answers instead of True (False, or an exception)."""
 
-    TIMEOUT_S = 3.0
+    TIMEOUT_S = STEADY_TIMEOUT_S
 
-    def __init__(self, log: _Log, *, waits: Optional[dict[int, Any]] = None, require: bool = True,
-                 **keywords: Any) -> None:
+    def __init__(self, log: _Log, *, waits: Optional[dict[int, Any]] = None, **keywords: Any) -> None:
         super().__init__(log, **keywords)
-        dwell = SimpleNamespace(require_steady_before_motion=require, steady_timeout_s=self.TIMEOUT_S)
-        self.config = SimpleNamespace(safety=SimpleNamespace(dwell=dwell))
         self.waits = dict(waits or {})
         self.waited = 0
 
@@ -350,6 +347,12 @@ class _Steady(_UR):
         if isinstance(answer, BaseException):
             raise answer
         return bool(answer)
+
+
+class _SimulatedPhysics(_Steady):
+    """The Isaac sim: its wait steps its own physics (``StepsItsOwnPhysics``), so nothing waits on it."""
+
+    steps_its_own_physics = True
 
 
 class _RefusingWorld(_World):
@@ -1017,8 +1020,8 @@ class AFailureAfterSomethingMovedStopsWhereTheArmIs(unittest.TestCase):
 
 
 class TheArmIsAtRestBeforeEveryMotion(unittest.TestCase):
-    """The cell's steady gate (``safety.dwell.require_steady_before_motion``, on in the owner's robot.yaml) holds
-    for the push as for every grasp and look motion: the arm is waited on before P0 and before every contact leg."""
+    """The steady gate holds for the push as for every grasp and look motion: the arm is waited on before P0 and
+    before every contact leg."""
 
     def test_every_motion_waits_for_the_arm_to_rest_first(self) -> None:
         cell = _Cell(self, _Steady)
@@ -1027,8 +1030,8 @@ class TheArmIsAtRestBeforeEveryMotion(unittest.TestCase):
         self.assertEqual([kind for kind in cell.log.kinds() if kind in ("steady", "move")], ["steady", "move"] * 5)
         self.assertEqual(cell.log.of("steady"), [_Steady.TIMEOUT_S] * 5)
 
-    def test_no_wait_where_the_tree_asks_for_none(self) -> None:
-        cell = _Cell(self, _Steady, require=False)
+    def test_no_wait_on_an_arm_that_steps_its_own_physics(self) -> None:
+        cell = _Cell(self, _SimulatedPhysics)
         self.assertIs(cell.push().code, C.PUSHED)
         self.assertNotIn("steady", cell.log.kinds())
 

@@ -65,10 +65,8 @@ over one bad viewpoint.
 ## Several cameras: one calibration each
 
 Each camera is calibrated on its own and declares its file on its own rig,
-`camera.cameras.rigs[<id>].extrinsics`. `robot.grasping.fusion.cameras` names which cameras are fused,
-by the same rig id, and holds nothing else. Fusing takes two switches as well: `fusion.enabled` builds
-each named camera's resolver from its file, and `fusion.geometry.enabled` hands the fused surface to the
-grasp generator. Either one alone leaves the cell single-view:
+`camera.cameras.rigs[<id>].extrinsics`. That is all fusing takes: a cell fuses every enabled RGB-D rig
+that declares its calibration, where two or more do and the primary is one of them:
 
 ```yaml
 camera:
@@ -83,22 +81,14 @@ camera:
         extrinsics:
           mounting_mode: eye_to_hand
           artifact_path: "../calibration/real/eth_cam_right.json"
-robot:
-  grasping:
-    fusion:
-      enabled: true
-      geometry: {enabled: true}
-      cameras:
-        cam_left: {enabled: true}
-        cam_right: {enabled: true}
 ```
 
 An `eye_in_hand` rig also declares `shutter_motion_tolerance_mm` and `shutter_motion_tolerance_deg`, how
 far the arm may move while a frame is taken; an `eye_to_hand` rig declares neither. Every reader loads
 the file through `RigCalibration.from_config` in [`rig_calibration.py`](../rig_calibration.py). When the
-cell is built, an enabled fused camera whose rig declares no calibration, or whose file is missing or
-invalid, is refused, because a smaller camera set than the one asked for must not run silently. A
-camera set `enabled: false` under `fusion.cameras` is skipped.
+cell is built, a fused camera whose file is missing or invalid is refused, because a smaller camera set
+than the one declared must not run silently. A rig switched off is not fused, nor one that declares no
+calibration; the build's boot line names the cameras it fuses.
 
 ## Traps
 

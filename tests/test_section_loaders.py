@@ -12,7 +12,6 @@ that are used on their own.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import tempfile
@@ -30,8 +29,7 @@ from src.config.loader import (
 )
 
 _DATA = Path(__file__).resolve().parents[1] / "config"
-_PERCEPTION_FIELDS = ("objectdetector", "segmenter", "detector", "segmenter_backend", "rtdetr",
-                      "oneformer", "pipeline")
+_PERCEPTION_FIELDS = ("segmenter", "rtdetr", "pipeline", "weights_root")
 
 
 class _ScratchTree(unittest.TestCase):
@@ -46,6 +44,15 @@ class _ScratchTree(unittest.TestCase):
     def tearDown(self) -> None:
         reload_config()
         shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _move_rtdetr(self) -> dict:
+        """Take the `rtdetr` block out of `object.yaml`, the optional perception key, and hand it back."""
+        objects = self.root / "models" / "object.yaml"
+        data = yaml.safe_load(objects.read_text(encoding="utf-8"))
+        self.assertIn("rtdetr", data, "the shipped tree stopped writing the key this test moves")
+        block = data.pop("rtdetr")
+        objects.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        return block
 
     def _assert_loads(self, loader) -> None:
         try:
@@ -82,7 +89,7 @@ class ThePerceptionSectionIsWhatThePerceptionSpecReadsTests(unittest.TestCase):
 
         spec = tuple(item.name for item in dataclasses.fields(PerceptionSpec))
         self.assertEqual(tuple(PerceptionModelsConfig.model_fields), spec)
-        self.assertEqual(spec, _PERCEPTION_FIELDS, "the seven the scratch-tree tests compare moved")
+        self.assertEqual(spec, _PERCEPTION_FIELDS, "the four the scratch-tree tests compare moved")
         for name, info in PerceptionModelsConfig.model_fields.items():
             whole = ModelsConfig.model_fields[name]
             with self.subTest(field=name):
@@ -139,7 +146,7 @@ class AFaultStaysInItsSectionTests(_ScratchTree):
 
     def test_a_malformed_detector_file_refuses_perception_and_leaves_speech(self) -> None:
         (self.root / "models" / "object.yaml").write_text(
-            "objectdetector: [never closed\n", encoding="utf-8")
+            "pipeline: [never closed\n", encoding="utf-8")
         with self.assertRaises(ConfigError):
             load_perception_section(self.root, profile=None)
         for loader in (load_robot_section, load_camera_section, load_speech_section):
@@ -147,9 +154,9 @@ class AFaultStaysInItsSectionTests(_ScratchTree):
                 self._assert_loads(loader)
 
     def test_an_unreadable_file_that_cannot_hold_a_perception_key_leaves_perception_loadable(self) -> None:
-        """All seven perception keys are written in `object.yaml` or `segmenting.yaml`, so a broken
-        `hand.yaml` or `stt.yaml` could not have held one of them."""
-        for name in ("hand.yaml", "stt.yaml"):
+        """All four perception keys are written in `object.yaml`, `segmenting.yaml` or `weights.yaml`, so a broken
+        `stt.yaml` could not have held one of them."""
+        for name in ("stt.yaml",):
             path = self.root / "models" / name
             original = path.read_text(encoding="utf-8")
             path.write_text("broken: [never closed\n", encoding="utf-8")
@@ -160,21 +167,16 @@ class AFaultStaysInItsSectionTests(_ScratchTree):
                 path.write_text(original, encoding="utf-8")
 
     def test_a_key_written_nowhere_beside_an_unreadable_file_refuses_rather_than_defaults(self) -> None:
-        """The other half of the rule. With `oneformer` written in no file, a broken `hand.yaml` might
+        """The other half of the rule. With `rtdetr` written in no file, a broken `stt.yaml` might
         have held it, so perception refuses and names the file instead of taking the schema default."""
-        segmenting = self.root / "models" / "segmenting.yaml"
-        data = yaml.safe_load(segmenting.read_text(encoding="utf-8"))
-        self.assertIn("oneformer", data, "the shipped tree stopped writing the key this test removes")
-        del data["oneformer"]
-        segmenting.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        self._move_rtdetr()
         # Control: with every file readable, the default for a key nobody wrote is an honest answer.
         self._assert_loads(load_perception_section)
-        (self.root / "models" / "hand.yaml").write_text("handdetect: [never closed\n", encoding="utf-8")
+        (self.root / "models" / "stt.yaml").write_text("stt: [never closed\n", encoding="utf-8")
         with self.assertRaises(ConfigError) as ctx:
             load_perception_section(self.root, profile=None)
-        self.assertIn("hand.yaml", str(ctx.exception))
-        self.assertIn("oneformer", str(ctx.exception))
-        self._assert_loads(load_speech_section)
+        self.assertIn("stt.yaml", str(ctx.exception))
+        self.assertIn("rtdetr", str(ctx.exception))
 
 
 class AnUnknownModelsKeyIsNotDroppedTests(_ScratchTree):
@@ -197,7 +199,7 @@ class AnUnknownModelsKeyIsNotDroppedTests(_ScratchTree):
         self.assertIn("object.yaml", str(ctx.exception))
         self._assert_loads(load_speech_section)
 
-    def test_an_unknown_key_beside_all_seven_still_refuses_perception(self) -> None:
+    def test_an_unknown_key_beside_all_four_still_refuses_perception(self) -> None:
         path = self.root / "models" / "object.yaml"
         path.write_text(path.read_text(encoding="utf-8") + "\nnot_a_model_key: 1\n", encoding="utf-8")
         with self.assertRaises(ConfigError) as ctx:
@@ -206,15 +208,12 @@ class AnUnknownModelsKeyIsNotDroppedTests(_ScratchTree):
         self._assert_loads(load_speech_section)
 
     def test_a_misspelled_key_in_a_file_of_its_own_refuses_the_section_missing_that_key(self) -> None:
-        segmenting = self.root / "models" / "segmenting.yaml"
-        data = yaml.safe_load(segmenting.read_text(encoding="utf-8"))
-        oneformer = data.pop("oneformer")
-        segmenting.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        rtdetr = self._move_rtdetr()
         (self.root / "models" / "extra.yaml").write_text(
-            yaml.safe_dump({"oneformr": oneformer}, sort_keys=False), encoding="utf-8")
+            yaml.safe_dump({"rtdter": rtdetr}, sort_keys=False), encoding="utf-8")
         with self.assertRaises(ConfigError) as ctx:
             load_perception_section(self.root, profile=None)
-        self.assertIn("oneformr", str(ctx.exception))
+        self.assertIn("rtdter", str(ctx.exception))
         self._assert_loads(load_speech_section)
 
     def test_an_unknown_key_in_the_speech_file_refuses_speech_and_leaves_perception(self) -> None:
@@ -231,9 +230,9 @@ class AnUnknownKeyIsNamedWhereItIsWrittenTests(_ScratchTree):
     carries one path, and naming it sends an operator to a file that holds no such key."""
 
     def test_a_misspelled_key_in_an_overlay_names_the_overlay(self) -> None:
+        # The shipped tree carries no models overlay since 2026-10-17; a cell's own is the case.
         overlay = self.root / "models" / "object.sim.yaml"
-        self.assertTrue(overlay.is_file(), "the shipped tree stopped carrying models/object.sim.yaml")
-        overlay.write_text(overlay.read_text(encoding="utf-8") + "\nrtdter: {}\n", encoding="utf-8")
+        overlay.write_text("rtdetr:\n  threshold: 0.3\nrtdter: {}\n", encoding="utf-8")
         with self.assertRaises(ConfigError):
             load_config(self.root, profile="sim")
         with self.assertRaises(ConfigError) as ctx:
@@ -244,17 +243,14 @@ class AnUnknownKeyIsNamedWhereItIsWrittenTests(_ScratchTree):
         self.assertNotIn(str(self.root / "models" / "object.yaml") + ":", message)
 
     def test_a_misspelled_key_in_a_profile_only_file_names_the_layer_that_wrote_it(self) -> None:
-        segmenting = self.root / "models" / "segmenting.yaml"
-        data = yaml.safe_load(segmenting.read_text(encoding="utf-8"))
-        oneformer = data.pop("oneformer")
-        segmenting.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        rtdetr = self._move_rtdetr()
         (self.root / "models" / "extra.sim.yaml").write_text(
-            yaml.safe_dump({"oneformr": oneformer}, sort_keys=False), encoding="utf-8")
+            yaml.safe_dump({"rtdter": rtdetr}, sort_keys=False), encoding="utf-8")
         (self.root / "models" / "extra.ur3e.yaml").write_text("{}\n", encoding="utf-8")
         with self.assertRaises(ConfigError) as ctx:
             load_perception_section(self.root, profile="sim,ur3e")
         message = str(ctx.exception)
-        self.assertIn("oneformr", message)
+        self.assertIn("rtdter", message)
         self.assertIn("extra.sim.yaml", message)
         self.assertNotIn("extra.ur3e.yaml", message)
 
@@ -263,9 +259,8 @@ class TheRuleHoldsUnderAProfileChainTests(_ScratchTree):
     """The fault rule has to hold for overlays and for profile-only files, not only for base files."""
 
     def test_a_broken_overlay_of_a_perception_file_refuses_perception_under_that_profile(self) -> None:
-        overlay = self.root / "models" / "object.sim.yaml"
-        self.assertTrue(overlay.is_file(), "the shipped tree stopped carrying models/object.sim.yaml")
-        overlay.write_text("objectdetector: [never closed\n", encoding="utf-8")
+        overlay = self.root / "models" / "object.sim.yaml"  # a cell's own overlay; the shipped tree carries none
+        overlay.write_text("pipeline: [never closed\n", encoding="utf-8")
         with self.assertRaises(ConfigError) as ctx:
             load_perception_section(self.root, profile="sim")
         self.assertIn("object.sim.yaml", str(ctx.exception))
@@ -273,20 +268,17 @@ class TheRuleHoldsUnderAProfileChainTests(_ScratchTree):
         load_speech_section(self.root, profile="sim")
 
     def test_a_profile_only_file_contributes_its_keys_and_its_faults(self) -> None:
-        segmenting = self.root / "models" / "segmenting.yaml"
-        data = yaml.safe_load(segmenting.read_text(encoding="utf-8"))
-        oneformer = data.pop("oneformer")
-        segmenting.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        rtdetr = self._move_rtdetr()
         extra = self.root / "models" / "extra.sim.yaml"
-        extra.write_text(yaml.safe_dump({"oneformer": oneformer}, sort_keys=False), encoding="utf-8")
+        extra.write_text(yaml.safe_dump({"rtdetr": rtdetr}, sort_keys=False), encoding="utf-8")
         whole = load_config(self.root, profile="sim")
-        self.assertIsNotNone(whole.models.oneformer, "the profile-only file must be what supplies the key")
-        self.assertEqual(load_perception_section(self.root, profile="sim").oneformer, whole.models.oneformer)
-        extra.write_text("oneformer: [never closed\n", encoding="utf-8")
+        self.assertIsNotNone(whole.models.rtdetr, "the profile-only file must be what supplies the key")
+        self.assertEqual(load_perception_section(self.root, profile="sim").rtdetr, whole.models.rtdetr)
+        extra.write_text("rtdetr: [never closed\n", encoding="utf-8")
         with self.assertRaises(ConfigError) as ctx:
             load_perception_section(self.root, profile="sim")
         self.assertIn("extra.sim.yaml", str(ctx.exception))
-        self.assertIn("oneformer", str(ctx.exception))
+        self.assertIn("rtdetr", str(ctx.exception))
         load_speech_section(self.root, profile="sim")
 
 
@@ -305,8 +297,7 @@ class ASectionNamesWhatItRefusesTests(_ScratchTree):
         cases = (
             (load_camera_section, ("camera", "cam.yaml"), "cameras", "camera.cameras.not_a_key"),
             (load_speech_section, ("models", "stt.yaml"), "stt", "models.stt.not_a_key"),
-            (load_perception_section, ("models", "object.yaml"), "objectdetector",
-             "models.objectdetector.not_a_key"),
+            (load_perception_section, ("models", "object.yaml"), "rtdetr", "models.rtdetr.not_a_key"),
         )
         for loader, (folder, name), block, dotted in cases:
             with self.subTest(loader=loader.__name__):
@@ -329,72 +320,6 @@ class ASectionNamesWhatItRefusesTests(_ScratchTree):
             load_robot_section(self.root, profile=None)
         self.assertNotIn("does not exist", str(ctx.exception))
         self.assertIn("empty", str(ctx.exception))
-
-
-class TheCalibrationRuleSpansTwoSectionsTests(_ScratchTree):
-    """The one rule on `AppConfig` reads the camera section and the robot section together: every camera
-    `robot.grasping.fusion.cameras` names must be a rig in `camera.cameras.rigs`, because its calibration
-    is declared on that rig. Each section loader sees only its half, so the rule is also a function every
-    door that combines two sections calls."""
-
-    def test_the_whole_tree_refuses_the_sections_load_and_the_function_names_the_conflict(self) -> None:
-        from src.config.schema import camera_calibration_conflict
-
-        camera = load_camera_section(self.root, profile=None)
-        self.assertIsNone(camera_calibration_conflict(camera, load_robot_section(self.root, profile=None)))
-        ghost = "no_such_rig"
-        self.assertNotIn(ghost, {rig.rig_id for rig in camera.cameras.rigs})
-        path = self.root / "robot" / "robot.yaml"
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        fusion = data["robot"].setdefault("grasping", {}).setdefault("fusion", {})
-        fusion["cameras"] = {ghost: {"enabled": True}}
-        path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-        with self.assertRaises(ConfigError):
-            load_config(self.root, profile=None)
-        robot = load_robot_section(self.root, profile=None)
-        self._assert_loads(load_camera_section)
-        conflict = camera_calibration_conflict(camera, robot)
-        self.assertIsNotNone(conflict)
-        self.assertIn(ghost, conflict)
-
-
-class TheRobotSectionSeesTheAdaptationOverlayTests(_ScratchTree):
-    """`WILLY_ADAPTATION_OVERLAY` changes the robot block of the whole tree. The robot section has to see
-    the same change, or the two doors would describe two different cells."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self._previous = os.environ.pop("WILLY_ADAPTATION_OVERLAY", None)
-        self.addCleanup(self._restore)
-        self.overlay = Path(self._tmp) / "adaptation.yaml"
-        self.overlay.write_text(
-            "robot:\n  grasping:\n    success_model:\n      ranking_blend_weight: 0.15\n",
-            encoding="utf-8",
-        )
-
-    def _restore(self) -> None:
-        os.environ.pop("WILLY_ADAPTATION_OVERLAY", None)
-        if self._previous is not None:
-            os.environ["WILLY_ADAPTATION_OVERLAY"] = self._previous
-        reload_config()
-
-    def test_the_overlay_reaches_both_doors_alike(self) -> None:
-        before = load_robot_section(self.root, profile=None)
-        self.assertNotEqual(before.grasping.success_model.ranking_blend_weight, 0.15,
-                            "the overlay must change the value, or this test proves nothing")
-        os.environ["WILLY_ADAPTATION_OVERLAY"] = str(self.overlay)
-        reload_config()
-        section = load_robot_section(self.root, profile=None)
-        self.assertEqual(section.grasping.success_model.ranking_blend_weight, 0.15)
-        self.assertEqual(section, load_config(self.root, profile=None).robot)
-
-    def test_an_overlay_without_a_robot_file_builds_what_the_whole_tree_builds(self) -> None:
-        (self.root / "robot" / "robot.yaml").unlink()
-        os.environ["WILLY_ADAPTATION_OVERLAY"] = str(self.overlay)
-        reload_config()
-        whole = load_config(self.root, profile=None).robot
-        self.assertIsNotNone(whole, "the premise: the whole tree builds a robot from the overlay alone")
-        self.assertEqual(load_robot_section(self.root, profile=None), whole)
 
 
 class TheCameraSectionCarriesARigCalibrationTests(_ScratchTree):

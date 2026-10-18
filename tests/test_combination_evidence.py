@@ -8,7 +8,7 @@ box, S22 makes a planner refuse without one.
 
 ⭐ **THE KEY IS THE COMBINATION, NOT THE PAIR.** The same arm and hand disagree at different plates, different
 placements and different planner margins, so all of them are in the name:
-`{arm}_{hand}_c{coupling}mm_{approach}{closing}_m{margin}mm_a{attach}.json`. A ur3e at 4 mm and the same ur3e at
+`{arm}_{hand}_c{coupling}mm_{approach}{closing}_m{margin}mm.json`. A ur3e at 4 mm and the same ur3e at
 10 mm are two files, because they are two measurements, and B6 measured exactly that: at 10 mm the UR5 and the UR10
 have no pose at all.
 
@@ -36,7 +36,7 @@ from src.robot.safety.planning.evidence import (
 
 #: The combination the sim cell runs, as its file is named. The margin is 4, not the 10 this design was drafted
 #: against: B6 measured the family at 4 mm and the sim layer ships it, so the drafted name was already stale.
-_SIM_KEY = "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm_a0.json"
+_SIM_KEY = "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm.json"
 
 
 def _measured(**over: object) -> Measured:
@@ -52,7 +52,7 @@ def _measured(**over: object) -> Measured:
 def _evidence(**over: object) -> CombinationEvidence:
     fields: dict[str, object] = {
         "arm": "ur5e", "hand": "robotiq_2f85", "coupling_mm": 0.0, "approach": "+Y", "closing": "+X",
-        "planner_margin_mm": 4.0, "attach_spheres": 0, "guard_margin_mm": 10.0,
+        "planner_margin_mm": 4.0, "guard_margin_mm": 10.0,
         "composed_sha256": "c" * 64, "urdf_sha256": "u" * 64, "arm_descriptor_sha256": "a" * 64,
         "hand_map_sha256": "h" * 64, "guard_sha256": "g" * 64,
         "measured": _measured(),
@@ -66,39 +66,39 @@ class TheKeyNamesEverythingThatCanDisagree(unittest.TestCase):
     def test_the_sim_cell_is_the_name_the_gate_will_write(self) -> None:
         self.assertEqual(
             evidence_path(arm="ur5e", hand="robotiq_2f85", coupling_mm=0.0, approach="+Y", closing="+X",
-                          planner_margin_mm=4.0, attach_spheres=0).name,
+                          planner_margin_mm=4.0).name,
             _SIM_KEY,
         )
 
     def test_two_margins_are_two_files(self) -> None:
         """⭐ Not cosmetic: B6 measured the UR5 as having no pose at all at 10 mm and one at 4 mm."""
         four = evidence_path(arm="ur3e", hand="robotiq_hande", coupling_mm=20.0, approach="+Y", closing="+X",
-                             planner_margin_mm=4.0, attach_spheres=0)
+                             planner_margin_mm=4.0)
         ten = evidence_path(arm="ur3e", hand="robotiq_hande", coupling_mm=20.0, approach="+Y", closing="+X",
-                            planner_margin_mm=10.0, attach_spheres=0)
+                            planner_margin_mm=10.0)
         self.assertNotEqual(four.name, ten.name)
         self.assertIn("m4mm", four.name)
         self.assertIn("m10mm", ten.name)
 
     def test_two_placements_are_two_files(self) -> None:
         plus_y = evidence_path(arm="ur5e", hand="robotiq_hande", coupling_mm=20.0, approach="+Y", closing="+X",
-                               planner_margin_mm=4.0, attach_spheres=0)
+                               planner_margin_mm=4.0)
         plus_z = evidence_path(arm="ur5e", hand="robotiq_hande", coupling_mm=20.0, approach="+Z", closing="+X",
-                               planner_margin_mm=4.0, attach_spheres=0)
+                               planner_margin_mm=4.0)
         self.assertNotEqual(plus_y.name, plus_z.name)
 
     def test_two_plates_are_two_files(self) -> None:
         bare = evidence_path(arm="ur5e", hand="robotiq_hande", coupling_mm=0.0, approach="+Y", closing="+X",
-                             planner_margin_mm=4.0, attach_spheres=0)
+                             planner_margin_mm=4.0)
         plated = evidence_path(arm="ur5e", hand="robotiq_hande", coupling_mm=20.0, approach="+Y", closing="+X",
-                               planner_margin_mm=4.0, attach_spheres=0)
+                               planner_margin_mm=4.0)
         self.assertNotEqual(bare.name, plated.name)
 
     def test_a_placement_nobody_declared_has_no_file_to_look_for(self) -> None:
         """A cell whose tool frame places no hand cannot be measured, and a path would suggest it could."""
         with self.assertRaises(ValueError) as refused:
             evidence_path(arm="ur5e", hand="robotiq_hande", coupling_mm=20.0, approach="", closing="+X",
-                          planner_margin_mm=4.0, attach_spheres=0)
+                          planner_margin_mm=4.0)
         self.assertIn("places", str(refused.exception))
 
 
@@ -150,7 +150,7 @@ class WhatARefusalRefuses(unittest.TestCase):
     def _asked(self, folder: str, **over: object) -> "str | None":
         asked: dict[str, object] = {
             "arm": "ur5e", "hand": "robotiq_2f85", "coupling_mm": 0.0, "approach": "+Y", "closing": "+X",
-            "planner_margin_mm": 4.0, "attach_spheres": 0, "guard_margin_mm": 10.0,
+            "planner_margin_mm": 4.0, "guard_margin_mm": 10.0,
             "composed_sha256": "c" * 64, "urdf_sha256": "u" * 64, "arm_descriptor_sha256": "a" * 64,
             "hand_map_sha256": "h" * 64, "guard_sha256": "g" * 64, "evidence_dir": Path(folder),
         }

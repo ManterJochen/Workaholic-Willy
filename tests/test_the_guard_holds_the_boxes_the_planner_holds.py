@@ -469,41 +469,38 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
     the step, or the arm can touch what the camera saw between two samples that both passed."""
 
     def test_a_seen_box_distance_and_margin_short_of_the_step_is_refused_at_load(self) -> None:
+        """Every camera world grows its boxes by 6 mm since 2026-10-17 (``perceived.CAMERA_BOX_MARGIN_MM``): a seen-box
+        distance that, with those 6 mm, falls short of the step is refused at load, naming both keys; one that reaches
+        it loads."""
         with self.assertRaises(ValidationError) as caught:
-            RobotSafetyConfig.model_validate({
-                "self_collision": {"min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0},
-                "planning_world": {"perceived": {"margin_mm": 4.0}},
-            })
+            RobotSafetyConfig.model_validate({"self_collision": {"min_distance_mm": 10.0, "perceived_min_distance_mm": 3.0}})
         said = str(caught.exception)
-        for key in ("perceived_min_distance_mm", "perceived.margin_mm", "min_distance_mm"):
+        for key in ("perceived_min_distance_mm", "min_distance_mm", "6 mm"):
             self.assertIn(key, said)
+        RobotSafetyConfig.model_validate({"self_collision": {"min_distance_mm": 10.0, "perceived_min_distance_mm": 4.0}})
 
-    def test_a_voxel_coarser_than_the_one_the_seen_distance_was_measured_at_is_refused_at_load(self) -> None:
-        """At a 20 mm voxel a pixel the camera measured lay 5.6 mm outside every box, so a sample the guard passes at
-        5 mm can touch it: while seen boxes are held nearer than the step, the thinning stays at the 10 it was measured
-        at. Held at the step, the rule from before 2026-09-30 stands unchanged. The step here is the 10 mm it was
-        written at; the shipped 3 mm holds seen boxes at the step itself."""
-        step = {"min_distance_mm": 10.0}
-        with self.assertRaises(ValidationError) as caught:
-            RobotSafetyConfig.model_validate({"self_collision": step,
-                                              "planning_world": {"perceived": {"voxel_size_mm": 20.0}}})
-        said = str(caught.exception)
-        for key in ("perceived.voxel_size_mm", "perceived_min_distance_mm", "min_distance_mm"):
-            self.assertIn(key, said)
-        for voxel in (10.0, 5.0):
-            RobotSafetyConfig.model_validate({"self_collision": step,
-                                              "planning_world": {"perceived": {"voxel_size_mm": voxel}}})
-        RobotSafetyConfig.model_validate({"self_collision": {**step, "perceived_min_distance_mm": 10.0},
-                                          "planning_world": {"perceived": {"voxel_size_mm": 20.0}}})
+    def test_the_seen_distance_is_judged_on_the_voxel_it_was_measured_at(self) -> None:
+        """At a 20 mm voxel a pixel the camera measured lay 5.6 mm outside every box, so a sample the guard passes near a
+        seen box could touch it: every camera world thins at the 10 mm the seen distance was measured at, and a tree
+        that still writes a voxel of its own is refused at load."""
+        from src.robot.safety.planning.perceived import CAMERA_VOXEL_MM
+
+        self.assertEqual(CAMERA_VOXEL_MM, 10.0)
+        with self.assertRaises(ValidationError):
+            RobotSafetyConfig.model_validate({"planning_world": {"perceived": {"voxel_size_mm": 20.0}}})
 
     def test_the_shipped_numbers_add_up_to_the_step(self) -> None:
+        from src.config.schema.robot import safety_schema
+        from src.robot.safety.planning.perceived import CAMERA_BOX_MARGIN_MM
+
+        # The schema's own number for the margin is the camera world's (the config layer imports no runtime module).
+        self.assertEqual(safety_schema._SEEN_BOX_MARGIN_MM, CAMERA_BOX_MARGIN_MM)
         config = RobotSafetyConfig()
         self.assertEqual(config.self_collision.perceived_min_distance_mm, 2.0)  # type: ignore[attr-defined]
         self.assertGreaterEqual(
-            config.self_collision.perceived_min_distance_mm + config.planning_world.perceived.margin_mm,  # type: ignore[attr-defined]
+            config.self_collision.perceived_min_distance_mm + CAMERA_BOX_MARGIN_MM,  # type: ignore[attr-defined]
             config.self_collision.min_distance_mm)
-        RobotSafetyConfig.model_validate({"self_collision": {"min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0},
-                                          "planning_world": {"perceived": {"margin_mm": 5.0}}})
+        RobotSafetyConfig.model_validate({"self_collision": {"min_distance_mm": 10.0, "perceived_min_distance_mm": 4.0}})
         preflight = SafetyPreflight.from_safety_config(
             RobotSafetyConfig.model_validate({"self_collision": {"backend": "capsule"}}),
             SimpleNamespace(x_min=-1000.0, x_max=1000.0, y_min=-1000.0, y_max=1000.0, z_min=-100.0, z_max=1000.0),  # type: ignore[arg-type]
@@ -513,21 +510,23 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
 
     def test_the_shipped_cell_leaves_room_for_the_height_map(self) -> None:
         from src.config.loader import load_robot_section
+        from src.robot.safety.planning.perceived import CAMERA_MAX_BOXES
         from src.robot.safety.planning.reservation import PlannerReservation
 
         from src.config.schema.robot import RobotConfig
 
         robot = load_robot_section(None, profile="ur10")
         self.assertEqual(robot.safety.self_collision.perceived_min_distance_mm, 2.0)  # type: ignore[attr-defined]
-        self.assertEqual(robot.safety.planning_world.perceived.max_boxes, 64)
+        # Room for 128 boxes on every cell since 2026-10-17, the owner's cell's; the library's own tuning keeps 64.
+        self.assertEqual(CAMERA_MAX_BOXES, 128)
         self.assertEqual(WorldBuildTuning().max_boxes, 64)
-        # The planner reserves a slot for every box the world may send: the bench, and the 64.
+        # The planner reserves a slot for every box the world may send: the bench, and the 128.
         cell = RobotConfig.model_validate({
             "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"}, "gripper": {"model": "robotiq_hande"},
             "safety": {"self_collision": {"planner_margin_mm": 4.0}, "planning_world": {
-                "enabled": True, "support_plane": {"height_mm": 0.0}}},
+                "support_plane": {"height_mm": 0.0}}},
         })
-        self.assertEqual(PlannerReservation.from_config(robot_cfg=cell).cuboid_slots, 1 + 64)
+        self.assertEqual(PlannerReservation.from_config(robot_cfg=cell).cuboid_slots, 1 + CAMERA_MAX_BOXES)
 
 
 # ---------------------------------------------------------------------------------------------------------------------

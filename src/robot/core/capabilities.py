@@ -29,10 +29,10 @@ class RobotCapabilities:
     Parameters
     ----------
     vendor : str
-        Free-form vendor or driver identifier (``"ur"``, ``"franka"``, ``"ros2"``,
-        ``"sim"``, ``"dummy"``). Lower-case, no whitespace.
+        Free-form vendor or driver identifier (``"ur"``, ``"sim"``, ``"dummy"``, or a
+        custom rig's own name). Lower-case, no whitespace.
     model : str
-        Arm model identifier (``"ur5e"``, ``"panda"``, ``"iiwa14"``). Free-form,
+        Arm model identifier (``"ur5e"``, ``"ur10"``). Free-form,
         may be empty.
     dof : int
         Degrees of freedom. Validated against :class:`JointPositions` lengths at

@@ -115,7 +115,7 @@ class SharedContractTests(unittest.TestCase):
     def test_an_unknown_constructor_argument_is_ignored(self) -> None:
         """The ladder builds one kwargs dict per rung; a floor must not track the analytic surface."""
         for floor in _FLOORS:
-            floor(camera_matrix=_K, support_footprint_geometry=True, gripper_model=object())
+            floor(camera_matrix=_K, gripper_model=object())
 
 
 class CallingConventionTests(unittest.TestCase):

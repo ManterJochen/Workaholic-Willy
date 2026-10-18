@@ -2,7 +2,7 @@
 2026-10-03).
 
 The Advanced drawer's switch ``options.critical_parts``: true, the task's campaign pushes nothing and a blocker is
-cleared instead; false, a push may rearrange the scene; null, the cell's ``robot.grasping.recovery.critical_parts``. The
+cleared instead; false, a push may rearrange the scene; null, the cell's ``runtime.task.critical_parts``. The
 resolved plan echoes it, and says whether the operator set the push distance (``push_asked``): a distance asked for is
 taken as asked, the cell's may go longer where it opens too little room, so the plan's resolved number reaches the
 library only where it was asked for. The cell's facts say the cell's own switch, which the drawer shows.

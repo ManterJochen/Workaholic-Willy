@@ -3,8 +3,8 @@
 Side grasps are on by the owner's decision (2026-10-01), so ``Robot.pick`` now meets grasps up to 90 degrees off
 vertical. It backed out of every grasp along its approach, which for a side grasp drags the part sideways along the
 support, through whatever the side approach just kept its room from. A grasp more than 10 degrees off vertical now
-lifts straight up (BASE +Z) after the close, by the standoff and at least 60 mm, and W-M1's carried judgement judges
-that same lift before the jaws close. An empty hand still backs out along the approach: after a close that measured
+lifts straight up (BASE +Z) after the close, by the standoff and at least 60 mm, and W-M1's judgement judges that
+same lift before the jaws close. An empty hand still backs out along the approach: after a close that measured
 nothing, and when the carried lift is refused (``CARRIED_RETREAT_REFUSED``).
 
 ``HandlingReport.another_candidate_may_follow`` (the cell-fix plan's contract 4) is true only after a guard or planner
@@ -26,7 +26,7 @@ import numpy as np
 
 from src.geometry import Frame, Pose
 from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, MotionCommand, MotionResult, MotionStatus
-from src.robot.core.arm_capabilities import LineMotion, LineReading, PayloadModel
+from src.robot.core.arm_capabilities import LineMotion, LineReading
 from src.robot.core.gripper import HoldEvidence
 from src.robot.grasping.geometry.grasp_frame import pose_from_grasp_axes
 from tests.test_a_stopped_controller_moves_no_jaws import _PROTECTIVE, _RUNNING, _pulses, _toggle
@@ -34,9 +34,9 @@ from tests.test_robot_pick_and_place import _Log, _LoggedHand, _RecordingArm
 
 #: The pick's part, BASE mm: 100 mm over the bench, as the other pick doubles have it.
 _AT = (400.0, 0.0, 100.0)
-#: What the arm answers about a lift it would refuse with the part in its jaws.
+#: What the arm answers about a lift it would refuse, judged before the jaws close.
 _HELD = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO,
-                            message="the planner refused this line at sample 0 of 12: a part is carried")
+                            message="the exact guard refused this line at sample 0 of 12: the bin's rim")
 
 
 def _handling() -> Any:
@@ -57,8 +57,8 @@ def _mm(position: Any) -> tuple[float, ...]:
 
 
 class _Arm(_RecordingArm):
-    """The desk arm, judging a lift as if its jaws held the part (``JudgesCarriedLines``) and refusing the motions it
-    is told to, nothing sent. ``statuses`` is what its controller answers, the last one from then on."""
+    """The desk arm, judging a lift before its jaws close (``JudgesCarriedLines``) and refusing the motions it is told
+    to, nothing sent. ``statuses`` is what its controller answers, the last one from then on."""
 
     def __init__(self, events: list[Any], *, carried: "MotionResult | None" = None,
                  refuse: "dict[int, MotionResult] | None" = None,
@@ -73,19 +73,9 @@ class _Arm(_RecordingArm):
     def get_robot_status(self) -> Any:
         return self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
 
-    def carried_line_refusal(self, pose: Pose, *, grip_width_mm: float) -> "MotionResult | None":
-        self.log.entries.append(("judge", _mm(pose.position_mm), round(float(grip_width_mm), 2)))
+    def carried_line_refusal(self, pose: Pose) -> "MotionResult | None":
+        self.log.entries.append(("judge", _mm(pose.position_mm)))
         return self.carried
-
-    def attach_payload(self, width_mm: float) -> bool:
-        self.log.entries.append(("attach", round(float(width_mm), 2)))
-        return True
-
-    def payload_declined_reason(self) -> "str | None":
-        return None
-
-    def payload_model(self) -> PayloadModel:
-        return PayloadModel.PLANNER_AND_FILTER
 
     def move(self, pose: Pose, **kwargs: Any) -> MotionResult:
         index = sum(1 for entry in self.log.entries if entry[0] == "move")
@@ -125,10 +115,10 @@ def _refusal(status: MotionStatus, message: str = "lfinger|seen_00: mesh distanc
 
 
 class ATiltedPickLiftsStraightUpTests(unittest.TestCase):
-    def test_a_30_degree_grasp_lifts_straight_up_judged_carrying(self) -> None:
+    def test_a_30_degree_grasp_lifts_straight_up_as_judged(self) -> None:
         """⭐ Red before: the line out went back along the approach to the standoff, sideways through the room the side
         grasp kept. Now: in along the approach, closed, then straight up by the standoff, and that lift is the one the
-        arm judged carrying before the jaws closed."""
+        arm judged before the jaws closed."""
         handling = _handling()
         events: list[Any] = []
         robot = _robot(events, carried=None)
@@ -140,8 +130,7 @@ class ATiltedPickLiftsStraightUpTests(unittest.TestCase):
         lift = (400.0, 0.0, 180.0)
         self.assertEqual([(standoff, False), (_mm(_AT), True), (lift, True)], _moves(events))
         judged = [e for e in events if isinstance(e, tuple) and e[0] == "judge"]
-        self.assertEqual([("judge", lift, 39.0)], judged)
-        self.assertLess(events.index(judged[0]), next(i for i, e in enumerate(events) if e == ("attach", 39.0)))
+        self.assertEqual([("judge", lift)], judged)
         self.assertEqual(1, _pulses(events))
         self.assertEqual("lift", report.poses[-1].label)
 
@@ -153,7 +142,7 @@ class ATiltedPickLiftsStraightUpTests(unittest.TestCase):
         robot.pick(_tilted(30.0), 40.0, standoff_mm=10.0)
 
         self.assertEqual((400.0, 0.0, 160.0), _moves(events)[-1][0])
-        self.assertIn(("judge", (400.0, 0.0, 160.0), 39.0), events)
+        self.assertIn(("judge", (400.0, 0.0, 160.0)), events)
 
     def test_a_vertical_grasp_is_unchanged(self) -> None:
         events: list[Any] = []
@@ -164,7 +153,7 @@ class ATiltedPickLiftsStraightUpTests(unittest.TestCase):
 
         self.assertEqual([((400.0, 0.0, 180.0), False), (_mm(_AT), True), ((400.0, 0.0, 180.0), True)],
                          _moves(events))
-        self.assertIn(("judge", (400.0, 0.0, 180.0), 39.0), events)
+        self.assertIn(("judge", (400.0, 0.0, 180.0)), events)
 
     def test_ten_degrees_off_vertical_still_backs_out_along_the_approach(self) -> None:
         """The bound: 10 degrees backs out along the approach as before; 12 lifts straight up."""
@@ -200,7 +189,7 @@ class ATiltedPickLiftsStraightUpTests(unittest.TestCase):
         moves = _moves(events)
         self.assertEqual(3, len(moves))
         self.assertEqual(moves[0][0], moves[-1][0], "back up the line it came down")
-        self.assertIn(("judge", (400.0, 0.0, 180.0), 39.0), events, "the lift it would have run was judged")
+        self.assertIn(("judge", (400.0, 0.0, 180.0)), events, "the lift it would have run was judged")
         self.assertEqual(0, _pulses(events))
 
 

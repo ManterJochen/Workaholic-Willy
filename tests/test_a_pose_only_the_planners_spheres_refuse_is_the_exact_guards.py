@@ -5,8 +5,9 @@ The owner's LOOK[0] on the UR10 with the Hand-E, (-42.5, -67.9, -78.6, -136.2, 9
 it was refused before anything was sent, the move back to it too. The owner's decision, 2026-09-30:
 
 1. The exact guard decides the planner's self pairs it judges, where it accepted the very configuration: at the goal
-   screen, on every straight line and plan leg (``_judge_legs``) and on a tool line (moveL). The planner's world, its
-   bounds and the carried part stay its own, and anything the driver cannot read whole leaves the refusal standing.
+   screen, on every straight line and plan leg (``_judge_legs``) and on a tool line (moveL). The planner's world and
+   its bounds stay its own (and the carried part did, while a cell modelled one), and anything the driver cannot read
+   whole leaves the refusal standing.
 2. A PLANNED move out of such a pose, or into one, takes a straight leg of at most 20 degrees per joint (the owner,
    2026-09-30: 10 at first, 20 once LOOK[1] needed wrist_1 +19.5) to the nearest configuration both authorities clear,
    judged by both, and cuRobo plans from there (``plan_joint`` with an explicit start). A line-only move never does.
@@ -41,8 +42,9 @@ from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.planning import JointCheckVerdict, StateRefusal, StateRefusalKind, StateWhere
 from src.robot.safety.planning._curobo_pairs import PairOverlap
 from src.robot.safety.planning.curobo_client import PathJudgement, RefusedSample
+from tests._arm_kit import with_the_whole_envelope
 from tests._plan_end import pose_where_it_ends
-from tests._route_planner import line
+from tests._route_planner import line, the_planner_holds_more
 from tests.test_the_exact_guard_decides_the_planners_self_pairs import FOLDED_DEG, LOOK0_DEG, owner_like_arm
 
 _DECLINED = "unit double: this file reads what the exact guard decides on a cuRobo arm, and no camera world is wired"
@@ -251,7 +253,8 @@ def _arm(planner: BandPlanner, *, here: "list[float]") -> Any:
     arm._conn.moveJ.return_value = True
     planner.here = list(here)
     arm._curobo = planner
-    return arm
+    # These scenes pin the band admission, which mesh first never reaches where it applies: here it does not.
+    return the_planner_holds_more(arm)
 
 
 def _joint_move(arm: Any, target: "list[float]", *, on_the_line: bool = False) -> MotionResult:
@@ -296,11 +299,10 @@ class TheExactGuardDecidesTheBandTests(unittest.TestCase):
         self.assertIs(result.status, MotionStatus.SELF_COLLISION_REJECTED)
         arm._conn.moveJ.assert_not_called()
 
-    def test_the_world_the_bounds_the_carried_part_and_a_pair_the_guard_skips_stay_the_planners(self) -> None:
+    def test_the_world_the_bounds_and_a_pair_the_guard_skips_stay_the_planners(self) -> None:
         cases = {
             "bounds": {"row_changes": {"bound_ok": False}},
             "world": {"row_changes": {"world_ok": False}},
-            "the carried part": {"pairs": (_PAIR, ("attached_object", "forearm_link"))},
             "a pair the guard skips": {"pairs": (("hand", "wrist_2_link"),)},
             "an unnamed self collision": {"row_changes": {"pairs": ()}},
         }
@@ -364,8 +366,10 @@ class TheExactGuardDecidesTheBandTests(unittest.TestCase):
         self.assertFalse(planner.named("plan"))
         # The goal on the arm's own branch is the one reached, on the line: a screen that refused it would send the arm
         # to another branch's goal, half a turn of the shoulder pan away.
+        # The gate found the arm where the route opens (every cuRobo arm gates its own sends), so no moveJ goes there:
+        # what runs starts with the leg after it.
         (executed,) = planner.named("execute")
-        self.assertEqual(len(executed[1]), 2)
+        self.assertEqual(len(executed[1]), 1)
         self.assertLess(max(abs(a - b) for a, b in zip(executed[1][-1], LOOK0_DEEPER)), 1e-6)
         self.assertFalse([line for line in logs.output if "changes the arm's branch" in line])
 
@@ -487,9 +491,10 @@ class APlannedMoveLeavesTheBandByAShortLegTests(unittest.TestCase):
         turned = [abs(math.degrees(a - b)) for a, b in zip(escape, LOOK0)]
         self.assertLessEqual(max(turned), _CAP_DEG + 1e-9, "the escape leg turns no joint more than 20 degrees")
         self.assertEqual([i for i, t in enumerate(turned) if t > 1e-9], [3], "wrist_1 alone gets out of the band here")
+        # The gate found the arm where the route opens (every cuRobo arm gates its own sends), so no moveJ goes there:
+        # what runs starts with the leg after it.
         (executed,) = planner.named("execute")
-        self.assertEqual(executed[1][0], LOOK0, "the route opens where the arm stands")
-        self.assertEqual(executed[1][1], escape, "then the escape")
+        self.assertEqual(executed[1][0], escape, "the escape first")
         self.assertEqual(executed[1][-1], ACROSS)
         legs = [c for c in planner.named("check") if c[1][0] == LOOK0 and c[1][-1] == escape and c[2] > 0.0]
         self.assertTrue(legs, "the escape leg was judged as a straight line, at the line clearance")
@@ -583,10 +588,11 @@ class APlannedMoveLeavesTheBandByAShortLegTests(unittest.TestCase):
         self.assertTrue(result.ok, result.message)
         self.assertEqual(len(planner.explicit), 2, "the second goal was planned from the escape")
         self.assertNotEqual(planner.explicit[0], planner.explicit[1])
+        # The gate found the arm where the route opens (every cuRobo arm gates its own sends), so no moveJ goes there:
+        # what runs starts with the leg after it.
         (executed,) = planner.named("execute")
-        self.assertEqual(executed[1][0], LOOK0)
-        self.assertFalse(planner.in_band(executed[1][1]), "the first leg is the escape")
-        self.assertLessEqual(max(abs(math.degrees(a - b)) for a, b in zip(executed[1][1], LOOK0)), _CAP_DEG + 1e-9)
+        self.assertFalse(planner.in_band(executed[1][0]), "the first leg is the escape")
+        self.assertLessEqual(max(abs(math.degrees(a - b)) for a, b in zip(executed[1][0], LOOK0)), _CAP_DEG + 1e-9)
         self.assertEqual(executed[1][-1], planner.explicit[1])
 
     def test_a_cartesian_move_no_goal_of_which_plans_from_the_escape_is_no_plan(self) -> None:
@@ -614,10 +620,11 @@ class APlannedMoveLeavesTheBandByAShortLegTests(unittest.TestCase):
         self.assertTrue(result.ok, result.message)
         (executed,) = planner.named("execute")
         route = executed[1]
-        self.assertEqual(route[0], LOOK0)
-        self.assertLessEqual(max(abs(math.degrees(a - b)) for a, b in zip(route[1], LOOK0)), _CAP_DEG + 1e-9,
+        # The gate found the arm where the route opens (every cuRobo arm gates its own sends), so no moveJ goes there:
+        # what runs starts with the leg after it.
+        self.assertLessEqual(max(abs(math.degrees(a - b)) for a, b in zip(route[0], LOOK0)), _CAP_DEG + 1e-9,
                              "the first moveJ out of the band is the escape leg")
-        self.assertFalse(planner.in_band(route[1]))
+        self.assertFalse(planner.in_band(route[0]))
         self.assertLess(max(abs(a - b) for a, b in zip(route[-1], goal)), 1e-9)
         self.assertLess(len(route), 12, "the plan behind the escape was still shortened")
         routed = [line for line in logs.output if "escape leg" in line and "executed" in line]
@@ -666,9 +673,10 @@ class APlannedMoveLeavesTheBandByAShortLegTests(unittest.TestCase):
         self.assertEqual([i for i, t in enumerate(turned) if abs(t) > 1e-9], [3], "wrist_1 alone leaves this band")
         self.assertGreater(turned[3], 19.5 - 1e-9, "no nearer pose on wrist_1 is out of the band")
         self.assertLessEqual(turned[3], _CAP_DEG + 1e-9)
+        # The gate found the arm where the route opens (every cuRobo arm gates its own sends), so no moveJ goes there:
+        # what runs starts with the leg after it.
         (executed,) = planner.named("execute")
-        self.assertEqual(executed[1][0], LOOK1, "the route opens where the arm stands")
-        self.assertEqual(executed[1][1], escape, "then the escape, run as the leg it was judged as")
+        self.assertEqual(executed[1][0], escape, "the escape first, run as the leg it was judged as")
         self.assertEqual(executed[1][-1], ACROSS_LOOK1)
         legs = [c for c in planner.named("check") if c[1][0] == LOOK1 and c[1][-1] == escape and c[2] > 0.0]
         self.assertTrue(legs, "the escape leg was judged as a straight line, at the line clearance")
@@ -752,6 +760,10 @@ class APoseIsScreenedBeforeAPickMeetsItTests(unittest.TestCase):
 
         planner = BandPlanner()
         arm = _arm(planner, here=LOOK0)
+        # The pose the guard accepts nearby turns wrist_1 to 100 degrees, more than half a turn from the UR10's home
+        # (-90), where every real arm's window refuses it since 2026-10-17: this scene reads the screen's search, not
+        # the window, which has its own file.
+        with_the_whole_envelope(arm.safety_preflight)
         folded = _deg(*FOLDED_DEG)
         screen = arm.screen_configuration(JointPositions(tuple(folded)))
         self.assertIs(screen.verdict, PoseVerdict.GUARD_REFUSED)
@@ -923,10 +935,9 @@ class TheScreenIsSaidWherePosesAreMetTests(unittest.TestCase):
         screen = _canned_screen([PoseScreen(PoseVerdict.BAND, "straight lines run.")])
         self.enterContext(mock.patch.object(URRobotArm, "screen_configuration", screen))
         cell = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"},
+            "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo", "look_deg": [list(LOOK0_DEG)]},
             "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL},
             "safety": {"self_collision": {"planner_margin_mm": 4.0, "backend": "fcl"}},
-            "look_joint_positions_deg": [list(LOOK0_DEG)],
         })
         # The camera section of the same tree, as Cell.start_planner hands it: here no wrist camera hangs on the arm.
         report = PlannerStart.from_robot_config(cell, camera=SimpleNamespace(cameras=SimpleNamespace(rigs=[]))).run()

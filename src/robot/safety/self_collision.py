@@ -2,17 +2,17 @@
 
 There are two backends.
 
-``capsule`` is the default and is always available. It approximates the arm as a chain
-of capsules, one per link, plus a tool capsule rooted at the TCP and a base column
-capsule. Fixtures are the axis-aligned boxes declared in :class:`FixtureBoxConfig`.
-The distance is closed-form, so the per-move cost stays under a millisecond.
+``capsule`` is always available. It approximates the arm as a chain of capsules, one per
+link, the hand's fingers as one capsule at the TCP and the robot's base as a column.
+Fixtures are the axis-aligned boxes declared in :class:`FixtureBoxConfig`. The distance
+is closed-form, so the per-move cost stays under a millisecond.
 
 * On an arm whose reported model the arm registry describes as a UR (a real UR, and the
-  Isaac arm, which reports the UR it drives) the arm-against-arm capsule chain comes from
-  that description's DH rows (:mod:`_ur_kinematics`), and every non-adjacent link pair is
-  checked against the others and against every fixture.
-* On any other arm (the dummy) that chain is unavailable, so the guard checks the tool
-  against the base and the tool against the fixtures only.
+  Isaac arm, which reports the UR it drives) the arm-against-arm capsule chain and the
+  base come from that description (:mod:`_ur_kinematics`), and every non-adjacent link
+  pair is checked against the others and against every fixture.
+* On any other arm (the dummy) the chain and the base are unavailable, and none is
+  guessed, so the guard checks the tool against the fixtures only.
 
 ``fcl`` is exact mesh-against-mesh distance over the bundled per-model collision
 meshes, with Coal preferred and python-fcl as the fallback, in
@@ -32,9 +32,13 @@ Configuration
 * ``perceived_min_distance_mm`` is that distance for a box a camera saw, which the exact
   mesh guard judges as the planner holds it, turned; it is already grown by the camera
   world's margin (``SelfCollisionGuard.set_perceived_fixtures``).
-* ``link_radii_mm`` is the per-link capsule radius. Omitted, the guard uses 60 mm, a
-  typical UR link cross-section.
 * ``fixtures`` is a list of :class:`FixtureBoxConfig`.
+
+The capsule proxy's own geometry is no key since 2026-10-17 (the owner's cleanup): every
+link is a 60 mm capsule, the base a column up to the shoulder joint the arm's description
+names, and the fingers come from the registry file of the hand the guard models
+(:meth:`SelfCollisionGuard._tool_capsule`). Where the arm's DH base stands from the frame
+poses and fixtures are written in is the arm's guard numbers' (``guard_numbers``).
 """
 
 from __future__ import annotations
@@ -65,6 +69,7 @@ from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.config.schema.grippers.gripper_schema import ParallelJawSpec
     from src.config.schema.robot import SelfCollisionSafetyConfig
 
     from .planning.band import ExactPairs
@@ -75,34 +80,32 @@ __all__ = ["SelfCollisionGuard"]
 
 _LOGGER = logging.getLogger(__name__)
 
-# Default capsule radii and lengths, used where the operator overrides none. They
-# match a typical UR link of 60 mm cross-section and a 70 mm gripper envelope.
-_DEFAULT_LINK_RADIUS_MM = 60.0
-_DEFAULT_TOOL_RADIUS_MM = 70.0
-_DEFAULT_TOOL_LENGTH_MM = 150.0
-_DEFAULT_BASE_RADIUS_MM = 80.0
-_DEFAULT_BASE_HEIGHT_MM = 150.0
-
-
-def _hand_identity(hand: "Maybe[PlannerHand]") -> "tuple[str, tuple[object, ...]] | None":
-    """What makes two hands one hand for a capsule's tool dimensions: its name and the plates that hold it out."""
-    return (hand.model, tuple(hand.plates)) if chosen(hand) else None
+#: Every arm link's capsule radius in the capsule proxy, millimetres: a typical UR link's cross-section, and every
+#: cell's since ``link_radii_mm`` left on 2026-10-17 (the owner's cell named no radii and ran this one for every link).
+_LINK_RADIUS_MM = 60.0
+#: The base column's radius in the capsule proxy, millimetres: the owner's cell's (it declared none), about a UR base's
+#: own: the UR10's round housing is 79.2 mm, 95.05 mm across its lugs (``planning.self_envelope.ROBOT_BASES``).
+_BASE_RADIUS_MM = 80.0
 
 
 class SelfCollisionGuard:
     """Self-collision guard.
 
-    Stateless across calls. :meth:`SafetyPreflight.from_safety_config` constructs it
-    when ``safety.self_collision.enforce`` is ``True``.
+    Stateless across calls. :meth:`SafetyPreflight.from_safety_config` constructs it on
+    every cell.
     """
 
     name = "self_collision"
 
     def __init__(
         self, config: "SelfCollisionSafetyConfig", *, hand: "Maybe[PlannerHand]" = UNSET,
-        built_for: "Maybe[str | None]" = UNSET,
+        built_for: "Maybe[str | None]" = UNSET, base_yaw_deg: float = 0.0,
     ) -> None:
         self._config = config
+        #: How far the arm's DH base is turned about z from the frame poses and fixtures are written in, degrees: 0 on a
+        #: real arm, whose controller reports in its DH base, and the Isaac arm's half turn, which its harness states
+        #: (``GuardNumbers.base_yaw_deg``). Only the arm's own links move with it: arm against arm is unchanged.
+        self._base_yaw_deg = float(base_yaw_deg)
         #: The arm model the pipeline was built for, as ``SafetyPreflight.from_safety_config`` names it, ``None`` where
         #: it names an arm the registry does not describe as a UR, ``UNSET`` for a guard built directly (P0e E6). The
         #: hand refusal at build was decided for this arm, so the guard judges no other (:meth:`refusal_for`).
@@ -150,17 +153,10 @@ class SelfCollisionGuard:
         #: function could return five, having grown two since the sentence was written. A list
         #: beside something that already knows the answer only stays true for a while.
         self._fcl_status: str | None = None
-        # Tool and base capsule geometry, from config, defaulting to the constants above.
-        self._tool_length_mm = float(getattr(config, "tool_length_mm", _DEFAULT_TOOL_LENGTH_MM))
-        self._tool_radius_mm = float(getattr(config, "tool_radius_mm", _DEFAULT_TOOL_RADIUS_MM))
-        # The tool model. "capsule", the default, is a bounding cylinder along the
-        # approach axis. "finger" is a thin capsule along the grasp closing axis, which
-        # is the faithful footprint of a descending 2F-85 finger.
-        self._tool_model = str(getattr(config, "tool_model", "capsule"))
-        self._tool_finger_radius_mm = float(getattr(config, "tool_finger_radius_mm", 16.0))
-        self._tool_finger_span_mm = float(getattr(config, "tool_finger_span_mm", 150.0))
-        self._base_radius_mm = float(getattr(config, "base_radius_mm", _DEFAULT_BASE_RADIUS_MM))
-        self._base_height_mm = float(getattr(config, "base_height_mm", _DEFAULT_BASE_HEIGHT_MM))
+        #: The registry jaw the capsule proxy models the fingers with, read once (:meth:`_capsule_jaw`), and its base
+        #: column, by the model it was read for (:meth:`_base_capsule`).
+        self._jaw: "ParallelJawSpec | None" = None
+        self._bases: dict[str, Capsule] = {}
         self._declared_fixtures = tuple(
             AxisAlignedBox(
                 center_mm=np.asarray(fx.center_mm, dtype=np.float64),
@@ -173,10 +169,12 @@ class SelfCollisionGuard:
         #: Separate from the declared list so a perceived box can never overwrite a measured one, and
         #: so clearing them cannot take the bench with it.
         self._perceived_fixtures: tuple[AxisAlignedBox, ...] = ()
-        #: Whether a path is judged whole before it is judged sample by sample
-        #: (``SelfCollisionSafetyConfig.whole_path_judge``): :meth:`exact_pairs` then answers the mesh-first questions of
-        #: a whole path at once too. The path gate reads the same key (``SafetyPreflight.from_safety_config``).
-        self._whole_path_judge = bool(getattr(config, "whole_path_judge", False))
+        #: The other arms of the cell where they stand, each part as its hull (``set_partner_bodies``), judged with the
+        #: declared boxes at ``min_distance_mm``: the guard's distances hold to another arm too (owner, 2026-10-15).
+        self._partner_fixtures: tuple[AxisAlignedBox, ...] = ()
+        #: The declared boxes and the other arms, as one tuple kept until either changes: the exact backend keeps the
+        #: engine objects of a tuple by its identity, so a tuple built per sample would build them per sample.
+        self._held: tuple[AxisAlignedBox, ...] = self._declared_fixtures
 
     @property
     def _fixtures(self) -> "tuple[AxisAlignedBox, ...]":
@@ -186,7 +184,7 @@ class SelfCollisionGuard:
         a camera inferred, and so the numbering of the unnamed ones is stable while the perceived
         list changes underneath.
         """
-        return self._declared_fixtures + self._perceived_fixtures
+        return self._held + self._perceived_fixtures
 
     def set_perceived_fixtures(self, boxes: "Sequence[AxisAlignedBox]") -> None:
         """Tell this guard about obstacles a camera saw, or clear them with an empty sequence.
@@ -207,6 +205,70 @@ class SelfCollisionGuard:
         to its declared geometry, which is the honest state when the cameras cannot answer.
         """
         self._perceived_fixtures = tuple(boxes)
+
+    def set_partner_bodies(self, bodies: "Sequence[AxisAlignedBox]") -> None:
+        """Hold the other arms of the cell where they stand, or none with an empty sequence (owner, 2026-10-15).
+
+        Each part of another arm is a box carrying its hull (``AxisAlignedBox.hull_mm``, :func:`~src.robot.safety.
+        partner_arm.partner_bodies`), in this arm's base: judged with the declared boxes at ``min_distance_mm``, every
+        sample, by the exact mesh guard on the hull and by the capsule proxy on its enclosure. Only a cell that keeps
+        the other arms standing while this one moves may hand them so: a body that moves meanwhile is no obstacle
+        anybody judged.
+        """
+        self._partner_fixtures = tuple(bodies)
+        self._held = self._declared_fixtures + self._partner_fixtures
+
+    @property
+    def partner_bodies(self) -> "tuple[AxisAlignedBox, ...]":
+        """The other arms' parts this guard holds now, as :meth:`set_partner_bodies` last handed them."""
+        return self._partner_fixtures
+
+    def body_hulls(self, arm: object, joints: "Sequence[float]") -> "dict[str, np.ndarray] | None":
+        """This arm's own parts at ``joints`` (radians), each its hull's vertices in this arm's base, millimetres: what
+        another arm of the cell keeps its distance from. No part in the jaws is among them: no cell models one
+        (2026-10-17). ``None`` where the exact mesh guard does not run here (the capsule proxy, no model, no engine or no
+        bundle), so a cell knows it cannot describe this arm's body.
+        """
+        if self._backend != "fcl" or arm is None:
+            return None
+        model = self.model_for(arm)
+        backend = None if model is None else self._exact_mesh_backend(model)
+        placed = getattr(backend, "placed_hulls", None)
+        if model is None or not callable(placed):
+            return None
+        transforms = arm_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64), arm)
+        if transforms is None:
+            return None
+        hulls = dict(placed(transforms, self._base_yaw_deg))
+        # The base the bundle leaves out, as this guard keeps it (``_base_capsule``): a prism about base Z.
+        base = self._base_capsule(model)
+        if base is not None:
+            turns = np.linspace(0.0, 2.0 * math.pi, 16, endpoint=False)
+            ring = np.stack([base.radius_mm * np.cos(turns), base.radius_mm * np.sin(turns)], axis=1)
+            hulls["base"] = np.concatenate([np.column_stack([ring, np.zeros(16)]),
+                                             np.column_stack([ring, np.full(16, float(base.p1[2]))])])
+        return hulls
+
+    def swept_corners(self, arm: object, configs: "Sequence[Sequence[float]]") -> "dict[str, np.ndarray] | None":
+        """Each of this arm's parts as the points that hold its sweep over ``configs`` (radians), in this arm's base:
+        the space a moving arm reserves in a cell of several arms (``MeshSelfCollisionBackend.swept_corners``), its
+        base's prism among them. ``None`` where the exact mesh guard does not run here.
+        """
+        if self._backend != "fcl" or arm is None:
+            return None
+        model = self.model_for(arm)
+        backend = None if model is None else self._exact_mesh_backend(model)
+        corners = getattr(backend, "swept_corners", None)
+        if model is None or not callable(corners):
+            return None
+        transforms = arm_link_transforms_mm_many(model, np.asarray(configs, dtype=np.float64), arm)
+        if transforms is None:
+            return None
+        swept = dict(corners(transforms, self._base_yaw_deg))
+        hulls = self.body_hulls(arm, configs[0])
+        if hulls is not None and "base" in hulls:
+            swept["base"] = hulls["base"]
+        return swept
 
     def set_finger_opening(self, width_mm: float | None) -> None:
         """Hold the hand's fingers ``width_mm`` apart, between their inner faces, where the hand was told to open no
@@ -237,68 +299,61 @@ class SelfCollisionGuard:
     # Capsule construction
     # ------------------------------------------------------------------
 
-    def _link_radius(self, axis_idx: int) -> float:
-        radii = self._config.link_radii_mm
-        if radii is None:
-            return _DEFAULT_LINK_RADIUS_MM
-        if axis_idx < len(radii):
-            return float(radii[axis_idx])
-        return _DEFAULT_LINK_RADIUS_MM
+    def _base_capsule(self, model: str | None) -> Capsule | None:
+        """The robot's base as a column about its axis, from the mounting face up to the shoulder joint where the arm's
+        description places it (``config/arms/<model>.yaml``, its first joint's ``d_m``), :data:`_BASE_RADIUS_MM` round;
+        ``None`` for an arm the registry does not describe as a UR, whose base is not guessed. Every cell's since its
+        150 mm and 80 mm left the config on 2026-10-17: the UR10's shoulder joint stands 127.3 mm over its mounting face,
+        a UR5e's 162.5."""
+        if model is None:
+            return None
+        base = self._bases.get(model)
+        if base is None:
+            from src.config.arms import load_arm
 
-    def _base_capsule(self) -> Capsule:
-        """The fixed base column, from the floor to the mounting flange."""
-        return Capsule(
-            p0=np.array([0.0, 0.0, 0.0], dtype=np.float64),
-            p1=np.array([0.0, 0.0, self._base_height_mm], dtype=np.float64),
-            radius_mm=self._base_radius_mm,
-        )
+            shoulder_mm = 1000.0 * float(load_arm(model.lower()).joints[0].d_m)
+            base = Capsule(p0=np.zeros(3, dtype=np.float64), p1=np.array([0.0, 0.0, shoulder_mm], dtype=np.float64),
+                           radius_mm=_BASE_RADIUS_MM)
+            self._bases[model] = base
+        return base
+
+    def _capsule_jaw(self) -> "ParallelJawSpec":
+        """The registry jaw of the hand this guard models (``config/grippers/<model>.yaml``): for a guard built with no
+        hand, the hand every arm bundle carries, the 2F-85, as the exact mesh backend keeps the arm bundle's own
+        (``planning.hand.ARM_BUNDLE_HAND``)."""
+        if self._jaw is None:
+            if chosen(self._hand):
+                self._jaw = self._hand.jaw
+            else:
+                from src.config.grippers import load_gripper
+
+                from .planning.hand import ARM_BUNDLE_HAND
+
+                self._jaw = load_gripper(ARM_BUNDLE_HAND, aliases=False).jaw
+        return self._jaw
 
     def _tool_capsule(self, ctx: SafetyContext) -> Capsule | None:
-        """The tool capsule, rooted at the commanded TCP pose.
+        """The hand's fingers as one capsule along the grasp's closing axis, centred on the commanded TCP, the grasp centre
+        between them; ``None`` on a context with no pose.
 
-        ``tool_model='capsule'``, the default, runs a capsule ``tool_length_mm`` from
-        the TCP back toward the flange, which is a rotation-invariant bounding
-        cylinder. ``tool_model='finger'`` instead lays a thin capsule along the closing
-        axis of the grasp, which is the faithful parallel-jaw footprint.
+        As long as the open jaw is across its fingers' outer faces (``aperture_mm`` and both ``finger_thickness_mm``)
+        and as thick as a finger is wide (``finger_width_mm``), from the registry file of the hand this guard models
+        (:meth:`_capsule_jaw`). The owner's cell modelled its tool so (``tool_model: finger``) until the capsule's numbers
+        left the config on 2026-10-17; the 2F-85's registry gives 147.7 mm and 13.5 mm where the 150 and 16 measured off
+        its USD stood. It is rotation-aware: the closing axis is R[:, 0] under the [closing, binormal, approach]
+        convention, so the capsule clears a bin wall its thin side faces and refuses the one its open span faces, where a
+        cylinder about the approach claimed 140 mm every way and refused off-centre targets in a KLT.
         """
         pose = ctx.target_pose
         if pose is None:
             return None
-        tcp_mm = np.asarray(pose.position_mm, dtype=np.float64)
         from src.geometry.quaternion import to_rotation_matrix
-        R = to_rotation_matrix(pose.quaternion_xyzw)
-        if self._tool_model == "finger":
-            # The descending fingers of a 2F-85 as a thin capsule along the closing
-            # axis, which is R[:, 0] under the [closing, binormal, approach]
-            # convention. Measured at about 27 mm wide perpendicular to closing, so a
-            # half-width near 13.5 against the r=70 bounding cylinder, and about
-            # 150 mm fingertip to fingertip at full open. It is rotation-aware: it
-            # clears the wall the thin side faces and rejects the open-span wall.
-            closing = R[:, 0]
-            half = 0.5 * self._tool_finger_span_mm
-            return Capsule(
-                p0=tcp_mm - closing * half,
-                p1=tcp_mm + closing * half,
-                radius_mm=self._tool_finger_radius_mm,
-            )
-        # The default is one capsule from the TCP back along the tool local -Z, from
-        # the grasp centre toward the flange, because that is where the material of the
-        # tool is. The direction is load-bearing: a tool protruding from the flange is
-        # the right picture for a flange-rooted pose, but ``ctx.target_pose`` is the
-        # commanded pose and every pose this stack commands is the grasp centre. Run
-        # forward from there, the capsule would model 150 mm of solid tool on the far
-        # side of the grasp point. On a top-down grasp at (300, 0, 37) it reaches
-        # (300, 0, -113) at r=70, which is 113 mm of phantom material below the table
-        # where the object and the table are, while the real 2F-85 body between z 37
-        # and z 169 goes unmodelled: inventing collisions where the gripper is not and
-        # missing them where it is.
-        #
-        # The small overhang of the fingertips past the grasp centre is not modelled.
-        # Bounding it needs the flange-to-TCP offset from the tool-frame contract, so
-        # the omission is stated rather than guessed at.
-        tool_z = R[:, 2]
-        flange_side_mm = tcp_mm - tool_z * self._tool_length_mm
-        return Capsule(p0=tcp_mm, p1=flange_side_mm, radius_mm=self._tool_radius_mm)
+
+        tcp_mm = np.asarray(pose.position_mm, dtype=np.float64)
+        closing = to_rotation_matrix(pose.quaternion_xyzw)[:, 0]
+        jaw = self._capsule_jaw()
+        half = 0.5 * (float(jaw.aperture_mm) + 2.0 * float(jaw.finger_thickness_mm))
+        return Capsule(p0=tcp_mm - closing * half, p1=tcp_mm + closing * half, radius_mm=0.5 * float(jaw.finger_width_mm))
 
     def _ur_arm_capsules(self, ctx: SafetyContext) -> list[Capsule] | None:
         """Per-link capsules for the arm in hand, keyed by the model it reports, or ``None`` where none derive.
@@ -319,21 +374,12 @@ class SelfCollisionGuard:
             return None
         # Reconcile the bundled DH base frame to the system base frame, where the
         # base, tool and fixture capsules live, by rotating the arm-link origins about
-        # +Z. The Isaac UR5e USD base_link is measured 180 deg off the official UR DH
-        # base, and the default of 0.0 leaves an existing cell unchanged.
-        yaw_deg = float(self._config.kinematics_base_yaw_deg)
-        if yaw_deg != 0.0:
-            origins_mm = self._rotate_origins_z(origins_mm, yaw_deg)
-        capsules: list[Capsule] = []
-        for i in range(len(origins_mm) - 1):
-            capsules.append(
-                Capsule(
-                    p0=origins_mm[i],
-                    p1=origins_mm[i + 1],
-                    radius_mm=self._link_radius(i),
-                )
-            )
-        return capsules
+        # +Z: no turn on a real arm, the half turn the Isaac UR asset's base_link
+        # stands from the official UR DH base on the sim's.
+        if self._base_yaw_deg != 0.0:
+            origins_mm = self._rotate_origins_z(origins_mm, self._base_yaw_deg)
+        return [Capsule(p0=origins_mm[i], p1=origins_mm[i + 1], radius_mm=_LINK_RADIUS_MM)
+                for i in range(len(origins_mm) - 1)]
 
     @staticmethod
     def _rotate_origins_z(origins_mm: list[np.ndarray], yaw_deg: float) -> list[np.ndarray]:
@@ -367,13 +413,13 @@ class SelfCollisionGuard:
             if dec is not None:
                 return dec
 
-        base = self._base_capsule()
+        base = self._base_capsule(self.model_for(ctx.arm))
         tool = self._tool_capsule(ctx)
         arm_links = self._ur_arm_capsules(ctx)
 
         # Build the full capsule registry for the pairwise checks, keeping the names so
         # a rejection report can say which pair collided.
-        labelled: list[tuple[str, Capsule]] = [("base", base)]
+        labelled: list[tuple[str, Capsule]] = [("base", base)] if base is not None else []
         if arm_links is not None:
             for i, cap in enumerate(arm_links):
                 labelled.append((f"link_{i}", cap))
@@ -458,16 +504,14 @@ class SelfCollisionGuard:
         return self._hand
 
     def mount_refusal(self, hand: "Maybe[PlannerHand]") -> str | None:
-        """Why this guard cannot judge with ``hand`` mounted, or ``None``: the build's own refusals (a hand not named, a
-        frame that places none), and a capsule guard handed another hand than the one it was built with (P0i i5).
+        """Why this guard cannot judge with ``hand`` mounted, or ``None``: the build's own refusals, a hand not named and a
+        frame that places none (P0i i5).
 
-        ⛔ THE CAPSULE MODELS THE TREE'S TOOL (found by review, 2026-09-26). Its tool is a capsule of
-        ``safety.self_collision``'s ``tool_length_mm``, ``tool_radius_mm`` and finger dimensions, set for the hand the
-        tree names and read from nothing else, so another hand would be judged with the first one's dimensions. A
-        guard on ``fcl`` reads the hand's own geometry and takes it; where its engine is missing it falls back to the
-        same capsule, a cell the doctor already reports as degraded.
+        The capsule proxy models the mounted hand as it models the built one, from its registry file
+        (:meth:`_tool_capsule`), so it takes another hand as the exact meshes do; until 2026-10-17 its tool was the
+        tree's ``safety.self_collision`` dimensions, which no mount changed, and it refused one.
         """
-        from src.robot.safety.planning.hand import guard_hand_refusal, hand_geometry_model
+        from src.robot.safety.planning.hand import guard_hand_refusal
 
         built_for = self._built_for if chosen(self._built_for) else None
         refusal = guard_hand_refusal(self._config, hand, built_for)
@@ -476,14 +520,6 @@ class SelfCollisionGuard:
         if chosen(hand) and not chosen(hand.placement):
             return (hand.placement_refusal
                     or f"{hand.model} has no placement on the flange, so no exact mesh guard can model where it is")
-        if hand_geometry_model(self._config, built_for if built_for else UNSET) is None:
-            held, wanted = _hand_identity(self._hand), _hand_identity(hand)
-            if held != wanted:
-                return (
-                    f"this cell's self collision guard models the tool as a capsule from safety.self_collision's tool "
-                    f"dimensions, set for {held[0] if held else 'no hand'} and changed by no mount, so it would judge "
-                    f"{wanted[0] if wanted else 'no hand'} with them: build the cell with the tool it carries"
-                )
         return None
 
     def mount(self, hand: "Maybe[PlannerHand]") -> None:
@@ -499,6 +535,7 @@ class SelfCollisionGuard:
 
             raise ToolChangeRefused(refusal)
         self._hand = hand
+        self._jaw = None
         # The opening the old hand was told is not this hand's (lever G): its fingers stand as baked, fully open,
         # until it is told a width of its own.
         self._finger_opening_mm = None
@@ -510,7 +547,7 @@ class SelfCollisionGuard:
     @property
     def base_yaw_deg(self) -> float:
         """The yaw, in degrees, this guard turns the bundled DH base by to place the arm."""
-        return float(self._config.kinematics_base_yaw_deg)
+        return self._base_yaw_deg
 
     def model_for(self, arm: "object | None") -> str | None:
         """The robot model this guard judges ``arm`` as: the model the arm reports, where the arm registry describes a
@@ -519,7 +556,8 @@ class SelfCollisionGuard:
         The arm is the only source since P0d D5. ``safety.self_collision.kinematics_model`` used to stand in for it,
         because the Isaac arm answered ``isaac-sim``; it now reports the UR it drives (``robot.sim.robot_model``), and
         a key that could only ever repeat that name goes. The vendor does not enter the rule: an arm that reports a
-        model nobody describes, the dummy's ``dummy-6dof`` or a KUKA's, gets no UR geometry whatever its vendor says.
+        model nobody describes, the dummy's ``dummy-6dof`` or another vendor's, gets no UR geometry whatever its
+        vendor says.
 
         Public because more than the meshes depend on it. A sampled path is bounded by how far a joint can swing a
         point of this same arm, so the two answers have to be the same robot. An arm that could not name itself cost
@@ -623,7 +661,7 @@ class SelfCollisionGuard:
             # The config asked for the exact-mesh backend. Falling back to the coarser
             # capsule proxy in silence would look like a robot that cannot grasp
             # anything rather than a missing safety authority, because the proxy
-            # over-rejects at _DEFAULT_LINK_RADIUS_MM. So this says it once and records
+            # over-rejects at _LINK_RADIUS_MM. So this says it once and records
             # the reason, which lets telemetry and the boot banner show a degraded
             # cell.
             self._fcl_status = mesh_backend_status(model, self._config.mesh_dir, variant)
@@ -682,7 +720,7 @@ class SelfCollisionGuard:
             return None
         from .planning.band import ExactPairs
 
-        yaw = float(self._config.kinematics_base_yaw_deg)
+        yaw = self._base_yaw_deg
 
         def distance(joints: "Sequence[float]", part_a: str, part_b: str) -> "float | None":
             transforms = arm_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64), arm)
@@ -713,9 +751,9 @@ class SelfCollisionGuard:
             part, gap = near_of(transforms, yaw, radius_mm=shape.radius_mm, top_mm=shape.top_mm, within_mm=within)
             return str(part), float(gap)
 
-        # The whole-path judge (whole_path_judge): the same two questions asked of every configuration of a path at once.
-        # ExactPairs.first_low and first_near_base hand only the configurations these may refuse to lowest and base,
-        # which say why; without them every configuration is asked of lowest and base in turn, as before.
+        # The whole-path judge: the same two questions asked of every configuration of a path at once. ExactPairs.first_low
+        # and first_near_base hand only the configurations these may refuse to lowest and base, which say why; a backend
+        # that cannot answer them has every configuration asked of lowest and base in turn.
         lowest_many_of = getattr(backend, "lowest_mm_many", None)
         near_base_from_of = getattr(backend, "first_near_base", None)
 
@@ -732,13 +770,12 @@ class SelfCollisionGuard:
             return int(near_base_from_of(transforms, yaw, radius_mm=shape.radius_mm, top_mm=shape.top_mm,
                                          within_mm=within_mm))
 
-        whole = self._whole_path_judge
         return ExactPairs(checks=backend.checks, frames=backend.part_frames,  # type: ignore[attr-defined]
                           distance=distance, min_distance_mm=self._min_distance_mm,
                           lowest=lowest if callable(lowest_of) else None,
                           base=base if shape is not None and callable(near_of) else None,
-                          lows=lows if whole and callable(lowest_of) and callable(lowest_many_of) else None,
-                          near_base_from=(near_base_from if whole and shape is not None and callable(near_of)
+                          lows=lows if callable(lowest_of) and callable(lowest_many_of) else None,
+                          near_base_from=(near_base_from if shape is not None and callable(near_of)
                                           and callable(near_base_from_of) else None))
 
     def first_suspect(self, arm: "object | None", configs: np.ndarray, until: int) -> "int | None":
@@ -766,7 +803,7 @@ class SelfCollisionGuard:
         if transforms is None:
             return None
         return int(judge(
-            transforms, float(self._config.kinematics_base_yaw_deg), declared=self._declared_fixtures,
+            transforms, self._base_yaw_deg, declared=self._held,
             min_distance_mm=self._min_distance_mm, seen=self._perceived_fixtures,
             seen_min_distance_mm=self._perceived_min_distance_mm, until=until,
         ))
@@ -798,11 +835,11 @@ class SelfCollisionGuard:
         # The arm against itself and the declared fixtures at min_distance_mm, then the boxes a camera
         # saw, each turned as the planner holds it, at perceived_min_distance_mm: in that order, so a
         # refusal names the same first pair it always did.
-        yaw = float(self._config.kinematics_base_yaw_deg)
+        yaw = self._base_yaw_deg
         limit = self._min_distance_mm
         seen: tuple[AxisAlignedBox, ...] = ()
         hit = backend.evaluate(  # type: ignore[attr-defined]
-            transforms, yaw, self._declared_fixtures, limit, broadphase=True,
+            transforms, yaw, self._held, limit, broadphase=True,
         )
         if hit is None and self._perceived_fixtures:
             limit, seen = self._perceived_min_distance_mm, self._perceived_fixtures
@@ -813,7 +850,7 @@ class SelfCollisionGuard:
             return SafetyDecision.accept(self.name)
         pair, dmm = hit
         engine = getattr(backend, "engine", "fcl")  # 'coal' preferred, 'fcl' the fallback
-        where = _fixture_detail(pair, seen or self._declared_fixtures, seen=bool(seen))
+        where = _fixture_detail(pair, seen or self._held, seen=bool(seen))
         # What the world that built a seen box knows of it beyond its geometry (AxisAlignedBox.note).
         note = where.get("box_note", "")
         return SafetyDecision.reject(

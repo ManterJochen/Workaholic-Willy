@@ -252,11 +252,11 @@ class GraspBehaviorProfileTests(unittest.TestCase):
         )
         report = service.pick()
         self.assertIs(report.profile.sampling_mode, GraspSamplingMode.AUTO)
-        # `next_viewpoint` was merged into `rescan` on 2026-09-29, and `next_target` ("rescan, skipping
-        # the failed part", same label only) joined the same day (owner).
+        # `next_viewpoint` was merged into `rescan` on 2026-09-29; `next_target` ("rescan, skipping the failed
+        # part") joined that day and left on 2026-10-16 (the owner's cleanup).
         self.assertEqual(
             report.profile.recovery_allowed_actions,
-            ("rescan", "next_target"),
+            ("rescan",),
         )
 
     def test_dense_clutter_profile_locked(self) -> None:
@@ -270,11 +270,11 @@ class GraspBehaviorProfileTests(unittest.TestCase):
         self.assertIs(
             report.profile.sampling_mode, GraspSamplingMode.DENSE_CLUTTER
         )
-        # `nudge_target` moved here from dense_autonomous when that mode left (owner, 2026-09-29),
-        # `next_viewpoint` was merged into `rescan` and `next_target` joined, all the same day.
+        # `nudge_target` moved here from dense_autonomous when that mode left (owner, 2026-09-29), and
+        # `next_viewpoint` was merged into `rescan` the same day; `next_target` left on 2026-10-16.
         self.assertEqual(
             report.profile.recovery_allowed_actions,
-            ("rescan", "next_target", "nudge_target"),
+            ("rescan", "nudge_target"),
         )
 
     def test_profile_is_frozen(self) -> None:
@@ -302,7 +302,7 @@ class AutonomousGraspServiceTests(unittest.TestCase):
         self.assertIs(execution_pkg.GraspBehaviorProfile, GraspBehaviorProfile)
         self.assertIs(execution_pkg.resolve_grasp_mode, resolve_grasp_mode)
 
-    def test_easy_mode_executes_with_single_object_sampling(self) -> None:
+    def test_easy_mode_executes(self) -> None:
         arm = _TypedFakeArm()
         calculator = _ScriptedCalculator([_success_result()])
         service = AutonomousGraspService.from_components(
@@ -321,11 +321,6 @@ class AutonomousGraspServiceTests(unittest.TestCase):
         self.assertIsNotNone(report.pick_report)
         assert report.pick_report is not None  # for type-checkers
         self.assertIs(report.pick_report.outcome, PickOutcome.EXECUTED)
-        # The wrapped orchestrator was configured with SINGLE_OBJECT.
-        self.assertIs(
-            service.runtime.orchestrator.grasp_sampling_mode,
-            GraspSamplingMode.SINGLE_OBJECT,
-        )
 
     def test_auto_is_default_when_mode_is_none(self) -> None:
         service = AutonomousGraspService.from_components(
@@ -420,8 +415,7 @@ class LegacySurfaceNonRegressionTests(unittest.TestCase):
             arm=_TypedFakeArm(),  # type: ignore[arg-type]
             calculator=_ScriptedCalculator([_success_result()]),  # type: ignore[arg-type]
             perception=_FakePerception([_perception_frame()]),
-            grasp_sampling_mode=GraspSamplingMode.SINGLE_OBJECT,
-        )
+            )
         runtime_report = runtime.run_attempt()
 
         wrapper = AutonomousGraspService.from_components(

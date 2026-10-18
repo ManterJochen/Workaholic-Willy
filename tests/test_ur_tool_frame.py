@@ -33,6 +33,7 @@ from src.robot.drivers.ur.pose import URPose
 from src.geometry.matrix import compare_tool_frames, position_quaternion_to_matrix
 from src.robot.drivers.planned.tool_frame import derive_active_tool_frame
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
+from tests._arm_kit import WEIGHED_PAYLOAD
 
 #: The 2F-85 on a UR flange, as the Isaac driver hardcodes it (sim/arm.py): 132 mm along flange +Y plus
 #: a -90 deg rotation about flange X, mapping the TCP +Z (approach) onto flange +Y.
@@ -44,7 +45,7 @@ _Q = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
 def _cfg(source="willy", **tool):
     return RobotConfig.model_validate({
         "vendor": "ur", "ur": {"ip": "127.0.0.1"},
-        "safety": {"payload": {"enforce": False}},
+        "safety": {"payload": WEIGHED_PAYLOAD},
         "gripper": {"model": "robotiq_2f85", "tool_frame": {
             "source": source, "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT, **tool,
         }},
@@ -120,7 +121,8 @@ class ConnectGateTests(unittest.TestCase):
     def test_undeclared_refuses_before_the_socket_opens(self):
         """Silence is an unmeasured cell, not a default."""
         arm = URRobotArm(RobotConfig.model_validate(
-            {"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"}}))
+            {"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "safety": {"payload": WEIGHED_PAYLOAD},
+             "gripper": {"model": "robotiq_2f85"}}))
         arm._conn = _conn(None)
         with self.assertRaises(RobotConnectionError) as ctx:
             arm.connect()
@@ -347,7 +349,7 @@ class _HeightBox:
 
 
 class TheControllerBoxJudgesTheGraspCentreTests(unittest.TestCase):
-    """`workspace_limits` bound the commanded TCP, and the controller path boxes whatever it is handed.
+    """`robot.motion.workspace` bounds the commanded TCP, and the controller path boxes whatever it is handed.
 
     `MotionController.move_to` runs its own full-box check on the URPose it receives. Once willy mode
     hands it the flange target, a grasp centre inside the box whose flange is outside is refused as
@@ -363,7 +365,7 @@ class TheControllerBoxJudgesTheGraspCentreTests(unittest.TestCase):
         cfg = RobotConfig.model_validate({
             "vendor": "ur", "ur": {"ip": "127.0.0.1"},
             "motion": {"planner": "ik"},
-            "safety": {"payload": {"enforce": False}},
+            "safety": {"payload": WEIGHED_PAYLOAD},
             "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": "willy", "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT,
             }},

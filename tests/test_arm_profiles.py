@@ -75,7 +75,7 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
         """
         for model in _arm_profiles():
             with self.subTest(model=model):
-                w = load_config(profile=model).robot.workspace_limits
+                w = load_config(profile=model).robot.motion.workspace
                 centre = self._shoulder_distance(
                     model, (w.x_min + w.x_max) / 2.0, (w.y_min + w.y_max) / 2.0,
                     (w.z_min + w.z_max) / 2.0)
@@ -100,7 +100,7 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
         self.assertTrue(derived, "no profile declares itself derived, so this test proves nothing")
         for model in derived:
             with self.subTest(model=model):
-                w = load_config(profile=model).robot.workspace_limits
+                w = load_config(profile=model).robot.motion.workspace
                 corner = max(self._shoulder_distance(model, x, y, z)
                              for x in (w.x_min, w.x_max) for y in (w.y_min, w.y_max)
                              for z in (w.z_min, w.z_max))
@@ -118,7 +118,7 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
         by_reach = sorted(_arm_profiles(), key=lambda m: float(load_arm(m).reach_mm or 0.0))
         volumes = []
         for model in by_reach:
-            w = load_config(profile=model).robot.workspace_limits
+            w = load_config(profile=model).robot.motion.workspace
             volumes.append((w.x_max - w.x_min) * (w.y_max - w.y_min) * (w.z_max - w.z_min))
         # Ties are fine (a UR5 and a UR5e reach the same); a REVERSAL is not.
         for (a, va), (b, vb) in zip(zip(by_reach, volumes), list(zip(by_reach, volumes))[1:]):
@@ -138,8 +138,8 @@ class TheMeasuredCellsAreTighterThanTheDerivedBoundsTests(unittest.TestCase):
     def test_the_measured_ur3e_cell_fits_inside_the_derived_ur3_bound(self) -> None:
         if "ur3" not in _arm_profiles():
             self.skipTest("no derived ur3 profile to compare against")
-        measured = load_config(profile="ur3e").robot.workspace_limits
-        derived = load_config(profile="ur3").robot.workspace_limits
+        measured = load_config(profile="ur3e").robot.motion.workspace
+        derived = load_config(profile="ur3").robot.motion.workspace
         shoulder = load_arm("ur3e").joints[0].d_m * 1000.0
         far = max(math.sqrt(x * x + y * y + (z - shoulder) ** 2)
                   for x in (measured.x_min, measured.x_max)

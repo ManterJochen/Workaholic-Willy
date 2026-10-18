@@ -44,16 +44,17 @@ _ROOT = Path(__file__).resolve().parents[1]
 CELL_LAYER = """\
 # The cell's own layer, git-ignored on a real cell (Q10).
 robot:
-  named_poses:
-    drop_left:
-      joints_deg: [-45.0, -100.0, -110.0, -60.0, 90.0, 0.0]
-      label: "Ablage links"
-      taught_at: "2026-10-01T10:00:00+02:00"
-      screen: "clear"
-      note: ""
-    park:
-      joints_deg: [0.0, -90.0, -90.0, -90.0, 90.0, 0.0]
-  default_place_pose: drop_left
+  motion:
+    named_poses:
+      drop_left:
+        joints_deg: [-45.0, -100.0, -110.0, -60.0, 90.0, 0.0]
+        label: "Ablage links"
+        taught_at: "2026-10-01T10:00:00+02:00"
+        screen: "clear"
+        note: ""
+      park:
+        joints_deg: [0.0, -90.0, -90.0, -90.0, 90.0, 0.0]
+    default_place_pose: drop_left
 """
 
 CLEAR = PoseScreen(PoseVerdict.CLEAR, "the exact guard and the planner both clear it.")

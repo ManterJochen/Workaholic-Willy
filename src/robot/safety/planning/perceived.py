@@ -102,11 +102,23 @@ if TYPE_CHECKING:  # pragma: no cover (typing only: self_envelope imports this m
     from src.robot.safety.planning.self_envelope import BaseShape
 
 __all__ = [
+    "CAMERA_BENCH_BAND_MM",
+    "CAMERA_BOX_MARGIN_MM",
+    "CAMERA_CLUSTER_VOXEL_MM",
+    "CAMERA_FIELD_VOXEL_MM",
+    "CAMERA_FRAME_MAX_AGE_MS",
+    "CAMERA_MAX_BOXES",
+    "CAMERA_MIN_POINTS",
+    "CAMERA_PIXEL_STRIDE",
+    "CAMERA_VOXEL_MM",
     "DECLARED_SURFACE_MM",
+    "FINGER_CONTACT_MM",
+    "FINGER_FLOOR_MM",
     "MAX_DECLARED_BAND_MM",
     "NEAR_BAND_MM",
     "NEAR_VOXEL_MM",
     "SELF_FILTER_MIN_MM",
+    "SUPPORT_ALLOWANCE_MM",
     "DeclaredBody",
     "DepthView",
     "DropReason",
@@ -151,10 +163,10 @@ MAX_DECLARED_BAND_MM = 25.0
 #: millimetres, before the view's own placement error is added.
 #:
 #: It holds what nothing declares about a body: how well it was measured, the depth error of the
-#: camera and the error of its calibration. Five, the figure the shipped ``plane_clearance_mm``
-#: gives the bench for the same three errors, and a choice rather than a measurement. It is its own
-#: number and not that key because a cell that sinks its slab below the bench raises the key by the
-#: sink (robot.yaml): reused as the band round a fixture, a sink of 50 mm took every part within
+#: camera and the error of its calibration. Five, the figure the bench band gives the bench for the
+#: same three errors (:data:`CAMERA_BENCH_BAND_MM`), and a choice rather than a measurement. It is its
+#: own number and not that band because the band was a key a cell sinking its slab below the bench
+#: raised by the sink: reused as the band round a fixture, a sink of 50 mm took every part within
 #: about 60 mm of a declared tote out of the world (review of 2026-09-23). It never exceeds the
 #: bench band, so the slab, which is declared too, takes nothing the plane test did not.
 DECLARED_SURFACE_MM = 5.0
@@ -209,7 +221,7 @@ class DropReason(StrEnum):
     OUTSIDE_LIMITS = "outside_limits"
     #: Too few points to be anything but sensor noise.
     TOO_FEW_POINTS = "too_few_points"
-    #: On the robot's own body, or on what it is carrying.
+    #: On the robot's own body.
     SELF = "self"
     #: Real, in reach, and there was no collision slot left for it.
     NO_SLOT = "no_slot"
@@ -302,15 +314,14 @@ class WorldBuildTuning:
     #: Grown on every side of every box. A box that is exactly the measured hull is a box the
     #: planner will graze, and depth noise is one-sided at an edge.
     margin_mm: float = 15.0
-    #: How far into a box of a named part a finger may come (``PerceivedBox.soft_mm``): the margin and the cell's
-    #: finger contact where the fingers may touch parts (``perceived.fingers_touch_parts``), 0 where they may not.
+    #: How far into a box of a named part a finger may come (``PerceivedBox.soft_mm``): a cell's wiring sets the margin
+    #: and :data:`FINGER_CONTACT_MM`, the fingers coming to a named part; 0, the library's default, holds them off it.
     part_soft_mm: float = 0.0
     #: Whether a finger keeps the guard's distance from a support's reading and its excess rather than from the solid
-    #: held over it (``PerceivedBox.finger_top_mm``, ``perceived.fingers_to_the_support_reading``). Off for a library
-    #: caller, as before.
+    #: held over it (``PerceivedBox.finger_top_mm``): on in every cell's world, off for a library caller, as before.
     fingers_to_the_reading: bool = False
     #: How much nearer than the guard's distance a finger may come to what a support reads, millimetres: the guard's
-    #: ``perceived_min_distance_mm`` less ``perceived.finger_floor_mm`` (the owner's 1 mm, 2026-10-06), 0 for none. A
+    #: ``perceived_min_distance_mm`` less :data:`FINGER_FLOOR_MM` (the owner's 1 mm, 2026-10-06), 0 for none. A
     #: support's solid lowers its top for the fingers by this as well (``PerceivedBox.finger_top_mm``).
     finger_floor_drop_mm: float = 0.0
     #: Boxes the caller has slots for. Every cluster is a height map of several boxes
@@ -345,7 +356,7 @@ class WorldBuildTuning:
     #: band, and the declared bench as an upright solid up to its band. A point leaves the world only where such a
     #: solid holds every pixel it stands for, and a small cluster standing on one is no noise. Off is the world of
     #: before, byte for byte: the library's default, so a caller that builds a tuning by hand gets what it always got.
-    #: A cell turns it on with ``planning_world.perceived.support_surfaces``.
+    #: Every cell's world finds them (``execution.camera_world_wiring``).
     support_surfaces: bool = False
     #: How far the solids the guard and the planner hold stand over what they take out, millimetres (fix plan F3).
     support_allowance_mm: float = 0.0
@@ -378,6 +389,82 @@ class WorldBuildTuning:
         reach = float(self.fine_reach_mm)
         if not (math.isfinite(reach) and reach >= 0.0):
             raise PerceptionGeometryError(f"fine_reach_mm is finite and not negative, got {reach!r}")
+
+
+# The camera world every cell builds (``execution.camera_world_wiring``). Each number below was a key of
+# ``robot.safety.planning_world.perceived`` until the owner's cleanup of 2026-10-17 fixed it at what the owner's cell
+# ran (its Robotiq tree of 2026-10-14), the distance field at the 10 mm the owner decided on 2026-10-15. The block's
+# switches were all on there and are on everywhere since: the fingers may come to a named part and keep their distance
+# from what a support reads, every box is carried down to the bench, and the supports are found on every build. The
+# library's own :class:`WorldBuildTuning` keeps its defaults for a caller that builds a world by hand.
+
+#: A frame older than this is not planned against, milliseconds, measured from the shutter: the cell had time to change
+#: since. A frame with no capture time counts as too old. The age is judged where the world is refreshed: before a path
+#: is judged, and again before the next goal after a plan that was not taken, not while a plan is computed. 2000, what
+#: the owner's cell ran; the schema had shipped 500.
+CAMERA_FRAME_MAX_AGE_MS = 2000.0
+
+#: Every second pixel of a frame is read. Not an approximation while it stays under the voxel in image terms: at a metre
+#: a D435 pixel is about 1.6 mm, so a 10 mm voxel spans six pixels, and every second one fills the voxels the whole
+#: frame would. Measured on an 848 x 480 frame: 33 ms at 1, 9 ms at 2, the resulting box within a millimetre.
+CAMERA_PIXEL_STRIDE = 2
+
+#: The cloud is thinned to the first pixel of each voxel of this edge, millimetres, before anything else, and the boxes
+#: are fitted to those pixels. The guard's distance from a seen box (``self_collision.perceived_min_distance_mm``) was
+#: measured at 10: no pixel the camera measured lay less than 4.07 mm inside its box over 3,400 noise-free synthetic
+#: scenes, where at 20 one lay 5.6 mm outside every box (review of 2026-09-30).
+CAMERA_VOXEL_MM = 10.0
+
+#: The edge of a voxel of the distance field the planner is sent, every column the cameras measured, millimetres (the
+#: owner, 2026-10-15), and beside it the fine world the guard holds about a motion's goal, on a grid of its own at
+#: :data:`NEAR_VOXEL_MM`. The planner reserves both when it starts. On the replay bank (297 picks): 26 more of 823
+#: plans from home, none fewer, every route as before, 0.1 s more a route.
+CAMERA_FIELD_VOXEL_MM = 10.0
+
+#: The grid the clustering runs on, millimetres. Two points in touching cells are one object, so this is also the gap at
+#: which two parts stop being one obstacle.
+CAMERA_CLUSTER_VOXEL_MM = 25.0
+
+#: Below this many points a cluster is sensor noise rather than a thing.
+CAMERA_MIN_POINTS = 12
+
+#: What every box is grown by on every side, millimetres: a box that is exactly the measured hull is one the planner
+#: grazes, and depth noise at an edge is one-sided. 6, the owner's cell's B of 2026-10-07: on the bench's twelve
+#: tightest scenes 7 of 12 picked against 5 at 8 (an earlier run 9 of 14 against 8), with fewer refused tries; 4 added
+#: nothing. The self filter takes the robot's own body back out by at least :data:`SELF_FILTER_MIN_MM`.
+CAMERA_BOX_MARGIN_MM = 6.0
+
+#: How many boxes of what the cameras saw the planner has slots for beside the declared ones: every object is a height
+#: map of a few boxes (a bin is its walls). Past it the boxes merge into the boxes that hold them, down to one box per
+#: object, and only what still does not fit is left out and refuses the motion, named. 128, what the owner's cell ran;
+#: the schema had shipped 64.
+CAMERA_MAX_BOXES = 128
+
+#: How far above the declared bench a point still counts as the bench, millimetres: the floor of the bench band
+#: (:attr:`WorldBuildLimits.plane_clearance_mm`). It holds what nothing declares: how well the bench height was
+#: measured, the depth error of the camera and the error of its calibration; a view adds the placement error its camera
+#: declares, up to :data:`MAX_DECLARED_BAND_MM`. It is measured from the top of the declared slab
+#: (``planning_world.support_plane.height_mm``), so the slab's top is the bench: a slab sunk below it would bring the
+#: whole bench back as one obstacle.
+CAMERA_BENCH_BAND_MM = 5.0
+
+#: How far past a detected part's measured surface a finger may go, millimetres: the owner's 3 of 2026-10-06 ("3 mm, in
+#: Isaac prüfen"), where 2026-10-05 said to its surface and no further. The descending finger may shove the neighbour
+#: aside by this much, which a dense pile with gaps under the open finger needs: the open Hand-E then needs 15 mm beside
+#: a part, not 18. A box of a part the detector named holds a finger link to its surface less this
+#: (``PerceivedBox.soft_mm``); every other link, the housing and the wrist camera among them, keeps the guard's distance.
+FINGER_CONTACT_MM = 3.0
+
+#: How near a finger comes to what a support surface reads, millimetres: the owner's "bis auf 1 mm, solange er sie nicht
+#: berührt" of 2026-10-06, for the mat and the bench alike. The guard holds every finger mesh this far over the reading
+#: and its excess, and every other link ``self_collision.perceived_min_distance_mm`` from the whole solid.
+FINGER_FLOOR_MM = 1.0
+
+#: How far the support solids the guard and the planner hold stand over what their band took out, millimetres. The
+#: solid follows the camera's reading, and where the camera reads a surface low a thin part the band took out stands
+#: that much higher than its solid: 2 keeps the guard's 5 mm from such a part while the camera reads up to 4 mm low (the
+#: owner, 2026-10-02). It costs grasps of short parts: the fingertip of a 30 mm part comes within reach of a higher solid.
+SUPPORT_ALLOWANCE_MM = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -543,9 +630,9 @@ class DeclaredBody:
 class ReachSphere:
     """Everywhere the robot's own body can be, in any configuration: a sphere about its base.
 
-    Built by :meth:`SelfEnvelope.reach`. A point outside it is somewhere no link, no hand, no wrist
-    camera and no carried part can ever meet, which is the one honest reason to leave an obstacle
-    out of the planner's world.
+    Built by :meth:`SelfEnvelope.reach`. A point outside it is somewhere no link, no hand and no
+    wrist camera can ever meet, which is the one honest reason to leave an obstacle out of the
+    planner's world.
     """
 
     #: Centre in BASE millimetres: the origin of the chain's base frame.
@@ -586,7 +673,7 @@ class LinkCapsule:
     radius_mm: float
     #: The link's own surface, in that frame, where the capsule is fitted round a link's mesh: a point
     #: inside the padded capsule is the link only within the padding of this surface
-    #: (:meth:`SelfBody.contains`). ``None`` takes the capsule as it is: a hand sphere, a carried part.
+    #: (:meth:`SelfBody.contains`). ``None`` takes the capsule as it is: a hand sphere.
     surface: "DeclaredBody | None" = None
 
 
@@ -607,6 +694,27 @@ class SelfEnvelope:
     mask: tuple[LinkCapsule, ...] = ()
     #: How far from a mask sphere a point is the robot's, millimetres: the maps' gap and a depth's noise.
     mask_reach_mm: float = 0.0
+    #: The other arms of the cell where they stand, each its own body already in THIS arm's base (owner, 2026-10-15,
+    #: :meth:`moved`): the self filter takes them out of what the cameras see as it takes this arm, so another arm is
+    #: never a box this arm plans around twice. :meth:`reach` and ``base`` stay this arm's own.
+    others: "tuple[SelfEnvelope, ...]" = ()
+
+    def moved(self, matrix_mm: np.ndarray) -> "SelfEnvelope":
+        """This body stood in another base: every frame turned and shifted by ``matrix_mm`` (4x4, millimetres), the
+        other arms it carries left out."""
+        matrix = np.asarray(matrix_mm, dtype=np.float64)
+        return replace(self, frames_mm=tuple(matrix @ np.asarray(frame, dtype=np.float64) for frame in self.frames_mm),
+                       others=())
+
+    def chains(self) -> "tuple[tuple[np.ndarray, ...], tuple[LinkCapsule, ...]]":
+        """Every body this envelope holds as one chain for the self filter: this arm's frames and capsules first, then
+        each other arm's, its capsules numbered on past the frames before them (``SelfBody.from_frames``)."""
+        frames, capsules = list(self.frames_mm), list(self.capsules)
+        for other in self.others:
+            offset = len(frames)
+            frames.extend(other.frames_mm)
+            capsules.extend(replace(capsule, frame=int(capsule.frame) + offset) for capsule in other.capsules)
+        return tuple(frames), tuple(capsules)
 
     def reach(self, *, padding_mm: float = 0.0) -> ReachSphere:
         """The sphere about the base frame's origin that holds this body in every configuration.
@@ -811,13 +919,21 @@ class SelfBody:
 
     @classmethod
     def of(cls, envelope: SelfEnvelope, *, padding_mm: float) -> "SelfBody":
-        """The body ``envelope`` describes: its capsules grown by ``padding_mm`` (:meth:`from_frames`), and its robot mask
-        placed by the same frames, each sphere grown by the mask's own reach (owner, 2026-10-15)."""
-        body = cls.from_frames(envelope.frames_mm, envelope.capsules, padding_mm=padding_mm)
-        if not envelope.mask:
+        """The body ``envelope`` describes, every other arm it carries included (:meth:`SelfEnvelope.chains`): the
+        capsules grown by ``padding_mm`` (:meth:`from_frames`), and each arm's robot mask placed by the same frames, each
+        sphere grown by its mask's own reach (owner, 2026-10-15)."""
+        frames, capsules = envelope.chains()
+        body = cls.from_frames(frames, capsules, padding_mm=padding_mm)
+        placed, offset = [], 0
+        for held in (envelope, *envelope.others):
+            if held.mask:
+                spheres = cls.from_frames(frames, [replace(sphere, frame=int(sphere.frame) + offset) for sphere in held.mask],
+                                          padding_mm=float(held.mask_reach_mm))
+                placed.append(np.column_stack((spheres.segments_mm[:, 0, :], spheres.radii_mm)))
+            offset += len(held.frames_mm)
+        if not placed:
             return body
-        placed = cls.from_frames(envelope.frames_mm, envelope.mask, padding_mm=float(envelope.mask_reach_mm))
-        return replace(body, mask_mm=np.column_stack((placed.segments_mm[:, 0, :], placed.radii_mm)))
+        return replace(body, mask_mm=np.vstack(placed))
 
     def contains(self, points_mm: np.ndarray) -> np.ndarray:
         """Which of `points_mm` lie inside the body. `(N,)` boolean.
@@ -2575,7 +2691,7 @@ def _stands_on_a_solid(points: np.ndarray, free_pixels: np.ndarray, model: Suppo
 
 
 #: The first frame of the chain whose capsules a fill keeps clear of (``height_map._under_the_robot``): wrist 1 on, with
-#: the hand, its camera and a carried part on the flange. What stands under the arm keeps its fill: a rim the shoulder
+#: the hand and its camera on the flange. What stands under the arm keeps its fill: a rim the shoulder
 #: housing hides was the reason to fill (review of 2026-09-30), and an upper arm or a forearm a fill was lowered under
 #: may come down onto it later.
 _MOVING_FROM_FRAME = 4
@@ -3117,7 +3233,7 @@ def _fine_guard_world(
     Every pixel the camera world read within the fine square, of every view, is judged on its own by the rules each of
     the camera world's points is judged by: the robot's own body now and where it stood for its frame, the bench's band
     and the solids of what the parts stand on, the keep-outs, the declared bodies, the workspace and the reach. What
-    stays makes the fine boxes, but for a cluster the camera world would take for noise (``perceived.min_points`` of its
+    stays makes the fine boxes, but for a cluster the camera world would take for noise (``tuning.min_points`` of its
     own voxels, and not standing on a solid). A pixel is a named part's where a mask names it (a fixed camera) or where
     it lies within :data:`fine_world.FINE_LABEL_MM` of the part's points (a camera on the wrist), each part on its own.
 

@@ -136,12 +136,16 @@ class TenMillimetresBesideThePartTests(unittest.TestCase):
         cell = PushCell.from_robot_config(robot)
         assert isinstance(cell, PushCell), cell
 
+        from src.robot.safety.planning.perceived import CAMERA_BOX_MARGIN_MM
+
         self.assertEqual(10.0, cell.beside_part_clearance_mm)
-        self.assertEqual(float(robot.safety.planning_world.perceived.margin_mm), cell.beside_part_mm)
+        self.assertEqual(CAMERA_BOX_MARGIN_MM, cell.beside_part_mm)
         self.assertEqual(float(robot.safety.self_collision.perceived_min_distance_mm), cell.guard_distance_mm)
         # The line judge's clearance stays what it was for every point the guard sees.
-        self.assertEqual(float(robot.safety.planning_world.perceived.margin_mm)
-                         + float(robot.safety.planned_motion.line_clearance_mm), cell.hand_clearance_mm)
+        from src.robot.safety.path_samples import LINE_CLEARANCE_MM
+
+        self.assertEqual(CAMERA_BOX_MARGIN_MM + LINE_CLEARANCE_MM,
+                         cell.hand_clearance_mm)
 
     def test_the_pick_hands_the_planner_the_clearance_beside_the_part(self) -> None:
         cell = _PushCell(self)

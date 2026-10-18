@@ -81,9 +81,34 @@ marker = stereo.estimate_marker_pose_left(rect_left, target_id=0, rig=0)   # a 4
 ```
 
 `estimate_marker_pose_left` needs a rectified image: it uses the rectified lens with zero distortion, so
-a raw image gives a plausible pose that is wrong. The solvers never write into a `StereoCam3D`; hand a
-solved `Extrinsics` to `stereo.set_extrinsics(...)` yourself. All rigs share one
-`camera.cameras.stereo_calibration` (frame size and board) and one `camera.stereomatcher`.
+a raw image gives a plausible pose that is wrong. Where a stereo rig stands in the cell is its own
+calibration, `camera.cameras.rigs[<id>].extrinsics`, as for every camera; a runtime holds no pose. All
+rigs share one `camera.cameras.stereo_calibration` (frame size and board).
+
+`StereoDepth` is a calibrated pair as the pick path takes it (the owner, 2026-10-17): the left image
+rectified, the depth on its pixels in `uint16` millimetres from `focal * baseline / disparity`, 0 where
+the pair was not matched, and the rectified left lens with no distortion. `StereoDepthStreamer` in
+[`src/camera`](../camera/README.md#a-stereo-pair-as-the-cells-camera) hands it out as an RGB-D camera.
+
+```python
+from src.calibration.stereo import StereoDepth, working_depth_range_mm
+
+depth = StereoDepth(calibration, working_depth_range_mm(workspace=box, camera_to_base=placed))
+rect_left, rect_right = depth.rectify(left, right)
+depth_mm = depth.depth_mm(rect_left, rect_right)          # uint16 millimetres, 0 where unmatched
+lens = depth.intrinsics()                                 # the rectified left lens
+```
+
+The matcher has no settings to give. `working_depth_range_mm` says which depths it searches: a fixed
+camera's workspace box as its calibration places it, from its nearest corner and never nearer than
+`NEAR_LIMIT_MM`, 150 mm, which is where every other camera starts, and on to infinity, because a camera
+sees past its workspace and the matcher gives a surface beyond its search a wrong depth inside it.
+`disparity_search` turns those depths into OpenCV's disparities through the pair's own focal length and
+baseline, and everything else is `disparity.MEASURED_SETTINGS`, chosen on the D415's infrared pair
+(`scripts/stereo/measure_on_the_d415_ir_pair.py`): semi-global matching in three ways at a 5 pixel block,
+the pair padded so its left band is matched, a left-right check of its own, no disparity at the search's
+near end or on a flat block, and every pixel within 2 pixels of a hole or a depth step a hole too. No
+hole is ever filled, from the neighbours or from an earlier frame.
 
 ## Quality bands
 
@@ -107,7 +132,7 @@ save; what proves a calibration is a pick that lands where it was aimed.
 | `willy.calibration.cam_to_tool/1` | CAMERA to TOOL | `save_cam_to_tool`, `load_cam_to_tool` |
 | `willy.calibration.cam_to_tool/2` | CAMERA to TOOL, and the flange to TCP the solve was made against | the same two |
 | `willy.calibration.eye_hand.dataset/1` | the samples of one sweep | `EyeHandDataset.save`, `EyeHandDataset.load` |
-| `willy.calibration.stereo/1` | per-camera stereo parameters; the remap tables are recomputed on load | the stereo factory |
+| `willy.calibration.stereo/1` | per-camera stereo parameters; the remap tables are recomputed on load. A file written before 2026-10-17 may carry a `T_cam_to_base`, which is not read: the rig's `extrinsics` place it | `StereoCalibration.calibrate()` and the stereo factory write it, `StereoDepthStreamer` and the factory read it |
 
 Writes are atomic with sorted keys, so two identical solves give identical bytes. A mismatched schema,
 or a transform whose frames are not the ones the file claims, raises `ExtrinsicsError`, so a CAMERA to
@@ -132,7 +157,7 @@ The legend is the guide's [evidence levels](../../docs/guide/README.md#what-veri
 |---|---|
 | [`eye_hand/`](eye_hand/README.md) | the two hand-eye workflows, their settings, results and dataset |
 | [`solver/`](solver/) | `HandEyeAXXB` for AX=XB and `UmeyamaRigid` for point-set registration, NumPy only |
-| [`stereo/`](stereo/) | `StereoCam3D`, `StereoRigConfig`, `CalibrationResult` and the ArUco pose estimator |
+| [`stereo/`](stereo/) | `StereoCam3D`, `StereoRigConfig`, `CalibrationResult`, the ArUco pose estimator, and `StereoDepth`, `working_depth_range_mm` and the measured matcher (`sub_modules/disparity.py`) |
 | [`extrinsics.py`](extrinsics.py) | `Extrinsics` |
 | [`rig_calibration.py`](rig_calibration.py) | `RigCalibration`, `RigNotCalibrated`, `RigCalibrationError`: the one loader of a rig's calibration |
 | [`rgbd_marker_source.py`](rgbd_marker_source.py) | `RGBDArucoMarkerSource`, the target poses of an RGB-D camera for the sweep, and what each judged frame showed |

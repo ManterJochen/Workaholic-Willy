@@ -95,8 +95,7 @@ class TheCellsThisRepositoryShipsAreMeasured(unittest.TestCase):
             "hand": hand.model, "coupling_mm": hand.coupling_mm,
             "approach": placement.approach, "closing": placement.closing,
             "planner_margin_mm": float(cfg.safety.self_collision.planner_margin_mm or 0.0),
-            "attach_spheres": 0,
-        }
+            }
 
     def test_the_sim_profile_resolves_to_a_file_that_passes(self) -> None:
         from src.robot.safety.planning.evidence import evidence_path
@@ -124,7 +123,7 @@ class TheCellsThisRepositoryShipsAreMeasured(unittest.TestCase):
         closing along +X, and the owner's flange +Z closing along -Y, its tool frame a quarter turn about Z."""
         from src.robot.safety.planning._hand_placement import HandPlacement, placement_quaternion_xyzw
 
-        placements = {path.name.split("_")[-3] for path in _FILES}
+        placements = {path.name.split("_")[-2] for path in _FILES}
         for placement in sorted(placements):
             approach, closing = placement[:2], placement[2:]
             derived = HandPlacement.from_quaternion_xyzw(placement_quaternion_xyzw(approach, closing))

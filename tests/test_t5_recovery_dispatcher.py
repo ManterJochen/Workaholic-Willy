@@ -1,181 +1,56 @@
-"""Phase T5 — RED tests for the pure failure-class dispatcher.
+"""The failure-class dispatcher: what each failure class asks the recovery loop for.
 
-The dispatcher maps a :class:`GraspFailureReason` to an *ordered* tuple
-of :class:`SceneRecoveryAction` candidates the orchestrator will try
-in priority order, subject to policy + profile + budget gates.
-
-These tests pin the locked Q6 default mapping. They do *not* exercise
-gating, anti-loop, or service wiring — those live in the orchestrator
-and service test files.
+Every class a look again can help asks for ``RESCAN``, which moves nothing itself: the next pick re-perceives the
+scene. An escalation asks for nothing, and the operator hears of it. ``NEXT_VIEWPOINT`` left every row on 2026-09-29,
+merged into ``RESCAN``; ``NEXT_TARGET`` and ``CONTAINER_AGITATE`` left them on 2026-10-16 with their code, and the
+push with them, because it runs inside the pick attempt and never from this loop (the owner's cleanup). The gates, the
+budgets and the anti-loop rule are the orchestrator's (``tests/test_t5_recovery_orchestrator.py``).
 """
 
 from __future__ import annotations
 
 import unittest
 
-from src.robot.grasping.types.feedback import GraspFailureReason
+from src.robot.grasping.recovery.orchestrator import RecoveryDispatcher
 from src.robot.grasping.recovery.policy import SceneRecoveryAction
-from src.robot.grasping.recovery.orchestrator import (
-    RecoveryDispatcher,
+from src.robot.grasping.types.feedback import GraspFailureReason as R
+
+#: Every class a look again can help: reach and table conflicts, perception complaints, occlusion, no grasp, the
+#: refinement classes an older record may carry, and a planner's refusal, which nothing that moves may answer
+#: (``tests/test_motion_plan_refusal_recovery.py``).
+RESCANS = (
+    R.IK_FAILED, R.ALL_OUT_OF_WORKSPACE, R.ALL_TABLE_CONFLICT,
+    R.RESCAN_RECOMMENDED, R.LOW_DEPTH_CONFIDENCE, R.LOW_MASK_CONFIDENCE, R.EMPTY_MASK, R.MASK_TOO_SMALL,
+    R.NO_VALID_DEPTH, R.ACTIVE_PERCEPTION_RECOMMENDED, R.HEAVY_OCCLUSION,
+    R.NO_CANDIDATES_GENERATED, R.ALL_COLLIDED, R.NO_VALID_GRASP,
+    R.TARGET_LOST_DURING_REFINE, R.REFINEMENT_DIVERGED, R.MOTION_PLAN_REFUSED,
+)
+#: The escalations: a stopped controller, a label nobody saw, the rejections, and the semantic hint that the next
+#: candidate is the pick loop's own business.
+ESCALATIONS = (
+    R.CONTROLLER_NOT_OPERATIONAL, R.TARGET_LABEL_NOT_FOUND, R.TOPOLOGY_RISK_REJECTED, R.SEMANTIC_REJECTED,
+    R.TRY_NEXT_CANDIDATE, R.DEFORMABLE_ROUTING_REQUIRED,
 )
 
 
-class RecoveryDispatcherDefaultsTests(unittest.TestCase):
-    """The default dispatcher must encode the operator-locked map."""
+class TheDispatcherRowsTests(unittest.TestCase):
+    def test_every_class_a_look_again_can_help_rescans(self) -> None:
+        for reason in RESCANS:
+            with self.subTest(reason=reason.value):
+                self.assertEqual((SceneRecoveryAction.RESCAN,), RecoveryDispatcher().actions_for(reason))
 
-    def setUp(self) -> None:
-        self.dispatcher = RecoveryDispatcher()
+    def test_an_escalation_asks_for_nothing(self) -> None:
+        for reason in ESCALATIONS:
+            with self.subTest(reason=reason.value):
+                self.assertEqual((), RecoveryDispatcher().actions_for(reason))
 
-    def test_ik_failed_prefers_next_target_then_rescan(self) -> None:
-        seq = self.dispatcher.actions_for(GraspFailureReason.IK_FAILED)
-        self.assertEqual(
-            seq,
-            (
-                SceneRecoveryAction.NEXT_TARGET,
-                SceneRecoveryAction.RESCAN,
-            ),
-        )
+    def test_every_failure_class_has_its_row(self) -> None:
+        self.assertEqual(set(R), set(RESCANS) | set(ESCALATIONS))
+        self.assertFalse(set(RESCANS) & set(ESCALATIONS))
 
-    def test_workspace_and_table_share_ik_failed_priority(self) -> None:
-        for reason in (
-            GraspFailureReason.ALL_OUT_OF_WORKSPACE,
-            GraspFailureReason.ALL_TABLE_CONFLICT,
-        ):
-            self.assertEqual(
-                self.dispatcher.actions_for(reason),
-                (
-                    SceneRecoveryAction.NEXT_TARGET,
-                    SceneRecoveryAction.RESCAN,
-                ),
-                f"unexpected sequence for {reason}",
-            )
-
-    def test_perception_signals_rescan(self) -> None:
-        # RESCAN alone: NEXT_VIEWPOINT, which followed it, was merged into it on 2026-09-29.
-        for reason in (
-            GraspFailureReason.RESCAN_RECOMMENDED,
-            GraspFailureReason.LOW_DEPTH_CONFIDENCE,
-            GraspFailureReason.LOW_MASK_CONFIDENCE,
-            GraspFailureReason.EMPTY_MASK,
-            GraspFailureReason.MASK_TOO_SMALL,
-            GraspFailureReason.NO_VALID_DEPTH,
-        ):
-            self.assertEqual(
-                self.dispatcher.actions_for(reason),
-                (SceneRecoveryAction.RESCAN,),
-                f"unexpected sequence for {reason}",
-            )
-
-    def test_occlusion_signals_rescan(self) -> None:
-        # They moved the viewpoint first until NEXT_VIEWPOINT was merged into RESCAN (2026-09-29);
-        # another view comes from a look pose or a second camera, not from recovery.
-        for reason in (
-            GraspFailureReason.ACTIVE_PERCEPTION_RECOMMENDED,
-            GraspFailureReason.HEAVY_OCCLUSION,
-        ):
-            self.assertEqual(
-                self.dispatcher.actions_for(reason),
-                (SceneRecoveryAction.RESCAN,),
-                f"unexpected sequence for {reason}",
-            )
-
-    def test_no_candidates_path_skips_the_part_then_rescans(self) -> None:
-        # The push left these rows on 2026-09-29 (owner): nothing says a neighbour is in the way, so it has
-        # no direction to go. It is offered for ALL_COLLIDED only.
-        for reason in (
-            GraspFailureReason.NO_CANDIDATES_GENERATED,
-            GraspFailureReason.NO_VALID_GRASP,
-        ):
-            self.assertEqual(
-                self.dispatcher.actions_for(reason),
-                (
-                    SceneRecoveryAction.NEXT_TARGET,
-                    SceneRecoveryAction.RESCAN,
-                ),
-                f"unexpected sequence for {reason}",
-            )
-
-    def test_all_collided_path_offers_agitate_for_clutter_jams(self) -> None:
-        # G6: a clutter jam (ALL_COLLIDED) additionally offers the envelope-clamped agitate between the
-        # nudge and the rescan (the viewpoint change until NEXT_VIEWPOINT was merged into RESCAN).
-        # Stays double-gated (profile + policy + fixture + amplitude).
-        self.assertEqual(
-            self.dispatcher.actions_for(GraspFailureReason.ALL_COLLIDED),
-            (
-                SceneRecoveryAction.NEXT_TARGET,
-                SceneRecoveryAction.NUDGE_TARGET,
-                SceneRecoveryAction.CONTAINER_AGITATE,
-                SceneRecoveryAction.RESCAN,
-            ),
-        )
-
-    def test_refinement_failures_prefer_rescan_then_next_target(self) -> None:
-        for reason in (
-            GraspFailureReason.TARGET_LOST_DURING_REFINE,
-            GraspFailureReason.REFINEMENT_DIVERGED,
-        ):
-            self.assertEqual(
-                self.dispatcher.actions_for(reason),
-                (
-                    SceneRecoveryAction.RESCAN,
-                    SceneRecoveryAction.NEXT_TARGET,
-                ),
-                f"unexpected sequence for {reason}",
-            )
-
-    def test_try_next_candidate_maps_to_next_target_only(self) -> None:
-        self.assertEqual(
-            self.dispatcher.actions_for(GraspFailureReason.TRY_NEXT_CANDIDATE),
-            (SceneRecoveryAction.NEXT_TARGET,),
-        )
-
-    def test_escalation_signals_yield_empty_sequence(self) -> None:
-        for reason in (
-            GraspFailureReason.TOPOLOGY_RISK_REJECTED,
-            GraspFailureReason.SEMANTIC_REJECTED,
-            GraspFailureReason.DEFORMABLE_ROUTING_REQUIRED,
-        ):
-            self.assertEqual(
-                self.dispatcher.actions_for(reason),
-                (),
-                f"expected empty escalation sequence for {reason}",
-            )
-
-
-class RecoveryDispatcherOverrideTests(unittest.TestCase):
-    """The dispatcher accepts operator overrides without changing defaults."""
-
-    def test_override_replaces_specific_reason_only(self) -> None:
-        override = {
-            GraspFailureReason.IK_FAILED: (SceneRecoveryAction.RESCAN,),
-        }
-        dispatcher = RecoveryDispatcher(overrides=override)
-        self.assertEqual(
-            dispatcher.actions_for(GraspFailureReason.IK_FAILED),
-            (SceneRecoveryAction.RESCAN,),
-        )
-        # Non-overridden reason retains default mapping.
-        self.assertEqual(
-            dispatcher.actions_for(GraspFailureReason.NO_VALID_GRASP),
-            (
-                SceneRecoveryAction.NEXT_TARGET,
-                SceneRecoveryAction.RESCAN,
-            ),
-        )
-
-    def test_override_to_empty_disables_class(self) -> None:
-        dispatcher = RecoveryDispatcher(
-            overrides={GraspFailureReason.IK_FAILED: ()}
-        )
-        self.assertEqual(
-            dispatcher.actions_for(GraspFailureReason.IK_FAILED),
-            (),
-        )
-
-    def test_dispatcher_is_frozen(self) -> None:
-        dispatcher = RecoveryDispatcher()
-        with self.assertRaises((AttributeError, Exception)):
-            dispatcher.overrides = {}  # type: ignore[misc]
+    def test_the_dispatcher_is_frozen(self) -> None:
+        with self.assertRaises((AttributeError, TypeError)):
+            RecoveryDispatcher().rows = {}  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -15,8 +15,8 @@ model copy), before its first pick:
    min(100 mm, half its footprint's diagonal) of where the survey found it, a footprint within 20 % and a rim within
    20 mm of the survey's (``recheck``), so a bin that creeps between the parts is not followed further and further.
 4. **The drop** (Q3, item 6; the owner, 2026-10-14). Over the middle of the rim, the rim air over it (the operator's 0
-   to 50 mm, else the cell's ``robot.place.rim_air_mm``, 20 as shipped): the part's bottom there and the tool higher by
-   the part's hang, where the cell declares how far its parts hang (``safety.planning_world.payload.length_mm``); the
+   to 50 mm, else the owner's cell's 20 mm): the part's bottom there and the tool higher by the part's hang, where the
+   cell declares how far its parts hang (``robot.motion.place.part_hang_mm``); the
    tool there where it declares none, as the doubles' cell does unless a test gives it a tree. Turned along the cell's
    natural closing axis for a grasp within 5 degrees of vertical; ``Robot.place`` without a keep-out, which would take
    the bin's walls out of the world the line in is judged against. The return runs inside the hold, which ends after
@@ -24,9 +24,9 @@ model copy), before its first pick:
 5. **Lost** (Q13 (c)). A bin not seen, moved too far or swapped, a drop no configuration reaches, a part that does not
    fit the opening: the part goes back where it was gripped (``service.put_back``), the arm returns, and the task asks.
    A put back that does not release stays where it stands; one whose line out a stopped controller refused after the
-   release sends no return to it. A lost bin is looked for again first (the owner, 2026-10-09, ``robot.place.relocate``
-   on; ``tests/test_a_bin_that_moved_is_found_again_before_the_drop.py``): here the bin is found nowhere, or the cell
-   keeps the old rule (``relocate`` off) where it would be found, so each test pins the put back.
+   release sends no return to it. A lost bin is looked for again first (the owner, 2026-10-09; every cell since
+   2026-10-17; ``tests/test_a_bin_that_moved_is_found_again_before_the_drop.py``): here the bin is found nowhere, so
+   each test pins the put back, and a bin that crept is kept where it is found.
 
 A fixed camera finds the bin once where the arm stands and checks it at the start of each part instead, with no look
 to carry the part to and no frames to hold. "Stop after this part" is read before the survey and before each of its
@@ -61,7 +61,6 @@ from tests._task_fakes import (
     declaring,
     do0_changes,
     motions,
-    placing,
     run,
 )
 
@@ -211,28 +210,22 @@ class TheBinFoundTests(unittest.TestCase):
         self.assertAlmostEqual(0.0, checked["moved_mm"], delta=1.0)
 
     def test_the_rim_air_is_the_operators_choice(self) -> None:
-        """The operator's 45 mm, over the cell's own: even its 0 mm."""
-        for name, arm in (("the doubles' cell", None), ("a cell whose own air is 0 mm",
-                                                        _declaring(None, place={"rim_air_mm": 0.0}))):
-            with self.subTest(name):
-                ran = _camera_task(air_mm=45.0, arm=arm)
+        """The operator's 45 mm, over the owner's cell's 20."""
+        ran = _camera_task(air_mm=45.0)
 
-                self.assertAlmostEqual(BIN_RIM_MM + 45.0, _place_moves(ran)[1][1][2], delta=0.5)
+        self.assertAlmostEqual(BIN_RIM_MM + 45.0, _place_moves(ran)[1][1][2], delta=0.5)
 
     def test_no_air_lets_the_parts_bottom_go_at_the_rim(self) -> None:
-        """The owner's "genau auf Höhe der Kante" (2026-10-14): on a cell that declares how far its parts hang, its own
-        ``robot.place.rim_air_mm: 0`` or the operator's 0 mm lets the part go with its bottom at the rim, the tool the
-        part's 20 mm hang over it."""
+        """The owner's "genau auf Höhe der Kante" (2026-10-14): on a cell that declares how far its parts hang, the
+        operator's 0 mm lets the part go with its bottom at the rim, the tool the part's 20 mm hang over it."""
         from src.robot.execution.task import TaskStop
 
-        for name, air_mm, place in (("the cell's 0 mm", None, {"rim_air_mm": 0.0}), ("the operator's 0 mm", 0.0, {})):
-            with self.subTest(name):
-                ran = _camera_task(air_mm=air_mm, arm=_declaring(60.0, place=place))
+        ran = _camera_task(air_mm=0.0, arm=_declaring(60.0))
 
-                self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
-                drop = ran.hooks.of("task.drop_planned")[0]
-                self.assertEqual((0.0, GRASP_Z_MM), (drop["air_mm"], drop["hang_mm"]))
-                self.assertAlmostEqual(BIN_RIM_MM + GRASP_Z_MM, _place_moves(ran)[1][1][2], delta=0.5)
+        self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+        drop = ran.hooks.of("task.drop_planned")[0]
+        self.assertEqual((0.0, GRASP_Z_MM), (drop["air_mm"], drop["hang_mm"]))
+        self.assertAlmostEqual(BIN_RIM_MM + GRASP_Z_MM, _place_moves(ran)[1][1][2], delta=0.5)
 
     def test_a_vertical_grasp_is_dropped_along_the_cells_natural_axis(self) -> None:
         from src.geometry.closing_axis import closing_axis_of
@@ -329,13 +322,12 @@ class NoBinTests(unittest.TestCase):
 
 
 class ABinLostAtTheDropTests(unittest.TestCase):
-    def _lost(self, change: Any, why: str, *, relocate: bool = True) -> Any:
-        """``change`` the bin after the pick; with ``relocate`` off, the cell keeps the old rule for a lost bin."""
+    def _lost(self, change: Any, why: str) -> Any:
+        """``change`` the bin after the pick, so that it is found nowhere when it is looked for again."""
         from src.robot.execution.task import TaskStop
 
         bin = _Bin()
-        arm = None if relocate else placing(TaskArm([], fk_table={_key(L1): AT_L1, _key(L2): AT_L2}), relocate=False)
-        ran = _camera_task((Pick("part", then=lambda: change(bin)),), bin=bin, arm=arm)
+        ran = _camera_task((Pick("part", then=lambda: change(bin)),), bin=bin)
 
         self.assertIs(TaskStop.TARGET_LOST, ran.report.stop, ran.report.sentence)
         self.assertEqual([{"look": look_label(L1), "why": why, "phrase": "blue bin"}],
@@ -350,12 +342,6 @@ class ABinLostAtTheDropTests(unittest.TestCase):
         self.assertEqual(("home",), motions(ran.log)[-1])
         self.assertIs(False, ran.hooks.of("task.part_finished")[0]["placed"])
         return ran
-
-    def test_a_bin_moved_150_mm_is_lost_the_part_goes_back_and_the_arm_returns(self) -> None:
-        """With ``robot.place.relocate`` off: on, the bin moved 150 mm is found again where the check saw it."""
-        ran = self._lost(lambda bin: bin.move(150.0), "moved_too_far", relocate=False)
-        self.assertAlmostEqual(150.0, ran.hooks.of("task.target_checked")[0]["moved_mm"], delta=3.0)
-        self.assertNotIn("task.target_relocated", ran.names())
 
     def test_a_bin_swapped_for_another_is_lost(self) -> None:
         self._lost(lambda bin: bin.move(0.0, size=(200.0, 120.0)), "footprint_changed")
@@ -381,8 +367,7 @@ class ABinLostAtTheDropTests(unittest.TestCase):
     def test_a_bin_that_creeps_is_followed_only_within_the_bound_of_where_the_survey_found_it(self) -> None:
         """Red before: each check measured from the last bin it followed, so a bin moved 60 mm before every drop was
         followed 60 mm at a time without end. Measured from where the survey found it, the second drop stands 120 mm
-        away, past the 100 mm bound: the part goes back and the task asks, where the cell keeps the old rule
-        (``robot.place.relocate`` off; on, the bin is found again there)."""
+        away, past the 100 mm bound: the bin is lost there, looked for again and kept where it stands now."""
         from src.robot.execution.task import TaskStop
 
         bin = _Bin()
@@ -392,17 +377,17 @@ class ABinLostAtTheDropTests(unittest.TestCase):
             moved.append(1)
             bin.move(60.0 * len(moved))
 
-        arm = placing(TaskArm([], fk_table={_key(L1): AT_L1, _key(L2): AT_L2}), relocate=False)
-        ran = _camera_task((Pick("part", then=creep), Pick("part", then=creep), "part"), bin=bin, scope="until_empty",
-                           arm=arm)
+        ran = _camera_task((Pick("part", then=creep), Pick("part", then=creep), "part", "empty", "empty"), bin=bin,
+                           scope="until_empty")
 
-        self.assertIs(TaskStop.TARGET_LOST, ran.report.stop, ran.report.sentence)
-        self.assertEqual(1, ran.report.parts_placed)
+        self.assertIs(TaskStop.NOTHING_LEFT, ran.report.stop, ran.report.sentence)
+        self.assertEqual(3, ran.report.parts_placed)
         checks = ran.hooks.of("task.target_checked")
-        self.assertEqual([True, False], [check["followed"] for check in checks])
+        self.assertEqual([True, False], [check["followed"] for check in checks[:2]])
         self.assertAlmostEqual(120.0, checks[1]["moved_mm"], delta=3.0)
-        self.assertEqual("moved_too_far", ran.hooks.of("task.target_lost")[0]["why"])
-        self.assertEqual(4, do0_changes(ran.log))
+        relocated = ran.hooks.of("task.target_relocated")
+        self.assertEqual([True], [said["found"] for said in relocated])
+        self.assertAlmostEqual(120.0, relocated[0]["moved_mm"], delta=3.0)
         self.assertEqual(("home",), motions(ran.log)[-1])
 
     def test_a_put_back_whose_line_out_a_stopped_controller_refused_sends_no_return(self) -> None:
@@ -591,13 +576,13 @@ class AFixedCameraTests(unittest.TestCase):
         self.assertIsNone(ran.hooks.of("task.target_found")[0]["look"])
 
     def test_a_bin_a_fixed_camera_lost_before_a_pick_returns_and_asks_with_nothing_picked(self) -> None:
-        """With ``robot.place.relocate`` off: on, the bin moved 200 mm is found again where the camera saw it."""
+        """The bin taken away after the first part: the fixed camera finds it nowhere where it stands, so the task
+        returns and asks before it picks again (one that moved is found again where the camera sees it)."""
         from src.robot.execution.task import TaskStop
 
         bin = _Bin()
         ran = _camera_task(("part", "part"), bin=bin, scope="until_empty", wrist=False,
-                           arm=placing(TaskArm([], fk_table={_key(L1): AT_L1, _key(L2): AT_L2}), relocate=False),
-                           hooks=RecordingHooks(on_event=lambda name, _d: bin.move(200.0)
+                           hooks=RecordingHooks(on_event=lambda name, _d: bin.take_away()
                                                 if name == "task.part_finished" else None))
 
         self.assertIs(TaskStop.TARGET_LOST, ran.report.stop)

@@ -2,7 +2,7 @@
 
 A pose closes along its tool +X. A program names the closing axis it wants (``GraspMotion(closing_axis=...)``,
 ``Scene.grasps(closing_axis=...)``, ``Locator.look_around(..., closing_axis=...)``), and a cell names how its hand and
-camera naturally stand (``robot.natural_closing_axis``, the owner's decision, 2026-09-30). Both are read here, by
+camera naturally stand (``robot.motion.natural_closing_axis``, the owner's decision, 2026-09-30). Both are read here, by
 :func:`closing_axis_of`: a name of :data:`~src.geometry.pose.CLOSING_AXES` (a leading "+" allowed), read at each place
 through the geometry's own rule, :func:`~src.geometry.pose.closing_axis_heading_deg`; or an orientation, a quaternion
 (x, y, z, w) or a BASE ``Pose``, whose tool +X laid onto the base XY plane is the heading. Only that heading counts: a
@@ -125,7 +125,7 @@ def closing_axis_of(value: object) -> ClosingAxis:
 
 
 def natural_closing_axis_of(robot_config: object) -> "ClosingAxis | None":
-    """How the hand and camera of the cell ``robot_config`` describes naturally stand (``robot.natural_closing_axis``),
+    """How the hand and camera of the cell ``robot_config`` describes naturally stand (``robot.motion.natural_closing_axis``),
     read as :func:`closing_axis_of` reads an axis; ``None`` where it names none, a config without the key included."""
-    named = getattr(robot_config, "natural_closing_axis", None)
+    named = getattr(getattr(robot_config, "motion", None), "natural_closing_axis", None)
     return None if named is None else closing_axis_of(named)

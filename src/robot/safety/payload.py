@@ -34,7 +34,7 @@ class PayloadGuard:
     """Mass / CoG / inertia envelope guard.
 
     Stateless across calls. :meth:`SafetyPreflight.from_safety_config` constructs it
-    when ``safety.payload.enforce`` is ``True``.
+    on every cell.
     """
 
     name = "payload"

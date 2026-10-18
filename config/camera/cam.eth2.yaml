@@ -1,7 +1,23 @@
 # ============================================================================
-# Camera layer for a cell with two fixed RGB-D cameras.
+# Camera layer for a cell with two fixed RGB-D cameras, fused.
 #
 #   WILLY_PROFILE=ur5e,eth2       the bench cell of robot.ur5e.yaml, with two cameras
+#
+# There is no fusion switch (2026-10-16): a cell fuses by itself wherever this section declares two
+# or more enabled RGB-D rigs with their calibration, the primary among them. This layer is the whole
+# of that cell's fusion, and the arm, the bench and the tool are `robot.ur5e.yaml`'s.
+#
+# What fusing a second view is for. One camera sees one side of a part. The grasp is synthesised
+# from the primary camera's cloud, and a surface it never measured is a surface the finger
+# placement is guessing at. A second view measured in the same frame turns that guess into
+# geometry. Scored against a simulated reference corpus through the analytic calculator, fusing a
+# second view raises both the share of scenes whose best candidate is graspable and the share of
+# objects reachable at all, by a wide margin. The size of the gain belongs to that corpus and to
+# that calculator, so this file does not quote it as a prediction for your bin.
+#
+# This cell has never run on hardware. `_build_multi_camera_rig` in
+# `src/robot/execution/autonomous_grasp/cells.py` says so about itself, and the real-cell
+# calibration has only ever been exercised in simulation.
 #
 # Two Intel RealSense D435 class devices, both bolted in the cell looking at the same bin
 # from different angles, neither on the wrist. That is what eye-to-hand means here: the
@@ -18,6 +34,49 @@
 # every other camera only confirms what it sees, so moving it moves every number this cell measures.
 # What changed is that moving it is now an edit to a named key rather than a reordering nobody would
 # read as a decision.
+#
+# Bring-up order.
+#
+# 1. Read both camera serials with `rs-enumerate-devices -s` and set WILLY_CAM_LEFT_SERIAL
+#    and WILLY_CAM_RIGHT_SERIAL, or write the literals into camera/cam.eth2.yaml. With
+#    neither set the placeholder defaults load and validate, so the tree passes the command
+#    below and the failure moves to the first attempt to open a device.
+#
+#      WILLY_PROFILE=ur5e,eth2 python -m src.config
+#
+# 2. Prove each camera streams depth on its own, before anything is built:
+#
+#      WILLY_PROFILE=ur5e,eth2 python -m src.robot.perception --rig cam_left
+#      WILLY_PROFILE=ur5e,eth2 python -m src.robot.perception --rig cam_right
+#
+# 3. Fill in the tool frame and the payload in robot.ur5e.yaml. Those are bench
+#    measurements and the cell refuses to connect without them.
+#
+# 4. Calibrate each camera against the robot. This moves the robot. Check first, then run:
+#
+#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_left --freedrive --check
+#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_left --freedrive
+#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_right --freedrive
+#
+#    --freedrive guides the arm by hand to each pose; --fixed-poses PATH visits stations from a file
+#    instead. A run that names neither is refused, --check included.
+#
+#    Each run writes `calibration/real/eth_<rig>.json` and prints the rig block to paste. The two
+#    `extrinsics` blocks in camera/cam.eth2.yaml already name those files; point them elsewhere
+#    only if you passed `--out`.
+#
+# 5. Check the whole cell, rehearse it, then pick:
+#
+#      WILLY_PROFILE=ur5e,eth2 python -m src.robot.execution.real_cell --check
+#      WILLY_PROFILE=ur5e,eth2 python -m src.robot.execution.real_cell --rehearse
+#
+#    `--check` reads whether the rigs declare `extrinsics`: the camera to base row the
+#    primary's, the camera world row every enabled RGB-D rig's. It opens none of the files,
+#    so a green check with a missing artifact still fails when the cell is built.
+#
+# What this cell does not do: the operator console's live view reads the primary camera
+# only, and offers no camera selector, so the second view appears in telemetry rather than
+# on the panel.
 # ============================================================================
 cameras:
   # Which of the two cameras below the cell opens. The grasp is synthesised from its view and

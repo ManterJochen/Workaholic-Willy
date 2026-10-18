@@ -179,7 +179,7 @@ class TheTaskSetsAndPutsBackTests(unittest.TestCase):
 
     def test_a_task_that_takes_every_part_takes_a_blocker_as_the_pick(self) -> None:
         """The owner, 2026-10-06: where the task takes every part into one place, a blocker goes there too (the
-        cell's ``recovery.blocker_into_the_place``, on); a task that names an object, or says otherwise, sets it aside."""
+        cell's, on for every cell); a task that names an object, or says otherwise, sets it aside."""
         from src.robot.execution.task import PlaceAt, TaskOptions, TaskPlan
 
         def plan(obj: str, **options: object) -> TaskPlan:

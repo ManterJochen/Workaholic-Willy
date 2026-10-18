@@ -391,9 +391,9 @@ class _TeachSession:
         arm = console.session.arm
         app = console.config()
         robot = app.robot
-        box = getattr(getattr(arm, "config", None), "workspace_limits", None)
+        box = getattr(getattr(getattr(arm, "config", None), "motion", None), "workspace", None)
         if box is None and robot is not None:
-            box = robot.workspace_limits
+            box = robot.motion.workspace
         self._limits = HandGuidingLimits.of(arm, box)
         guide = HandGuide(BrowserConsole(self), BrowserView(self))
         # The person confirmed the payload in the browser before the arm was freed (``payload_seen``, checked by
@@ -571,7 +571,7 @@ def refusal_before_a_teach(console: "Console", app: Any, *, name: str | None = N
     if browser_jaws.pending(console) is not None:
         return TeachSessionRefused(RefusalCode.JAWS_QUESTION_PENDING, (
             "a jaws question is in progress: answer it in the browser first; the arm was not freed"))
-    held = _part_may_be_held(arm, gripper)
+    held = _part_may_be_held(gripper)
     if held:
         return TeachSessionRefused(RefusalCode.PART_IN_HAND, (
             f"{held}: a pose is taught with empty jaws (a place pose puts the fingertips where a part's bottom is let "
@@ -588,7 +588,7 @@ def refusal_before_a_teach(console: "Console", app: Any, *, name: str | None = N
 
 
 def poses(console: "Console") -> PosesOut:
-    """Home (read-only, from ``robot.home_joint_positions``, in degrees), every named pose with its label and screen, the
+    """Home (read-only, from ``robot.motion.home_deg``, in degrees), every named pose with its label and screen, the
     default place, the file a taught pose is written to, and whether a pose can be taught now and why not.
 
     A pose the console wrote carries when it was taught (``source: taught``); one a person wrote in the YAML does not
@@ -601,12 +601,12 @@ def poses(console: "Console") -> PosesOut:
     # The cell's own home, else the one its arm's description states (P0e E4). An arm nobody describes, the desk
     # dummy's, has no home of its own to show unless the cell declares one: it stands where it was built.
     selected = robot.arm
-    home = robot.home_joint_positions or described_home(selected.model) or ()
+    home = robot.motion.home_rad or described_home(selected.model) or ()
     named = [
         PoseOut(name=name, label=pose.label, joints_deg=[float(v) for v in pose.joints_deg],
                 source="taught" if pose.taught_at else "config", screen=pose.screen, note=pose.note,
                 taught_at=pose.taught_at)
-        for name, pose in robot.named_poses.items()
+        for name, pose in robot.motion.named_poses.items()
     ]
     tree = _tree(console)
     target = tree.pose_file()
@@ -619,7 +619,7 @@ def poses(console: "Console") -> PosesOut:
     return PosesOut(
         home=PoseOut(name="home", label="Home", joints_deg=[round(math.degrees(float(v)), 6) for v in home],
                      source="config"),
-        poses=named, default_place=robot.default_place_pose, teachable=not why_not, why_not=why_not,
+        poses=named, default_place=robot.motion.default_place_pose, teachable=not why_not, why_not=why_not,
         why_not_code=why_not_code,  # type: ignore[arg-type]
         target_file=str(target) if target is not None else None,
     )
@@ -639,8 +639,8 @@ def choose_default_place(console: "Console", name: str | None) -> PosesOut:
     except RunLocked as locked:
         raise TeachSessionRefused(RefusalCode.RUN_ACTIVE, str(locked), {"run_id": locked.run_id}) from locked
     robot = console.robot()
-    if name is not None and name not in robot.named_poses:
-        known = ", ".join(sorted(robot.named_poses)) or "none"
+    if name is not None and name not in robot.motion.named_poses:
+        known = ", ".join(sorted(robot.motion.named_poses)) or "none"
         raise TeachSessionRefused(RefusalCode.UNKNOWN_POSE, (
             f"{name!r} is no pose of this cell (poses: {known}): teach it first, or choose one of them"),
             {"which": "place"})

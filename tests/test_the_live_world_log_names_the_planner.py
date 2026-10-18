@@ -49,8 +49,7 @@ _RIG = "realsense_d435"
 def _cell(planner: str) -> RobotConfig:
     return RobotConfig.model_validate({
         "vendor": "ur", "motion": {"planner": planner},
-        "safety": {"payload": {"enforce": False}, "planning_world": {
-            "enabled": True,
+        "safety": {"planning_world": {
             "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
         }},
     })

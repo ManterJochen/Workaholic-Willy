@@ -95,12 +95,6 @@ SEEN_TOLERANCE_MM: Final[float] = 5.0
 #: The key of ``GraspResult.telemetry`` under which a result with no candidate says why, in one sentence
 #: (:func:`no_grasp_said`).
 NO_GRASP_SAID: Final[str] = "no_grasp_said"
-#: SFE's tilt ladder and its height solve (``support_footprint.generate_support_footprint_grasps``), restated for the
-#: least part height a hand grips (:func:`least_part_height_mm`); ``tests/test_the_support_is_no_neighbour.py`` holds
-#: the two equal on the generator itself.
-_SFE_TILTS_DEG: Final[tuple[float, ...]] = (0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0)
-#: The solve adds a height only where it lies this far under the part's top, millimetres (``need <= prism.z1 - 2``).
-_SFE_TOP_SLACK_MM: Final[float] = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,24 +117,26 @@ class SceneObstacleRules:
     #: The declared bench's top, BASE z millimetres; ``None`` where the cell declares none.
     bench_top_mm: float | None = None
     #: How far over the bench, or over a support's local reading, a point is still that surface, millimetres
-    #: (``planning_world.perceived.plane_clearance_mm``).
+    #: (``perceived.CAMERA_BENCH_BAND_MM``).
     band_mm: float = 5.0
-    #: The declared bodies the camera sees again (the bench slab, the fixtures the planning world includes, its meshes):
-    #: a point within :attr:`declared_band_mm` of one is that body, not a neighbour. ``perceived.DeclaredBody``.
+    #: The declared bodies the camera sees again (the bench slab and the planning world's meshes; a cell's fixtures stay
+    #: the guard's since 2026-10-17): a point within :attr:`declared_band_mm` of one is that body, not a neighbour.
+    #: ``perceived.DeclaredBody``.
     declared: tuple[Any, ...] = ()
     #: ``perceived.DECLARED_SURFACE_MM``.
     declared_band_mm: float = 5.0
-    #: A voxel needs this many points to be an obstacle (``perceived.min_points``).
+    #: A voxel needs this many points to be an obstacle (``perceived.CAMERA_MIN_POINTS``).
     min_points: int = 12
-    #: The voxel the points are counted in, millimetres (``perceived.cluster_voxel_mm``).
+    #: The voxel the points are counted in, millimetres (``perceived.CAMERA_CLUSTER_VOXEL_MM``).
     cluster_voxel_mm: float = 25.0
-    #: What the camera world grows every box of a neighbour by, millimetres (``perceived.margin_mm``).
+    #: What the camera world grows every box of a neighbour by, millimetres (``perceived.CAMERA_BOX_MARGIN_MM``).
     margin_mm: float = 15.0
-    #: The height step a box of a neighbour's height map holds, millimetres (``perceived.voxel_size_mm``).
+    #: The height step a box of a neighbour's height map holds, millimetres (``perceived.CAMERA_VOXEL_MM``).
     voxel_size_mm: float = 10.0
-    #: Whether the camera world carries a neighbour's boxes down to the bench (``perceived.floor_to_plane``).
+    #: Whether a neighbour's boxes are carried down to the bench, as every cell's camera world carries its boxes.
     floor_to_plane: bool = True
-    #: Every how many pixels the frame is read along each axis (``perceived.pixel_stride``), as the world reads it.
+    #: Every how many pixels the frame is read along each axis (``perceived.CAMERA_PIXEL_STRIDE``), as the world reads
+    #: it.
     pixel_stride: int = 2
     reach_mm: float = REACH_MM
     mask_growth_mm: float = MASK_GROWTH_MM
@@ -150,11 +146,11 @@ class SceneObstacleRules:
     declared_boxes: tuple[DeclaredBox, ...] = ()
     declared_distance_mm: float = 10.0
     #: How far into a box of a named neighbour part a finger may come, as the camera world says
-    #: (``WorldBuildTuning.part_soft_mm``): the margin and the finger contact where the fingers may touch parts
-    #: (``perceived.fingers_touch_parts``), 0 where they may not.
+    #: (``WorldBuildTuning.part_soft_mm``): a cell's tree gives the margin and ``perceived.FINGER_CONTACT_MM``, the
+    #: fingers coming to a named part; 0 holds them off it.
     part_soft_mm: float = 0.0
-    #: Whether the fingers keep the guard's distance from a support's reading and excess rather than from its solid
-    #: (``perceived.fingers_to_the_support_reading``), as the guard holds them.
+    #: Whether the fingers keep the guard's distance from a support's reading and excess rather than from its solid, as
+    #: the guard holds them in every cell's camera world.
     fingers_to_the_reading: bool = False
     #: How much nearer than ``support_distance_mm`` a finger comes to what a support reads (``finger_floor_drop_mm``).
     finger_floor_drop_mm: float = 0.0
@@ -169,26 +165,37 @@ class SceneObstacleRules:
         """The rules a cell's tree states: the bench and its band, the declared bodies, the voxel rule, the distances.
 
         Read the way the camera world reads them (``camera_world_wiring._live_planner_world``): the bench is
-        ``safety.planning_world.support_plane``'s top where the planning world is on, the declared bodies its cuboids
-        and meshes, the voxel rule and the band ``planning_world.perceived``. A tree with no planning world has no
-        bench: the support the part stands on bounds the rule alone.
+        ``safety.planning_world.support_plane``'s top where the cell declares it (which turns the planning world on), the
+        declared bodies the bench slab and the meshes, and the voxel rule and the band every cell's camera world is
+        built with (``perceived.CAMERA_*``). A tree with no planning world has no bench: the support the part stands on
+        bounds the rule alone. The guard's fixtures are the boxes the hand keeps the guard's distance from.
         """
         from src.robot.safety.planning.live_world import _declared_bodies  # noqa: PLC0415 (the world's own reader)
-        from src.robot.safety.planning.perceived import DECLARED_SURFACE_MM  # noqa: PLC0415
-        from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes  # noqa: PLC0415
+        from src.robot.safety.planning.perceived import (  # noqa: PLC0415
+            CAMERA_BENCH_BAND_MM,
+            CAMERA_BOX_MARGIN_MM,
+            CAMERA_CLUSTER_VOXEL_MM,
+            CAMERA_MIN_POINTS,
+            CAMERA_PIXEL_STRIDE,
+            CAMERA_VOXEL_MM,
+            DECLARED_SURFACE_MM,
+            FINGER_CONTACT_MM,
+        )
+        from src.robot.safety.planning.world import (  # noqa: PLC0415
+            build_planner_cuboids,
+            build_planner_meshes,
+            planning_world_on,
+        )
 
         safety = robot_config.safety
         world = getattr(safety, "planning_world", None)
-        perceived = getattr(world, "perceived", None)
         guard = safety.self_collision
-        on = world is not None and bool(getattr(world, "enabled", False))
+        on = planning_world_on(world)
         plane = getattr(world, "support_plane", None) if on else None
         bodies: tuple[Any, ...] = ()
         unread: tuple[str, ...] = ()
         if on:
-            # Every declared box, whatever the planner's slot count: a box left out of the planner is still declared.
-            bodies, unread = _declared_bodies(build_planner_cuboids(world, guard.fixtures, max_cuboids=1_000_000),
-                                              build_planner_meshes(world))
+            bodies, unread = _declared_bodies(build_planner_cuboids(world), build_planner_meshes(world))
         boxes = tuple(
             DeclaredBox(str(fixture.name), tuple(float(v) for v in fixture.center_mm),  # type: ignore[arg-type]
                         tuple(float(v) for v in fixture.half_extents_mm))  # type: ignore[arg-type]
@@ -196,21 +203,21 @@ class SceneObstacleRules:
         )
         return cls(
             bench_top_mm=None if plane is None else float(plane.height_mm),
-            band_mm=float(getattr(perceived, "plane_clearance_mm", 5.0)),
+            band_mm=CAMERA_BENCH_BAND_MM,
             declared=tuple(bodies),
             declared_band_mm=float(DECLARED_SURFACE_MM),
-            min_points=int(getattr(perceived, "min_points", 12)),
-            cluster_voxel_mm=float(getattr(perceived, "cluster_voxel_mm", 25.0)),
-            margin_mm=float(getattr(perceived, "margin_mm", 15.0)),
-            voxel_size_mm=float(getattr(perceived, "voxel_size_mm", 10.0)),
-            floor_to_plane=bool(getattr(perceived, "floor_to_plane", True)),
-            pixel_stride=int(getattr(perceived, "pixel_stride", 2)),
+            min_points=CAMERA_MIN_POINTS,
+            cluster_voxel_mm=CAMERA_CLUSTER_VOXEL_MM,
+            margin_mm=CAMERA_BOX_MARGIN_MM,
+            voxel_size_mm=CAMERA_VOXEL_MM,
+            floor_to_plane=True,
+            pixel_stride=CAMERA_PIXEL_STRIDE,
             support_distance_mm=float(guard.perceived_min_distance_mm),
             declared_boxes=boxes,
             declared_distance_mm=float(guard.min_distance_mm),
-            part_soft_mm=(float(getattr(perceived, "margin_mm", 15.0)) + float(getattr(perceived, "finger_contact_mm", 0.0))
-                          if bool(getattr(perceived, "fingers_touch_parts", False)) else 0.0),
-            fingers_to_the_reading=bool(getattr(perceived, "fingers_to_the_support_reading", False)),
+            # The fingers to a named part's measured surface, and past it by the finger contact (the owner, 2026-10-05).
+            part_soft_mm=CAMERA_BOX_MARGIN_MM + FINGER_CONTACT_MM,
+            fingers_to_the_reading=True,
             finger_floor_drop_mm=finger_floor_drop_mm(robot_config),
             unread=tuple(unread),
             # The camera world of a cell holds the fine world about every goal (``camera_world_wiring``).
@@ -781,10 +788,10 @@ WHOLE_SLACK_MM = 1.0
 #: pair unmeasured, millimetres. The spheres' gap is a lower bound on the boxes' distance, so any pair beyond the
 #: distance could be left out; this much more keeps a rounding in either sum from ever deciding a verdict.
 _SPHERE_SLACK_MM: Final[float] = 1e-6
-#: How near its limit a number :meth:`SeenEnvelope.refuses_many` or :meth:`SeenInTheFrame.unseen_many` reads may lie
-#: before its answer for that hand is "unsure" (2), millimetres or pixels. They answer for many hands at once, and a
-#: product over many rounds its last bit, about 1e-13 mm here, as it likes; within this much of a limit the caller asks
-#: the one-hand call (:meth:`SeenEnvelope.refuses`, :meth:`SeenInTheFrame.__call__`), which decides as it always did.
+#: How near its limit a number :meth:`SeenEnvelope.refuses_many` reads may lie before its answer for that hand is
+#: "unsure" (2), millimetres. It answers for many hands at once, and a product over many rounds its last bit, about
+#: 1e-13 mm here, as it likes; within this much of a limit the caller asks the one-hand call
+#: (:meth:`SeenEnvelope.refuses`), which decides as it always did.
 _MANY_SURE: Final[float] = 1e-6
 
 
@@ -977,9 +984,7 @@ class SeenEnvelope:
         own rounding stayed under 1.1e-13 mm on 200,000 random pairs, 2026-10-08), and it refuses a hand at once where
         the point of one of its boxes nearest a box's centre already stands nearer to that box than the limit less the
         band. The distances it measures many at once may round their last bit another way than one hand's call does,
-        which the band covers. SFE asks this of every build of a closing line at once (``support_footprint._build_many``):
-        on a boxed-in cube's search (2026-10-09) 183 of the 25,843 pairs the spheres leave were measured, and the search
-        took 0.15 instead of 0.56 s.
+        which the band covers. The part's body asks this of a batch of its grasps at once (``body_grasps._kept``).
         """
         turns = np.asarray(rotations, dtype=np.float64).reshape(-1, 3, 3)
         at = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
@@ -1123,9 +1128,8 @@ class SeenInTheFrame:
     """Who says whether a depth ray of one frame reached a point: what :func:`corridor_seen_in` answers, asked with
     ``(N, 3)`` BASE millimetres and answering one ``bool`` per point.
 
-    A value rather than a closure, so it pickles and a worker process (``src.robot.grasping.workers``) asks the same
-    question of the same numbers. The turn and the shift are read off :attr:`to_camera` at every call, the views the
-    closure held, so the arithmetic is the closure's to the bit.
+    A value rather than a closure, so it can be compared and copied as data. The turn and the shift are read off
+    :attr:`to_camera` at every call, the views the closure held, so the arithmetic is the closure's to the bit.
     """
 
     #: The frame's depth along the optical axis, millimetres, ``(H, W)``; 0 or not finite where nothing was measured.
@@ -1159,49 +1163,6 @@ class SeenInTheFrame:
         measured = depth[v[index].astype(np.int64), u[index].astype(np.int64)]
         with np.errstate(invalid="ignore"):
             out[index] = np.isfinite(measured) & (measured > 0.0) & (measured >= z[index] - slack)
-        return out
-
-    def unseen_many(self, points_base_mm: np.ndarray, asked: np.ndarray) -> np.ndarray:
-        """Whether a depth ray missed one of a build's points, for many builds at once: ``(N, P, 3)`` BASE millimetres
-        and which of them are asked (``asked``, ``(N, P)``) in, one ``int8`` per build out: 0 where :meth:`__call__`
-        sees every point asked, 1 where it misses one, 2 where a point's pixel lies within :data:`_MANY_SURE` of a
-        rounding edge, its depth within it of the measured depth less the tolerance, or the point within it of the
-        camera's plane, which only :meth:`__call__` decides.
-
-        The arithmetic is :meth:`__call__`'s, on every point asked at once, whose product may round its last bit
-        another way than one build's call does; the band covers that. SFE asks this of every tilted build of a closing
-        line at once (``support_footprint._build_many``).
-        """
-        depth = self.depth_mm
-        turn, shift = self.to_camera[:3, :3], self.to_camera[:3, 3]
-        height, width = depth.shape
-        slack = float(self.tolerance_mm)
-        points = np.asarray(points_base_mm, dtype=np.float64)
-        out = np.zeros(points.shape[0], dtype=np.int8)
-        owner = np.nonzero(asked)[0]
-        flat = points[asked]
-        if not flat.shape[0]:
-            return out
-        camera = flat @ turn.T + shift
-        z = camera[:, 2]
-        front = np.isfinite(z) & (z > 1e-6)
-        safe_z = np.where(front, z, 1.0)
-        u_at = self.fx * camera[:, 0] / safe_z + self.cx
-        v_at = self.fy * camera[:, 1] / safe_z + self.cy
-        u, v = np.rint(u_at), np.rint(v_at)
-        # A pixel rounds another way only near its half, a point leaves the camera's front only at its plane.
-        unsure = ((np.abs(u_at - np.floor(u_at) - 0.5) < _MANY_SURE) | (np.abs(v_at - np.floor(v_at) - 0.5) < _MANY_SURE)
-                  | (np.abs(z - 1e-6) < _MANY_SURE))
-        inside = front & (u >= 0) & (u < width) & (v >= 0) & (v < height)
-        index = np.nonzero(inside)[0]
-        measured = depth[v[index].astype(np.int64), u[index].astype(np.int64)]
-        seen = np.zeros(flat.shape[0], dtype=bool)
-        with np.errstate(invalid="ignore"):
-            read = np.isfinite(measured) & (measured > 0.0)
-            seen[index] = read & (measured >= z[index] - slack)
-            unsure[index] |= read & (np.abs(measured - (z[index] - slack)) < _MANY_SURE)
-        out[owner[unsure]] = 2
-        out[owner[~seen & ~unsure]] = 1
         return out
 
 
@@ -1278,17 +1239,6 @@ class SeenInAnyFrame:
             if not missed.size:
                 break
             out[missed] = frame(points[missed])
-        return out
-
-    def unseen_many(self, points_base_mm: np.ndarray, asked: np.ndarray) -> np.ndarray:
-        """:meth:`SeenInTheFrame.unseen_many` over the frames, point by point as :meth:`__call__` answers: 0 where every
-        point asked of a build one frame or another saw, 1 where one no frame saw; never 2, nothing to ask again."""
-        points = np.asarray(points_base_mm, dtype=np.float64)
-        out = np.zeros(points.shape[0], dtype=np.int8)
-        owner = np.nonzero(asked)[0]
-        flat = points[asked]
-        if flat.shape[0]:
-            out[np.unique(owner[~self(flat)])] = 1
         return out
 
 
@@ -1395,14 +1345,13 @@ class EnvelopeVerdict:
 
 def finger_floor_drop_mm(robot: Any) -> float:
     """How much nearer than the guard's distance from a camera box a finger comes to what a support reads, millimetres:
-    ``self_collision.perceived_min_distance_mm`` less ``planning_world.perceived.finger_floor_mm`` (the owner's 1 mm,
-    2026-10-06), 0 where the fingers keep their distance from the whole solid or the floor is no nearer."""
+    ``self_collision.perceived_min_distance_mm`` less ``perceived.FINGER_FLOOR_MM`` (the owner's 1 mm, 2026-10-06), 0
+    where the floor is no nearer."""
+    from src.robot.safety.planning.perceived import FINGER_FLOOR_MM  # noqa: PLC0415
+
     safety = getattr(robot, "safety", None)
-    perceived = getattr(getattr(safety, "planning_world", None), "perceived", None)
-    if perceived is None or not bool(getattr(perceived, "fingers_to_the_support_reading", False)):
-        return 0.0
     guard = float(getattr(getattr(safety, "self_collision", None), "perceived_min_distance_mm", 0.0) or 0.0)
-    return max(0.0, guard - float(getattr(perceived, "finger_floor_mm", guard)))
+    return max(0.0, guard - FINGER_FLOOR_MM)
 
 
 def envelope_verdicts(
@@ -1569,39 +1518,31 @@ def _surface_distances(finger_centres: np.ndarray, turn: np.ndarray, finger_halv
 
 
 def least_part_height_mm(jaw: Any) -> float:
-    """How far over its support a part has to stand for this hand to be planned on it at all, millimetres: the lower of
-    SFE's ladder and the part's own body (``body_grasps``).
-
-    SFE solves, per tilt of its ladder, the anchor height at which the fingers clear the support by the table
-    clearance, and tries that height only where it lies 2 mm under the part's top (``generate_support_footprint_grasps``):
-    13.45 mm for the Hand-E. The body's pads hold where the part stands into them and its outline can be read above
-    them (``body_grasps.body_least_height_mm``): 8 mm for the Hand-E (2026-10-13). A part lower than both gets no
-    height to try: it is too short for this hand.
+    """How far over its support a part has to stand for this hand to be planned on it at all, millimetres: what the
+    part's own body asks (``body_grasps.body_least_height_mm``). Its pads hold where the part stands into them and its
+    outline can be read above them: 8 mm for the Hand-E (2026-10-13). A lower part gets no height to try: it is too
+    short for this hand. (SFE's ladder asked 13.45 mm of the Hand-E; it left with SFE's search on 2026-10-16.)
     """
-    from src.robot.grasping.generation.body_grasps import body_least_height_mm  # noqa: PLC0415 (it imports SFE)
+    from src.robot.grasping.generation.body_grasps import body_least_height_mm  # noqa: PLC0415 (it imports this module)
 
-    tilts = np.radians(np.asarray(_SFE_TILTS_DEG))
-    need = float(jaw.finger_ahead_mm) * np.cos(tilts) + (float(jaw.finger_width_mm) / 2.0) * np.sin(tilts)
-    return min(float(jaw.table_clearance_mm + need.min() + _SFE_TOP_SLACK_MM), body_least_height_mm(jaw))
+    return float(body_least_height_mm(jaw))
 
 
 def refusal_counts(telemetry: Mapping[str, Any]) -> dict[str, int]:
-    """Why the grasps of a part were refused, by cause, both stages' together: SFE's builds
-    (``support_footprint_refused``) and the body's grasps (``body_refused``), which count under SFE's causes. A part the
-    body alone searched (its prism switched off, or offering nothing) says what met it as SFE's would.
+    """Why the grasps of a part were refused, by cause: the body's grasps (``body_refused``), which count under the
+    causes SFE counted under, so a part says what met it as SFE's builds would have.
 
     Args:
         telemetry: A calculator result's telemetry.
 
     Returns:
-        dict[str, int]: The refusals by cause; empty where neither stage counted any.
+        dict[str, int]: The refusals by cause; empty where the body counted none.
     """
     out: dict[str, int] = {}
-    for key in ("support_footprint_refused", "body_refused"):
-        counts = telemetry.get(key)
-        if isinstance(counts, Mapping):
-            for cause, value in counts.items():
-                out[str(cause)] = out.get(str(cause), 0) + int(value or 0)
+    counts = telemetry.get("body_refused")
+    if isinstance(counts, Mapping):
+        for cause, value in counts.items():
+            out[str(cause)] = out.get(str(cause), 0) + int(value or 0)
     return out
 
 
@@ -1610,16 +1551,16 @@ def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReaso
 
     In this order, the fix plan's (Track A):
 
-    * the post-hoc filters emptied what SFE offered: a support's solid or a declared box too near the open hand
+    * the post-hoc filters emptied what the stage offered: a support's solid or a declared box too near the open hand
       (``ALL_TABLE_CONFLICT``), the scene's points inside the hand (``ALL_COLLIDED``), the workspace, the reach;
-    * SFE offered nothing, and a build met a neighbour the camera saw (``seen_*``): ``ALL_COLLIDED``, the only reason a
-      push answers;
+    * the stage offered nothing, and a grasp met a neighbour the camera saw (``seen_*``): ``ALL_COLLIDED``, the only
+      reason a push answers;
     * it met a declared body (``declared_*``): ``ALL_TABLE_CONFLICT``;
     * the support refused it (``table``): ``ALL_TABLE_CONFLICT``, and where the part stands lower than the hand grips at
       any tilt or on its body (:func:`least_part_height_mm`), that it is too short for this hand;
     * the part's own low fragments alone: ``NO_VALID_GRASP``.
 
-    The refusals are both stages' (:func:`refusal_counts`): a part whose body met a neighbour is boxed in too. What the
+    The refusals are the body's (:func:`refusal_counts`): a part whose body met a neighbour is boxed in. What the
     part itself refused the rest for is said after a neighbour, and alone where nothing reached the scene: the cause it
     refused the most for (:data:`_PART_SAID`). The owner's tilted cube of 2026-10-15 held the pads on 20 of 22,000
     grasps; "every grasp the hand fits meets a neighbour" blamed the parts beside it. ``RESCAN_RECOMMENDED`` comes last

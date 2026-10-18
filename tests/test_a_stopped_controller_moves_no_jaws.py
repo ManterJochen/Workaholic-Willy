@@ -29,7 +29,7 @@ from src.robot.core import (
     RobotStatus,
     SafetyMode,
 )
-from src.robot.core.arm_capabilities import DigitalIOPort, PayloadModel
+from src.robot.core.arm_capabilities import DigitalIOPort
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grippers.jaw_io import JawIOGripper
@@ -162,22 +162,6 @@ class _Arm:
         self._tcp = pose
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
-    # The whole payload capability, because an arm carries one or does not: the verbs ask with
-    # ``isinstance(arm, CarriesPayload)``, and a double answering half of it is a shape no driver has.
-    def detach_payload(self) -> bool:
-        self.events.append("detach")
-        return True
-
-    def attach_payload(self, width_mm: float) -> bool:
-        self.events.append(("attach", round(float(width_mm), 2)))
-        return True
-
-    def payload_declined_reason(self) -> "str | None":
-        return None
-
-    def payload_model(self) -> PayloadModel:
-        return PayloadModel.PLANNER_AND_FILTER
-
 
 def _grasp() -> GraspPoint:
     """A 40 mm part at the owner's work area, closing along base -Y."""
@@ -212,7 +196,7 @@ class ThePolicyAsksTheControllerFirstTests(unittest.TestCase):
         self.assertEqual(["status"], events, "something was commanded before the controller was asked")
         self.assertEqual((), report.waypoints)
 
-    def test_a_stop_between_the_line_and_the_close_closes_nothing_and_attaches_nothing(self) -> None:
+    def test_a_stop_between_the_line_and_the_close_closes_nothing(self) -> None:
         events: list[Any] = []
         jaws = _toggle(events)
         arm = _Arm(events, statuses=(_RUNNING, _PROTECTIVE))
@@ -223,7 +207,6 @@ class ThePolicyAsksTheControllerFirstTests(unittest.TestCase):
         self.assertIs(PolicyOutcome.MOTION_FAILED, report.outcome)
         self.assertIs(MotionStatus.CONTROLLER_REJECTED, report.motion_status)
         self.assertEqual(0, _pulses(events), "the jaws closed on an arm that cannot lift")
-        self.assertFalse(any(isinstance(e, tuple) and e[0] == "attach" for e in events))
         self.assertEqual(policy.approach_steps, len(report.waypoints))
         self.assertEqual("status", events[-1])
 
@@ -237,7 +220,7 @@ class ThePolicyAsksTheControllerFirstTests(unittest.TestCase):
         self.assertIs(PolicyOutcome.EXECUTED, report.outcome, report.motion_message)
         self.assertEqual(2, arm.status_reads)
         self.assertEqual(1, _pulses(events))
-        self.assertLess(events.index("status"), events.index("detach"))
+        self.assertEqual("status", events[0], "something went before the controller was asked")
 
     def test_a_status_read_that_raises_leaves_the_pick_with_nothing_commanded(self) -> None:
         events: list[Any] = []
@@ -290,7 +273,6 @@ class ThePickLoopNamesTheStopTests(unittest.TestCase):
         self.assertIs(PickOutcome.CONTROLLER_NOT_OPERATIONAL, report.outcome)
         self.assertEqual(1, len(report.attempts), "a stopped cell was retried")
         self.assertEqual(0, _pulses(events))
-        self.assertNotIn("detach", events)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -675,7 +657,7 @@ class TheHandVerbsAskTheControllerFirstTests(unittest.TestCase):
         self.assertEqual(1, _pulses(events))
         assert report.hand is not None
         self.assertIs(HoldEvidence.UNMEASURED, report.hand.hold)
-        self.assertLess(events.index(("status",)), events.index(("detach",)))
+        self.assertEqual(("status",), events[0], "something went before the controller was asked")
 
 
 if __name__ == "__main__":  # pragma: no cover

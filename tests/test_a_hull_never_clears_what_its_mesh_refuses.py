@@ -31,7 +31,7 @@ from tests.test_a_faster_camera_world_builds_the_same_world import frame
 
 
 def _backend() -> "tuple[Any, Any, Any]":
-    preflight, arm = owner.owner_cell(whole=True)
+    preflight, arm = owner.owner_cell()
     guard = preflight._path_authority(arm)
     assert guard is not None
     return guard._exact_mesh_backend("ur10"), preflight, arm

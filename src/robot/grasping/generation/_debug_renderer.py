@@ -64,8 +64,6 @@ class _DebugRenderer:
                 config=config,
                 label=label or getattr(segmentation, "label", None),
                 telemetry={k: telemetry.get(k) for k in (
-                    "candidates_silhouette",
-                    "candidates_geometry",
                     "rejected_collision",
                     "rejected_table",
                     "rejected_workspace",

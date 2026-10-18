@@ -268,7 +268,7 @@ class ThePlannerAndTheGuardReadTheSamePlates(unittest.TestCase):
 
         cfg = RobotConfig.model_validate({
             "vendor": "ur",
-            "safety": {"payload": {"enforce": False}},
+            "safety": {},
             "gripper": {"model": "robotiq_hande", "coupling_plates": [
                 {"name": "hande_adapter", "thickness_mm": 20.0, "cross_section_mm": [31.5, 31.5]},
             ]},

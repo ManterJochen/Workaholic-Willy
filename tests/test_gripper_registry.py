@@ -20,10 +20,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from src.robot.grasping.collision import ParallelJawGripperModel
 from src.config import ConfigError
 from src.config.grippers import available_grippers, load_gripper
 from src.config.schema.robot import GripperConfig, RobotConfig
-from src.config.schema.robot.grasping_schema import GraspingParallelJawGeometryConfig
 
 _DATA = Path(__file__).resolve().parents[1] / "config"
 
@@ -57,7 +57,7 @@ class The2F85FileIsWhatTheCopiesSayTests(unittest.TestCase):
         }, JAW_GEOMETRY["2f85"])
 
     def test_it_is_the_runtime_envelope_default(self) -> None:
-        envelope = GraspingParallelJawGeometryConfig()
+        envelope = ParallelJawGripperModel()
         for name, expected in {
             "finger_length_mm": envelope.finger_length_mm,
             "finger_thickness_mm": envelope.finger_thickness_mm,

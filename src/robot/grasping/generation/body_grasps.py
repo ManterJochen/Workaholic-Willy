@@ -17,7 +17,7 @@ the fingertips the support's clearance over it):
 * the pads meet the body where it stands at least :data:`BODY_MIN_OVERLAP_MM` into the pad's height, over the finger's
   width; the pads close on one run of it along the closing axis, or on two or three runs and what lies between them, so
   one wall of a ring, one lobe of a star or one leg of an L is a grasp of its own (:func:`_spans`);
-* the span fits the stroke with :data:`support_footprint.JAW_SIDE_ROOM_MM` either side, and no part of the body stands
+* the span fits the stroke with :data:`hand.JAW_SIDE_ROOM_MM` either side, and no part of the body stands
   over the fingertips where the open fingers come down or between them and the span while they close;
 * both contacts hold inside the friction cone, by the body's own flanks: how steeply it rises at the contact (a lying
   cylinder over its equator rises too gently) and how its outline turns across the pad there, the face the pad comes
@@ -25,7 +25,7 @@ the fingertips the support's clearance over it):
 * the pads' lower edge :data:`UNDER_THE_WIDEST_MM` under where the part is widest, read from its measured points
   (:func:`_under_the_widest`), and each pad on a face of the part's outline in the colour mask, not on an edge or a
   corner (:data:`CORNER_DEG`), the grasps within :data:`SQUARE_DEG` of square ranked first (:func:`_squared`);
-* the closed and the open hand keep what SFE keeps (``support_footprint._build``): the support's clearance, the solids
+* the closed and the open hand keep what SFE's builds kept: the support's clearance, the solids
   the guard holds under the hand (``HandFloor``), the neighbours' points and the guard's boxes of them
   (``scene_obstacles.SeenEnvelope``), the declared bodies and the part's own low fragments;
 * an open finger over the part's own outline, its convex hull in the plane, comes down only through space a ray of the
@@ -35,26 +35,24 @@ the fingertips the support's clearance over it):
   every grasp, kept straight down or refused there by the scene (a wall, a neighbour over the fingers' way, the housing
   at either), is asked again with the hand leaning about the closing axis on SFE's whole ladder, :data:`BODY_TILTS_DEG`
   to 90 degrees either way, each lean that keeps the scene offered: its fingers clear of the part's own body, its palm
-  over the support (SFE's ``palm_aware``, ``support_footprint._palm_low_mm``: past 45 the palm is the hand's lowest
-  part), its way in seen from :data:`support_footprint._SEEN_FROM_TILT_DEG` off vertical (SFE's rule), scored upright
+  over the support (SFE's ``palm_aware``, ``hand._palm_low_mm``: past 45 the palm is the hand's lowest
+  part), its way in seen from :data:`hand._SEEN_FROM_TILT_DEG` off vertical (SFE's rule), scored upright
   by the cosine of its tilt as SFE scores one; a lean ranks by the room it keeps, and vertical wins a tie
-  (``support_footprint._upright_first``);
+  (``hand._upright_first``);
 * SFE's fine pass (the owner, 2026-10-06: "kompletter Freiheitsgrad", "die geneigte Schliessachse", and 2026-10-16):
-  where straight down and the ladder leave fewer than ``support_footprint._FINE_BELOW`` square grasps, the leans every
+  where straight down and the ladder leave fewer than ``hand._FINE_BELOW`` square grasps, the leans every
   7.5 degrees between the ladder's (:data:`BODY_FINE_TILTS_DEG`), and the part searched again in the frames of the hand
   rolled about its binormal, :data:`BODY_ROLLS_DEG`, one finger higher than the other, where the hand comes straight
   down along its own approach (:func:`_rolled_found`): the same search on the measured points as that hand sees them,
   so the pads lie on a part's leaning faces, its fingers kept out of the part as that frame holds it; each rolled grasp
-  leaning on the ladder as well, as SFE rolls on every tilt of it;
-* SFE's ``inflate_mm`` (``robot.grasping.geometry.inflate_mm``): every face of the body pushed out by it, the safe way
-  for the grazing rim a depth image loses (:func:`_binned`).
+  leaning on the ladder as well, as SFE rolls on every tilt of it.
 
-What it offers is a :class:`support_footprint.SupportFootprintCandidate`, scored as SFE scored a side approach (its
+What it offers is a :class:`hand.SupportFootprintCandidate`, scored as SFE scored a side approach (its
 weights: the friction cone's slack, the stroke left, how the pads sit on the part (:data:`_HOLD_SHARE` of that third)
 and the room the open fingers keep from every obstacle point (the rest of it), upright, the closing line across the
 part's centre of mass), robust first. Ranked beside SFE's own
-until 2026-10-14 (:func:`merged_ranking`, the owner's "Beide, gemeinsam gerankt" of 2026-10-13); since then the stage
-offers these alone (``_support_footprint_stage``).
+until 2026-10-14 (the owner's "Beide, gemeinsam gerankt" of 2026-10-13); since then the stage offers these alone
+(``_support_footprint_stage``), and SFE's own search left on 2026-10-16 (the owner's cleanup).
 
 Pure: numpy and SciPy's image tools. BASE millimetres throughout.
 """
@@ -62,14 +60,15 @@ Pure: numpy and SciPy's image tools. BASE millimetres throughout.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Final
 
 import numpy as np
 
 from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
-from src.robot.grasping.generation.support_footprint import (
+from src.robot.grasping.generation.hand import (
+    DEFAULT_MAX_CANDIDATES,
     _CLEARANCE_FULL_MM,
     _FINE_BELOW,
     _FINE_TILTS_DEG,
@@ -88,9 +87,9 @@ from src.robot.grasping.generation.support_footprint import (
     _palm_low_mm,
     _rolled,
     _Room,
-    _trim_low_fragments,
     _upright_first,
 )
+from src.robot.grasping.generation.support_prism import _trim_low_fragments
 
 __all__ = [
     "BODY_CELL_MM",
@@ -108,7 +107,6 @@ __all__ = [
     "body_grasps",
     "body_least_height_mm",
     "body_map",
-    "merged_ranking",
 ]
 
 #: The body's grid in BASE x and y, millimetres: about the D415's own reading of a part at 0.5 to 0.8 m.
@@ -157,12 +155,12 @@ _SQUARE_RUN_MM: Final[float] = 6.0
 _SQUARE_DEPTH_MM: Final[float] = 10.0
 _SQUARE_SPREAD_MM: Final[float] = 4.0
 #: How far the hand leans about the closing axis, either way, degrees, the least first: SFE's whole ladder to 90
-#: (``support_footprint._TILTS_DEG``, the owner, 2026-10-16: "alles von SFE"). Past 45 a finger's corner may reach under
+#: (``hand._TILTS_DEG``, the owner, 2026-10-16: "alles von SFE"). Past 45 a finger's corner may reach under
 #: the part and the palm becomes the hand's lowest part: the part's own body and the palm's height over the support
 #: refuse what does not fit (:func:`_refusal`).
 BODY_TILTS_DEG: Final[tuple[float, ...]] = tuple(t for t in _TILTS_DEG if t > 0.0)
-#: SFE's fine pass (``support_footprint._FINE_TILTS_DEG``, the owner, 2026-10-06: "die Orientierung feiner ... den
-#: kompletten Freiheitsgrad"): where the leans leave fewer square grasps than ``support_footprint._FINE_BELOW``, the
+#: SFE's fine pass (``hand._FINE_TILTS_DEG``, the owner, 2026-10-06: "die Orientierung feiner ... den
+#: kompletten Freiheitsgrad"): where the leans leave fewer square grasps than ``hand._FINE_BELOW``, the
 #: tilts every 7.5 degrees between the ladder's. The closing directions are every :data:`BODY_YAW_STEP_DEG` already,
 #: finer than SFE's fine fan.
 BODY_FINE_TILTS_DEG: Final[tuple[float, ...]] = tuple(t for t in _FINE_TILTS_DEG
@@ -204,10 +202,10 @@ _OUTLINE_CELLS: Final[int] = 3
 #: Beside a part alone on the support nothing stands, and its own shadow stays free.
 _HIDDEN_BESIDE_MM: Final[float] = 5.0
 #: How far off its grasp across the table the hand may stand for the grasp to be robust, millimetres
-#: (``support_footprint.ROBUST_ERROR_MM``).
+#: (``hand.ROBUST_ERROR_MM``).
 _ROBUST_MM: Final[float] = 4.0
 _EPS: Final[float] = 1e-9
-#: A grasp whose approach stands within 1 degree of straight down is vertical (``support_footprint._VERTICAL_APPROACH_Z``).
+#: A grasp whose approach stands within 1 degree of straight down is vertical, as SFE read one.
 _VERTICAL_APPROACH_Z: Final[float] = -math.cos(math.radians(1.0))
 
 
@@ -222,7 +220,7 @@ class BodyMap:
     cell_mm: float
     top: np.ndarray
     support_mm: float
-    #: The part's height, the 98th percentile of its points: where the pads sit best (``support_footprint._seated``).
+    #: The part's height, the 98th percentile of its points: where the pads sit best, as SFE seated its pads.
     top_mm: float
     #: The part's low fragments the body left out, ``(N, 3)``: kept as obstacles, as SFE keeps them.
     trimmed: np.ndarray
@@ -238,11 +236,11 @@ class BodyMap:
 
 
 def body_map(cloud_base_mm: np.ndarray, support_height_mm: float, *, floor_margin_mm: float,
-             cell_mm: float = BODY_CELL_MM, inflate_mm: float = 0.0) -> BodyMap | None:
+             cell_mm: float = BODY_CELL_MM) -> BodyMap | None:
     """The part's body of ``cloud_base_mm``: its points over the support and the floor margin, its low fragments that
-    stand apart from it left out (``support_footprint._trim_low_fragments``), on a grid of ``cell_mm``; one-cell holes a
-    3 x 3 closing takes in filled as high as the cells about them, every face pushed ``inflate_mm`` outward
-    (:func:`_binned`). ``None`` where too few points stand over the support."""
+    stand apart from it left out (``support_prism._trim_low_fragments``), on a grid of ``cell_mm``; one-cell holes a
+    3 x 3 closing takes in filled as high as the cells about them (:func:`_binned`). ``None`` where too few points stand
+    over the support."""
     points = np.asarray(cloud_base_mm, dtype=np.float64).reshape(-1, 3)
     points = points[np.isfinite(points).all(axis=1)]
     points = points[points[:, 2] > float(support_height_mm) + float(floor_margin_mm)]
@@ -251,30 +249,20 @@ def body_map(cloud_base_mm: np.ndarray, support_height_mm: float, *, floor_margi
     points, trimmed = _trim_low_fragments(points, float(support_height_mm))
     if points.shape[0] < 12:
         return None
-    return _binned(points, float(support_height_mm), trimmed, float(cell_mm), inflate_mm=float(inflate_mm))
+    return _binned(points, float(support_height_mm), trimmed, float(cell_mm))
 
 
-def _binned(points: np.ndarray, support_mm: float, trimmed: np.ndarray, cell: float, *,
-            inflate_mm: float = 0.0) -> BodyMap:
+def _binned(points: np.ndarray, support_mm: float, trimmed: np.ndarray, cell: float) -> BodyMap:
     """``points`` on a grid of ``cell``, each cell as high as the highest of them, its one-cell holes filled
-    (:func:`_filled`), standing on ``support_mm``; with ``inflate_mm`` every empty cell within it of the body as high as
-    the highest body cell within it, so every face moves out by it and no cell of the body rises, as SFE pushes its
-    prism's faces (``support_footprint.reconstruct_support_prism``)."""
-    grow = int(math.ceil(max(0.0, float(inflate_mm)) / cell - 1e-9))
+    (:func:`_filled`), standing on ``support_mm``. Its faces are where the points put them: a rim the mask lost comes
+    back as the part's visual hull (``footprint_hull``), and SFE's ``inflate_mm``, which pushed them out, left with the
+    ``geometry`` block on 2026-10-16 at the 0.0 every cell ran."""
     ix = np.floor(points[:, 0] / cell).astype(np.int64)
     iy = np.floor(points[:, 1] / cell).astype(np.int64)
-    x0, y0 = int(ix.min()) - grow, int(iy.min()) - grow
-    top = np.full((int(ix.max()) - x0 + 1 + grow, int(iy.max()) - y0 + 1 + grow), -np.inf)
+    x0, y0 = int(ix.min()), int(iy.min())
+    top = np.full((int(ix.max()) - x0 + 1, int(iy.max()) - y0 + 1), -np.inf)
     np.maximum.at(top, (ix - x0, iy - y0), points[:, 2])
     top = _filled(top)
-    if grow:
-        from scipy.ndimage import grey_dilation  # noqa: PLC0415 (only an inflated body asks it)
-
-        span = np.arange(-grow, grow + 1)
-        disc = (span[:, None] ** 2 + span[None, :] ** 2) * cell * cell <= float(inflate_mm) ** 2 + 1e-9
-        seen = np.isfinite(top)
-        grown = grey_dilation(np.where(seen, top, -1e12), footprint=disc, mode="constant", cval=-1e12)
-        top = np.where(seen, top, np.where(grown > -1e11, grown, -np.inf))
     return BodyMap(origin_mm=(x0 * cell, y0 * cell), cell_mm=cell, top=top, support_mm=float(support_mm),
                    top_mm=float(np.percentile(points[:, 2], 98.0)), trimmed=trimmed, points=points,
                    point_tops=top[ix - x0, iy - y0])
@@ -458,24 +446,23 @@ def body_grasps(
     floor_margin_mm: float = 2.0,
     open_width_mm: float | None = None,
     opens_as_needed: bool = False,
-    max_candidates: int = 12,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
     refusals: "dict[str, int] | None" = None,
     score_weights: "tuple[float, float, float, float, float] | None" = None,
     measured_base_mm: np.ndarray | None = None,
     outline_base_mm: np.ndarray | None = None,
-    inflate_mm: float = 0.0,
 ) -> list[SupportFootprintCandidate]:
     """The grasps straight down on the part's measured body (module docstring), robust first, each by score,
     ``max_candidates`` at most.
 
     ``open_width_mm`` is how wide the hand opens before it closes, millimetres: the whole stroke where ``None``, a hand
     that opens fully (the toggle). ``opens_as_needed`` opens it, grasp by grasp, as wide as the span and
-    :data:`support_footprint.NARROW_ROOM_MM` either side (a Robotiq hand that is told a width, lever G), and offers the
+    :data:`hand.NARROW_ROOM_MM` either side (a Robotiq hand that is told a width, lever G), and offers the
     same place fully open as well where the open fingers are clear there too: the narrow fingers stand where the D415
     smears a part's far edge, which the guard holds as the part's own fringe (2026-10-13: three of the owner's dense
     Tuesday picks lost every narrow grasp there and kept the fully open ones). Each grasp carries its opening
     (``SupportFootprintCandidate.open_width_mm``), the narrow one first. ``refusals``, where given, counts why the spans the pads close on were not offered,
-    under SFE's causes (``support_footprint.REFUSAL_CAUSES``): ``aperture``, ``prism`` (the open fingers on the part
+    under these causes: ``aperture``, ``prism`` (the open fingers on the part
     itself) and ``cone`` for the part; ``table``, ``seen_corridor`` and ``seen_fingers`` for the rest of the scene, and
     ``unseen_corridor`` for an open finger over the part's outline where no ray of the frame reached.
 
@@ -486,7 +473,7 @@ def body_grasps(
         obstacle_points_base_mm: The neighbours' points the camera saw, as SFE keeps the hand off them.
         rigid_obstacle_points_base_mm: The declared bodies' points, kept off undilated.
         seen_envelope: The guard's boxes of the neighbours (``scene_obstacles.SeenEnvelope``), or ``None``.
-        hand_floor: The solids the guard holds under the hand (``support_footprint.HandFloor``), or ``None``.
+        hand_floor: The solids the guard holds under the hand (``hand.HandFloor``), or ``None``.
         corridor_seen: Whether a ray of the frame reached a point (``scene_obstacles.SeenInTheFrame``), or ``None``,
             where an open finger over the part's outline is not asked.
         floor_margin_mm: How far over the support a point still counts as the support.
@@ -494,23 +481,18 @@ def body_grasps(
         opens_as_needed: Whether the hand opens only as wide as each span and the room beside each jaw.
         max_candidates: The most grasps returned.
         refusals: Counted into where given, as above.
-        score_weights: SFE's five weights, ``None`` for its own (``support_footprint._SCORE_WEIGHTS``).
+        score_weights: SFE's five weights, ``None`` for its own (``hand._SCORE_WEIGHTS``).
         measured_base_mm: The part's points a camera measured, ``(N, 3)`` BASE millimetres, where ``cloud_base_mm``
             holds points placed in its visual hull beside them; ``None`` where every point of it was measured. Where
             the part is widest is read from these alone (:func:`_under_the_widest`).
         outline_base_mm: The part's outline in its colour mask, BASE x and y at its top, ``(N, 2)``
             (``footprint_hull.mask_outline_xy``): how square each pad meets the part is read on it (:func:`_squared`);
             ``None`` reads none, and every grasp ranks as square.
-        inflate_mm: How far every face of the body is pushed outward, millimetres, as SFE pushes its prism's
-            (``robot.grasping.geometry.inflate_mm``): a depth image loses the grazing rim of a curved surface, and a
-            non-zero value biases the body the safe way. A face moves by the cells whose centres lie within it, so
-            on the 2 mm grid less than 2 mm moves none; 0 pushes none (the shipped value, the visual hull giving the
-            rim back).
 
     Returns:
         list[SupportFootprintCandidate]: The grasps, BASE millimetres; empty where the part has none.
     """
-    body = body_map(cloud_base_mm, support_height_mm, floor_margin_mm=floor_margin_mm, inflate_mm=inflate_mm)
+    body = body_map(cloud_base_mm, support_height_mm, floor_margin_mm=floor_margin_mm)
     if body is None:
         return []
     counted: dict[str, int] = {} if refusals is None else refusals
@@ -578,7 +560,7 @@ def body_grasps(
         if corridor_seen is not None and leanable:
             passed.extend(_side_approaches(leanable, weights[3], checks, BODY_FINE_TILTS_DEG))
         rolled = _rolled_found(measured, jaw=jaw, open_width_mm=open_width_mm, opens_as_needed=opens_as_needed,
-                               score_weights=score_weights, support_mm=support, count=count, inflate_mm=inflate_mm)
+                               score_weights=score_weights, support_mm=support, count=count)
         rolled_leanable: list[_Found] = []
         for start in range(0, len(rolled), _BATCH):
             batch = rolled[start:start + _BATCH]
@@ -683,7 +665,7 @@ def _search_of(body: BodyMap, *, jaw: SupportFootprintJaw, open_width_mm: "float
 def _found_at(body: BodyMap, yaw: float, search: _Search, count: Callable[[str, int], None]) -> "list[_Found]":
     """The grasps that hold on ``body`` closing along ``yaw`` (radians from BASE X, the module docstring's search):
     each span the pads close on, at each height, that fits the stroke, whose open fingers stand clear of the body,
-    whose contacts hold inside the friction cone, scored as SFE scores (``support_footprint._build``)."""
+    whose contacts hold inside the friction cone, scored as SFE scored its builds."""
     from scipy import ndimage  # noqa: PLC0415 (only the stage pays for it)
 
     jaw, cell, support, opening, opens_as_needed = (search.jaw, search.cell, search.support, search.opening,
@@ -788,7 +770,7 @@ def _found_at(body: BodyMap, yaw: float, search: _Search, count: Callable[[str, 
     v_mm = v0 + (bands + 0.5) * cell
     xs, ys = c * u_mm - s * v_mm, s * u_mm + c * v_mm
     z = heights[levels]
-    # As SFE scores (``support_footprint._build``): the cone's slack, the stroke left, how the pads sit on the part,
+    # As SFE scored its builds: the cone's slack, the stroke left, how the pads sit on the part,
     # upright, centred (an anchor between its contacts is).
     covered = np.clip(np.minimum(z + jaw.pad_behind_mm, body.top_mm) - np.maximum(z - jaw.pad_ahead_mm, support),
                       0.0, None) / max(jaw.pad_ahead_mm + jaw.pad_behind_mm, _EPS)
@@ -935,7 +917,7 @@ def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 def _leaning(f: _Found, degrees: float, upright_weight: float) -> _Found:
     """``f`` with the hand leaning ``degrees`` further about its closing axis (the sign the side), from where its own
     approach stands: straight down, or rolled (:func:`_rolled_found`), as SFE rolls the hand on every tilt of its ladder;
-    scored upright by the cosine of the approach's tilt as SFE scores a side approach (``support_footprint._build``)."""
+    scored upright by the cosine of the approach's tilt as SFE scored a side approach."""
     angle = math.radians(degrees)
     k = f.axis / max(float(np.linalg.norm(f.axis)), _EPS)
     a = f.approach
@@ -968,10 +950,10 @@ def _side_approaches(asked: "list[_Found]", upright_weight: float, checks: "dict
 
 def _rolled_found(points: np.ndarray, *, jaw: SupportFootprintJaw, open_width_mm: "float | None",
                   opens_as_needed: bool, score_weights: "tuple[float, float, float, float, float] | None",
-                  support_mm: float, count: Callable[[str, int], None], inflate_mm: float = 0.0) -> "list[_Found]":
+                  support_mm: float, count: Callable[[str, int], None]) -> "list[_Found]":
     """The grasps of the part's measured ``points`` (BASE) with the closing axis rolled :data:`BODY_ROLLS_DEG` out of the
     horizontal, every :data:`_ROLL_YAW_STEP_DEG` of closing direction: each searched in the frame of that hand, where it
-    comes straight down along its own approach (``support_footprint._rolled``, SFE's roll about the hand's binormal), as
+    comes straight down along its own approach (``hand._rolled``, SFE's roll about the hand's binormal), as
     the hand sees the part there: binned anew, its own lowest point its floor, the search, the contacts and where the
     part is widest read as straight down reads them (:func:`_found_at`, :func:`_refined`, :func:`_under_the_widest`),
     and each grasp carried back to BASE with that frame and that body (``_Found.frame``), the fingers kept out of it
@@ -989,7 +971,7 @@ def _rolled_found(points: np.ndarray, *, jaw: SupportFootprintJaw, open_width_mm
             axis, approach = _rolled(level, down, roll)
             frame = np.vstack([axis, _cross(-approach, axis), -approach])
             local = points @ frame.T
-            body = _binned(local, float(local[:, 2].min()), np.zeros((0, 3)), BODY_CELL_MM, inflate_mm=inflate_mm)
+            body = _binned(local, float(local[:, 2].min()), np.zeros((0, 3)), BODY_CELL_MM)
             search = _search_of(body, jaw=jaw, open_width_mm=open_width_mm, opens_as_needed=opens_as_needed,
                                 score_weights=score_weights, count=lambda _cause, _n: None)
             if search is None:
@@ -1011,8 +993,8 @@ def _rolled_found(points: np.ndarray, *, jaw: SupportFootprintJaw, open_width_mm
 
 def _with_a_vertical(out: "list[SupportFootprintCandidate]", ranked: "list[_Found]", jaw: SupportFootprintJaw,
                      most: int) -> "list[SupportFootprintCandidate]":
-    """``out`` with the best grasp straight down of ``ranked`` among them, as SFE keeps one
-    (``support_footprint._with_a_vertical``): where none made the list it takes the last place of its opening. A lean
+    """``out`` with the best grasp straight down of ``ranked`` among them, as SFE kept one: where none made the list
+    it takes the last place of its opening. A lean
     or a roll the arm cannot take is refused with every other of its line, and the grasp straight down is the one the
     pick loop then still has to try."""
     if not out or any(float(c.approach[2]) <= _VERTICAL_APPROACH_Z for c in out):
@@ -1109,7 +1091,7 @@ def _kept(batch: "list[_Found]", *, jaw: SupportFootprintJaw, opening: float, su
           outline: "Callable[[np.ndarray], np.ndarray] | None" = None, body: "BodyMap | None" = None,
           room: "_Room | None" = None, room_weight: float = 0.0,
           count: Callable[[str, int], None], beside: "_Beside | None" = None) -> "list[_Found | str]":
-    """The grasps of ``batch`` whose hand keeps what SFE keeps (``support_footprint._build``): the closed fingers the
+    """The grasps of ``batch`` whose hand keeps what SFE's builds kept: the closed fingers the
     support's clearance and the held solid's distance, the palm the solid's, the open fingers on their way in the
     solid's; the neighbours' points and the declared bodies off the open and the closed fingers; the guard's boxes of the
     neighbours off the open hand (``SeenEnvelope``). A verdict SFE would ask again one build at a time (2) is a refusal
@@ -1117,7 +1099,7 @@ def _kept(batch: "list[_Found]", *, jaw: SupportFootprintJaw, opening: float, su
     over the part's outline is space a ray of the frame reached, or the grasp is refused (``unseen_corridor``). A hand
     leaning off vertical keeps its fingers out of the part's own ``body`` and has its whole way in seen. Each grasp kept
     scores ``room_weight`` more as the room its open fingers keep from ``room``'s points nears :data:`_CLEARANCE_FULL_MM`
-    (SFE's side approaches, ``support_footprint._build``). One answer a grasp: it kept, or the cause it was refused for,
+    (SFE's side approaches). One answer a grasp: it kept, or the cause it was refused for,
     counted. The guard's boxes, the dearest of the checks, are asked only of the grasps every other check passed: the
     first cause a grasp is refused for is the same, and in a crate whose every grasp a neighbour's points refuse they
     were most of a part's search (2026-10-14)."""
@@ -1193,7 +1175,7 @@ def _refusal(f: _Found, closed: np.ndarray, swept: np.ndarray, *, jaw: SupportFo
     """What the scene refuses grasp ``f`` for (:func:`_kept`, SFE's causes), its closed fingers' points ``closed`` and its
     open fingers' way in ``swept``, the guard's boxes aside (:func:`_kept` asks them last); ``floored`` says whether the
     closed fingers, the palm and the open fingers stand under the solids the guard holds under the hand (``HandFloor``,
-    asked of the batch at once), ``palm_low`` how low the palm's box reaches (``support_footprint._palm_low_mm``: SFE's
+    asked of the batch at once), ``palm_low`` how low the palm's box reaches (``hand._palm_low_mm``: SFE's
     ``palm_aware``, asked of every grasp, as a hand leaning past 45 has its palm lowest), ``beside`` how high what the
     cameras saw stands beside each point (:class:`_Beside`), ``outer`` the open fingers' outer faces on their way in.
     ``""`` where it refuses nothing."""
@@ -1298,37 +1280,13 @@ def _joined(*clouds: "np.ndarray | None") -> "np.ndarray | None":
 
 def _near(candidate: SupportFootprintCandidate, kept: "list[SupportFootprintCandidate]") -> bool:
     """Whether ``candidate`` is a grasp near one of ``kept``: within 4 mm, its closing axis the same within 5 degrees,
-    its approach within SFE's (``support_footprint._near_one_of``: a lean is another grasp), the jaws opened alike (one
+    its approach within about 6 degrees (a lean is another grasp, as SFE told them apart), the jaws opened alike (one
     narrow and one fully open are two grasps to the guard)."""
     return any(float(np.linalg.norm(candidate.position_mm - k.position_mm)) < 4.0
                and abs(float(candidate.closing_axis @ k.closing_axis)) > math.cos(math.radians(5.0))
                and float(candidate.approach @ k.approach) > 0.995
                and (candidate.open_width_mm is None) == (k.open_width_mm is None)
                for k in kept)
-
-
-def merged_ranking(first: "list[SupportFootprintCandidate]", second: "list[SupportFootprintCandidate]", *,
-                   most: int) -> list[SupportFootprintCandidate]:
-    """Two stages' grasps ranked together as each ranks its own (``support_footprint.rank_found``): the robust ones
-    first, each by score. Every grasp of ``first`` stays as its stage offered it, so ``second`` only adds: on the owner's
-    Tuesday picks a body's grasp ranked in an SFE grasp's place had taken the one grasp the guard admitted from a pick.
-    A grasp of ``second`` within 4 mm of one of ``first``, its axes alike and its jaws opened alike, is left out: one
-    that opens narrow (lever G) is another grasp to the guard.
-
-    Args:
-        first: SFE's grasps, all of which stay.
-        second: The body's.
-        most: How many of ``second`` at most.
-
-    Returns:
-        list[SupportFootprintCandidate]: The grasps of both, ranked.
-    """
-    added = [candidate for candidate in second
-             if not any(float(np.linalg.norm(candidate.position_mm - k.position_mm)) < 4.0
-                        and abs(float(candidate.closing_axis @ k.closing_axis)) > 0.995
-                        and float(candidate.approach @ k.approach) > 0.995
-                        and (candidate.open_width_mm is None) == (k.open_width_mm is None) for k in first)][:int(most)]
-    return sorted([*first, *added], key=lambda c: (not c.robust, -float(c.score)))
 
 
 def body_least_height_mm(jaw: SupportFootprintJaw) -> float:
@@ -1347,6 +1305,3 @@ def body_least_height_mm(jaw: SupportFootprintJaw) -> float:
             + BODY_MIN_OVERLAP_MM + _LEAN_RISE_MM)
 
 
-def body_telemetry(found: "list[SupportFootprintCandidate]", refused: Mapping[str, int]) -> dict[str, Any]:
-    """What a result says of this stage: how many grasps it offered, and why it offered no more."""
-    return {"body_grasps": len(found), "body_refused": dict(refused)}

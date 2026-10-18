@@ -56,7 +56,7 @@ class _URFKAdapter:
 
 
 class _URChainFKAdapter:
-    """The singularity helpers' FK on the arm's own DH chain, with no round trip (``singularity_fk: dh``).
+    """The singularity helpers' FK on the arm's own DH chain, with no round trip (the owner's ``singularity_fk: dh``).
 
     ``chain`` is a :class:`~src.robot.safety._ur_kinematics.URDhChain`, the controller's calibrated rows or the model's
     nominal table, and ``tcp_m`` the controller's active TCP as a 4x4 in metres: the TCP pose ``getForwardKinematics``
@@ -81,10 +81,8 @@ class MotionController:
         guard: The ``WorkspaceGuard`` that validates every target pose.
         max_velocity: A hard cap on the commanded velocity. ``None`` disables clamping.
         max_acceleration: A hard cap on the commanded acceleration.
-        singularity_fk: ``robot.safety.ik_quality.singularity_fk``, which FK the singularity check before a move
-            differentiates: ``"controller"``, 12 round trips as always, or ``"dh"``, the arm's own DH chain here.
-        arm_model: ``robot.ur.model``, whose nominal table the ``"dh"`` check runs on where the controller's own rows
-            cannot be read.
+        arm_model: ``robot.ur.model``, whose nominal table the singularity check before a move runs on where the
+            controller's own rows cannot be read (:meth:`_singularity_fk`).
     """
 
     def __init__(
@@ -95,7 +93,6 @@ class MotionController:
         max_acceleration: float | None = None,
         singularity_thresholds: SingularityThresholds | None = None,
         *,
-        singularity_fk: str = "controller",
         arm_model: str | None = None,
     ):
         self.conn = connection
@@ -103,11 +100,8 @@ class MotionController:
         self.max_velocity = max_velocity
         self.max_acceleration = max_acceleration
         self.singularity_thresholds = singularity_thresholds or SingularityThresholds()
-        if singularity_fk not in ("controller", "dh"):
-            raise ValueError(f"singularity_fk is 'controller' or 'dh', got {singularity_fk!r}")
-        self.singularity_fk = singularity_fk
         self.arm_model = arm_model
-        #: What the ``"dh"`` check last said it runs on, so it says so once for every chain and TCP it meets; and whether
+        #: What the check last said it runs on, so it says so once for every chain and TCP it meets; and whether
         #: the controller's FK is the nominal table's, once per connection (:meth:`_why_not_the_controllers_fk`).
         self._singularity_fk_said: object = None
         self._nominal_checked: "tuple[object, str] | None" = None
@@ -121,10 +115,10 @@ class MotionController:
     def _is_singularity_risky(self, joints: list[float]) -> bool:
         """Return ``True`` where the target joint state is near a singularity.
 
-        The Jacobian is the central differences of a forward kinematics: the controller's, 12 round trips, or with
-        :attr:`singularity_fk` ``"dh"`` the arm's own DH chain here (:meth:`_singularity_fk`), with the same
+        The Jacobian is the central differences of a forward kinematics: the arm's own DH chain here
+        (:meth:`_singularity_fk`), and the controller's, 12 round trips, where that chain cannot be read, with the same
         differences and the same thresholds. On the controller's own rows the two are one FK: URSim CB3 answers them
-        to 6e-15 m, nominal and calibrated alike.
+        to 6e-15 m, nominal and calibrated alike. Every cell's since 2026-10-17 (the owner's ``singularity_fk: dh``).
         """
 
         report = analyze_joint_singularity(
@@ -141,15 +135,12 @@ class MotionController:
         return False
 
     def _singularity_fk(self) -> "_URFKAdapter | _URChainFKAdapter":
-        """The FK :meth:`_is_singularity_risky` differentiates: the controller's, or with :attr:`singularity_fk`
-        ``"dh"`` the arm's own chain, its controller's calibrated rows where they can be read
-        (``URConnection.controller_kinematics``, once per connection) and :attr:`arm_model`'s nominal table where they
-        cannot and the controller's own FK confirms the table is its chain (:meth:`_why_not_the_controllers_fk`), times
-        the active TCP (``URConnection.active_tcp_offset``). Anywhere else, the controller's, as always; which one is
-        said once for every chain it meets.
+        """The FK :meth:`_is_singularity_risky` differentiates: the arm's own chain, its controller's calibrated rows
+        where they can be read (``URConnection.controller_kinematics``, once per connection) and :attr:`arm_model`'s
+        nominal table where they cannot and the controller's own FK confirms the table is its chain
+        (:meth:`_why_not_the_controllers_fk`), times the active TCP (``URConnection.active_tcp_offset``). Anywhere else,
+        the controller's; which one is said once for every chain it meets.
         """
-        if self.singularity_fk != "dh":
-            return _URFKAdapter(self.conn)
         from src.robot.safety._ur_ik import ur_pose_matrix_m
         from src.robot.safety._ur_kinematics import URDhChain
 
@@ -178,14 +169,14 @@ class MotionController:
             said: object = ("controller", rows)
             if said != self._singularity_fk_said:
                 self._singularity_fk_said = said
-                self.logger.warning("The singularity check before a move asks the controller's FK, as with "
-                                    "singularity_fk: controller: %s.", rows if chain is None else "no active TCP read")
+                self.logger.warning("The singularity check before a move asks the controller's FK: %s.",
+                                    rows if chain is None else "no active TCP read")
             return _URFKAdapter(self.conn)
         said = (rows, tuple(float(v) for v in (tcp or ())))
         if said != self._singularity_fk_said:
             self._singularity_fk_said = said
             self.logger.info("The singularity check before a move runs on the arm's own DH chain, %s, times the active "
-                             "TCP %s (robot.safety.ik_quality.singularity_fk: dh).", rows,
+                             "TCP %s.", rows,
                              [round(float(v), 6) for v in (tcp or ())])
         return _URChainFKAdapter(chain, tcp_m)
 
@@ -260,7 +251,7 @@ class MotionController:
         ``pose`` is what the controller is told, in the frame its tool register uses.
         ``workspace_pose`` is what the workspace box judges when that differs: in
         ``willy`` tool-frame mode the controller is told the flange target, while
-        ``workspace_limits`` bound the grasp centre. ``None`` boxes ``pose`` itself.
+        ``robot.motion.workspace`` bounds the grasp centre. ``None`` boxes ``pose`` itself.
         """
         # Classify each rejection, so URRobotArm.move attaches the real typed cause
         # rather than the generic CONTROLLER_REJECTED of from_bool. It is cleared per

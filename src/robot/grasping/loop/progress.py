@@ -87,7 +87,7 @@ class PickProgress:
     #: Typed rejection reasons, as strings. Never free text: these come from ``GraspFailureReason``.
     reasons: tuple[str, ...] = ()
     #: ``rescan`` / ``exhausted`` on :attr:`PickStage.NO_CANDIDATE`; ``executed`` or the failed motion's word
-    #: (``object_not_detected``, ``camera_frame_rejected``, ``approach_path_blocked``, ``gripper_fault``,
+    #: (``object_not_detected``, ``camera_frame_rejected``, ``gripper_fault``,
     #: ``execution_failed``, ``controller_not_operational``, ``look_refused`` when a wrist pick reached none of its
     #: looks, the motion to one (its generated view and its move back included) failed once it may have been
     #: commanded or was refused by its verb before any command, or its controller stopped on the way to one, and
@@ -96,8 +96,8 @@ class PickProgress:
     #: looked again, or its push stopped where the arm stands, or found the controller unable to move before anything
     #: moved: ``extra['push']`` says which, and ``extra['push_reason']`` in the push's own words) on
     #: :attr:`PickStage.ATTEMPT_FINISHED`. The loop
-    #: never switches target on its own: ``next_target`` is a recovery action, recorded on the recovery
-    #: trail, not here; the pick it runs again, which skips the failed part, emits its own events. ``relocate``
+    #: never switches target on its own: a rescan is a recovery action, recorded on the recovery trail, not
+    #: here; the pick it runs again emits its own events. ``relocate``
     #: is retired with the relocate path (2026-09-29) and appears only in events recorded before then.
     action: str | None = None
     #: The typed ``PickOutcome`` on :attr:`PickStage.PICK_FINISHED`.

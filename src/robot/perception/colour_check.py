@@ -15,9 +15,9 @@ on the part's own pixels, in about 2 ms a part:
   owner's cell: on the 9 home views of 2026-10-07/08 (142 sightings of a part on the mat, the cell's light and auto
   exposure) every part was at least half coloured or at most a fifth, and the 80th percentile of a colourless part's
   lightness read 52-69 on the grey parts and 80-100 on the white ones (one at 79.6).
-* A pixel the camera clipped in some but not all of its channels is left out of every count (``clipped=``,
-  :class:`ColourClipped`, ``robot.grasping.colour_check_clipped``; ``exclude``, the owner's choice as shipped,
-  2026-10-09: "wenn das schon so gut war, dann nutzen wir das doch instant"). The colour camera runs on auto exposure,
+* A pixel the camera clipped in some but not all of its channels is left out of every count (the owner's choice,
+  2026-10-09: "wenn das schon so gut war, dann nutzen wir das doch instant"; every cell's since 2026-10-17, the key
+  ``robot.grasping.colour_check_clipped`` gone with the counting it chose). The colour camera runs on auto exposure,
   and where the mat around an orange part is dark it clips the part's red channel at 252 to 254: the hue is then read
   off the green channel alone and lands in the yellow band. Measured offline on the 31 looks the cell recorded on
   2026-10-07, by the review's rule and again through this function on the same parts (2026-10-09): orange judged
@@ -47,7 +47,6 @@ __all__ = [
     "CLIPPED_AT",
     "Colour",
     "ColourCheck",
-    "ColourClipped",
     "ColourVerdict",
     "ask_colour",
     "colour_named",
@@ -58,24 +57,13 @@ __all__ = [
 
 
 class ColourCheck(StrEnum):
-    """What a camera source does with a part's colour (``robot.grasping.colour_check``)."""
+    """What a camera source does with a part's colour: a cell judges it (``robot.grasping.colour_check`` until
+    2026-10-17, ``on`` at the owner's cell), the library's ``Locator.locate`` does not."""
 
     #: A part whose pixels contradict the colour its object label names is no target: the owner's choice, 2026-10-08.
     ON = "on"
-    #: Judged and logged, and nothing changed: the part stays a target whatever its pixels say.
-    LOG = "log"
     #: Not judged.
     OFF = "off"
-
-
-class ColourClipped(StrEnum):
-    """What the colour check does with a pixel the camera clipped in some but not all of its channels
-    (``robot.grasping.colour_check_clipped``)."""
-
-    #: Left out of the hue and lightness counts: the owner's choice as shipped, 2026-10-09.
-    EXCLUDE = "exclude"
-    #: Counted as every other pixel is, as before.
-    KEEP = "keep"
 
 
 class Colour(StrEnum):
@@ -282,8 +270,7 @@ def _colourless_seen(lightness: np.ndarray) -> Colour:
     return Colour.GREY
 
 
-def judge_colour(image_bgr: Any, mask: Any, wanted: Colour, *,
-                 clipped: ColourClipped | str = ColourClipped.EXCLUDE) -> ColourVerdict:
+def judge_colour(image_bgr: Any, mask: Any, wanted: Colour) -> ColourVerdict:
     """Whether the pixels of ``mask`` in ``image_bgr`` (BGR, uint8) have the colour ``wanted``; see the module's rule.
 
     Grey, white or black wanted: a part at least half coloured is refused as the hue band most of it lies in, one more
@@ -293,15 +280,13 @@ def judge_colour(image_bgr: Any, mask: Any, wanted: Colour, *,
     another band holds half, or while the part is at most a fifth coloured, refuses it; anything else is unsure, and so is
     a part of fewer than 50 pixels. Pink and brown are always unsure.
 
-    ``clipped`` (``robot.grasping.colour_check_clipped``): ``exclude``, the default, leaves every pixel with one or two
-    channels at :data:`CLIPPED_AT` or over, and not all three, out of every count above, the 50 pixels' included, so a
-    part left with fewer is unsure and the VLM is asked, and no part is called black for the pixels left out; the
-    verdict's numbers say how many were. ``keep`` counts them as every other pixel, as before.
+    Every pixel with one or two channels at :data:`CLIPPED_AT` or over, and not all three, is left out of every count
+    above, the 50 pixels' included, so a part left with fewer is unsure and the VLM is asked, and no part is called black
+    for the pixels left out; the verdict's numbers say how many were.
     """
     import cv2  # noqa: PLC0415 - deferred: the camera source imports this module, and OpenCV is no small import
 
     wanted = Colour(wanted)
-    clipped = ColourClipped(clipped)
     full = np.asarray(mask).astype(bool)
     if not full.any():
         return ColourVerdict(wanted, agrees=False, unsure=True, seen=UNNAMED, why="the mask is empty")
@@ -323,12 +308,9 @@ def judge_colour(image_bgr: Any, mask: Any, wanted: Colour, *,
     chroma = np.hypot(a, b)
     hue = (np.degrees(np.arctan2(b, a)) + 360.0) % 360.0
     # A pixel clipped in one or two channels and not all three says nothing true of its hue: the owner's choice leaves
-    # it out (ColourClipped.EXCLUDE). Kept, every pixel is readable, as before.
-    if clipped is ColourClipped.EXCLUDE:
-        channels = window[core]
-        readable = ~((channels.max(axis=1) >= CLIPPED_AT) & (channels.min(axis=1) < CLIPPED_AT))
-    else:
-        readable = np.ones(total, dtype=bool)
+    # it out.
+    channels = window[core]
+    readable = ~((channels.max(axis=1) >= CLIPPED_AT) & (channels.min(axis=1) < CLIPPED_AT))
     left_out = total - int(np.count_nonzero(readable))
     said_clipped = f", {left_out} clipped left out" if left_out else ""
     if wanted is Colour.BLACK:

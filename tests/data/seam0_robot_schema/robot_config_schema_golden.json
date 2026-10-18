@@ -1,82 +1,5 @@
 {
   "$defs": {
-    "AttachedPayloadConfig": {
-      "additionalProperties": false,
-      "description": "Whether the planner is told that the gripper is carrying something.\n\nThe planner's collision model ends at the gripper, so every transit, lift, place and retreat after\na successful close is planned as if the hand were empty. On a cell carrying a part out of a bin\nthat part is the geometry most likely to meet a wall.\n\nIt blocks on geometry rather than on principle: against the real planner (ur5e, a wall at\nx = 250 mm) a 300 x 300 x 50 mm plate turns a 61-waypoint plan into no plan, while a 20 mm cube\nstill plans.\n\nThe box is not the part. Its lateral extents come from the jaw opening at the grasp, which\nmeasures the part at the grasp line and says nothing about the rest of it, and ``length_mm`` is a\ndeclared worst case rather than a measurement: how far the longest part this cell carries hangs\npast the fingertips along the approach. No length is implied. A cell that declares none models no\ncarried part and reserves no payload spheres, and the checklist's ``carried part`` row says so;\none that declares a length reserves ``sphere_slots`` whether or not the planning world is enabled.",
-      "properties": {
-        "enabled": {
-          "default": true,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "lateral_margin_mm": {
-          "default": 10.0,
-          "maximum": 500.0,
-          "minimum": 0.0,
-          "title": "Lateral Margin Mm",
-          "type": "number"
-        },
-        "length_mm": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0.0,
-              "maximum": 2000.0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Length Mm"
-        },
-        "sphere_slots": {
-          "default": 16,
-          "maximum": 128,
-          "minimum": 4,
-          "title": "Sphere Slots",
-          "type": "integer"
-        }
-      },
-      "title": "AttachedPayloadConfig",
-      "type": "object"
-    },
-    "BlockerGraphSchemaConfig": {
-      "additionalProperties": false,
-      "description": "Per-signal blocker-graph flags.\n\nEvery signal defaults off, so :class:`GraspingOrderingConfig` is inert until an\noperator opts in. ``adjacency_radius_px`` is integer pixels in the perception mask;\n``depth_tolerance_mm`` is the camera-space depth difference in millimetres required\nbefore one candidate counts as in front of another.",
-      "properties": {
-        "adjacency_radius_px": {
-          "default": 5,
-          "maximum": 128,
-          "minimum": 0,
-          "title": "Adjacency Radius Px",
-          "type": "integer"
-        },
-        "corridor_overlap_enabled": {
-          "default": false,
-          "title": "Corridor Overlap Enabled",
-          "type": "boolean"
-        },
-        "depth_only_enabled": {
-          "default": false,
-          "title": "Depth Only Enabled",
-          "type": "boolean"
-        },
-        "depth_tolerance_mm": {
-          "default": 10.0,
-          "minimum": 0.0,
-          "title": "Depth Tolerance Mm",
-          "type": "number"
-        },
-        "mask_adjacency_enabled": {
-          "default": false,
-          "title": "Mask Adjacency Enabled",
-          "type": "boolean"
-        }
-      },
-      "title": "BlockerGraphSchemaConfig",
-      "type": "object"
-    },
     "CouplingPlateConfig": {
       "additionalProperties": false,
       "description": "One plate between the arm flange and the hand's own mounting face: what holds the hand out, and what it is.\n\nThe thickness places the hand and the cross section collides, and neither number is written twice. The\nstack's thicknesses sum to where the hand sits. The cross section is the two half extents across the\napproach, so a 90 mm quick change coupler is ``[45.0, 45.0]``.\n\nA plate without a cross section becomes no body, and the cell says its name rather than inventing a\nwidth. Measured by ``scripts/curobo/probe_plate_body.py``: the Hand-E's 20 mm plate over the 1,483 judged\nposes, against the exact guard's 10 mm, turns 0 to 2 of about 950 clear poses per arm at a UR flange\nradius, the worst grazing at 8.944 mm; at a coupler's 45 mm it is 0 to 25. So an unmeasured plate is a\nsmall hole and an unmeasured coupler is not, and the difference is what the caller declares.",
@@ -126,44 +49,6 @@
       "description": "Settings for the in-process dummy driver.\n\nIt carries no fields: the dummy driver is featureless by intent, so\nthat the rest of the stack can be exercised with neither hardware nor\na simulator. It is a class rather than ``None`` so a field can be\nadded later without changing the shape of the YAML.",
       "properties": {},
       "title": "DummyConfig",
-      "type": "object"
-    },
-    "DwellSafetyConfig": {
-      "additionalProperties": false,
-      "description": "Post-Stop dwell and steady-state gating.\n\nA temporal check, does the controller report steady state, rather than the per-target spatial\ncheck the other guards make, so it sits outside the per-move :class:`SafetyPreflight` pipeline.\n\n``require_steady_before_motion`` and ``steady_timeout_s`` are consumed by the planned arm itself\n(``drivers/planned/arm.py``, since P0e): every motion verb waits on ``wait_until_steady(steady_timeout_s)``\nafter its frame and camera-world refusals and fails closed with a TIMEOUT result, so a park, a calibration pose\nand a recovery move wait as the pick's moves do. ``dwell_after_stop_s`` is not enforced; there is no exercised\nStop or E-stop path in the runtime.",
-      "properties": {
-        "gate_at": {
-          "default": "verb",
-          "enum": [
-            "verb",
-            "send"
-          ],
-          "title": "Gate At",
-          "type": "string"
-        },
-        "require_steady_before_motion": {
-          "default": true,
-          "title": "Require Steady Before Motion",
-          "type": "boolean"
-        },
-        "steady_signal": {
-          "default": "is_steady",
-          "enum": [
-            "is_steady",
-            "joint_speeds"
-          ],
-          "title": "Steady Signal",
-          "type": "string"
-        },
-        "steady_timeout_s": {
-          "default": 5.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 60.0,
-          "title": "Steady Timeout S",
-          "type": "number"
-        }
-      },
-      "title": "DwellSafetyConfig",
       "type": "object"
     },
     "FixtureBoxConfig": {
@@ -222,107 +107,6 @@
         }
       },
       "title": "FixtureBoxConfig",
-      "type": "object"
-    },
-    "FusionCameraConfig": {
-      "additionalProperties": false,
-      "description": "One camera's entry in ``fusion.cameras``: whether it takes part in fusion.\n\nKeyed by the camera's rig id in ``camera.cameras.rigs``. Its calibration is not here: it is\ndeclared on its rig, ``camera.cameras.rigs[<id>].extrinsics``, and loaded through\n``RigCalibration``.",
-      "properties": {
-        "enabled": {
-          "default": true,
-          "description": "Whether this camera participates. Disabled cameras are skipped by the resolver map.",
-          "title": "Enabled",
-          "type": "boolean"
-        }
-      },
-      "title": "FusionCameraConfig",
-      "type": "object"
-    },
-    "FusionGeometryConfig": {
-      "additionalProperties": false,
-      "description": "Fuse each object's surface across the fixed cameras and feed that to the grasp generator.\n\nA separate switch from ``fusion.enabled``, but not an independent one. ``fusion.enabled`` is\nwhat builds the other cameras' CAMERA to BASE resolvers (``build_config_frame_resolvers``\nreturns none while it is off). With ``fusion.enabled`` false every second view is dropped at the\npick with a warning, so geometry fusion needs both switches on (``CameraFusionPlan`` checks it).\nThis one changes the grasp candidates themselves, since every camera that can identify an object\ncontributes its view of that object's surface and the generator plans on the union.\n\nA candidate is accepted or rejected on its closing axis, the closing axis comes from the\nobject's silhouette, and one depth view sees one side of an object while an antipodal grasp\nneeds two. Measured on the datagen reference through the real calculator (n=354): top-1\n43.50 % single-view -> 55.93 % fused, coverage 53.67 -> 64.69 %.\n\nRequires ``cameras`` to be populated (each camera individually calibrated) and a multi-camera\nperception source at runtime. Without both this stands down to the single-view path and stamps\nwhy in the telemetry.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "description": "Top-level switch. False (default) = the generator sees one view per object, exactly as before: byte-identical. Needs ``fusion.enabled`` too: that switch builds the other cameras' CAMERA to BASE resolvers, without which every second view is dropped.",
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "max_centroid_mm": {
-          "default": 150.0,
-          "description": "Distance at which the `centroid` metric scores 0. Unused by the other metrics.",
-          "exclusiveMinimum": 0.0,
-          "maximum": 5000.0,
-          "title": "Max Centroid Mm",
-          "type": "number"
-        },
-        "metric": {
-          "default": "overlap",
-          "description": "How 'the same object' is scored across cameras. Measured over 1240 answerable decisions and 488 where the target was absent from the other view: `overlap` gets 92.0 % of the answerable ones right at 0.08 % wrong and correctly refuses 98.2 % of the impossible ones. `centroid` looks better on the answerable half alone (99.5 %) and is the trap: it never abstains, so when the object is absent it takes a neighbour instead in up to 73 % of cases, welding a neighbour's far surface into the cloud the generator plans on.",
-          "enum": [
-            "overlap",
-            "box_iou",
-            "centroid"
-          ],
-          "title": "Metric",
-          "type": "string"
-        },
-        "min_score": {
-          "default": 0.3,
-          "description": "Match score a camera must clear to contribute. Below it the camera contributes nothing for that object, exactly as an occluded camera does. Fusing the wrong object is worse than fusing one fewer view: it invents a contact face the generator cannot distinguish from a real one.",
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Min Score",
-          "type": "number"
-        },
-        "neighbour_mm": {
-          "default": 12.0,
-          "description": "How near two points count as the same surface, for the `overlap` metric. Larger than a stereo camera's depth noise at working distance, smaller than the gap between two touching objects.",
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Neighbour Mm",
-          "type": "number"
-        },
-        "neighbour_scene_enabled": {
-          "default": false,
-          "description": "Also give the collision filter what the other cameras see: each object gets every other camera's view of everything that is not itself, fed as `scene_points_mm`. Requires `enabled`. False (default) = byte-identical.\n\n`finger_collision` is 60.0 % of every mis-rank left after target fusion, and showing the filter the hidden neighbours does not close it. Measured over 1073 visible objects (D5 reference, GT masks), paired per object: 5 grasps rescued, 4 destroyed, net +3 picks in 1073. Candidate precision does rise 64.6 -> 70.4 % at a cost of ~1.6 ms, but the gap itself barely moves (45 -> 39 objects) and `finger_collision` is still 59.0 % of it.\n\nReplaying the reference verdict on the surviving rank-0 winners shows 60.9 % of them collide with a bin wall rather than with an object, and in the `bin` family it is 14 of 14. No camera segments a wall as an instance, so no amount of object fusion reaches one: wall geometry comes from `container.interior_min_mm` and `interior_max_mm` with `container.wall_collision_enabled` set, never from a camera. Where the blocker is an object the lever works as designed: the `pile` gap halves, 8 -> 4. So this is on for a pile or heap cell, and for a bin it needs the container walls declared as well.",
-          "title": "Neighbour Scene Enabled",
-          "type": "boolean"
-        },
-        "neighbour_voxel_mm": {
-          "default": 8.0,
-          "description": "Voxel size the fused neighbour cloud is thinned to. Defaults to the same 8.0 mm the calculator already applies to the same-view neighbours it builds itself (`geometry_voxel_size_mm`), so the two halves of the obstacle set arrive at one density rather than letting the fused half dominate purely by point count.",
-          "exclusiveMinimum": 0.0,
-          "maximum": 100.0,
-          "title": "Neighbour Voxel Mm",
-          "type": "number"
-        },
-        "on_camera_unavailable": {
-          "default": "degrade",
-          "description": "What to do when a configured camera delivers no frame this pick (unplugged, dropped trigger, dirty lens). `degrade` (default) continues with the cameras that did deliver and logs a WARNING; `refuse` fails the pick closed. Either way the telemetry stamps which cameras actually contributed: a cell must never fall back to single-view silently, which is the whole failure this option exists to make visible.",
-          "enum": [
-            "degrade",
-            "refuse"
-          ],
-          "title": "On Camera Unavailable",
-          "type": "string"
-        },
-        "promote_unmatched": {
-          "default": false,
-          "description": "Let a camera introduce an object, instead of only confirming one the primary already found. Requires `enabled`. False, the default, is the behaviour every measured number in this repository was taken under.\n\nWhat it fixes. Detection and segmentation already run on every camera in a fused cell: each one costs a full detect and segment pass per pick. But the object list comes from the primary camera alone, and the other cameras' blobs are matched against it, so a part that only the second camera can see matches nothing, because there is nothing for it to match. It is found, segmented, back-projected, and then dropped. If it is the last part in a bin, the cell reports the bin empty while holding a positive detection of it in memory.\n\nWhat it costs. Grouping becomes symmetric over every camera pair rather than primary-against-each, and an object no primary segmentation corresponds to is computed in the camera that saw it, with that camera's mask, depth and intrinsics. So a cell holds one calculator per camera. The grouping uses complete linkage: a blob joins a group only when it clears `min_score` against every blob already in it, never merely against one. That splits where a chain would weld, which costs a duplicate object and one wasted attempt, rather than welding two parts into a cloud with a closing axis running through the gap between them.\n\nNot measured. How often a bin holds a part the primary cannot see is not known: no number in this repository answers it. That is why this ships off.",
-          "title": "Promote Unmatched",
-          "type": "boolean"
-        },
-        "score_voxel_mm": {
-          "default": 0.0,
-          "description": "Decimate each cloud to one point per this many mm, for the association scoring only. 0.0 (default) = off, byte-identical. The fused cloud handed to the grasp generator is rebuilt from the original full-resolution clouds, so this makes the match decision cheaper without making the geometry coarser. `_overlap_fraction` states its own precondition, 'the clouds are a few thousand points at most', and a data-generation corpus violates it by an order of magnitude: one datagen object's cloud is 37,119 points and a single scene's fusion took 182.7 s. Applies to the `overlap` metric only; `centroid` and `box_iou` are already cheap and must not shift by a voxel because this is set.",
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Score Voxel Mm",
-          "type": "number"
-        }
-      },
-      "title": "FusionGeometryConfig",
       "type": "object"
     },
     "GraspingContainerConfig": {
@@ -402,7 +186,7 @@
         },
         "wall_sample_mm": {
           "default": 8.0,
-          "description": "Point spacing on the sampled walls. Matches the calculator's own `geometry_voxel_size_mm` default so wall points arrive at the same density as the neighbour points they are checked alongside.",
+          "description": "Point spacing on the sampled walls. Matches the calculator's cloud voxel (`calculator.CLOUD_VOXEL_MM`, 8 mm) so wall points arrive at the same density as the neighbour points they are checked alongside.",
           "exclusiveMinimum": 0.0,
           "maximum": 100.0,
           "title": "Wall Sample Mm",
@@ -418,38 +202,6 @@
         }
       },
       "title": "GraspingContainerConfig",
-      "type": "object"
-    },
-    "GraspingDecisionConfig": {
-      "additionalProperties": false,
-      "description": "Pre-execution decision-layer knobs.\n\nConsumed by :class:`src.robot.grasping.decision.DecisionPolicy` when\nthe operator opts the auto fail-closed decision layer on. Defaults to\n``enabled=False``, so a ``robot.yaml`` that omits the block is unaffected.\n\nAttributes\n----------\nenabled\n    Master switch. When :data:`False`, the runtime builds no\n    :class:`DecisionEngine` and the pick path runs without one.\nauto_uncertainty_threshold\n    Maximum uncertainty (in ``[0, 1]``) accepted as a confident grasp.\n    ``uncertainty = (1 - top_score)`` plus an optional ``reasons_penalty``\n    when the grasp result carries failure reasons. Default ``0.4`` => require\n    ``top_score >= 0.6``.\nreasons_penalty\n    Added to the base uncertainty when :class:`GraspResult.reasons` is\n    non-empty. Default ``0.2``.\nfail_closed_on_real_hardware\n    When :data:`True` and the running arm reports\n    ``capabilities.is_simulated == False``, a grasp less confident than the\n    threshold is mapped to :class:`DecisionAction.FAIL_CLOSED`. Simulated runs\n    stay permissive.\n\nThe gate decides once per pick, on one frame, and never moves the camera to\nlook again: ``max_reobservations``, the budget for that, was removed on\n2026-09-29 with the camera move it budgeted. A tree that still writes it is\nrefused at load with the reason (``src/config/schema/_removed.py``).",
-      "properties": {
-        "auto_uncertainty_threshold": {
-          "default": 0.4,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Auto Uncertainty Threshold",
-          "type": "number"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "fail_closed_on_real_hardware": {
-          "default": true,
-          "title": "Fail Closed On Real Hardware",
-          "type": "boolean"
-        },
-        "reasons_penalty": {
-          "default": 0.2,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Reasons Penalty",
-          "type": "number"
-        }
-      },
-      "title": "GraspingDecisionConfig",
       "type": "object"
     },
     "GraspingDeepGeneratorConfig": {
@@ -522,1072 +274,16 @@
       "title": "GraspingDeepRankerConfig",
       "type": "object"
     },
-    "GraspingFeasibilityConfig": {
-      "additionalProperties": false,
-      "description": "Feasibility-aware ranking knobs.\n\nCarries three pre-commit feasibility signals that demote (never reject)\ncandidates with poor execution prospects: IK reachability quality, joint-limit\nmargin, and swept approach feasibility. All three are disabled by default\n(byte-identical). A signal takes effect only when its ``*_enabled`` flag is\nset and the top-level :attr:`weight` is non-zero; one without the other\ncarries no weight. ``apply_modes`` excludes ``easy`` so easy's cycle-time\nbudget is preserved.\n\nAttributes\n----------\nenabled\n    Master switch. When :data:`False`, the calculator is built without a\n    feasibility scorer and the ranking is unchanged.\nweight\n    Top-level feasibility weight in the\n    :class:`~src.robot.grasping.scoring.GraspScoreWeights` normalised\n    average. Default ``0.0`` keeps ``total_score`` byte-identical.\napply_modes\n    Modes not listed here skip feasibility ranking regardless of any other\n    flag (easy is permanently locked out).\nik_quality_enabled, joint_margin_enabled, swept_approach_enabled\n    Per-signal switches. Disabled signals contribute a neutral ``0.5`` floor\n    so they never demote a candidate below an enabled-but-unknown peer.\nik_quality_weight, joint_margin_weight, swept_approach_weight\n    Internal sub-weights inside the feasibility score; only relevant when\n    their corresponding signal is enabled.\nswept_approach_top_k\n    Maximum number of top-ranked candidates evaluated with swept-approach\n    validation. Caps O(N) cost so the affected modes still meet cycle time.",
-      "properties": {
-        "apply_modes": {
-          "default": [
-            "auto",
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "ik_quality_enabled": {
-          "default": false,
-          "title": "Ik Quality Enabled",
-          "type": "boolean"
-        },
-        "ik_quality_weight": {
-          "default": 0.4,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Ik Quality Weight",
-          "type": "number"
-        },
-        "joint_margin_enabled": {
-          "default": false,
-          "title": "Joint Margin Enabled",
-          "type": "boolean"
-        },
-        "joint_margin_weight": {
-          "default": 0.3,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Joint Margin Weight",
-          "type": "number"
-        },
-        "swept_approach_enabled": {
-          "default": false,
-          "title": "Swept Approach Enabled",
-          "type": "boolean"
-        },
-        "swept_approach_top_k": {
-          "default": 5,
-          "maximum": 64,
-          "minimum": 1,
-          "title": "Swept Approach Top K",
-          "type": "integer"
-        },
-        "swept_approach_weight": {
-          "default": 0.3,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Swept Approach Weight",
-          "type": "number"
-        },
-        "weight": {
-          "default": 0.0,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Weight",
-          "type": "number"
-        }
-      },
-      "title": "GraspingFeasibilityConfig",
-      "type": "object"
-    },
-    "GraspingFollowPartsConfig": {
-      "additionalProperties": false,
-      "description": "A task asks the detector once and then follows its parts (``src/robot/perception/kept_scene.py``).\n\nEvery pick of a task used to ground its first look again: Qwen boxing every part on the mat, 13 s at the median on\nthe owner's cell (2026-10-07/08), to find the parts where the last pick left them. On, a task's next pick finds them\nagain with SAM2 on their boxes and no detector, where nothing changed in depth and every part stands where it stood\nor within ``max_shift_mm``, its mask in its footprint, at its top and of its colour; all or nothing per frame, and\nany doubt grounds the frame as before (the owner, 2026-10-09). The first pick and a Restart ground; so does the pick\nafter a push, a blocker cleared, a recovery, a try that sent motion and failed, a part gripped that was not kept,\nand every end check of an \"until empty\" task. The later looks of each pick find its first look's parts by their\nprojected boxes. Off, the default: every pick grounds every look, as before. The guard judges every motion against\nfresh depth either way.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "max_creep_mm": {
-          "default": 20.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 40.0,
-          "title": "Max Creep Mm",
-          "type": "number"
-        },
-        "max_shift_mm": {
-          "default": 10.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 15.0,
-          "title": "Max Shift Mm",
-          "type": "number"
-        },
-        "refresh_every_picks": {
-          "default": 0,
-          "maximum": 1000,
-          "minimum": 0,
-          "title": "Refresh Every Picks",
-          "type": "integer"
-        }
-      },
-      "title": "GraspingFollowPartsConfig",
-      "type": "object"
-    },
-    "GraspingGeometryStageConfig": {
-      "additionalProperties": false,
-      "description": "Which geometry stage proposes grasp candidates.\n\n``support_footprint`` (the default) reconstructs the target as its visible footprint extruded\nonto the calibrated support plane and then solves for an anchor height that clears the surface.\n``silhouette`` anchors on the visible surface and lets the collision filter throw the result\naway, which cannot work when the constraint is the support surface: a filter can refuse, it\ncannot relocate a grasp.\n\nMeasured through the real calculator on the D5 gate subset (n=354), against ground-truth geometry:\n\n=====================  ===========  ==========  ==========\nstage                  precision    top-1       coverage\n=====================  ===========  ==========  ==========\nsilhouette             22.08 %      24.29 %     28.53 %\nsupport_footprint      63.59 %      43.50 %     53.67 %\nsupport_footprint      64.60 %      55.93 %     64.69 %\n+ fused target cloud\n=====================  ===========  ==========  ==========\n\nPer family, top-1 against the silhouette stage: packed 26.6 -> 44.1 %, pile 11.1 -> 35.2 %,\nsparse 30.3 -> 55.6 %. ``bin`` went 12.5 -> 8.3 % on this subset (n=24, two objects against\nthree); on the full 270-scene set (n=152) the same stage measured 27.6 % against 14.5 %.\n\nIt needs a BASE-frame support plane and a CAMERA->BASE transform. Without both it cannot place\nthe table, so it does not run and the silhouette stage stands: a runner that builds the service\nthrough ``from_components`` without a frame resolver gets the silhouette stage, and the\n``geometry_stage`` telemetry key says which one ran.",
-      "properties": {
-        "depth_band_mm": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0.0,
-              "maximum": 500.0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Keep only the depth within this much of the near face, and discard the rest before the cloud is built. A segmentation mask usually spills a few pixels past the object onto the bench, and those pixels are metres of surface behind it: they drag the median, inflate the object's apparent depth spread, and put table points into the geometry the fingers are planned against. Null, the default, keeps every pixel under the mask. This lever could not do anything at all while the producer flattened the depth, because every percentile of a constant is that constant.",
-          "title": "Depth Band Mm"
-        },
-        "depth_band_near_pct": {
-          "default": 10.0,
-          "description": "Which quantile of the under-mask depth the band above is measured from. Only read when depth_band_mm is set.",
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Depth Band Near Pct",
-          "type": "number"
-        },
-        "footprint_rim_mm": {
-          "default": 2.0,
-          "description": "The rim a part's mask loses for the cloud the support-footprint stage builds its footprint from, millimetres at the part (src/robot/grasping/generation/footprint_rim.py): the mask eroded by ceil(rim * fx / z) px, z the part's median depth and fx the colour lens's, never more than 30 % of the mask, a look's own input and the looks the pick loop fuses alike. The full mask stays for everything else: the jaw faces, the association of looks, the kept scene, the colour check, the planner world's hold-out and the neighbours. The D415 smears a part's far edge into a ramp of depths the mask's outer ~3 px lie on, and the footprint's hull follows them. Measured offline (2026-10-09) on 23 grey cubes the owner's cell recorded from 5 look poses on 2026-10-07: the centre the grasp closes on lay 2.53 mm off at the median, 2.5 mm of it away from the camera; through the calculator with 2.0 (3 px, 4 nearer than 609 mm) and inflate_mm 1.25 giving the faces back, 0.77 mm, and the footprint's sides within 0.8 mm. With the rim, every mask pixel SFE does not read (the rim, the depth steps, the holes) is placed in the part's visual hull (src/robot/grasping/generation/footprint_hull.py), inflate_mm 0.0: on the same cubes 0.58 mm at the median and 1.79 at the 90th percentile (the rim with inflate_mm 1.25: 0.77 and 2.26), and with 35 % of the part's depth knocked out in blobs 0.59 and 1.87 mm (the rim with inflate_mm 1.25: 0.87 and 2.28). Default 2.0, rim and hull (the owner, 2026-10-09 evening: on, without a switch of its own); 0.0 = SFE's input as before, no rim and no hull.",
-          "maximum": 10.0,
-          "minimum": 0.0,
-          "title": "Footprint Rim Mm",
-          "type": "number"
-        },
-        "grasp_depth_reference": {
-          "default": "centre",
-          "description": "Where in the object's depth spread the silhouette stage anchors a grasp. 'centre' is the median of the measured surface under the mask. 'top' is a low quantile of it, the near face. Measured on the D5 gate subset (n=354, neighbours rung): centre reaches 22.08 % precision and 24.29 % top-1, against 19.44 / 22.03 for top at q=25 and 18.24 / 21.47 for top at q=10. 'top' does what it promises and it is not enough: rank-0 'no candidate' falls from 65.4 to 60.2 %, so more objects clear the table, while every failure reason rises with it. The 2F-85 contact patch reaches 14.4 mm behind the grasp centre and 23.6 mm in front, so anchoring on the near face puts most of the patch in the air above the object: it buys clearance by giving up grip. Keep 'centre' unless a measurement on your parts says otherwise.",
-          "enum": [
-            "centre",
-            "top"
-          ],
-          "title": "Grasp Depth Reference",
-          "type": "string"
-        },
-        "grasp_top_penetration_mm": {
-          "default": 0.0,
-          "description": "How far below the reference above the grasp is driven. Only read when grasp_depth_reference is 'top', where the reference is the near face and closing on the very edge of a part slips. Until now the perception producer applied a fixed 3 mm of this to the depth map itself before anything downstream saw it, so no cell could set it and every consumer that wanted the object's shape got a flat sheet instead. The descend belongs here, where it is one number applied to one candidate, rather than in an image that six other stages read for geometry.",
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Grasp Top Penetration Mm",
-          "type": "number"
-        },
-        "grasp_top_quantile": {
-          "default": 10.0,
-          "description": "Which quantile of the under-mask depth counts as the near face when grasp_depth_reference is 'top'. A percentile rather than the minimum, because one speckle pixel in front of the part would otherwise set the whole object's grasp plane. Only read when the reference is 'top'.",
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Grasp Top Quantile",
-          "type": "number"
-        },
-        "inflate_mm": {
-          "default": 0.0,
-          "description": "Push every reconstructed face outward by this much. A depth image loses the grazing rim of a curved surface, so the measured footprint is systematically smaller than the object and every consequence of that is one-sided (an under-estimated span, a finger that clips a flank on the way in). Non-zero biases the estimate in the safe direction. Default 0.0 = the measurement above, which was taken without it. With footprint_rim_mm the faces the rim takes are given back by the part's visual hull (footprint_hull.py), measured with 0.0 here; 1.25 with a 2 mm rim and no hull was the measurement before it.",
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Inflate Mm",
-          "type": "number"
-        },
-        "stage": {
-          "default": "support_footprint",
-          "description": "Which stage proposes candidates. 'silhouette' anchors on the visible surface instead.",
-          "enum": [
-            "support_footprint",
-            "silhouette"
-          ],
-          "title": "Stage",
-          "type": "string"
-        }
-      },
-      "title": "GraspingGeometryStageConfig",
-      "type": "object"
-    },
-    "GraspingGripperGeometryConfig": {
-      "additionalProperties": false,
-      "description": "Which gripper collision envelope the calculator filters grasp candidates against.\n\n``kind`` picks the active model and the matching sub-block sizes it; ``outer_margin_mm`` inflates\nwhichever is chosen. Defaults reproduce the built-in parallel-jaw envelope byte-for-byte, so\nleaving this unset on a cell that names no hand changes nothing; a cell that names a hand takes\n``kind`` and the parallel-jaw numbers from its registry file. Set ``kind: suction`` for a vacuum\nend-effector so suction candidates are checked against a cup envelope, not a finger envelope.",
-      "properties": {
-        "kind": {
-          "default": "parallel_jaw",
-          "enum": [
-            "parallel_jaw",
-            "suction"
-          ],
-          "title": "Kind",
-          "type": "string"
-        },
-        "outer_margin_mm": {
-          "default": 0.0,
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "title": "Outer Margin Mm",
-          "type": "number"
-        },
-        "parallel_jaw": {
-          "$ref": "#/$defs/GraspingParallelJawGeometryConfig"
-        },
-        "suction": {
-          "$ref": "#/$defs/GraspingSuctionCupGeometryConfig"
-        }
-      },
-      "title": "GraspingGripperGeometryConfig",
-      "type": "object"
-    },
-    "GraspingOcclusionConfig": {
-      "additionalProperties": false,
-      "description": "Occlusion and hidden-geometry knobs.\n\nCarries two directional-occlusion behaviours on top of the feasibility\ncarrier: a corridor analyzer, which marches the approach axis (and the\nretreat axis when asked) in camera frame to estimate per-direction clearance\nand a fused depth+mask blockage confidence, and a hard reject, which drops\ncandidates whose corridor confidence exceeds\n:attr:`hard_reject_confidence_threshold` instead of merely demoting them.\nAll flags default off (byte-identical); ``easy`` is excluded from\n:attr:`apply_modes`.\n\nAttributes\n----------\ndirectional_enabled\n    Master switch for the corridor analyzer. When False, no corridor reports\n    are produced and ``hard_reject_enabled`` has no effect.\nhard_reject_enabled\n    When True (and the analyzer is enabled and the mode is in\n    ``apply_modes``), candidates whose blockage confidence exceeds\n    :attr:`hard_reject_confidence_threshold` are rejected outright rather than\n    only demoted by feasibility.\napply_modes\n    Modes not listed here skip the analyzer entirely regardless of other flags.\ncorridor_radius_mm, corridor_step_mm, corridor_max_distance_mm\n    Sampling geometry passed to the analyzer.\nmask_fusion_weight\n    Convex-combination weight of mask blockage vs depth blockage in the\n    analyzer's fused confidence.\npartial_confidence_threshold, hard_reject_confidence_threshold\n    Confidence cut-offs separating the ``clear``, ``partial`` and ``blocked``\n    :class:`CorridorMode` bands, and the hard-reject trigger respectively.\ntop_k\n    Cap on number of candidates analyzed per ``pick()`` cycle.",
-      "properties": {
-        "apply_modes": {
-          "default": [
-            "auto",
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "corridor_max_distance_mm": {
-          "default": 200.0,
-          "exclusiveMinimum": 0.0,
-          "title": "Corridor Max Distance Mm",
-          "type": "number"
-        },
-        "corridor_radius_mm": {
-          "default": 20.0,
-          "exclusiveMinimum": 0.0,
-          "title": "Corridor Radius Mm",
-          "type": "number"
-        },
-        "corridor_step_mm": {
-          "default": 5.0,
-          "exclusiveMinimum": 0.0,
-          "title": "Corridor Step Mm",
-          "type": "number"
-        },
-        "directional_enabled": {
-          "default": false,
-          "title": "Directional Enabled",
-          "type": "boolean"
-        },
-        "hard_reject_confidence_threshold": {
-          "default": 0.7,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Hard Reject Confidence Threshold",
-          "type": "number"
-        },
-        "hard_reject_enabled": {
-          "default": false,
-          "title": "Hard Reject Enabled",
-          "type": "boolean"
-        },
-        "mask_fusion_weight": {
-          "default": 0.5,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Mask Fusion Weight",
-          "type": "number"
-        },
-        "partial_confidence_threshold": {
-          "default": 0.3,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Partial Confidence Threshold",
-          "type": "number"
-        },
-        "top_k": {
-          "default": 5,
-          "maximum": 64,
-          "minimum": 1,
-          "title": "Top K",
-          "type": "integer"
-        }
-      },
-      "title": "GraspingOcclusionConfig",
-      "type": "object"
-    },
-    "GraspingOrderingConfig": {
-      "additionalProperties": false,
-      "description": "Clutter-aware target-ordering knobs.\n\nWhen :attr:`enabled` the runtime computes an unlock score per candidate via\nthe configured :class:`BlockerGraphSchemaConfig` signals and a priority\nscore ``local + unlock_weight * unlock``. The ``argmax(local_score)`` winner\nis only displaced when the priority winner is within\n:attr:`max_local_score_drop` of it: the operator decides how much local score\nthey will give up to unblock other picks. Every flag defaults off\n(byte-identical); ``easy`` is excluded from the default apply modes.",
-      "properties": {
-        "apply_modes": {
-          "default": [
-            "auto",
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "blocker_graph": {
-          "$ref": "#/$defs/BlockerGraphSchemaConfig"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "max_local_score_drop": {
-          "default": 0.1,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Max Local Score Drop",
-          "type": "number"
-        },
-        "unlock_weight": {
-          "default": 0.0,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Unlock Weight",
-          "type": "number"
-        }
-      },
-      "title": "GraspingOrderingConfig",
-      "type": "object"
-    },
-    "GraspingParallelJawGeometryConfig": {
-      "additionalProperties": false,
-      "description": "Parallel-jaw collision envelope (mm) in the local grasp frame (X closes, Y binormal, Z approach).\n\nEvery value flows straight into\n:class:`src.robot.grasping.collision.ParallelJawGripperModel`. The finger dimensions are\nmeasured off Isaac's Robotiq 2F-85 collision shapes; the palm dimensions are not measured.\n\nThese defaults describe the 2F-85 for a cell that names no hand. A cell that names one\n(``robot.gripper.model``) takes every value it leaves unset from that hand's registry file, and a\nstated value that differs is refused at load.",
-      "properties": {
-        "finger_length_mm": {
-          "default": 39.98,
-          "exclusiveMinimum": 0.0,
-          "maximum": 500.0,
-          "title": "Finger Length Mm",
-          "type": "number"
-        },
-        "finger_pad_overlap_mm": {
-          "default": 2.0,
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "title": "Finger Pad Overlap Mm",
-          "type": "number"
-        },
-        "finger_thickness_mm": {
-          "default": 31.35,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Finger Thickness Mm",
-          "type": "number"
-        },
-        "finger_width_mm": {
-          "default": 27.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Finger Width Mm",
-          "type": "number"
-        },
-        "fingertip_depth_mm": {
-          "default": 28.72,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Fingertip Depth Mm",
-          "type": "number"
-        },
-        "pad_ahead_mm": {
-          "default": 23.61,
-          "exclusiveMinimum": 0.0,
-          "maximum": 300.0,
-          "title": "Pad Ahead Mm",
-          "type": "number"
-        },
-        "pad_length_mm": {
-          "default": 38.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 300.0,
-          "title": "Pad Length Mm",
-          "type": "number"
-        },
-        "palm_depth_mm": {
-          "default": 35.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 500.0,
-          "title": "Palm Depth Mm",
-          "type": "number"
-        },
-        "palm_width_mm": {
-          "default": 70.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 500.0,
-          "title": "Palm Width Mm",
-          "type": "number"
-        }
-      },
-      "title": "GraspingParallelJawGeometryConfig",
-      "type": "object"
-    },
-    "GraspingPerformanceConfig": {
-      "additionalProperties": false,
-      "description": "Runtime SLO budgets and bounded-compute knobs.\n\nCarries the per-stage p95 latency budgets the runtime measures against, plus\ntimeouts and fallback policies that are plumbed end to end and not enforced:\nenforcement waits on the live success-probability model and the fusion path,\nso the timeouts are advisory. Per-stage latency is captured by a typed\n:class:`src.robot.grasping.telemetry.latency_tracker.LatencyTracker` seam owned\nby :class:`AutonomousGraspService`; a stage that does not run has an absent\n(``None``) latency and the SLO gate skips nulls. A breach emits a typed\n``RobotWatchdogEvent.SLO_BREACH`` and lets the listener decide; the runtime\nnever fail-closes on its own SLO.\n\nAttributes\n----------\nenabled\n    Master switch. When ``False`` the runtime still records latency telemetry\n    but does not emit breach events or apply bounded-compute fallbacks. Default\n    ``False`` is byte-identical.\ndecision_latency_slo_ms / ranking_latency_slo_ms / fusion_latency_slo_ms\n    Per-stage p95 budgets enforced by the SLO gate.\ndecision_timeout_ms / ranking_timeout_ms / fusion_timeout_ms\n    Hard per-stage caps. ``0.0`` means no cap and is the default; a non-zero\n    value is honoured once the producing stage enforces it, and is a telemetry\n    budget until then.\nmodel_fallback_policy\n    How the runtime degrades when the success-probability model breaches its\n    timeout: ``\"legacy_score\"`` reverts to geometry-only ranking, ``\"skip\"``\n    omits the probability signal, ``\"fail_closed\"`` fail-closes with a typed\n    reason.\nfusion_fallback_policy\n    How the runtime degrades when fusion breaches its timeout: ``\"skip\"``\n    proceeds with single-view evidence, ``\"fail_closed\"`` fail-closes.\nemit_breach_events\n    When ``True`` and ``enabled``, the service emits a\n    ``RobotWatchdogEvent.SLO_BREACH`` on rising-edge p95 breaches. Default\n    ``False``.\nbreach_window_size\n    Rolling window length (in attempts) for the in-runtime p95 that drives\n    ``SLO_BREACH`` emission. The replay/soak ``--slo-gate`` computes p95 across\n    the full pack.",
-      "properties": {
-        "breach_window_size": {
-          "default": 32,
-          "max_abs_step": 16,
-          "max_rel_step": 0.5,
-          "max_value": 4096,
-          "maximum": 4096,
-          "min_value": 2,
-          "minimum": 2,
-          "runtime_mutable": true,
-          "title": "Breach Window Size",
-          "type": "integer"
-        },
-        "decision_latency_slo_ms": {
-          "default": 60.0,
-          "exclusiveMinimum": 0.0,
-          "title": "Decision Latency Slo Ms",
-          "type": "number"
-        },
-        "decision_timeout_ms": {
-          "default": 0.0,
-          "minimum": 0.0,
-          "title": "Decision Timeout Ms",
-          "type": "number"
-        },
-        "emit_breach_events": {
-          "default": false,
-          "title": "Emit Breach Events",
-          "type": "boolean"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "fusion_fallback_policy": {
-          "default": "skip",
-          "minLength": 1,
-          "title": "Fusion Fallback Policy",
-          "type": "string"
-        },
-        "fusion_latency_slo_ms": {
-          "default": 220.0,
-          "exclusiveMinimum": 0.0,
-          "title": "Fusion Latency Slo Ms",
-          "type": "number"
-        },
-        "fusion_timeout_ms": {
-          "default": 0.0,
-          "minimum": 0.0,
-          "title": "Fusion Timeout Ms",
-          "type": "number"
-        },
-        "model_fallback_policy": {
-          "default": "legacy_score",
-          "minLength": 1,
-          "title": "Model Fallback Policy",
-          "type": "string"
-        },
-        "ranking_latency_slo_ms": {
-          "default": 80.0,
-          "exclusiveMinimum": 0.0,
-          "title": "Ranking Latency Slo Ms",
-          "type": "number"
-        },
-        "ranking_timeout_ms": {
-          "default": 0.0,
-          "minimum": 0.0,
-          "title": "Ranking Timeout Ms",
-          "type": "number"
-        }
-      },
-      "title": "GraspingPerformanceConfig",
-      "type": "object"
-    },
-    "GraspingRecoveryConfig": {
-      "additionalProperties": false,
-      "description": "Recovery-orchestration knobs.\n\nMirrors the surface in\n:class:`src.robot.grasping.recovery.SceneRecoveryPolicy` but holds\nstring action names, so the config layer imports no runtime enum. Every flag\ndefaults off (byte-identical); ``easy`` is excluded from the default apply\nmodes. When :attr:`allowed_actions` contains ``container_agitate``,\n:attr:`fixture` must be set: the cross-field check refuses to arm an\nagitation without an envelope. ``container_agitate`` is refused as well\nunless ``support.container`` declares its interior box. That check sits on\n:class:`RobotGraspingConfig` (``_container_agitate_needs_a_container``)\nbecause it needs both blocks. ``nudge_target``, the push, needs neither\n(owner, 2026-10-01): it lands inside the automatic push box, and a declared\nfixture only narrows that box.",
-      "properties": {
-        "allowed_actions": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "title": "Allowed Actions",
-          "type": "array"
-        },
-        "apply_modes": {
-          "default": [
-            "auto",
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "blocker_grasp_tries": {
-          "default": 3,
-          "maximum": 6,
-          "minimum": 1,
-          "title": "Blocker Grasp Tries",
-          "type": "integer"
-        },
-        "blocker_into_the_place": {
-          "default": true,
-          "title": "Blocker Into The Place",
-          "type": "boolean"
-        },
-        "critical_parts": {
-          "default": false,
-          "title": "Critical Parts",
-          "type": "boolean"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "fixture": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/GraspingRecoveryFixtureConfig"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "max_recovery_actions": {
-          "default": 2,
-          "maximum": 20,
-          "minimum": 0,
-          "title": "Max Recovery Actions",
-          "type": "integer"
-        },
-        "per_action_budget": {
-          "default": [],
-          "items": {
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "integer"
-              }
-            ],
-            "type": "array"
-          },
-          "title": "Per Action Budget",
-          "type": "array"
-        }
-      },
-      "title": "GraspingRecoveryConfig",
-      "type": "object"
-    },
-    "GraspingRecoveryFixtureConfig": {
-      "additionalProperties": false,
-      "description": "Operator-bounded envelope for physical recovery actions.\n\nA recovery action is the robot deliberately pushing something: nudging a part that will not\nseparate, agitating a container. That is motion aimed at the scene rather than at a grasp.\n``container_agitate`` needs this box: every waypoint of the agitation stays inside it, and the\nrecovery planner may not exceed these numbers. ``nudge_target`` does not (owner, 2026-10-01): the\npush's landing is bounded by what the camera saw (the workspace box intersected with the seen\ntable, shrunk by the push plus 30 mm, or a declared container's interior), and this box can only\nnarrow it.\n\n``push_distance_mm`` is how far a ``nudge_target`` push moves the part when nobody asks for\nanother distance, 30 mm by default. ``max_nudge_mm`` is the longest push the cell allows, 50 mm by\ndefault and at most, and above that the config is refused (owner, 2026-09-29). A request (the API,\na ``PickRun``) up to ``max_nudge_mm`` is taken as asked, and one above it is refused, never\nshortened. ``push_distance_mm`` longer than ``max_nudge_mm`` is refused at load. Below 10 mm no\npush can open room for a finger, so both are at least 10 and a shorter request is refused. A cell\nthat declares no fixture pushes these defaults: 30 mm, and 50 mm at most.",
-      "properties": {
-        "center_mm": {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "title": "Center Mm",
-          "type": "array"
-        },
-        "half_extents_mm": {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "title": "Half Extents Mm",
-          "type": "array"
-        },
-        "max_nudge_mm": {
-          "default": 50.0,
-          "maximum": 50.0,
-          "minimum": 10.0,
-          "title": "Max Nudge Mm",
-          "type": "number"
-        },
-        "push_distance_mm": {
-          "default": 30.0,
-          "maximum": 50.0,
-          "minimum": 10.0,
-          "title": "Push Distance Mm",
-          "type": "number"
-        }
-      },
-      "required": [
-        "center_mm",
-        "half_extents_mm"
-      ],
-      "title": "GraspingRecoveryFixtureConfig",
-      "type": "object"
-    },
-    "GraspingSuccessModelConfig": {
-      "additionalProperties": false,
-      "description": "Success-probability overlay (default off).\n\nPoints the runtime at a trained artifact and bounds what it may influence.\n``enabled=False`` means nothing in the pipeline loads or runs the model, so\nadding this block or omitting it is byte-identical.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False`, so the runtime never loads the\n    artifact.\nartifact_dir\n    Path of the directory containing ``model.json`` and ``manifest.json``: absolute,\n    relative to the config folder, or under ``${WILLY_PROJECT_ROOT}``, the repository\n    (:mod:`src.config.paths`). Defaults to the committed v1 artifact under the\n    repository's ``assets/models/success_probability/v1``.\napply_modes\n    Stable mode names the model may score in. Defaults to the three canonical\n    modes; ``\"easy\"`` is included because easy pick rate is the\n    strict-improvement target the model is calibrated against.\nranking_blend_enabled\n    Master switch for the bounded probability-blend reranker. Defaults to\n    :data:`False` (byte-identical). When :data:`True` (and ``enabled``, and a\n    non-shadow lifecycle artifact is loaded), the runtime reranks\n    ``best_result.candidates`` in dense modes only using the convex blend\n    ``(1 - w) * geometric + w * predicted_p``.\nranking_blend_weight\n    Blend weight ``w``. Clamped to ``[0.0, 0.5]`` so the geometric score always\n    retains >=50 % influence and a miscalibrated model cannot dominate ranking.\n    Default ``0.20``.\nranking_blend_modes\n    Locked dense-only subset of grasp-modes the blend reranker may operate in:\n    a subset of ``{\"dense_clutter\"}`` (``\"easy\"`` and\n    ``\"auto\"`` stay geometry-only so easy pick-rate cannot regress). Must also\n    be a subset of ``apply_modes`` (else the shadow probability is never\n    annotated and the blend has nothing to read).",
-      "properties": {
-        "apply_modes": {
-          "default": [
-            "easy",
-            "auto",
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "artifact_dir": {
-          "default": "${WILLY_PROJECT_ROOT}/assets/models/success_probability/v1",
-          "minLength": 1,
-          "title": "Artifact Dir",
-          "type": "string"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "lifecycle_phase": {
-          "default": "shadow",
-          "description": "U4 lifecycle gate (G1). 'shadow' (default) = the learned success predictor runs but its output is discarded (byte-identical to the no-blend path). 'canary'/'active' let the bounded blend reorder candidates in the dense modes; both require a valid promotion.json (verify_promotion: SHA-chain + verdict='pass' + thresholds not weaker than plan-locked + the plan-locked validation slice + metrics that agree with the recorded bounds) or the model load fails closed to None (no blend).",
-          "enum": [
-            "shadow",
-            "canary",
-            "active"
-          ],
-          "title": "Lifecycle Phase",
-          "type": "string"
-        },
-        "ranking_blend_enabled": {
-          "default": false,
-          "title": "Ranking Blend Enabled",
-          "type": "boolean"
-        },
-        "ranking_blend_modes": {
-          "default": [
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Ranking Blend Modes",
-          "type": "array"
-        },
-        "ranking_blend_weight": {
-          "default": 0.2,
-          "max_abs_step": 0.05,
-          "max_rel_step": 0.25,
-          "max_value": 0.5,
-          "maximum": 0.5,
-          "min_value": 0.0,
-          "minimum": 0.0,
-          "runtime_mutable": true,
-          "title": "Ranking Blend Weight",
-          "type": "number"
-        }
-      },
-      "title": "GraspingSuccessModelConfig",
-      "type": "object"
-    },
-    "GraspingSuctionCupGeometryConfig": {
-      "additionalProperties": false,
-      "description": "Suction-cup collision envelope (mm): cup, then shaft, then wrist mount back along -approach.\n\nFeeds :class:`src.robot.grasping.collision.SuctionCupGripperModel`; defaults model a\n~30 mm-diameter cup on a slim shaft with a wrist coupler.",
-      "properties": {
-        "contact_tip_depth_mm": {
-          "default": 2.0,
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "title": "Contact Tip Depth Mm",
-          "type": "number"
-        },
-        "cup_height_mm": {
-          "default": 25.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Cup Height Mm",
-          "type": "number"
-        },
-        "cup_radius_mm": {
-          "default": 15.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Cup Radius Mm",
-          "type": "number"
-        },
-        "mount_depth_mm": {
-          "default": 20.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 300.0,
-          "title": "Mount Depth Mm",
-          "type": "number"
-        },
-        "mount_radius_mm": {
-          "default": 30.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 300.0,
-          "title": "Mount Radius Mm",
-          "type": "number"
-        },
-        "shaft_length_mm": {
-          "default": 40.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 500.0,
-          "title": "Shaft Length Mm",
-          "type": "number"
-        },
-        "shaft_radius_mm": {
-          "default": 10.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Shaft Radius Mm",
-          "type": "number"
-        }
-      },
-      "title": "GraspingSuctionCupGeometryConfig",
-      "type": "object"
-    },
     "GraspingSupportConfig": {
       "additionalProperties": false,
-      "description": "Where the surface is that the parts stand on, the input the table-clearance check has\nnever been given.\n\n``compute()`` takes a ``support_plane`` and ``collision_checker.py`` skips the whole check\nwithout one: with none passed, ``rejected_table`` was 0 in 2128 of 2128 telemetry lines while\nthe independent reference rejected 37 % of the same candidates for driving a finger under the\nsupport. This block is what supplies it.\n\nThe height is a declared number refined by what the cameras see, and the higher of the two wins.\nThat combination is measured, not chosen. Over 1073 reference objects:\n\n======================  =========================  ===========================\nestimator               on the table (n=1052)      standing on something (n=21)\n======================  =========================  ===========================\ndeclared height alone   median +0.00, 0 % too low  median -14.08, 100 % too low\ntarget footprint        median +1.81, 0 % too low  median +0.89, 0 % too low\nplane fit near the      median +19.97              median -1.19, 33 % too low\nobject / whole scene    median +14.75              median +9.41, 33 % too low\n======================  =========================  ===========================\n\nA declared height cannot know that an object is standing on another object, and there it is too\nlow every single time. Both plane fits are worse still: they go too low on a third of the\nstacked cases, which is the direction that breaks a gripper. The target's own lowest point was\nnever too low in any of the 1073 cases, so taking the higher of the two can only ever be\nconservative.\n\nThe footprint is fused across cameras, and that is also measured. A single view of a bin sees\nthe object over the wall, so its lowest visible point is the rim rather than the base: p90 error\n50.6 mm in the ``bin`` family, 38 % of objects more than 10 mm too high. Taking the lowest point\nover all cameras that identified the object cuts that to 13.3 mm and 10.6 %, and stays at 0 %\ntoo low everywhere. What one camera cannot see behind a wall, another can.\n\nKnown limit. Even fused, the footprint still reads high in a bin (p90 13.3 mm against 1.7 mm in\nthe open). Since the higher value wins, that costs some valid low grasps in exactly the family\nthat is already hardest. Declaring ``container.floor_height_mm`` does not fix it: the floor is\nthe lower of the two and the fused estimate still wins. Closing it needs either a fourth camera\nlow enough to see the base, or a rule that recognises an estimate as wall-occluded; the second\nhas not been measured, so it is not implemented.",
+      "description": "What the parts stand on besides the bench: the bin they rest in, where the cell has one.\n\nThe table is the planner world's bench, the top of ``robot.safety.planning_world.support_plane`` (0 mm where the\ntree declares none). It is level, a part's own lowest point raises it wherever the part's cloud saw down its side,\nand the gripper keeps 1 mm over it, the guard's finger floor (``src/robot/grasping/collision/support_resolver.py``;\nthe owner's cleanup of 2026-10-17 took the four keys that restated these).\n\nKnown limit. Even fused over the cameras, a part's lowest point still reads high in a bin (p90 13.3 mm against\n1.7 mm in the open). Since the higher of the two wins, that costs some valid low grasps in exactly the family that\nis already hardest. Declaring ``container.floor_height_mm`` does not fix it: the floor is the lower of the two and\nthe fused estimate still wins.",
       "properties": {
         "container": {
           "$ref": "#/$defs/GraspingContainerConfig",
-          "description": "Optional bin/tray the parts rest in. Default: none, the workspace surface is used."
-        },
-        "height_mm": {
-          "default": 0.0,
-          "description": "The workspace surface in BASE mm, the table. Objects in a container use container.floor_height_mm instead when it is given.",
-          "title": "Height Mm",
-          "type": "number"
-        },
-        "min_clearance_mm": {
-          "default": 1.0,
-          "description": "How far the gripper envelope must stay above the support surface: the finger floor the exact guard holds over what a support reads (safety.planning_world.perceived.finger_floor_mm, 1 mm), the deepest it lets a finger go, so a grasp the calculator offers is one the guard admits (the owner, 2026-10-06: \"bis auf 1 mm, solange er sie nicht ber\u00fchrt\"; 3 mm from 2026-10-05, 5 mm before). Swept 0 / 2 / 5 mm over the gate subset (n=354): precision 18.87 -> 20.00 -> 22.08 %, coverage 28.81 -> 28.53 -> 28.53 %, top-1 flat at ~24.3 %. A part has to stand at least this, the fingertip's reach past the grasp centre and 2 mm tall for SFE's ladder (13.5 mm for the Hand-E), or this, the fingertip's reach past the pad, 3 mm into the pad and 4 mm of its outline above for the part's own body (scene_obstacles.least_part_height_mm): 8 mm for the Hand-E.",
-          "maximum": 200.0,
-          "minimum": 0.0,
-          "title": "Min Clearance Mm",
-          "type": "number"
-        },
-        "normal": {
-          "default": [
-            0.0,
-            0.0,
-            1.0
-          ],
-          "description": "Surface normal in BASE. Non-vertical describes a tilted tray or a slope; the closing-axis levelling and the clearance check both honour it.",
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "title": "Normal",
-          "type": "array"
-        },
-        "refine_from_target": {
-          "default": true,
-          "description": "Raise the declared height to the target's own lowest fused point when that is higher: the only way to know an object is standing on another object. Never lowers it.",
-          "title": "Refine From Target",
-          "type": "boolean"
+          "description": "Optional bin/tray the parts rest in. Default: none, the bench is what they stand on."
         }
       },
       "title": "GraspingSupportConfig",
-      "type": "object"
-    },
-    "GraspingUncertaintyConfig": {
-      "additionalProperties": false,
-      "description": "Uncertainty fusion + calibration layer.\n\nFusion is a weighted convex combination of seven typed per-channel\nmonotone-remapped values (exposed via :class:`UncertaintyChannelWeightsConfig`;\nruntime carrier in :mod:`src.robot.grasping.uncertainty`). When\n:attr:`enabled`, :attr:`fail_closed_threshold` replaces\n:attr:`GraspingDecisionConfig.auto_uncertainty_threshold`; when disabled the\ndecision layer keeps its own threshold (byte-identical). The layer always emits a\ntyped snapshot on every :class:`AutonomousGraspReport` (``fused=0.0,\nfused_available=False`` when disabled). ``\"easy\"`` is excluded from\n:attr:`apply_modes`.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False` (byte-identical).\nfail_closed_threshold\n    When ``fused >= fail_closed_threshold`` the decision layer fail-closes the\n    attempt (replacing ``GraspingDecisionConfig.auto_uncertainty_threshold``).\n    Default ``0.4`` matches that threshold's own default.\napply_modes\n    Stable mode names the layer applies to. ``\"easy\"`` is rejected.\nweights\n    Per-channel non-negative weights. When :attr:`enabled` at least one weight\n    must be strictly positive; all-zero weights are refused, because a fused\n    signal pinned at zero gates nothing.\nranking_penalty_weight\n    Ranking carrier. Multiplies the fused uncertainty when subtracting from a\n    candidate score. Default ``0.0`` => ranking byte-identical.\nrecovery_aggressive_threshold\n    Recovery carrier. When fused exceeds this threshold the orchestrator may\n    prefer the perception-recovery action (``RESCAN``). Default\n    ``1.01`` => never trips (fused is clamped to ``[0, 1]``).\ncalibration_artifact_path\n    Optional path (absolute or relative to the config root) to a JSON\n    calibration artifact produced by\n    :mod:`src.robot.grasping.calibration.uncertainty_calibration`.\n    When :data:`None`, the identity calibration is used.",
-      "properties": {
-        "apply_modes": {
-          "default": [
-            "auto",
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "calibration_artifact_path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Calibration Artifact Path"
-        },
-        "channel_disagreement_threshold": {
-          "default": 1.01,
-          "minimum": 0.0,
-          "title": "Channel Disagreement Threshold",
-          "type": "number"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "fail_closed_threshold": {
-          "default": 0.4,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Fail Closed Threshold",
-          "type": "number"
-        },
-        "ranking_penalty_weight": {
-          "default": 0.0,
-          "max_abs_step": 0.2,
-          "max_rel_step": 0.5,
-          "max_value": 1.0,
-          "min_value": 0.0,
-          "minimum": 0.0,
-          "runtime_mutable": true,
-          "title": "Ranking Penalty Weight",
-          "type": "number"
-        },
-        "recovery_aggressive_threshold": {
-          "default": 1.01,
-          "max_abs_step": 0.1,
-          "max_rel_step": 0.3,
-          "max_value": 1.01,
-          "min_value": 0.0,
-          "minimum": 0.0,
-          "runtime_mutable": true,
-          "title": "Recovery Aggressive Threshold",
-          "type": "number"
-        },
-        "rerank_enabled": {
-          "default": false,
-          "title": "Rerank Enabled",
-          "type": "boolean"
-        },
-        "rerank_modes": {
-          "default": [
-            "dense_clutter"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Rerank Modes",
-          "type": "array"
-        },
-        "rerank_weight": {
-          "default": 0.0,
-          "maximum": 0.5,
-          "minimum": 0.0,
-          "title": "Rerank Weight",
-          "type": "number"
-        },
-        "weights": {
-          "$ref": "#/$defs/UncertaintyChannelWeightsConfig"
-        }
-      },
-      "title": "GraspingUncertaintyConfig",
-      "type": "object"
-    },
-    "GraspingWatchdogConfig": {
-      "additionalProperties": false,
-      "description": "Drift + OOD watchdog runtime knobs.\n\nEvaluates five drift monitors (predicted-vs-observed calibration delta,\ndepth-confidence shift, fail-closed spike, hand-eye residual trend,\nverification residual trend) plus an OOD score over a rolling window of recent\nattempts, and surfaces a typed severity ladder\n(``none``/``low``/``moderate``/``high``/``severe``). Evaluators are pure\nfunctions; the :class:`AutonomousGraspService` owns the rolling history. The\ndefault ``shadow`` mode computes and emits telemetry but never alters\nbehaviour; ``high`` and ``severe`` block the ``auto`` mode on real hardware\nonly and are a telemetry flag in sim. Defaults are conservative (a healthy\nscene stays ``none``); thresholds form non-decreasing ladders and a\nmisconfigured YAML is rejected at construction.\n\nAttributes\n----------\nmode\n    One of ``\"disabled\"``, ``\"shadow\"``, ``\"canary\"``, ``\"active\"``. Defaults\n    to ``\"shadow\"``. ``\"disabled\"`` omits watchdog telemetry entirely.\nwindow_size\n    Rolling history length, in attempts. Must be ``>= 1``.\nmin_samples_for_trend\n    Minimum samples before any trend monitor emits anything other than\n    ``none``. Must be ``>= 2``.\nblock_modes\n    Stable grasp-mode names (matching\n    :class:`src.robot.grasping.types.modes.GraspMode`) that fall under the\n    ``high``/``severe`` block on real hardware. Defaults to ``(\"auto\",)``.\n    ``\"easy\"`` is permanently rejected.",
-      "properties": {
-        "block_modes": {
-          "default": [
-            "auto"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Block Modes",
-          "type": "array"
-        },
-        "calibration_delta_high_mm": {
-          "default": 5.0,
-          "minimum": 0.0,
-          "title": "Calibration Delta High Mm",
-          "type": "number"
-        },
-        "calibration_delta_moderate_mm": {
-          "default": 2.0,
-          "minimum": 0.0,
-          "title": "Calibration Delta Moderate Mm",
-          "type": "number"
-        },
-        "calibration_delta_severe_mm": {
-          "default": 10.0,
-          "minimum": 0.0,
-          "title": "Calibration Delta Severe Mm",
-          "type": "number"
-        },
-        "depth_confidence_shift_high": {
-          "default": 0.1,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Depth Confidence Shift High",
-          "type": "number"
-        },
-        "depth_confidence_shift_moderate": {
-          "default": 0.05,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Depth Confidence Shift Moderate",
-          "type": "number"
-        },
-        "depth_confidence_shift_severe": {
-          "default": 0.2,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Depth Confidence Shift Severe",
-          "type": "number"
-        },
-        "fail_closed_rate_high": {
-          "default": 0.5,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Fail Closed Rate High",
-          "type": "number"
-        },
-        "fail_closed_rate_moderate": {
-          "default": 0.3,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Fail Closed Rate Moderate",
-          "type": "number"
-        },
-        "fail_closed_rate_severe": {
-          "default": 0.75,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Fail Closed Rate Severe",
-          "type": "number"
-        },
-        "hand_eye_residual_trend_high_mm": {
-          "default": 3.0,
-          "minimum": 0.0,
-          "title": "Hand Eye Residual Trend High Mm",
-          "type": "number"
-        },
-        "hand_eye_residual_trend_moderate_mm": {
-          "default": 1.0,
-          "minimum": 0.0,
-          "title": "Hand Eye Residual Trend Moderate Mm",
-          "type": "number"
-        },
-        "hand_eye_residual_trend_severe_mm": {
-          "default": 7.0,
-          "minimum": 0.0,
-          "title": "Hand Eye Residual Trend Severe Mm",
-          "type": "number"
-        },
-        "min_samples_for_trend": {
-          "default": 6,
-          "maximum": 1024,
-          "minimum": 2,
-          "title": "Min Samples For Trend",
-          "type": "integer"
-        },
-        "mode": {
-          "default": "shadow",
-          "minLength": 1,
-          "title": "Mode",
-          "type": "string"
-        },
-        "ood_score_high": {
-          "default": 0.3,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Ood Score High",
-          "type": "number"
-        },
-        "ood_score_moderate": {
-          "default": 0.5,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Ood Score Moderate",
-          "type": "number"
-        },
-        "ood_score_severe": {
-          "default": 0.1,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Ood Score Severe",
-          "type": "number"
-        },
-        "verification_residual_trend_high_mm": {
-          "default": 2.0,
-          "minimum": 0.0,
-          "title": "Verification Residual Trend High Mm",
-          "type": "number"
-        },
-        "verification_residual_trend_moderate_mm": {
-          "default": 0.5,
-          "minimum": 0.0,
-          "title": "Verification Residual Trend Moderate Mm",
-          "type": "number"
-        },
-        "verification_residual_trend_severe_mm": {
-          "default": 5.0,
-          "minimum": 0.0,
-          "title": "Verification Residual Trend Severe Mm",
-          "type": "number"
-        },
-        "window_size": {
-          "default": 20,
-          "max_abs_step": 10,
-          "max_rel_step": 0.5,
-          "max_value": 1024,
-          "maximum": 1024,
-          "min_value": 1,
-          "minimum": 1,
-          "runtime_mutable": true,
-          "title": "Window Size",
-          "type": "integer"
-        }
-      },
-      "title": "GraspingWatchdogConfig",
       "type": "object"
     },
     "GripperConfig": {
@@ -1660,88 +356,6 @@
         }
       },
       "title": "GripperConfig",
-      "type": "object"
-    },
-    "HeldWorldConfig": {
-      "additionalProperties": false,
-      "description": "Where a pick or a place judges a motion in the world it already holds rather than in a new camera frame.\n\nEach is the owner's decision (2026-10-09: \"altes Bild, weil sich in der Kiste so oder so nichts ver\u00e4ndert\"), off by\ndefault, which takes a new frame for every motion as before. A held world is the world the last refresh built, the\ncameras' frames and boxes of that moment: every judgement still runs in it, the exact guard on every sample and the\nplanner against that world; only no new frame is taken.\n\n* ``standoff``: at a standoff the line down to a grasp, or the line in to a place, is judged in the world held from\n  before the arm left for the standoff. A grasp judged ahead holds the world its line down was judged in at the look,\n  and the route to the standoff is judged in it too; a place holds the world its route to the standoff was judged\n  in. A standoff frame in a bin had no depth on 12 of 88 arrivals, and flipped a line down 0.05 mm short of the\n  guard distance that had passed ahead (map2 O2).\n* ``carry``: the world the line down was judged in, held at the part, is held for the joint move a task declared\n  after the pick (the carry to the bin's look), judged while the jaws close (``robot.motion.judge_next_leg``).\n* ``drop``: the world the line in was judged in is held through the release: the line out is judged in it, while the\n  jaws open where ``robot.motion.judge_next_leg`` says so, and the joint move a task declared after the place (the\n  return) is judged in it too.\n\n``carry`` acts only through ``robot.motion.judge_next_leg``: a leg not judged ahead is judged as it runs, in a world\nof its own.",
-      "properties": {
-        "carry": {
-          "default": false,
-          "title": "Carry",
-          "type": "boolean"
-        },
-        "drop": {
-          "default": false,
-          "title": "Drop",
-          "type": "boolean"
-        },
-        "standoff": {
-          "default": false,
-          "title": "Standoff",
-          "type": "boolean"
-        }
-      },
-      "title": "HeldWorldConfig",
-      "type": "object"
-    },
-    "IkQualitySafetyConfig": {
-      "additionalProperties": false,
-      "description": "IK-solution-quality guard configuration.\n\nThe guard runs once the driver has produced a joint solution, and rejects:\n\n* NaN or wrong-DoF solutions outright,\n* solutions differing from the current pose by more than ``max_jump_rad`` on\n  any axis, since a jump that large signals a wrap-around ambiguity,\n* solutions whose Jacobian condition number exceeds ``max_condition_number``\n  or whose smallest singular value falls below ``min_singular_value``, both\n  near-singular configurations,\n* solutions inside ``limit_proximity_deg`` of the configured joint limits,\n  which the joint-limit guard also covers when enabled and this one still\n  catches when it is not.",
-      "properties": {
-        "enforce": {
-          "default": true,
-          "title": "Enforce",
-          "type": "boolean"
-        },
-        "limit_proximity_deg": {
-          "default": 2.0,
-          "maximum": 45.0,
-          "minimum": 0.0,
-          "title": "Limit Proximity Deg",
-          "type": "number"
-        },
-        "line_ik": {
-          "default": "controller",
-          "enum": [
-            "controller",
-            "local"
-          ],
-          "title": "Line Ik",
-          "type": "string"
-        },
-        "max_condition_number": {
-          "default": 250.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 1000000.0,
-          "title": "Max Condition Number",
-          "type": "number"
-        },
-        "max_jump_rad": {
-          "default": 1.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 6.283185307179586,
-          "title": "Max Jump Rad",
-          "type": "number"
-        },
-        "min_singular_value": {
-          "default": 0.005,
-          "exclusiveMinimum": 0.0,
-          "maximum": 1.0,
-          "title": "Min Singular Value",
-          "type": "number"
-        },
-        "singularity_fk": {
-          "default": "controller",
-          "enum": [
-            "controller",
-            "dh"
-          ],
-          "title": "Singularity Fk",
-          "type": "string"
-        }
-      },
-      "title": "IkQualitySafetyConfig",
       "type": "object"
     },
     "JawIOGripperConfig": {
@@ -1879,140 +493,9 @@
       "title": "JawIOGripperConfig",
       "type": "object"
     },
-    "JointLimitSafetyConfig": {
-      "additionalProperties": false,
-      "description": "Per-axis joint-limit guard configuration.\n\nThe guard prefers driver-side telemetry where it exists (UR's RTDE\n``query_joint_limits``) and otherwise falls back to the static ``min_deg`` /\n``max_deg`` lists below. With neither source it returns\n:attr:`SafetyReason.UNAVAILABLE` and fails closed while ``enforce`` is ``True``.\n\n``margin_deg`` is the buffer in degrees the guard keeps between each commanded\njoint angle and the axis limit itself.\n\n``within_half_turn_of_home`` narrows every axis whose range is a full turn or more to\nhalf a turn either side of the arm's own home configuration (``robot.home_joint_positions``,\nor the driver's default where that is unset), before the margin comes off. A cable run along\nthe arm is then never wound more than half a turn from where it was at home, and no joint\nrange has to be typed. It costs no reach: a UR joint is 2*pi-periodic, so every angle has a\ntwin inside any full-turn window, and what the window refuses is a move across the seam\nbehind home, which is the long way round. The margin does cost a band of ``2 * margin_deg``\nat that seam. A UR's elbow is left as the table has it: Universal Robots plans it within\n+-180 degrees, so it never turns the full turn that winds a cable, and it has no twin to fall\nback on. It is off by default, so a cell that does not ask keeps its envelope.",
-      "properties": {
-        "enforce": {
-          "default": true,
-          "title": "Enforce",
-          "type": "boolean"
-        },
-        "margin_deg": {
-          "default": 5.0,
-          "maximum": 45.0,
-          "minimum": 0.0,
-          "title": "Margin Deg",
-          "type": "number"
-        },
-        "max_deg": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "number"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Max Deg"
-        },
-        "min_deg": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "number"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Min Deg"
-        },
-        "within_half_turn_of_home": {
-          "default": false,
-          "title": "Within Half Turn Of Home",
-          "type": "boolean"
-        }
-      },
-      "title": "JointLimitSafetyConfig",
-      "type": "object"
-    },
-    "LimitsSafetyConfig": {
-      "additionalProperties": false,
-      "description": "Workspace-margin safety config.\n\n``workspace_margin_mm`` is consumed by :class:`SafetyPreflight.from_safety_config` to shrink the\n``workspace_limits`` box on every face before the workspace guard runs.\n\nNo velocity or acceleration ceiling lives here. Per-move vel/acc come from\n:class:`MotionLimitsConfig` (``config.motion_limits``), which is also where hardware\nspeed-limiting belongs, as a ``min(motion_limits, safety)`` clamp at the UR/KUKA boundary.",
-      "properties": {
-        "enforce": {
-          "default": true,
-          "title": "Enforce",
-          "type": "boolean"
-        },
-        "workspace_margin_mm": {
-          "default": 20.0,
-          "maximum": 500.0,
-          "minimum": 0.0,
-          "title": "Workspace Margin Mm",
-          "type": "number"
-        }
-      },
-      "title": "LimitsSafetyConfig",
-      "type": "object"
-    },
-    "MotionContinuitySafetyConfig": {
-      "additionalProperties": false,
-      "description": "Step-size guard between consecutive commanded targets.\n\nCatches an accidental ``move(other_pose)`` that would slam the arm across the\nworkspace. The guard caches the last accepted target inside\n:class:`SafetyPreflight`, so the first command after a\n:meth:`SafetyPreflight.reset` is always accepted: there is no previous target\nto diff against.",
-      "properties": {
-        "enforce": {
-          "default": true,
-          "title": "Enforce",
-          "type": "boolean"
-        },
-        "max_joint_step_deg": {
-          "default": 45.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 180.0,
-          "title": "Max Joint Step Deg",
-          "type": "number"
-        },
-        "max_orientation_step_deg": {
-          "default": 30.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 180.0,
-          "title": "Max Orientation Step Deg",
-          "type": "number"
-        },
-        "max_tcp_step_mm": {
-          "default": 250.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 2000.0,
-          "title": "Max Tcp Step Mm",
-          "type": "number"
-        }
-      },
-      "title": "MotionContinuitySafetyConfig",
-      "type": "object"
-    },
-    "MotionLimitsConfig": {
-      "additionalProperties": false,
-      "description": "Hard upper bounds on commanded velocity and acceleration.",
-      "properties": {
-        "max_acceleration": {
-          "default": 0.5,
-          "exclusiveMinimum": 0.0,
-          "maximum": 5.0,
-          "title": "Max Acceleration",
-          "type": "number"
-        },
-        "max_velocity": {
-          "default": 1.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 3.14,
-          "title": "Max Velocity",
-          "type": "number"
-        }
-      },
-      "title": "MotionLimitsConfig",
-      "type": "object"
-    },
     "NamedPoseConfig": {
       "additionalProperties": false,
-      "description": "A pose taught by hand in the console: where a task puts its part, or where it returns to (owner decision 15).\n\nThe console frees the arm, a person guides it there, and the pose is screened by the exact guard and the planner\nwhile the arm holds; only a pose both clear, or one in the planner's cushion band, is written, into the last layer\nof the profile chain (the owner, Q10). A place pose says where the part's BOTTOM is let go: a task raises the tool\nover it by the part's hang. The name it is kept under (``robot.named_poses.<name>``) follows\n:func:`pose_name_refusal`.",
+      "description": "A pose taught by hand in the console: where a task puts its part, or where it returns to (owner decision 15).\n\nThe console frees the arm, a person guides it there, and the pose is screened by the exact guard and the planner\nwhile the arm holds; only a pose both clear, or one in the planner's cushion band, is written, into the last layer\nof the profile chain (the owner, Q10). A place pose says where the part's BOTTOM is let go: a task raises the tool\nover it by the part's hang. The name it is kept under (``robot.motion.named_poses.<name>``) follows\n:func:`pose_name_refusal`.",
       "properties": {
         "joints_deg": {
           "items": {
@@ -2108,7 +591,7 @@
     },
     "PayloadSafetyConfig": {
       "additionalProperties": false,
-      "description": "Tool and payload envelope.\n\nValidated when the operator updates the payload, by calling\n``URRobotArm.set_payload`` or by editing this YAML and reloading. Per-move\nevaluation only verifies that the currently configured payload still fits the\nenvelope.\n\n``cog_mm`` is the centre-of-gravity offset from the flange in mm.\n``inertia_kgm2`` is the diagonal inertia tensor (Ixx, Iyy, Izz) in kg*m^2.\n``max_mass_kg`` is the absolute upper bound the guard refuses to set,\nregardless of the configured ``mass_kg``.",
+      "description": "Tool and payload envelope.\n\nValidated when the operator updates the payload, by calling\n``URRobotArm.set_payload`` or by editing this YAML and reloading. Per-move\nevaluation only verifies that the currently configured payload still fits the\nenvelope.\n\n``cog_mm`` is the centre-of-gravity offset from the flange in mm.\n``inertia_kgm2`` is the diagonal inertia tensor (Ixx, Iyy, Izz) in kg*m^2.\n``max_mass_kg`` is the absolute upper bound the guard refuses to set,\nregardless of the configured ``mass_kg``.\n\nThe guard runs, and a real arm pushes ``mass_kg`` and ``cog_mm`` to its controller at connect, on every cell since\n2026-10-17 (the owner's cleanup took ``enforce``): a mass of 0, the shipped \"not weighed yet\" marker, is refused at\nconnect, so a cell weighs what its flange carries.",
       "properties": {
         "cog_mm": {
           "default": [
@@ -2131,11 +614,6 @@
           ],
           "title": "Cog Mm",
           "type": "array"
-        },
-        "enforce": {
-          "default": true,
-          "title": "Enforce",
-          "type": "boolean"
         },
         "inertia_kgm2": {
           "default": [
@@ -2177,130 +655,6 @@
       "title": "PayloadSafetyConfig",
       "type": "object"
     },
-    "PerceivedWorldConfig": {
-      "additionalProperties": false,
-      "description": "Turning what the cameras see into obstacles the planner routes around.\n\nThis has no opt-in of its own. A cell that declares ``planning_world`` has said the planner\nshould know its surroundings, and a photograph taken once at startup is not that: everything that\narrived afterwards is invisible to it while looking exactly like empty space in every log there\nis. So it follows ``planning_world.enabled``, and ``enabled`` here is the way out rather than the\nway in, for a cell that wants its bench declared and nothing camera driven.\n\nWhat it costs, stated before the knobs. Every plan waits for a depth frame, converts it and\nregisters a world, and a frame older than ``max_age_ms`` refuses the motion rather than planning\nagainst a cell that had time to change. The age is judged when the world is refreshed: before a\npath is judged, and again before the next goal after a plan that was not taken, since one such plan\ncosts seconds (P0g R1); not while a plan is being computed. That refusal is the point of the feature\nand it is also the way it will first annoy somebody: a camera that stalls stops the arm.",
-      "properties": {
-        "cluster_voxel_mm": {
-          "default": 25.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 500.0,
-          "title": "Cluster Voxel Mm",
-          "type": "number"
-        },
-        "enabled": {
-          "default": true,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "finger_contact_mm": {
-          "default": 3.0,
-          "maximum": 20.0,
-          "minimum": 0.0,
-          "title": "Finger Contact Mm",
-          "type": "number"
-        },
-        "finger_floor_mm": {
-          "default": 1.0,
-          "maximum": 20.0,
-          "minimum": 0.0,
-          "title": "Finger Floor Mm",
-          "type": "number"
-        },
-        "fingers_to_the_support_reading": {
-          "default": true,
-          "title": "Fingers To The Support Reading",
-          "type": "boolean"
-        },
-        "fingers_touch_parts": {
-          "default": true,
-          "title": "Fingers Touch Parts",
-          "type": "boolean"
-        },
-        "floor_to_plane": {
-          "default": true,
-          "title": "Floor To Plane",
-          "type": "boolean"
-        },
-        "fresh_frame_attempts": {
-          "default": 3,
-          "maximum": 10,
-          "minimum": 0,
-          "title": "Fresh Frame Attempts",
-          "type": "integer"
-        },
-        "margin_mm": {
-          "default": 8.0,
-          "maximum": 500.0,
-          "minimum": 0.0,
-          "title": "Margin Mm",
-          "type": "number"
-        },
-        "max_age_ms": {
-          "default": 500.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 60000.0,
-          "title": "Max Age Ms",
-          "type": "number"
-        },
-        "max_boxes": {
-          "default": 64,
-          "maximum": 256,
-          "minimum": 0,
-          "title": "Max Boxes",
-          "type": "integer"
-        },
-        "min_points": {
-          "default": 12,
-          "maximum": 100000,
-          "minimum": 1,
-          "title": "Min Points",
-          "type": "integer"
-        },
-        "pixel_stride": {
-          "default": 2,
-          "maximum": 16,
-          "minimum": 1,
-          "title": "Pixel Stride",
-          "type": "integer"
-        },
-        "plane_clearance_mm": {
-          "default": 5.0,
-          "maximum": 200.0,
-          "minimum": 0.0,
-          "title": "Plane Clearance Mm",
-          "type": "number"
-        },
-        "support_allowance_mm": {
-          "default": 2.0,
-          "maximum": 10.0,
-          "minimum": 0.0,
-          "title": "Support Allowance Mm",
-          "type": "number"
-        },
-        "support_surfaces": {
-          "default": true,
-          "title": "Support Surfaces",
-          "type": "boolean"
-        },
-        "voxel_field_mm": {
-          "default": 0.0,
-          "maximum": 200.0,
-          "minimum": 0.0,
-          "title": "Voxel Field Mm",
-          "type": "number"
-        },
-        "voxel_size_mm": {
-          "default": 10.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Voxel Size Mm",
-          "type": "number"
-        }
-      },
-      "title": "PerceivedWorldConfig",
-      "type": "object"
-    },
     "PlaceGridConfig": {
       "additionalProperties": false,
       "description": "The spots a flat place lays its parts out on where no camera reads it: ``rows`` x ``columns`` about the taught\npose, along the taught tool's heading, the nearest the taught pose first.",
@@ -2335,49 +689,6 @@
         }
       },
       "title": "PlaceGridConfig",
-      "type": "object"
-    },
-    "PlannedMotionSafetyConfig": {
-      "additionalProperties": false,
-      "description": "How a cuRobo cell chooses the path of a move, and how far a planned path may wander.\n\nA move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the\nstraight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the\ngoal, on any planned arm (``src/robot/drivers/planned/goal_set.py``). Both keys bound that choice. The Isaac sim\narm keeps its own route until it becomes a planned arm and reads neither.\n\n``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's\nworld, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is\nplanned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that\ngrazes one by a millimetre passes a check that asks only for no penetration. Where only the boxes a camera saw come\ncloser, the planner is asked again with them set aside, and with a hand known empty and open the exact guard decides\nthem at ``self_collision.perceived_min_distance_mm`` (Option 1). The default is 10 mm, the distance at\nwhich cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_\ndistance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan\nis shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, which the guard keeps\nfrom the arm itself and from a declared fixture. From a box a camera saw, already its surface grown by\n``planning_world.perceived.margin_mm``, the guard keeps ``self_collision.perceived_min_distance_mm`` (5 mm). It is\nnot a certified distance, and 0 judges a line at no penetration, which is how a planned path is judged.\n\n``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and\nwhere it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none\nis left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and\nrefuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on\nthe owner's cell (2026-09-24).\n\n``mesh_first`` (on) lets the exact mesh guard judge a straight line and a goal configuration alone (the owner,\n2026-10-07: \"einfach mit den meshes pr\u00fcfen und nicht mit kugeln\"): where it accepts every sample, at its own\ndistances, the line runs and cuRobo's spheres are not asked; cuRobo plans only where the guard refuses the straight\nline, and the guard judges every sample of that plan. It applies only where the guard holds everything the planner\nwould judge the motion against: the arm, the hand, the wrist cameras and the declared fixtures both hold, and the\ncamera's boxes the guard holds from the same refresh. Where the planner holds more, both authorities judge, as\nbefore: a mesh its world declares, a distance field of the camera's points, a carried part, on a cell that models\none a hand not known empty and open, and the declared support plane wherever a part of the arm or the hand past\nthe shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes. On the real cell the spheres refused lines the meshes kept\n18 mm clear, and every refusal cost a report over thousands of sphere pairs before the guard could decide.",
-      "properties": {
-        "finetune_passes": {
-          "default": 3,
-          "maximum": 3,
-          "minimum": 0,
-          "title": "Finetune Passes",
-          "type": "integer"
-        },
-        "line_clearance_mm": {
-          "default": 3.0,
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "title": "Line Clearance Mm",
-          "type": "number"
-        },
-        "max_detour_deg": {
-          "default": 45.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 360.0,
-          "title": "Max Detour Deg",
-          "type": "number"
-        },
-        "mesh_first": {
-          "default": true,
-          "title": "Mesh First",
-          "type": "boolean"
-        },
-        "planning_spheres": {
-          "default": "",
-          "enum": [
-            "",
-            "lean"
-          ],
-          "title": "Planning Spheres",
-          "type": "string"
-        }
-      },
-      "title": "PlannedMotionSafetyConfig",
       "type": "object"
     },
     "PlannerMeshConfig": {
@@ -2440,43 +751,14 @@
     },
     "PlanningWorldConfig": {
       "additionalProperties": false,
-      "description": "What the trajectory planner is told about the cell, as axis-aligned boxes in the base frame.\n\nSeparate from the guard's own fixture list only in what consumes it: the guard checks a single\ncommanded configuration, the planner shapes the whole path. ``include_fixtures`` keeps the two one\ndeclaration, so a bin wall added for the guard is a bin wall the planner routes around.\n\nThe planner takes three kinds of geometry and the choice between them is a real one. Boxes are\nwhat an operator writes down and what a refusal can name. A mesh is how a container keeps its\nhollow, so a cell can reach into a tote instead of treating it as a solid block. A distance field\nover a grid is how the whole scene arrives at once, with nothing left out for want of a collision\nslot: see :class:`PerceivedWorldConfig`, which turns what the cameras see into boxes, a field, or\nboth, and is on whenever this block is.",
+      "description": "What the trajectory planner is told about the cell, in the base frame: the bench, the meshes, and what the\ncameras see.\n\nThe world is on wherever a ``support_plane`` is declared. Registering a world replaces the planner's own, boot table\nincluded, so a cell that declares no bench registers none and its planner keeps the world it booted with. Nothing\nelse switches it since the owner's cleanup of 2026-10-17, every switch fixed at the owner's cell's: the cameras'\nworld is built wherever it is on (``safety.planning.perceived``, its numbers every cell's), a pick and a place judge\nacross their standoff, their carry and their drop in the world they hold rather than in a new frame, a world the\nplanner confirms only in part refuses the motion, the guard's own fixtures stay the guard's (the cameras find what\nthe parts stand on), and no part in the jaws is modelled: a closed hand is judged as an empty one, by the exact\nguard at full stroke.\n\nThe planner takes three kinds of geometry and the choice between them is a real one. Boxes are what an operator\nwrites down and what a refusal can name. A mesh is how a container keeps its hollow, so a cell can reach into a tote\ninstead of treating it as a solid block. A distance field over a grid is how the whole scene arrives at once, with\nnothing left out for want of a collision slot: every cell's camera world sends the boxes it fits and a field of\nevery column its cameras measured. Every plan waits for a depth frame, converts it and registers a world, and a frame\ntoo old refuses the motion rather than planning against a cell that had time to change, so a camera that stalls\nstops the arm.",
       "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "hold": {
-          "$ref": "#/$defs/HeldWorldConfig"
-        },
-        "include_fixtures": {
-          "default": true,
-          "title": "Include Fixtures",
-          "type": "boolean"
-        },
         "meshes": {
           "items": {
             "$ref": "#/$defs/PlannerMeshConfig"
           },
           "title": "Meshes",
           "type": "array"
-        },
-        "payload": {
-          "$ref": "#/$defs/AttachedPayloadConfig"
-        },
-        "perceived": {
-          "$ref": "#/$defs/PerceivedWorldConfig"
-        },
-        "register_in_place": {
-          "default": false,
-          "title": "Register In Place",
-          "type": "boolean"
-        },
-        "require_registration": {
-          "default": true,
-          "title": "Require Registration",
-          "type": "boolean"
         },
         "support_plane": {
           "anyOf": [
@@ -2493,22 +775,9 @@
       "title": "PlanningWorldConfig",
       "type": "object"
     },
-    "RLExperimentalConfig": {
-      "additionalProperties": false,
-      "description": "``rl_experimental`` lane carrier.\n\nThe runtime rejects this lane; the block exists so that an operator sees the\nwhole surface in YAML. ``enabled`` must be ``True`` before the schema accepts\n``mode = \"rl_experimental\"``.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        }
-      },
-      "title": "RLExperimentalConfig",
-      "type": "object"
-    },
     "RobotCalibrationConfig": {
       "additionalProperties": false,
-      "description": "Tunable parameters for the hand-eye calibration routine.\n\nTwo keys this block deliberately does not offer:\n\n* ``quality_threshold_mm``, an auto-apply gate that would hold an RMSE above it for operator\n  review. No such gate exists anywhere: ``save_extrinsics`` writes whatever it is given,\n  judging the RMSE is the operator's job, and :data:`quality_bands_mm` is what labels it.\n* ``speed_scale``, an arm-speed scale for the duration of the routine. There is no speed\n  governor; ``robot.motion_limits`` is what the driver layer enforces, and the routine takes\n  a ``motion_limits=`` argument.\n\n``quality_bands_mm`` is the opposite case: both calibration runners (``run_eth_calibrate.py``,\n``run_eih_calibrate.py``) pass it straight into :func:`src.calibration.quality.classify_rmse`.\n\nNor does it offer anything that shapes generated poses (a spread, a retry budget, a pose box):\nnothing generates calibration stations. They are written down, taught, or guided by hand.",
+      "description": "Tunable parameters for the hand-eye calibration routine.\n\nTwo keys this block deliberately does not offer:\n\n* ``quality_threshold_mm``, an auto-apply gate that would hold an RMSE above it for operator\n  review. No such gate exists anywhere: ``save_extrinsics`` writes whatever it is given,\n  judging the RMSE is the operator's job, and :data:`quality_bands_mm` is what labels it.\n* ``speed_scale``, an arm-speed scale for the duration of the routine. There is no speed\n  governor; ``robot.motion.max_velocity`` and ``max_acceleration`` are what the driver layer enforces, and the\n  routine takes a ``motion_limits=`` argument.\n\n``quality_bands_mm`` is the opposite case: both calibration runners (``run_eth_calibrate.py``,\n``run_eih_calibrate.py``) pass it straight into :func:`src.calibration.quality.classify_rmse`.\n\nNor does it offer anything that shapes generated poses (a spread, a retry budget, a pose box):\nnothing generates calibration stations. They are written down, taught, or guided by hand.",
       "properties": {
         "freedrive_samples": {
           "default": 15,
@@ -2555,84 +824,10 @@
       "title": "RobotCalibrationQualityBandsMm",
       "type": "object"
     },
-    "RobotGraspingApproachValidationConfig": {
-      "additionalProperties": false,
-      "description": "Dense-mode swept-volume approach/retreat validation.\n\nWhen ``enabled`` (and the resolved mode is in :attr:`apply_modes`), the orchestrator validates each\nranked candidate's approach/retreat sweep against the scene neighbour cloud (the calculator only\nchecks the final grasp pose) and executes the first sweep-clear candidate, refusing with\n``APPROACH_PATH_BLOCKED`` if every candidate is blocked. Default ``enabled=False`` is byte-identical;\n``easy`` and single-object picking are exempt (``apply_modes`` excludes ``'easy'``).",
-      "properties": {
-        "apply_modes": {
-          "default": [
-            "dense_clutter"
-          ],
-          "description": "Mode labels that activate the validator (the dense mode by default). The orchestrator skips the check when its resolved mode label is not in this set. easy is locked out.",
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "collision_margin_mm": {
-          "default": 0.0,
-          "description": "Extra margin (mm) added to the swept gripper box when testing collisions.",
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "title": "Collision Margin Mm",
-          "type": "number"
-        },
-        "enabled": {
-          "default": false,
-          "description": "Top-level switch. When False the approach validator is a no-op (byte-identical).",
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "num_approach_samples": {
-          "default": 6,
-          "description": "Swept samples on the approach leg (0 disables the approach check).",
-          "maximum": 64,
-          "minimum": 0,
-          "title": "Num Approach Samples",
-          "type": "integer"
-        },
-        "num_retreat_samples": {
-          "default": 4,
-          "description": "Swept samples on the retreat leg (0 disables the retreat check).",
-          "maximum": 64,
-          "minimum": 0,
-          "title": "Num Retreat Samples",
-          "type": "integer"
-        },
-        "retreat_mm": {
-          "default": 100.0,
-          "description": "Retreat distance (mm) after the grasp; the retreat leg is swept along +Z.",
-          "maximum": 500.0,
-          "minimum": 0.0,
-          "title": "Retreat Mm",
-          "type": "number"
-        },
-        "standoff_mm": {
-          "default": 80.0,
-          "description": "Pre-grasp standoff (mm) along -approach; the sweep is sampled standoff -> grasp.",
-          "maximum": 500.0,
-          "minimum": 0.0,
-          "title": "Standoff Mm",
-          "type": "number"
-        }
-      },
-      "title": "RobotGraspingApproachValidationConfig",
-      "type": "object"
-    },
     "RobotGraspingConfig": {
       "additionalProperties": false,
-      "description": "Vendor-neutral grasping-behaviour surface.\n\nSits as a sibling of :class:`RobotSafetyConfig` under :class:`RobotConfig`.\nAll knobs are behavioural (mode selection, recovery, decision); safety\nremains exclusively under ``robot.safety``.\n\n``verification`` and ``dense_recovery`` were removed on 2026-09-29: no pick path ran the\npost-grasp verification stage, the gripper's own hold evidence decides every close, and the\ndense-recovery policy was consulted by no pick. A tree that still writes either block is refused\nat load with the sentence that says what to do instead (``src/config/schema/_removed.py``).\n\nThe runtime derives per-mode behaviour from the\n:class:`src.robot.execution.autonomous_grasp.GraspBehaviorProfile`\ntable. Values here apply on top of that profile: they tighten or disable\noptional behaviour, but cannot relax safety limits or unlock recovery actions\nthe mode profile forbids. ``default_mode`` is resolved against\n:class:`src.robot.grasping.types.modes.GraspMode` at use time so the config\nlayer imports no runtime modules.",
+      "description": "Vendor-neutral grasping-behaviour surface.\n\nSits as a sibling of :class:`RobotSafetyConfig` under :class:`RobotConfig`.\nAll knobs are behavioural (mode selection, recovery, decision); safety\nremains exclusively under ``robot.safety``.\n\n``verification`` and ``dense_recovery`` were removed on 2026-09-29: no pick path ran the\npost-grasp verification stage, the gripper's own hold evidence decides every close, and the\ndense-recovery policy was consulted by no pick. A tree that still writes either block is refused\nat load with the sentence that says what to do instead (``src/config/schema/_removed.py``).\n\nThe runtime derives per-mode behaviour from the\n:class:`src.robot.execution.autonomous_grasp.GraspBehaviorProfile`\ntable. Values here apply on top of that profile: they tighten or disable\noptional behaviour, but cannot relax safety limits or unlock recovery actions\nthe mode profile forbids. ``default_mode`` is resolved against\n:class:`src.robot.grasping.types.modes.GraspMode` at use time so the config\nlayer imports no runtime modules.\n\nTwelve switches left on 2026-10-17 at the values the owner's cell ran (the owner's cleanup): the attempts a pick\nmay make (5), the parts beside the one grasped seen as obstacles, tilted approaches, grasps from inside a bore, the\nfirst good part taken at once (0.6), the colour check (clipped pixels left out), the parts beside named, the weak\nlook, the task's own places hidden from the detector and a task following its parts. Each now says what it does\nwhere it is done, and a tree that still writes one is refused at load (``schema/_removed.py``).",
       "properties": {
-        "approach_validation": {
-          "$ref": "#/$defs/RobotGraspingApproachValidationConfig",
-          "description": "Dense-mode swept-volume approach/retreat validator. Default disabled (byte-identical); independent of fusion (it needs only the per-frame neighbour masks)."
-        },
-        "batched_builds": {
-          "default": false,
-          "title": "Batched Builds",
-          "type": "boolean"
-        },
         "calculator": {
           "default": "geometric",
           "description": "Which grasp generator ranks candidates. 'geometric' is the analytic stack; 'deep' is the learned 6-DoF generator, which additionally takes the geometric candidates as seeds. Fails closed when 'deep' is selected without weights.",
@@ -2643,28 +838,6 @@
           "title": "Calculator",
           "type": "string"
         },
-        "colour_check": {
-          "default": "on",
-          "enum": [
-            "on",
-            "log",
-            "off"
-          ],
-          "title": "Colour Check",
-          "type": "string"
-        },
-        "colour_check_clipped": {
-          "default": "exclude",
-          "enum": [
-            "keep",
-            "exclude"
-          ],
-          "title": "Colour Check Clipped",
-          "type": "string"
-        },
-        "decision": {
-          "$ref": "#/$defs/GraspingDecisionConfig"
-        },
         "deep_generator": {
           "$ref": "#/$defs/GraspingDeepGeneratorConfig",
           "description": "The learned 6-DoF grasp generator, selected by `calculator: deep`. Inert while `calculator` is 'geometric', which is the default, so this block changes nothing until a cell deliberately switches its generator."
@@ -2674,80 +847,10 @@
           "description": "The learned grasp ranker in shadow mode. Default off; enabling it adds telemetry and changes no decision. See the class docstring for what it measured."
         },
         "default_mode": {
-          "default": "auto",
+          "default": "dense_clutter",
           "minLength": 1,
           "title": "Default Mode",
           "type": "string"
-        },
-        "feasibility": {
-          "$ref": "#/$defs/GraspingFeasibilityConfig"
-        },
-        "fine_pass_waits": {
-          "default": true,
-          "title": "Fine Pass Waits",
-          "type": "boolean"
-        },
-        "first_good_part": {
-          "default": true,
-          "title": "First Good Part",
-          "type": "boolean"
-        },
-        "follow_parts": {
-          "$ref": "#/$defs/GraspingFollowPartsConfig"
-        },
-        "fusion": {
-          "$ref": "#/$defs/RobotGraspingFusionConfig"
-        },
-        "geometry": {
-          "$ref": "#/$defs/GraspingGeometryStageConfig",
-          "description": "Which stage proposes grasp candidates. Default 'support_footprint', measured 43.50 % top-1 against the silhouette stage's 24.29 % through the real calculator."
-        },
-        "good_part_score": {
-          "default": 0.6,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Good Part Score",
-          "type": "number"
-        },
-        "gripper_geometry": {
-          "$ref": "#/$defs/GraspingGripperGeometryConfig",
-          "description": "Gripper collision envelope the calculator filters grasp candidates against (parallel-jaw or suction-cup). Unset on a cell naming a hand: that hand's registry numbers. Unset on a cell naming none: parallel_jaw with the 2F-85 dims -> byte-identical."
-        },
-        "hide_own_places": {
-          "default": false,
-          "title": "Hide Own Places",
-          "type": "boolean"
-        },
-        "inner_grasps": {
-          "default": true,
-          "title": "Inner Grasps",
-          "type": "boolean"
-        },
-        "isotropic_radial_closing": {
-          "default": false,
-          "title": "Isotropic Radial Closing",
-          "type": "boolean"
-        },
-        "max_attempts": {
-          "default": 5,
-          "maximum": 50,
-          "minimum": 1,
-          "title": "Max Attempts",
-          "type": "integer"
-        },
-        "name_neighbours": {
-          "default": true,
-          "title": "Name Neighbours",
-          "type": "boolean"
-        },
-        "occlusion": {
-          "$ref": "#/$defs/GraspingOcclusionConfig"
-        },
-        "ordering": {
-          "$ref": "#/$defs/GraspingOrderingConfig"
-        },
-        "performance": {
-          "$ref": "#/$defs/GraspingPerformanceConfig"
         },
         "record_log_path": {
           "anyOf": [
@@ -2759,193 +862,24 @@
             }
           ],
           "default": null,
-          "description": "Opt-in JSONL path for production GraspAttemptRecord logging. When set, AutonomousGraspService.from_robot_config / from_components call enable_record_logging(path), so every pick() appends one record (the soak / KPI / RL data source). Default null -> off, byte-identical. The loader applies ${ENV} substitution, e.g. record_log_path: \"${WILLY_RECORD_LOG:-}\" -> an empty (unset) value is treated as off.",
+          "description": "The JSONL file every pick() appends its GraspAttemptRecord to (what `python -m src.robot.grasping.replay` reads). Null, the default, or an environment reference that expands to nothing (record_log_path: \"${WILLY_RECORD_LOG:-}\") appends to grasp_records.jsonl in the log folder (WILLY_LOG_DIR, else logs/), since 2026-10-17: a cell keeps its records whether or not its tree names a file.",
           "title": "Record Log Path"
-        },
-        "recovery": {
-          "$ref": "#/$defs/GraspingRecoveryConfig"
-        },
-        "scene_obstacles": {
-          "default": true,
-          "title": "Scene Obstacles",
-          "type": "boolean"
-        },
-        "side_approaches": {
-          "default": true,
-          "title": "Side Approaches",
-          "type": "boolean"
-        },
-        "success_model": {
-          "$ref": "#/$defs/GraspingSuccessModelConfig"
         },
         "support": {
           "$ref": "#/$defs/GraspingSupportConfig",
-          "description": "Where the parts stand. Nothing passes the calculator a support_plane today, and without one the table-clearance check is skipped; see the class docstring for the measurement behind the defaults."
-        },
-        "uncertainty": {
-          "$ref": "#/$defs/GraspingUncertaintyConfig"
-        },
-        "watchdog": {
-          "$ref": "#/$defs/GraspingWatchdogConfig"
-        },
-        "weak_look_trigger": {
-          "default": false,
-          "title": "Weak Look Trigger",
-          "type": "boolean"
-        },
-        "workers": {
-          "anyOf": [
-            {
-              "const": "auto",
-              "type": "string"
-            },
-            {
-              "minimum": 0,
-              "type": "integer"
-            }
-          ],
-          "default": 0,
-          "title": "Workers"
+          "description": "What the parts stand on besides the bench (robot.safety.planning_world.support_plane): the bin they rest in, where the cell has one."
         }
       },
       "title": "RobotGraspingConfig",
       "type": "object"
     },
-    "RobotGraspingFusionConfig": {
-      "additionalProperties": false,
-      "description": "Multi-camera fusion: which cameras a cell fuses, and how each object's surface is fused.\n\n``enabled`` builds the fused cameras' CAMERA to BASE resolvers\n(``build_config_frame_resolvers``, one per enabled camera ``cameras`` lists, from the calibration\ndeclared on its rig) and does nothing else; ``geometry`` fuses each object's surface across\nthose cameras and hands the union to the grasp generator. Fusing takes both: with ``enabled``\noff the resolver map is empty and every other camera's view is dropped at the pick with a\nwarning, and with ``geometry.enabled`` off nothing asks for the map. ``CameraFusionPlan`` names\nwhichever is missing.\n\nThe voxel-occupancy grid this block also configured, and the commit gate that read it, were\nremoved on 2026-09-28: the grid's contents never reached a grasp, a decision or a measured\nresult. A tree that still writes one of their keys is refused at load with the reason\n(``src/config/schema/_removed.py``).",
-      "properties": {
-        "cameras": {
-          "additionalProperties": {
-            "$ref": "#/$defs/FusionCameraConfig"
-          },
-          "description": "Every camera this cell fuses, keyed by the id it has in ``camera.cameras.rigs``, INCLUDING the primary. One list answers 'how many cameras does this cell have', and a simulator and a real cell mean the same thing by it. Each entry carries ``enabled``. Each camera's calibration is declared on its rig, ``camera.cameras.rigs[<id>].extrinsics``, and loaded through ``RigCalibration`` at construction, fail-closed; an id that names no rig is refused at load. ``build_config_frame_resolvers`` turns the enabled entries into a {camera_id -> FrameResolver} map (eye_to_hand -> StaticCameraToBaseResolver, eye_in_hand -> EyeInHandFrameResolver). The primary is left out of the extra-camera rig, because it already streams through the cell's main perception source and fusing a second copy of it costs a full detect and segment pass for a view already present.",
-          "title": "Cameras",
-          "type": "object"
-        },
-        "enabled": {
-          "default": false,
-          "description": "Builds the CAMERA to BASE resolver of each enabled camera ``cameras`` lists, from the calibration declared on its rig, and that is all it does: those resolvers are how ``geometry`` places every other camera's view in the base frame (the voxel grid this switch also fed was removed on 2026-09-28). They are built while ``geometry.enabled`` is on as well. False (default) builds none, so with ``geometry.enabled`` on every other camera's view is dropped at the pick with a warning and the cell grasps single-view. It fuses nothing on its own, and the primary camera's resolver never waits for it.",
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "geometry": {
-          "$ref": "#/$defs/FusionGeometryConfig",
-          "description": "Fuse each object's surface across ``cameras`` and hand the union to the grasp generator. Needs ``enabled`` above as well: that switch builds the other cameras' CAMERA to BASE resolvers, without which every second view is dropped at the pick."
-        }
-      },
-      "title": "RobotGraspingFusionConfig",
-      "type": "object"
-    },
     "RobotMotionConfig": {
       "additionalProperties": false,
-      "description": "How this cell's motions are planned, whichever arm drives them, and when the next leg of a pick or a place is\njudged: as it runs, or ahead while the arm waits or moves.\n\n``planner`` was ``robot.ur.motion_planner`` until 2026-10-13 (aurora's P0c), where it sat in a vendor block that\nevery tree materialises: a sim or dummy tree carried ``curobo`` as well, and readers outside the UR driver acted on\nit. Every vendor plans the same way, so the choice is the cell's rather than one vendor's. The Isaac driver is not\ngoverned by this key yet and says so: its planner lives in its own driver config (``robot.sim``), and a runner can\noverride it per run.\n\n``judge_next_leg`` (map4 motion C7, the owner, 2026-10-09):\n\n* ``\"off\"``, the default and today's behaviour: every leg is judged when the arm stands at its start, and the jaws'\n  stroke is waited out before anything else is asked.\n* ``\"in_settles\"``: the change of the jaws goes out once, as ever, and while their stroke is waited out the next leg\n  is judged: the line out of a place, and, in a world held across the stroke (``safety.planning_world.hold``), the\n  joint move a task declared after the pick or the place. Nothing is sent before the stroke is over.\n* ``\"in_settles_and_motion\"``: as ``\"in_settles\"``, and a declared joint move not judged in a stroke is judged on a\n  second thread while the line before it runs, on an arm that watches its sends (``robot.ur.brake_on_halt``: a halt\n  brakes the line in flight). Elsewhere it falls back to ``\"in_settles\"`` and says so once in the log.\n\nA leg judged ahead runs only where the arm stands within 0.5 mm of where it was judged from and nothing else it was\njudged on changed since (the world's refresh, the carried part, the hand, the camera's boxes, a halt); otherwise it\nis judged again where the arm stands. Judging ahead sends nothing and switches no output.",
+      "description": "How this cell moves, whichever arm drives it: how its motions are planned and how fast they may go, the box it\nworks in, its home and its looks, the way its jaws close, the poses taught to it, and how a task sets its parts\ndown.\n\n``planner`` was ``robot.ur.motion_planner`` until 2026-10-13 (aurora's P0c), where it sat in a vendor block that\nevery tree materialises: a sim or dummy tree carried ``curobo`` as well, and readers outside the UR driver acted on\nit. Every vendor plans the same way, so the choice is the cell's rather than one vendor's. The Isaac driver is not\ngoverned by this key yet and says so: its planner lives in its own driver config (``robot.sim``), and a runner can\noverride it per run.\n\nThe next leg of a pick or a place is judged ahead on every arm planned with cuRobo, as the owner's cell ran it (map4\nmotion C7, ``robot.motion.judge_next_leg: in_settles_and_motion`` until 2026-10-17): the change of the jaws goes out\nonce, as ever, and while their stroke is waited out the next leg is judged: the line out of a place, and, in the\nworld held across the stroke, the joint move a task declared after the pick or the place. A declared joint move not\njudged in a stroke is judged on a second thread while the line before it runs, on an arm whose halt brakes the line\nin flight (every UR); elsewhere in the strokes alone. Nothing is sent before the stroke is over.\n\nA leg judged ahead runs only where the arm stands within 0.5 mm of where it was judged from and nothing else it was\njudged on changed since (the world's refresh, the hand, the camera's boxes, a halt); otherwise it is judged again\nwhere the arm stands. Judging ahead sends nothing and switches no output.\n\nThe limits, the box, the home, the looks, the closing axis, the poses and the place stood beside this block until\n2026-10-17 (``robot.motion_limits``, ``robot.workspace_limits``, ``robot.home_joint_positions_deg``,\n``robot.look_joint_positions_deg``, ``robot.natural_closing_axis``, ``robot.named_poses``,\n``robot.default_place_pose``, ``robot.place``; the owner's cleanup). A tree that still writes one is refused at load\nnaming its key here, and ``python -m src.config migrate`` moves them; the home in radians\n(``robot.home_joint_positions``) and ``robot.safe_pose`` left.",
       "properties": {
-        "judge_next_leg": {
-          "default": "off",
-          "enum": [
-            "off",
-            "in_settles",
-            "in_settles_and_motion"
-          ],
-          "title": "Judge Next Leg",
-          "type": "string"
-        },
-        "planner": {
-          "default": "curobo",
-          "enum": [
-            "ik",
-            "curobo"
-          ],
-          "title": "Planner",
-          "type": "string"
-        }
-      },
-      "title": "RobotMotionConfig",
-      "type": "object"
-    },
-    "RobotPlaceConfig": {
-      "additionalProperties": false,
-      "description": "How a task sets its parts down: into a box, on a flat place, and the carry to a box. See the module docstring.",
-      "properties": {
-        "below_the_rim_mm": {
-          "default": 30.0,
-          "maximum": 50.0,
-          "minimum": 10.0,
-          "title": "Below The Rim Mm",
-          "type": "number"
-        },
-        "carry": {
-          "default": "via_the_look",
-          "enum": [
-            "via_the_look",
-            "over_the_rim"
-          ],
-          "title": "Carry",
-          "type": "string"
-        },
-        "grid": {
-          "$ref": "#/$defs/PlaceGridConfig"
-        },
-        "opening_margin_mm": {
-          "default": 10.0,
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Opening Margin Mm",
-          "type": "number"
-        },
-        "release_in_a_box": {
-          "default": "over_the_rim",
-          "enum": [
-            "over_the_rim",
-            "below_the_rim"
-          ],
-          "title": "Release In A Box",
-          "type": "string"
-        },
-        "relocate": {
-          "default": true,
-          "title": "Relocate",
-          "type": "boolean"
-        },
-        "rim_air_mm": {
-          "default": 20.0,
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Rim Air Mm",
-          "type": "number"
-        },
-        "rim_floor_margin_mm": {
-          "default": 15.0,
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "title": "Rim Floor Margin Mm",
-          "type": "number"
-        },
-        "side_by_side": {
-          "default": false,
-          "title": "Side By Side",
-          "type": "boolean"
-        },
-        "spacing_margin_mm": {
-          "default": 20.0,
-          "maximum": 200.0,
-          "minimum": 0.0,
-          "title": "Spacing Margin Mm",
-          "type": "number"
-        }
-      },
-      "title": "RobotPlaceConfig",
-      "type": "object"
-    },
-    "RobotRLConfig": {
-      "additionalProperties": false,
-      "description": "RL optimisation extension layer.\n\nThe default ``mode = \"hybrid_ml\"`` is the production stack: the deterministic\npipeline plus the promoted ML scorers, no RL artifact loaded. A default\nconfiguration therefore behaves as the deterministic stack does.\n\nAn RL-active mode requires ``mode`` set to ``rl_shadow``, ``rl_active`` or\n``rl_experimental``, both ``policy_id`` and ``artifact_path``, and for\n``rl_experimental`` also ``experimental.enabled``. The runtime rejects every\nRL-active mode with a typed :class:`RLModeNotImplementedError`; this schema\ngate is defence in depth for when the producers land.",
-      "properties": {
-        "artifact_path": {
+        "default_place_pose": {
           "anyOf": [
             {
-              "minLength": 1,
               "type": "string"
             },
             {
@@ -2953,212 +887,9 @@
             }
           ],
           "default": null,
-          "title": "Artifact Path"
+          "title": "Default Place Pose"
         },
-        "experimental": {
-          "$ref": "#/$defs/RLExperimentalConfig"
-        },
-        "mode": {
-          "default": "hybrid_ml",
-          "enum": [
-            "geometry_only",
-            "hybrid_ml",
-            "rl_shadow",
-            "rl_active",
-            "rl_experimental"
-          ],
-          "title": "Mode",
-          "type": "string"
-        },
-        "online_update_enabled": {
-          "default": false,
-          "title": "Online Update Enabled",
-          "type": "boolean"
-        },
-        "perception_artifact_path": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Perception Artifact Path"
-        },
-        "policy_id": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Policy Id"
-        },
-        "ranking_artifact_path": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Ranking Artifact Path"
-        },
-        "recovery_artifact_path": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Recovery Artifact Path"
-        },
-        "runtime_tier": {
-          "default": "stdlib",
-          "enum": [
-            "stdlib",
-            "numpy",
-            "torch"
-          ],
-          "title": "Runtime Tier",
-          "type": "string"
-        },
-        "sequencing_artifact_path": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Sequencing Artifact Path"
-        }
-      },
-      "title": "RobotRLConfig",
-      "type": "object"
-    },
-    "RobotSafetyConfig": {
-      "additionalProperties": false,
-      "description": "Vendor-neutral safety surface.\n\nEach guard is a dedicated sub-block carrying its own gate: ``enforce`` on most, ``enabled`` on\n:attr:`planning_world`, ``require_steady_before_motion`` on :attr:`dwell`. An operator can\ndisable one guard without touching the others.\n\nSub-blocks\n----------\n* :attr:`limits`: the ``workspace_margin_mm`` consumed by the workspace guard.\n* :attr:`joint_limits`: per-axis joint hard limits and margin.\n* :attr:`ik_quality`: IK-solution quality checks.\n* :attr:`motion_continuity`: step size between consecutive commanded targets.\n* :attr:`planned_motion`: the straight line's clearance and the detour a cuRobo path may take.\n* :attr:`payload`: mass, CoG and inertia envelope.\n* :attr:`self_collision`: link-link and link-fixture collision.\n* :attr:`dwell`: post-Stop dwell and steady-state gating.\n* :attr:`planning_world`: the boxes the trajectory planner routes around.\n\nNot here: the emergency stop. It is a hardware and controller function, and nothing in this\npackage can enable, disable, route or observe it.",
-      "properties": {
-        "dwell": {
-          "$ref": "#/$defs/DwellSafetyConfig"
-        },
-        "ik_quality": {
-          "$ref": "#/$defs/IkQualitySafetyConfig"
-        },
-        "joint_limits": {
-          "$ref": "#/$defs/JointLimitSafetyConfig"
-        },
-        "limits": {
-          "$ref": "#/$defs/LimitsSafetyConfig"
-        },
-        "motion_continuity": {
-          "$ref": "#/$defs/MotionContinuitySafetyConfig"
-        },
-        "payload": {
-          "$ref": "#/$defs/PayloadSafetyConfig"
-        },
-        "planned_motion": {
-          "$ref": "#/$defs/PlannedMotionSafetyConfig"
-        },
-        "planning_world": {
-          "$ref": "#/$defs/PlanningWorldConfig"
-        },
-        "self_collision": {
-          "$ref": "#/$defs/SelfCollisionSafetyConfig"
-        }
-      },
-      "title": "RobotSafetyConfig",
-      "type": "object"
-    },
-    "SafePoseConfig": {
-      "additionalProperties": false,
-      "description": "Cartesian position the robot can retreat to at operator request.\n\nPosition only. The single reader is the willy_sim reach doctor (``harness/reach.py``), which\nasks whether the point lies inside the arm's envelope, and orientation does not enter that\nquestion. Nothing moves to this pose; orientation belongs with the code that would.",
-      "properties": {
-        "x": {
-          "default": 0.0,
-          "title": "X",
-          "type": "number"
-        },
-        "y": {
-          "default": -300.0,
-          "title": "Y",
-          "type": "number"
-        },
-        "z": {
-          "default": 400.0,
-          "title": "Z",
-          "type": "number"
-        }
-      },
-      "title": "SafePoseConfig",
-      "type": "object"
-    },
-    "SelfCollisionSafetyConfig": {
-      "additionalProperties": false,
-      "description": "Self-collision guard configuration.\n\nTwo ``backend`` values are supported, the default being ``fcl``:\n\n* ``capsule`` is always available. It approximates each arm link as a capsule\n  and runs a closed-form distance check over every link pair and every\n  link/fixture pair.\n* ``fcl`` uses the optional ``python-fcl`` package against the meshes in\n  ``mesh_dir``. Selected without a populated ``mesh_dir``, the guard reports\n  :attr:`SafetyReason.UNAVAILABLE` and, while ``enforce`` is ``True``, rejects\n  the motion: it fails closed.\n\n``min_distance_mm`` is the minimum signed distance between any two monitored\nshapes; closer than that counts as a collision.\n\n``link_radii_mm`` is the per-link capsule radius in mm; when omitted the guard\nuses a single default radius supplied at runtime. Its length is not validated\nhere because DoF is a driver-side property: the guard checks it at evaluation\ntime and reports :attr:`SafetyReason.UNAVAILABLE` on mismatch.",
-      "properties": {
-        "backend": {
-          "default": "fcl",
-          "enum": [
-            "capsule",
-            "fcl"
-          ],
-          "title": "Backend",
-          "type": "string"
-        },
-        "base_height_mm": {
-          "default": 150.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 2000.0,
-          "title": "Base Height Mm",
-          "type": "number"
-        },
-        "base_radius_mm": {
-          "default": 80.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 1000.0,
-          "title": "Base Radius Mm",
-          "type": "number"
-        },
-        "enforce": {
-          "default": true,
-          "title": "Enforce",
-          "type": "boolean"
-        },
-        "fixtures": {
-          "items": {
-            "$ref": "#/$defs/FixtureBoxConfig"
-          },
-          "title": "Fixtures",
-          "type": "array"
-        },
-        "kinematics_base_yaw_deg": {
-          "default": 0.0,
-          "maximum": 360.0,
-          "minimum": -360.0,
-          "title": "Kinematics Base Yaw Deg",
-          "type": "number"
-        },
-        "link_radii_mm": {
+        "home_deg": {
           "anyOf": [
             {
               "items": {
@@ -3171,7 +902,181 @@
             }
           ],
           "default": null,
-          "title": "Link Radii Mm"
+          "title": "Home Deg"
+        },
+        "look_deg": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Look Deg"
+        },
+        "max_acceleration": {
+          "default": 0.5,
+          "exclusiveMinimum": 0.0,
+          "maximum": 5.0,
+          "title": "Max Acceleration",
+          "type": "number"
+        },
+        "max_velocity": {
+          "default": 1.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 3.14,
+          "title": "Max Velocity",
+          "type": "number"
+        },
+        "named_poses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/NamedPoseConfig"
+          },
+          "title": "Named Poses",
+          "type": "object"
+        },
+        "natural_closing_axis": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Natural Closing Axis"
+        },
+        "place": {
+          "$ref": "#/$defs/RobotPlaceConfig"
+        },
+        "planner": {
+          "default": "curobo",
+          "enum": [
+            "ik",
+            "curobo"
+          ],
+          "title": "Planner",
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceLimitsConfig"
+        }
+      },
+      "title": "RobotMotionConfig",
+      "type": "object"
+    },
+    "RobotPlaceConfig": {
+      "additionalProperties": false,
+      "description": "How a task sets its parts down: into a box, on a flat place, and the carry to a box. See the module docstring.",
+      "properties": {
+        "carry": {
+          "default": "via_the_look",
+          "enum": [
+            "via_the_look",
+            "over_the_rim"
+          ],
+          "title": "Carry",
+          "type": "string"
+        },
+        "grid": {
+          "$ref": "#/$defs/PlaceGridConfig"
+        },
+        "part_hang_mm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 2000.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Part Hang Mm"
+        },
+        "release_in_a_box": {
+          "default": "over_the_rim",
+          "enum": [
+            "over_the_rim",
+            "below_the_rim"
+          ],
+          "title": "Release In A Box",
+          "type": "string"
+        },
+        "side_by_side": {
+          "default": false,
+          "title": "Side By Side",
+          "type": "boolean"
+        }
+      },
+      "title": "RobotPlaceConfig",
+      "type": "object"
+    },
+    "RobotSafetyConfig": {
+      "additionalProperties": false,
+      "description": "Vendor-neutral safety surface.\n\nEvery guard family runs on every cell since 2026-10-17 (the owner's cleanup took the ``enforce`` switches), and\nthe workspace margin, the joint limits, the IK quality and the motion continuity run at the numbers of the arm\n(``src/robot/safety/guard_numbers.py``: every real arm the owner's cell's), so their blocks left too. What a cell\nstill says is what differs from cell to cell. The steady gate before every motion is the arm's own and fixed\n(``robot_arm.STEADY_TIMEOUT_S``; ``safety.dwell`` until 2026-10-17).\n\nSub-blocks\n----------\n* :attr:`payload`: mass, CoG and inertia envelope.\n* :attr:`self_collision`: link-link and link-fixture collision.\n* :attr:`planning_world`: the boxes the trajectory planner routes around.\n\nNot here: the emergency stop. It is a hardware and controller function, and nothing in this\npackage can enable, disable, route or observe it.",
+      "properties": {
+        "payload": {
+          "$ref": "#/$defs/PayloadSafetyConfig"
+        },
+        "planning_world": {
+          "$ref": "#/$defs/PlanningWorldConfig"
+        },
+        "self_collision": {
+          "$ref": "#/$defs/SelfCollisionSafetyConfig"
+        }
+      },
+      "title": "RobotSafetyConfig",
+      "type": "object"
+    },
+    "SelfCollisionSafetyConfig": {
+      "additionalProperties": false,
+      "description": "Self-collision guard configuration.\n\nTwo ``backend`` values are supported, the default being ``fcl``:\n\n* ``capsule`` is always available. It approximates each arm link as a capsule\n  and runs a closed-form distance check over every link pair and every\n  link/fixture pair.\n* ``fcl`` uses the optional ``python-fcl`` package against the meshes in\n  ``mesh_dir``. Selected without a populated ``mesh_dir``, the guard reports\n  :attr:`SafetyReason.UNAVAILABLE` and rejects the motion: it fails closed.\n\nThe guard runs on every cell since 2026-10-17 (the owner's cleanup took ``enforce``).\n\n``min_distance_mm`` is the minimum signed distance between any two monitored\nshapes; closer than that counts as a collision.\n\nThe capsule proxy's own geometry is no key since 2026-10-17 (the owner's cleanup): its fingers come from the\nhand's registry file, its base from the arm's description, every link is 60 mm round\n(``SelfCollisionGuard._tool_capsule``), and every path is judged whole first\n(``SafetyPreflight.gate_joint_path``); ``schema/_removed.py`` refuses a tree that still writes one of those keys.",
+      "properties": {
+        "backend": {
+          "default": "fcl",
+          "enum": [
+            "capsule",
+            "fcl"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "fixtures": {
+          "items": {
+            "$ref": "#/$defs/FixtureBoxConfig"
+          },
+          "title": "Fixtures",
+          "type": "array"
         },
         "mesh_dir": {
           "anyOf": [
@@ -3212,48 +1117,6 @@
           ],
           "default": null,
           "title": "Planner Margin Mm"
-        },
-        "tool_finger_radius_mm": {
-          "default": 16.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Tool Finger Radius Mm",
-          "type": "number"
-        },
-        "tool_finger_span_mm": {
-          "default": 150.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 500.0,
-          "title": "Tool Finger Span Mm",
-          "type": "number"
-        },
-        "tool_length_mm": {
-          "default": 150.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 1000.0,
-          "title": "Tool Length Mm",
-          "type": "number"
-        },
-        "tool_model": {
-          "default": "capsule",
-          "enum": [
-            "capsule",
-            "finger"
-          ],
-          "title": "Tool Model",
-          "type": "string"
-        },
-        "tool_radius_mm": {
-          "default": 70.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 500.0,
-          "title": "Tool Radius Mm",
-          "type": "number"
-        },
-        "whole_path_judge": {
-          "default": false,
-          "title": "Whole Path Judge",
-          "type": "boolean"
         }
       },
       "title": "SelfCollisionSafetyConfig",
@@ -4060,11 +1923,6 @@
       "additionalProperties": false,
       "description": "UR-specific connection settings.\n\nRead only when ``robot.vendor == \"ur\"``. Vendor blocks are siblings\nunder ``robot:`` so each driver owns its own typed surface.",
       "properties": {
-        "brake_on_halt": {
-          "default": false,
-          "title": "Brake On Halt",
-          "type": "boolean"
-        },
         "ip": {
           "anyOf": [
             {
@@ -4091,56 +1949,6 @@
         }
       },
       "title": "URConfig",
-      "type": "object"
-    },
-    "UncertaintyChannelWeightsConfig": {
-      "additionalProperties": false,
-      "description": "Per-channel weights for the uncertainty fusion layer.\n\nThe five always-produced channels default to ``1.0``; ``topology_risk`` and\n``semantic_confidence`` default to ``0.0`` because the runtime does not always\nproduce them, so an operator opts those two in.",
-      "properties": {
-        "depth_confidence": {
-          "default": 1.0,
-          "minimum": 0.0,
-          "title": "Depth Confidence",
-          "type": "number"
-        },
-        "feasibility_margin": {
-          "default": 1.0,
-          "minimum": 0.0,
-          "title": "Feasibility Margin",
-          "type": "number"
-        },
-        "mask_confidence": {
-          "default": 1.0,
-          "minimum": 0.0,
-          "title": "Mask Confidence",
-          "type": "number"
-        },
-        "occlusion_corridor_risk": {
-          "default": 1.0,
-          "minimum": 0.0,
-          "title": "Occlusion Corridor Risk",
-          "type": "number"
-        },
-        "semantic_confidence": {
-          "default": 0.0,
-          "minimum": 0.0,
-          "title": "Semantic Confidence",
-          "type": "number"
-        },
-        "topology_risk": {
-          "default": 0.0,
-          "minimum": 0.0,
-          "title": "Topology Risk",
-          "type": "number"
-        },
-        "verification_residual": {
-          "default": 1.0,
-          "minimum": 0.0,
-          "title": "Verification Residual",
-          "type": "number"
-        }
-      },
-      "title": "UncertaintyChannelWeightsConfig",
       "type": "object"
     },
     "VacuumGripperConfig": {
@@ -4218,7 +2026,7 @@
     },
     "WorkspaceLimitsConfig": {
       "additionalProperties": false,
-      "description": "Cartesian workspace bounding box in millimetres.",
+      "description": "The box in BASE, millimetres, every commanded pose stays inside (``robot.motion.workspace``).",
       "properties": {
         "x_max": {
           "default": 500.0,
@@ -4256,22 +2064,10 @@
     }
   },
   "additionalProperties": false,
-  "description": "Top-level robot configuration tree.\n\n``vendor`` selects which driver the robot runtime instantiates and defaults to ``ur``.\nVendor-specific transport settings live in named sibling blocks (``ur``, ``sim``, ``dummy``) so\neach driver owns its own typed surface: a UR cell's transport under ``ur``. Only the block\nmatching ``vendor`` is consulted at runtime; the others stay valid but unused. The ``kuka:``\nblock went with the EthernetKRL driver (2026-09-19).\n\nThe config layer imports no robot runtime module, so validation works on hosts that only edit\nor lint YAML.",
+  "description": "Top-level robot configuration tree.\n\n``vendor`` selects which driver the robot runtime instantiates and defaults to ``ur``.\nVendor-specific transport settings live in named sibling blocks (``ur``, ``sim``, ``dummy``) so\neach driver owns its own typed surface: a UR cell's transport under ``ur``. Only the block\nmatching ``vendor`` is consulted at runtime; the others stay valid but unused.\n\nThe config layer imports no robot runtime module, so validation works on hosts that only edit\nor lint YAML.",
   "properties": {
     "calibration": {
       "$ref": "#/$defs/RobotCalibrationConfig"
-    },
-    "default_place_pose": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Default Place Pose"
     },
     "dummy": {
       "$ref": "#/$defs/DummyConfig"
@@ -4282,106 +2078,8 @@
     "gripper": {
       "$ref": "#/$defs/GripperConfig"
     },
-    "home_joint_positions": {
-      "anyOf": [
-        {
-          "items": {
-            "type": "number"
-          },
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Home Joint Positions"
-    },
-    "home_joint_positions_deg": {
-      "anyOf": [
-        {
-          "items": {
-            "type": "number"
-          },
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Home Joint Positions Deg"
-    },
-    "look_joint_positions_deg": {
-      "anyOf": [
-        {
-          "items": {
-            "items": {
-              "type": "number"
-            },
-            "type": "array"
-          },
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Look Joint Positions Deg"
-    },
     "motion": {
       "$ref": "#/$defs/RobotMotionConfig"
-    },
-    "motion_limits": {
-      "$ref": "#/$defs/MotionLimitsConfig"
-    },
-    "named_poses": {
-      "additionalProperties": {
-        "$ref": "#/$defs/NamedPoseConfig"
-      },
-      "title": "Named Poses",
-      "type": "object"
-    },
-    "natural_closing_axis": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "maxItems": 4,
-          "minItems": 4,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Natural Closing Axis"
-    },
-    "place": {
-      "$ref": "#/$defs/RobotPlaceConfig"
-    },
-    "rl": {
-      "$ref": "#/$defs/RobotRLConfig"
-    },
-    "safe_pose": {
-      "$ref": "#/$defs/SafePoseConfig"
     },
     "safety": {
       "$ref": "#/$defs/RobotSafetyConfig"
@@ -4397,9 +2095,6 @@
       "minLength": 1,
       "title": "Vendor",
       "type": "string"
-    },
-    "workspace_limits": {
-      "$ref": "#/$defs/WorkspaceLimitsConfig"
     }
   },
   "title": "RobotConfig",

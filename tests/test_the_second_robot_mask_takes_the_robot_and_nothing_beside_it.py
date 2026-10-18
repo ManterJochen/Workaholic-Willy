@@ -227,7 +227,7 @@ class TheOwnersCellCarriesItsMaskTests(unittest.TestCase):
     def test_the_ur10_the_hande_and_the_d415_inside_out_10_mm_about_them(self) -> None:
         from tests._owner_guard import HOME_DEG, camera_body, owner_cell
 
-        preflight, arm = owner_cell(whole=False)
+        preflight, arm = owner_cell()
         envelope = self_envelope(preflight, arm, np.radians(HOME_DEG))
         assert envelope is not None
         self.assertEqual(8.0 + MASK_NOISE_MM, envelope.mask_reach_mm)
@@ -361,7 +361,7 @@ class TheMaskHangsWhereTheGuardHangsTheRobotTests(unittest.TestCase):
         from tests import _seen_scenes as seen
         from tests._owner_guard import HOME_DEG, owner_cell
 
-        preflight, arm = owner_cell(whole=False)
+        preflight, arm = owner_cell()
         owners_hand = preflight.planner_hand(arm)
         spheres, reach = mask_spheres(owners_hand, "ur10")  # type: ignore[misc]
         frames = yawed_link_transforms_mm("ur10", np.radians(HOME_DEG), 0.0)

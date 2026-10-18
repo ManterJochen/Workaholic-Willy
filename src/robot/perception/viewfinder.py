@@ -2,7 +2,7 @@
 
 An operator console wants to show what the robot is looking at, and ``acquire()`` is the wrong way
 to get it twice over. ``acquire()`` on a real cell throws away five warm-up frames and then runs
-GroundingDINO and SAM2 on the GPU, so a viewer at 8 Hz would run a detector 8 times a second beside
+the cell's detector and SAM2 on the GPU, so a viewer at 8 Hz would run a detector 8 times a second beside
 the pick that needs it. ``acquire()`` on the Isaac source steps the simulator (``vision.py`` warms
 up 20 steps), so a browser tab left open would advance the physics clock of the cell it is watching.
 

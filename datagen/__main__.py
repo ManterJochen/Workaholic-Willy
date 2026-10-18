@@ -408,7 +408,8 @@ def _cmd_label_grasps(config: DatagenConfig, *, name: str, out_root: str | None,
 
 
 def _cmd_predict_masks(config: DatagenConfig, *, name: str, out_root: str | None) -> int:
-    """GPU: GroundingDINO + SAM2 over every rendered view, written as predicted instance maps.
+    """GPU: the cell's own perception (the VLM or RT-DETR, then SAM2) over every rendered view, written as predicted
+    instance maps.
 
     The second mask source. `eval-grasps --masks pred` then re-grades the calculator on those
     instead of the renderer's ground truth.
@@ -1156,7 +1157,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--masks", type=str, default=None, choices=["gt", "pred"],
         help="eval-grasps / camera-probe: which segmentation to feed; the renderer's ground truth "
-             "or GroundingDINO+SAM2's (run predict-masks first). Reported separately, never merged. "
+             "or the cell's own perception's (run predict-masks first). Reported separately, never merged. "
              "Defaults differ by command, deliberately: eval-grasps defaults to `gt` so the "
              "calculator is isolated from the perception ahead of it; camera-probe defaults to "
              "`pred`, the pair a real cell actually gets. For camera-probe `gt` is then the CONTROL; "

@@ -108,9 +108,9 @@ def resolve(name: str, *layers: "Maybe[_T]") -> _T:
     The precedence of this repository, in one function so it cannot be written
     down twice with two answers::
 
-        max_attempts = resolve("max_attempts", explicit, from_config, 5)
-        #                                      ^^^^^^^^  ^^^^^^^^^^^  ^
-        #                                      caller    YAML         code default
+        mode = resolve("default_mode", explicit, from_config, "dense_clutter")
+        #                              ^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+        #                              caller    YAML         code default
 
     `AutonomousGraspService.from_robot_config` resolves `max_attempts` in that
     order: the sentinel first, then the config block, then a literal.

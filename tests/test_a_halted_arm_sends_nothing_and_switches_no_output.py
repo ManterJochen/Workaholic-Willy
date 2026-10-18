@@ -11,8 +11,8 @@ pulse that began before the halt (a bistable valve's coil, a vacuum blow-off), b
 cell is cleared is what cooks it. Never for a toggle hand, whose every change of DO0 moves the jaws.
 
 The latch lives on the UR connection object, which a Disconnect and a Connect of the same built arm keep, and on the dummy
-arm itself. ``halt()`` sends nothing from the thread that calls it: with ``robot.ur.brake_on_halt`` off (Q1 = A, as
-shipped) the move in flight ends as it would have, and nothing after it is sent. ``stop()`` on the UR arm latches it as
+arm itself. ``halt()`` sends nothing from the thread that calls it: the thread that sent the move in flight brakes it
+(every UR since 2026-10-17), and nothing after it is sent. ``stop()`` on the UR arm latches it as
 well; before, it sent ``stopJ`` and ``stopL`` from whatever thread called it, which did nothing to a synchronous move in
 flight. On the dummy ``stop()`` stays the no-op it was.
 
@@ -46,7 +46,7 @@ from src.robot.drivers.ur import connection as connection_module
 from src.robot.core.arm_capabilities import MoveEnd
 from src.robot.drivers.ur.connection import URConnection
 from src.robot.grippers.jaw_io import JawIOGripper
-from tests._halt_fakes import RecordingRtde, SimulatedUr, VirtualClock, ur_arm_on
+from tests._halt_fakes import RecordingRtde, SimulatedUr, ur_arm_on
 
 _POSE = Pose(position_mm=np.array([450.0, -120.0, 320.0]), quaternion_xyzw=np.array([0.0, 1.0, 0.0, 0.0]),
              frame=Frame.BASE, label="halted")
@@ -155,16 +155,16 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
         self.assertFalse(sim.outputs.get(16, False))
 
     def test_clear_halt_gives_motion_and_outputs_back(self) -> None:
-        rtde = RecordingRtde()
-        arm = ur_arm_on(rtde)
+        sim = SimulatedUr()
+        arm = ur_arm_on(sim)
         arm.halt(_REASON)
         arm.clear_halt()
         self.assertIsNone(arm.halt_state())
+        sim.calls.clear()
         self.assertIs(MotionStatus.EXECUTED, arm.move_to_joints(_Q).status)
         arm.set_digital_output(0, True, port=DigitalIOPort.TOOL)
-        # The arm's own steady gate goes first since P0e E9: every motion verb waits once before it sends. Every output
-        # write asks first whether the IO link is up (P0g io1).
-        self.assertEqual(["isSteady", "moveJ", "isConnected", "setToolDigitalOut"], [call[1] for call in rtde.calls])
+        self.assertEqual(1, len(sim.named("moveJ")))
+        self.assertTrue(sim.outputs.get(16, False), "tool DO0 was not switched after the clear")
 
     def test_the_latch_outlives_a_disconnect_and_a_connect_of_the_same_arm(self) -> None:
         """It lives on the connection object, which the arm keeps from build to rebuild (build plan 1.3.5)."""
@@ -218,47 +218,6 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
         self.assertIn("stop()", state.reason)
         self.assertTrue(_cancelled(arm.move_to_joints(_Q)))
 
-    def test_brakes_off_the_move_in_flight_ends_and_nothing_after_it_is_sent(self) -> None:
-        """Q1 = A: the synchronous move runs to its end as it always did, and the next one is never sent."""
-        clock = VirtualClock()
-        sim = SimulatedUr(clock=clock, wait=clock.sleep)
-        conn = sim.attach(URConnection("127.0.0.1", vel=0.5, acc=0.8, clock=clock, sleep=clock.sleep))
-        clock.at(0.2, lambda: conn.request_halt(_REASON))
-        target = [0.6, -1.0, 1.1, -0.6, 1.45, 0.35]
-        self.assertTrue(conn.moveJ(target), "the move in flight is not cut short with brakes off")
-        np.testing.assert_allclose(sim.q, target)
-        state = conn.halt_state()
-        assert state is not None
-        self.assertEqual((True, False, None, "ran_out"), (state.in_motion, state.braked, state.brake_s, state.brake))
-        self.assertFalse(conn.moveJ([0.0, -1.2, 1.3, -0.4, 1.5, 0.2]))
-        self.assertIs(MoveEnd.REFUSED_HALTED, conn.last_move_end)
-        self.assertEqual(1, len(sim.named("moveJ")), "a move was sent after the halt")
-        self.assertEqual([], sim.named("stopJ") + sim.named("stopL"))
-        self.assertIs(False, sim.named("moveJ")[0][3][-1], "brakes off sends the move synchronously")
-
-    def test_brakes_off_a_move_in_flight_that_raises_is_unconfirmed_and_never_called_braked(self) -> None:
-        """Brakes off, halted while a synchronous move runs, and ur_rtde then raises out of that move: nobody can say the
-        arm stands, so the record is unconfirmed and says to press the emergency stop. Nothing braked it, so the record
-        never says it was braked. Red before: the sentence said "the move in flight was braked"."""
-        clock = VirtualClock()
-        sim = SimulatedUr(clock=clock, wait=clock.sleep)
-        conn = sim.attach(URConnection("127.0.0.1", vel=0.5, acc=0.8, clock=clock, sleep=clock.sleep))
-        clock.at(0.2, lambda: conn.request_halt(_REASON))
-
-        def lost_mid_move(*_args: Any) -> bool:
-            clock.sleep(0.3)  # the move runs, and the halt lands inside it
-            raise RuntimeError("RTDE control script is not running!")
-
-        sim.moveJ = lost_mid_move  # type: ignore[method-assign]
-        with self.assertRaises(RuntimeError):
-            conn.moveJ([0.6, -1.0, 1.1, -0.6, 1.45, 0.35])
-        state = conn.halt_state()
-        assert state is not None
-        self.assertEqual((True, False, "unconfirmed"), (state.in_motion, state.braked, state.brake))
-        self.assertIn("press the emergency stop", state.render())
-        self.assertNotIn("braked", state.render(), "a brake that never ran was named")
-        self.assertEqual([], sim.named("stopJ") + sim.named("stopL"), "brakes off sends no stop")
-
     def test_what_both_arms_answer_is_supports_halt(self) -> None:
         self.assertIsInstance(ur_arm_on(RecordingRtde()), SupportsHalt)
         self.assertIsInstance(DummyRobotArm(), SupportsHalt)
@@ -284,9 +243,8 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
         arm.end_output_pulse(1, port=DigitalIOPort.TOOL)
         self.assertEqual(["io", "setToolDigitalOut", [1, False], {}], rtde.calls[-1])
 
-    def test_whether_an_arm_brakes_a_move_in_flight_is_its_setting(self) -> None:
-        self.assertFalse(ur_arm_on(RecordingRtde()).brakes_in_motion())
-        self.assertTrue(ur_arm_on(RecordingRtde(), brake_on_halt=True).brakes_in_motion())
+    def test_every_ur_arm_brakes_a_move_in_flight_and_the_dummy_does_not(self) -> None:
+        self.assertTrue(ur_arm_on(RecordingRtde()).brakes_in_motion())
         self.assertFalse(DummyRobotArm().brakes_in_motion())
 
 

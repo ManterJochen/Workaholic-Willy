@@ -170,16 +170,16 @@ class PlannerStart:
 
 
 def _screened_looks(arm: Any, cfg: "RobotConfig") -> tuple[str, ...]:
-    """Each look ``robot.look_joint_positions_deg`` configures, screened on the planner just started; one line each.
+    """Each look ``robot.motion.look_deg`` configures, screened on the planner just started; one line each.
 
     What a pick would meet at each look, said at the desk before a pick meets it (``planning.band``): clear, in the
     planner's cushion band (straight lines run, a planned move takes a short escape leg), beside the boxes the camera
-    saw (straight lines and moveL run with a hand known empty and open, a planned move into it or out of it is refused),
+    saw (straight lines and moveL run whatever the hand holds, a planned move into it or out of it is refused),
     or refused, an ERROR, with a pose nearby both clear. Only an arm whose class screens
     (``URRobotArm.screen_configuration``); a screen that raises
     is said on its line. Nothing moves: no controller is asked.
     """
-    rows = getattr(cfg, "look_joint_positions_deg", None) or ()
+    rows = getattr(getattr(cfg, "motion", None), "look_deg", None) or ()
     if not rows or not callable(getattr(type(arm), "screen_configuration", None)):
         return ()
     from src.robot.core.joint_positions import JointPositions
@@ -204,7 +204,7 @@ def _unscreened_looks(cfg: "RobotConfig") -> tuple[str, ...]:
     """The one line said where the looks are not screened: no camera section was handed in, so nobody knows which wrist
     cameras hang on the arm, and a screen without a housing that is there reads clear a pose it meets. ``()`` where
     the profile configures no look."""
-    if not (getattr(cfg, "look_joint_positions_deg", None) or ()):
+    if not (getattr(getattr(cfg, "motion", None), "look_deg", None) or ()):
         return ()
     return ("looks not screened: no camera section was handed in, so which wrist cameras hang on the arm is not known, "
             "and a screen without a housing that is there would miss what it meets (Cell.start_planner hands it)",)

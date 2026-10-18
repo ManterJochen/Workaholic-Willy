@@ -18,8 +18,8 @@ A block added tomorrow is covered the day its schema field lands.
 WHAT IT PROVES: the operator's value reaches a runtime carrier.
 WHAT IT DOES NOT PROVE: that the pick path then *acts* on that carrier. A carrier that
 is set and never read would pass here. That second half is covered per-block by the
-behavioural tests (``test_t1_decision_integration``, ``test_g4_uncertainty_rerank``,
-``test_pick_loop``, ...) -- this guard is the net under them, not a replacement.
+behavioural tests (``test_pick_loop``, ``test_grasping_config_wiring``, ...) -- this guard is the
+net under them, not a replacement.
 
 Measured when this landed (2026-08-14): all 23 flags change something. There is
 deliberately **no allow-list of known-unwired flags** -- an empty exception list is
@@ -41,7 +41,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from dataclasses import fields, is_dataclass
-from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,10 +49,8 @@ from typing import Any, Iterator
 import numpy as np
 from pydantic import BaseModel
 
-from src.config.schema import CameraConfig
 from src.config.schema.robot import RobotConfig
 from src.config.schema.robot.grasping_schema import RobotGraspingConfig
-from src.contracts import UNSET, Maybe
 from src.robot.execution.autonomous_grasp import AutonomousGraspService
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
@@ -67,8 +64,10 @@ _BASE_MODE = "dense_clutter"
 # How many flags the schema walker is expected to find. This is not a contract on the
 # schema -- it is a guard on the WALKER: a refactor that renames the convention (say
 # ``*_enabled`` -> ``*_active``) would otherwise silently reduce this test to nothing,
-# and a test that asserts over an empty set passes loudest of all.
-_MIN_EXPECTED_FLAGS = 20
+# and a test that asserts over an empty set passes loudest of all. Three on 2026-10-16, once the blocks
+# nothing read, and the recovery and fusion switches, had left the schema (the owner's cleanup); two on 2026-10-17,
+# once the following of a task's parts was every cell's.
+_MIN_EXPECTED_FLAGS = 2
 
 
 class _PrereqSpec(SimpleNamespace):
@@ -87,66 +86,17 @@ def _prerequisites(flag: str, tmpdir: Path) -> dict[str, Any]:
     the "falls back to another setting" bug this file guards.
     """
 
-    if flag.startswith("feasibility.") and flag != "feasibility.enabled":
-        # Every feasibility signal is gated on ``feas_active`` in build_effective_config.
-        return {"feasibility": {"enabled": True}}
-    if flag == "occlusion.hard_reject_enabled":
-        # A hard reject cannot fire when the corridor analyzer that produces the score
-        # is not running.
-        return {"occlusion": {"directional_enabled": True}}
-    if flag.startswith("ordering.blocker_graph."):
-        # The blocker-graph signals only exist inside the ordering overlay.
-        return {"ordering": {"enabled": True}}
     if flag == "support.container.wall_collision_enabled":
         # The schema itself refuses this without an interior box -- there is no default bin.
         return {"support": {"container": {"interior_min_mm": [0.0, 0.0, 0.0],
                                           "interior_max_mm": [300.0, 200.0, 150.0]}}}
-    if flag.startswith("fusion.geometry.") and flag != "fusion.geometry.enabled":
-        # The multi-camera block's sub-switches only reach the loop through the carrier that
-        # ``fusion.geometry.enabled`` installs; with the parent off there is no carrier to put
-        # them on.
-        return {"fusion": {"geometry": {"enabled": True}}}
-    if flag == "fusion.enabled":
-        # What the switch builds is the fused cameras' CAMERA -> BASE resolvers, and only geometry
-        # fusion over a listed camera asks for them. The camera is the rig `_camera_prerequisite`
-        # calibrates.
-        return {"fusion": {"geometry": {"enabled": True}, "cameras": {_fused_rig_id(): {"enabled": True}}}}
     if flag == "deep_ranker.enabled":
         # The ranker's TREES are gitignored (`.gitignore:52`), so no checkout carries them and
         # `DeepRankerContext.from_config` fail-safes to None on a missing artifact -- the flag is
-        # wired (builders.py:1078) and would still look inert here. Supply a real artifact, the
-        # same way `fusion.enabled` supplies real extrinsics, so the switch has something to load.
+        # wired (builders.py:1078) and would still look inert here. Supply a real artifact, so the
+        # switch has something to load.
         return {"deep_ranker": {"artifact_dir": _write_ranker_artifact(tmpdir)}}
     return {}
-
-
-def _fused_rig_id() -> str:
-    """The shipped RGB-D rig, the one ``_camera_prerequisite`` makes the primary and calibrates."""
-    from src.config import load_config
-
-    data = load_config().camera.model_dump(mode="json")
-    return str(next(r["rig_id"] for r in data["cameras"]["rigs"] if r["source"] == "rgbd"))
-
-
-def _camera_prerequisite(flag: str, tmpdir: Path) -> Maybe[CameraConfig]:
-    """The camera section a flag needs before it can act, or UNSET when it needs none.
-
-    ``fusion.enabled`` builds each fused camera's CAMERA->BASE resolver from the calibration its
-    rig declares, ``camera.cameras.rigs[<id>].extrinsics``, which lives in the camera section
-    rather than under ``grasping``, and a declared artifact that does not load is refused at
-    build. Supply a real persisted artifact there, on the rig ``_prerequisites`` lists.
-    """
-
-    if flag != "fusion.enabled":
-        return UNSET
-    from src.config import load_config
-
-    data = load_config().camera.model_dump(mode="json")
-    rig = next(r for r in data["cameras"]["rigs"] if r["source"] == "rgbd")
-    rig.update({"enabled": True, "extrinsics": {
-        "mounting_mode": "eye_to_hand", "artifact_path": _write_identity_extrinsics(tmpdir)}})
-    data["cameras"]["primary_rig_id"] = rig["rig_id"]
-    return CameraConfig.model_validate(data)
 
 
 def _write_ranker_artifact(directory: Path) -> str:
@@ -181,27 +131,6 @@ def _write_ranker_artifact(directory: Path) -> str:
             encoding="utf-8",
         )
     return str(directory)
-
-
-def _write_identity_extrinsics(directory: Path) -> str:
-    from src.calibration.extrinsics import Extrinsics
-    from src.calibration.serialization import save_extrinsics
-    from src.geometry import Frame, Transform
-
-    artifact = directory / "eth_extrinsics.json"
-    if not artifact.exists():
-        save_extrinsics(
-            artifact,
-            Extrinsics(
-                transform=Transform.identity(from_frame=Frame.CAMERA, to_frame=Frame.BASE),
-                rmse_mm=1.0,
-                max_error_mm=2.0,
-                num_samples=10,
-                captured_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                rig_id="wiring_guard",
-            ),
-        )
-    return str(artifact)
 
 
 # ---------------------------------------------------------------------------
@@ -363,17 +292,16 @@ def _nest(dotted: str, value: object) -> dict[str, Any]:
     return root
 
 
-def _build(grasping: dict[str, Any], camera: Maybe[CameraConfig] = UNSET) -> AutonomousGraspService:
+def _build(grasping: dict[str, Any]) -> AutonomousGraspService:
     config = RobotConfig(
         vendor="dummy",
         gripper={"vendor": "none"},
-        grasping=_merge({"default_mode": _BASE_MODE, "max_attempts": 5}, grasping),
+        grasping=_merge({"default_mode": _BASE_MODE}, grasping),
     )
     return AutonomousGraspService.from_robot_config(
         config,
         calculator=_ScriptedCalculator(),  # type: ignore[arg-type]
         perception=_FakePerception(),
-        camera=camera,
     )
 
 
@@ -398,7 +326,7 @@ class GraspingFlagsReachTheRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(len(flags), len(set(flags)), "duplicate flag paths")
 
-    def test_every_flag_either_moves_the_runtime_or_refuses_to_load(self) -> None:
+    def test_every_flag_moves_the_runtime(self) -> None:
         """The whole point: a config block the cell would silently ignore fails here.
 
         STRENGTHENED 2026-08-17. The original guard asserted that every flag moves the
@@ -413,33 +341,22 @@ class GraspingFlagsReachTheRuntimeTests(unittest.TestCase):
         EITHER move the runtime OR be declared unwired in the schema and REFUSE TO LOAD.
         The one thing it may not be is quietly acceptable and inert. The docstring
         promised that the day an exception list was needed the failure would name the
-        flag rather than hide it -- this is that day, and the list lives in the schema
-        (``RobotGraspingConfig.UNWIRED_SWITCHES``) where an operator meets it, not here.
+        flag rather than hide it -- that list lived in the schema
+        (``RobotGraspingConfig.UNWIRED_SWITCHES``) where an operator met it.
+
+        2026-10-16: the three blocks, and the switch the list still held, left the schema with
+        their code (the owner's cleanup), so the list went with them. Every flag left must move
+        the runtime, and a block removed on purpose is refused at load with its sentence
+        (``src/config/schema/_removed.py``).
         """
 
-        unwired = RobotGraspingConfig.UNWIRED_SWITCHES
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             for flag in _iter_flags():
                 with self.subTest(flag=flag):
                     prereq = _prerequisites(flag, tmpdir)
-                    camera = _camera_prerequisite(flag, tmpdir)
-                    if flag in unwired:
-                        # Declared unwired -> the schema must refuse it, and the refusal
-                        # must SAY SO. A silent acceptance here is the failure mode.
-                        with self.assertRaises(Exception) as ctx:
-                            _build(_merge(prereq, _nest(flag, True)), camera)
-                        # grasping_schema.py:2075 now says "... never reaches the pick path.";
-                        # the migration lower-cased the shout, the refusal is unchanged.
-                        self.assertIn(
-                            "never reaches the pick path",
-                            str(ctx.exception),
-                            f"`grasping.{flag}` is declared unwired but the refusal does "
-                            "not explain itself to the operator who hit it.",
-                        )
-                        continue
-                    before = _observe(_build(prereq, camera))
-                    after = _observe(_build(_merge(prereq, _nest(flag, True)), camera))
+                    before = _observe(_build(prereq))
+                    after = _observe(_build(_merge(prereq, _nest(flag, True))))
                     changed = sorted(
                         key
                         for key in set(before) | set(after)
@@ -453,18 +370,6 @@ class GraspingFlagsReachTheRuntimeTests(unittest.TestCase):
                         "builders.build_effective_config), or -- if it genuinely needs "
                         "another flag first -- declare that in `_prerequisites`.",
                     )
-
-    def test_the_unwired_list_names_only_flags_that_exist(self) -> None:
-        """A stale entry would silently exempt a flag that was wired since -- or a typo."""
-
-        flags = set(_iter_flags())
-        stale = sorted(set(RobotGraspingConfig.UNWIRED_SWITCHES) - flags)
-        self.assertEqual(
-            stale, [],
-            "RobotGraspingConfig.UNWIRED_SWITCHES names switches the schema walker does "
-            "not find. Either they were renamed/removed, or the path is wrong -- both "
-            "mean the exemption is silently covering nothing.",
-        )
 
 
 if __name__ == "__main__":

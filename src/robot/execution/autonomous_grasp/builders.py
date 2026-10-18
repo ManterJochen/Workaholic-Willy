@@ -19,46 +19,22 @@ from typing import TYPE_CHECKING, Any, Optional
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import GRASP_BUILDERS_LOG_FILE, create_robot_logger
 from src.robot.execution.runtime_pick import RuntimePickService
-from src.robot.grasping.collision import (
-    GripperGeometryStrategy,
-    ParallelJawGripperModel,
-    SuctionCupGripperModel,
-)
-from src.robot.grasping.collision.gripper_model import HandSteps
-from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
+from src.robot.grasping.collision.gripper_model import HandSteps, jaw_envelope
+from src.robot.grasping.collision.support_resolver import DeclaredSupport, bench_height_mm
 from src.robot.grasping.motion.grasp_motion import (
     GraspMotion,
     build_execution_policy,
     foreign_policy_refusal,
 )
-from src.robot.grasping.scoring.corridor import CorridorAnalysisConfig
-from src.robot.grasping.scoring.feasibility_score import FeasibilityScoreConfig
-from src.robot.grasping.loop.target_selector import (
-    BlockerGraphConfig,
-    TargetOrderingConfig,
-)
-from src.robot.grasping.scoring.success_probability import (
-    RankingBlendConfig,
-    UncertaintyRerankConfig,
-    try_load_shadow_success_context,
-)
 
 from .config import (
-    EffectiveCorridorConfig,
-    EffectiveDecisionConfig,
-    EffectiveFeasibilityConfig,
+    CELL_RECOVERY,
     EffectiveGraspingConfig,
-    EffectiveOrderingConfig,
-    EffectivePerformanceConfig,
-    EffectiveRecoveryOrchestratorConfig,
-    EffectiveUncertaintyConfig,
-    EffectiveWatchdogConfig,
 )
 
 if TYPE_CHECKING:
     from src.config.schema import CameraConfig
     from src.config.schema.robot import RobotConfig, RobotGraspingConfig
-    from src.config.schema.robot.grasping_schema import GraspingGripperGeometryConfig
     from src.robot.core import Gripper, RobotArm
     from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
     from src.robot.grasping.motion.frame_resolver import FrameResolver
@@ -76,111 +52,15 @@ logger = create_robot_logger("AutonomousGraspBuilders", GRASP_BUILDERS_LOG_FILE)
 #: Orchestrator slots that an overlay fills, in the order ``apply_orchestrator_overlays`` sets them.
 #: Logged as one aggregate line rather than one line per slot.
 _OVERLAY_SLOTS: tuple[str, ...] = (
-    "shadow_success_context",
-    "ranking_blend_config",
-    "uncertainty_rerank_config",
-    "fusion_geometry_config",
-    "corridor_config",
-    "feasibility_config",
-    "target_ordering",
-    "approach_path_policy",
+    "camera_frame_resolvers",
 )
-
-
-def build_gripper_geometry(
-    config: GraspingGripperGeometryConfig,
-    *,
-    past_the_tcp_mm: float = 0.0,
-    palm_thickness_mm: float | None = None,
-    hand_steps: "HandSteps | None" = None,
-) -> GripperGeometryStrategy:
-    """Map the ``grasping.gripper_geometry`` config block onto a collision envelope for the calculator.
-
-    Pass the result as ``GraspCalculator(gripper_model=...)`` so grasp candidates are filtered
-    against the real end-effector shape (parallel-jaw fingers or a suction cup). The default block
-    (``kind: parallel_jaw`` with the shipped dimensions) produces the same envelope as
-    ``ParallelJawGripperModel()`` built with no arguments.
-
-    ``past_the_tcp_mm`` is how far past the TCP the guard holds the jaw's grasp centre
-    (``planning.hand.hand_past_the_tcp_mm``): the whole jaw stands that much further along the approach, its fingertip
-    and pad further ahead of the TCP and its palm nearer, so the calculator plans the hand where the guard judges it.
-    0.0, the default, is the jaw as the registry describes it. ``palm_thickness_mm`` is the registry's housing along
-    the closing axis (``ParallelJawGripperModel.palm_thickness_mm``); ``None`` keeps the palm as wide as the open
-    fingers. ``hand_steps`` are the fingers and the housing as the hand's guard bundle measures them about the grasp
-    centre (``gripper_model.hand_steps_of``), placed with the jaw ``past_the_tcp_mm`` on; ``None`` keeps each one box.
-    """
-    if config.kind == "suction":
-        s = config.suction
-        return SuctionCupGripperModel(
-            cup_radius_mm=s.cup_radius_mm,
-            cup_height_mm=s.cup_height_mm,
-            contact_tip_depth_mm=s.contact_tip_depth_mm,
-            shaft_radius_mm=s.shaft_radius_mm,
-            shaft_length_mm=s.shaft_length_mm,
-            mount_radius_mm=s.mount_radius_mm,
-            mount_depth_mm=s.mount_depth_mm,
-            outer_margin_mm=config.outer_margin_mm,
-        )
-    j = config.parallel_jaw
-    past = max(0.0, float(past_the_tcp_mm))
-    return ParallelJawGripperModel(
-        finger_length_mm=float(j.finger_length_mm) - past,
-        finger_thickness_mm=j.finger_thickness_mm,
-        finger_width_mm=j.finger_width_mm,
-        finger_pad_overlap_mm=j.finger_pad_overlap_mm,
-        fingertip_depth_mm=float(j.fingertip_depth_mm) + past,
-        pad_length_mm=j.pad_length_mm,
-        pad_ahead_mm=float(j.pad_ahead_mm) + past,
-        palm_depth_mm=j.palm_depth_mm,
-        palm_width_mm=j.palm_width_mm,
-        outer_margin_mm=config.outer_margin_mm,
-        palm_thickness_mm=palm_thickness_mm,
-        hand_steps=None if hand_steps is None else HandSteps(
-            finger=tuple(replace(step, z_mm=(step.z_mm[0] + past, step.z_mm[1] + past)) for step in hand_steps.finger),
-            housing=tuple(replace(step, z_mm=(step.z_mm[0] + past, step.z_mm[1] + past)) for step in hand_steps.housing)),
-    )
 
 
 # ``build_subpolicies``, ``build_closed_loop_actors`` and ``assert_closed_loop_actors_wired`` left on
 # 2026-09-29 with the two blocks they turned into runtime objects: ``robot.grasping.verification``
 # (a verifier no pick path consulted) and ``robot.grasping.dense_recovery`` (a recovery policy and
-# strategy stored on the service and consulted by no pick). The recovery a pick runs is
-# ``robot.grasping.recovery``, which the service reads from the effective-config snapshot below.
-
-
-def build_decision_layer(
-    grasping_cfg: Optional[RobotGraspingConfig],
-    *,
-    decision_policy: Optional[DecisionPolicy],
-    decision_engine: Optional[DecisionEngine],
-) -> tuple[Optional[DecisionPolicy], Optional[DecisionEngine]]:
-    """Decision-layer auto-build.
-
-    Caller-supplied policy and engine instances always win over schema-derived
-    ones. A disabled decision block leaves both slots at :data:`None`, so the
-    pick path runs with no decision gate.
-    """
-
-    resolved_decision_policy = decision_policy
-    resolved_decision_engine = decision_engine
-    if resolved_decision_engine is not None and resolved_decision_policy is None:
-        # A caller-supplied engine implicitly defines the policy.
-        resolved_decision_policy = resolved_decision_engine.policy
-    if (
-        resolved_decision_engine is None
-        and grasping_cfg is not None
-        and grasping_cfg.decision.enabled
-    ):
-        dc = grasping_cfg.decision
-        if resolved_decision_policy is None:
-            resolved_decision_policy = DecisionPolicy(
-                enabled=True,
-                auto_uncertainty_threshold=float(dc.auto_uncertainty_threshold),
-                reasons_penalty=float(dc.reasons_penalty),
-                fail_closed_on_real_hardware=bool(dc.fail_closed_on_real_hardware),
-            )
-        resolved_decision_engine = DecisionEngine(policy=resolved_decision_policy)
-    return resolved_decision_policy, resolved_decision_engine
+# strategy stored on the service and consulted by no pick). The recovery a pick runs is fixed since 2026-10-16
+# (``CELL_RECOVERY``), and the service reads it from the effective-config snapshot below.
 
 
 def build_effective_config(
@@ -188,416 +68,33 @@ def build_effective_config(
     *,
     resolved_mode: "GraspMode",
     resolved_max_attempts: int,
+    critical_parts: bool = False,
+    fusion: bool = False,
 ) -> Optional["EffectiveGraspingConfig"]:
     """Build the immutable effective-config snapshot.
 
     Returns :data:`None` when no ``grasping`` block was consulted, which leaves
     :attr:`AutonomousGraspService.effective_config` at :data:`None` on the
-    ``mode``-override path. The ``apply_modes`` filters are enforced here so
-    easy-mode services never see feasibility / occlusion / ordering / recovery
-    overlays even when the operator turns a master flag on.
+    ``mode``-override path. The recovery is the cell's fixed one (:data:`CELL_RECOVERY`), whose ``apply_modes`` filter
+    is enforced here, so an easy-mode service never sees a recovery action. ``critical_parts`` is the cell's
+    ``runtime.task.critical_parts``, and ``fusion`` whether its camera section fuses two or more cameras
+    (:func:`~src.robot.execution.camera_fusion.fused_cameras`).
     """
 
     if grasping_cfg is None:
         return None
 
-    # Feasibility-aware ranking overlay. The ``apply_modes`` filter is
-    # enforced here, which keeps easy mode's +5% cycle-time budget
-    # (``median_cycle_time_increase_pct_max``) intact.
-    feas_cfg = grasping_cfg.feasibility
-    feas_active = bool(feas_cfg.enabled) and (
-        resolved_mode.value in feas_cfg.apply_modes
-    )
+    recovery = CELL_RECOVERY
+    if resolved_mode.value not in recovery.apply_modes:
+        # A resolved mode outside ``apply_modes`` collapses every action to off.
+        recovery = replace(recovery, enabled=False, allowed_actions=(), per_action_budget=())
     return EffectiveGraspingConfig(
         default_mode=resolved_mode,
         max_attempts=resolved_max_attempts,
-        # The three keys the flat contract does not cover (config.py field docstrings say why).
-        # Effective state, the same rule the feasibility, corridor and ordering overlays use: a
-        # block outside its ``apply_modes`` reads False even when the YAML says true, because a
-        # record has to answer whether the block was acting on this attempt. ``fusion`` has no
-        # ``apply_modes``, so it reports the configured value; whether another camera's view was
-        # actually fused depends on the rig delivering and on each camera's calibration, which are
-        # runtime facts no config snapshot can see.
-        success_model_enabled=bool(
-            grasping_cfg.success_model.enabled
-            and resolved_mode.value in grasping_cfg.success_model.apply_modes
-        ),
-        fusion_enabled=bool(grasping_cfg.fusion.enabled),
-        approach_validation_enabled=bool(
-            grasping_cfg.approach_validation.enabled
-            and resolved_mode.value in grasping_cfg.approach_validation.apply_modes
-        ),
-        decision=EffectiveDecisionConfig(
-            enabled=bool(grasping_cfg.decision.enabled),
-            auto_uncertainty_threshold=float(
-                grasping_cfg.decision.auto_uncertainty_threshold
-            ),
-        ),
-        feasibility=EffectiveFeasibilityConfig(
-            enabled=feas_active,
-            score_weight=(
-                float(feas_cfg.weight) if feas_active else 0.0
-            ),
-            ik_quality_enabled=(
-                bool(feas_cfg.ik_quality_enabled) if feas_active else False
-            ),
-            joint_margin_enabled=(
-                bool(feas_cfg.joint_margin_enabled)
-                if feas_active
-                else False
-            ),
-            swept_approach_enabled=(
-                bool(feas_cfg.swept_approach_enabled)
-                if feas_active
-                else False
-            ),
-            swept_approach_top_k=int(
-                feas_cfg.swept_approach_top_k
-            ),
-            # The 4th feasibility signal is gated by the corridor
-            # apply-modes filter so it cannot demote candidates
-            # when the analyzer is not running.
-            corridor_risk_enabled=(
-                feas_active
-                and bool(grasping_cfg.occlusion.directional_enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.occlusion.apply_modes
-                )
-            ),
-            corridor_risk_weight=0.0,
-        ),
-        # Occlusion / corridor overlay. The ``apply_modes`` filter on
-        # ``occlusion`` is enforced here, so an easy-mode service never
-        # runs the analyzer.
-        corridor=EffectiveCorridorConfig(
-            directional_enabled=(
-                bool(grasping_cfg.occlusion.directional_enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.occlusion.apply_modes
-                )
-            ),
-            hard_reject_enabled=(
-                bool(grasping_cfg.occlusion.hard_reject_enabled)
-                and bool(grasping_cfg.occlusion.directional_enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.occlusion.apply_modes
-                )
-            ),
-            top_k=int(grasping_cfg.occlusion.top_k),
-            radius_mm=float(
-                grasping_cfg.occlusion.corridor_radius_mm
-            ),
-            step_mm=float(
-                grasping_cfg.occlusion.corridor_step_mm
-            ),
-            max_distance_mm=float(
-                grasping_cfg.occlusion.corridor_max_distance_mm
-            ),
-            mask_fusion_weight=float(
-                grasping_cfg.occlusion.mask_fusion_weight
-            ),
-            hard_reject_confidence_threshold=float(
-                grasping_cfg.occlusion.hard_reject_confidence_threshold
-            ),
-        ),
-        # Clutter-aware target ordering. Easy mode is locked out by
-        # ``apply_modes`` regardless of the master flag; when inactive
-        # every signal reads off.
-        ordering=EffectiveOrderingConfig(
-            enabled=(
-                bool(grasping_cfg.ordering.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.ordering.apply_modes
-                )
-            ),
-            unlock_weight=(
-                float(grasping_cfg.ordering.unlock_weight)
-                if bool(grasping_cfg.ordering.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.ordering.apply_modes
-                )
-                else 0.0
-            ),
-            max_local_score_drop=float(
-                grasping_cfg.ordering.max_local_score_drop
-            ),
-            mask_adjacency_enabled=(
-                bool(
-                    grasping_cfg.ordering.blocker_graph.mask_adjacency_enabled
-                )
-                and bool(grasping_cfg.ordering.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.ordering.apply_modes
-                )
-            ),
-            depth_only_enabled=(
-                bool(grasping_cfg.ordering.blocker_graph.depth_only_enabled)
-                and bool(grasping_cfg.ordering.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.ordering.apply_modes
-                )
-            ),
-            corridor_overlap_enabled=(
-                bool(
-                    grasping_cfg.ordering.blocker_graph.corridor_overlap_enabled
-                )
-                and bool(grasping_cfg.ordering.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.ordering.apply_modes
-                )
-            ),
-            adjacency_radius_px=int(
-                grasping_cfg.ordering.blocker_graph.adjacency_radius_px
-            ),
-            depth_tolerance_mm=float(
-                grasping_cfg.ordering.blocker_graph.depth_tolerance_mm
-            ),
-        ),
-        # Recovery orchestrator. Easy is permanently locked out by
-        # ``apply_modes``. A resolved mode outside ``apply_modes``
-        # collapses every flag to its off default.
-        recovery_orchestrator=EffectiveRecoveryOrchestratorConfig(
-            enabled=(
-                bool(grasping_cfg.recovery.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.recovery.apply_modes
-                )
-            ),
-            max_actions=(
-                int(grasping_cfg.recovery.max_recovery_actions)
-                if bool(grasping_cfg.recovery.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.recovery.apply_modes
-                )
-                else 2
-            ),
-            apply_modes=tuple(
-                grasping_cfg.recovery.apply_modes
-            ),
-            allowed_actions=(
-                tuple(grasping_cfg.recovery.allowed_actions)
-                if bool(grasping_cfg.recovery.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.recovery.apply_modes
-                )
-                else ()
-            ),
-            per_action_budget=(
-                tuple(
-                    (str(action), int(count))
-                    for action, count in grasping_cfg.recovery.per_action_budget
-                )
-                if bool(grasping_cfg.recovery.enabled)
-                and (
-                    resolved_mode.value
-                    in grasping_cfg.recovery.apply_modes
-                )
-                else ()
-            ),
-            blocker_grasp_tries=int(grasping_cfg.recovery.blocker_grasp_tries),
-            critical_parts=bool(grasping_cfg.recovery.critical_parts),
-            blocker_into_the_place=bool(getattr(grasping_cfg.recovery, "blocker_into_the_place", True)),
-            # Emitted unconditionally, even when the mode gate above zeroes the actions: it is the
-            # operator's declared bound, and a bound is not dropped because a gate is closed. The
-            # consumer builds an envelope from it whenever recovery is on: container_agitate needs
-            # one, and for the push it only narrows the push box.
-            fixture=(
-                (
-                    # Unpacked rather than comprehended: the schema pins both as 3-tuples, and a
-                    # generator would widen them to `tuple[float, ...]`, which is exactly the shape
-                    # a 2- or 4-element mistake would take.
-                    (
-                        float(grasping_cfg.recovery.fixture.center_mm[0]),
-                        float(grasping_cfg.recovery.fixture.center_mm[1]),
-                        float(grasping_cfg.recovery.fixture.center_mm[2]),
-                    ),
-                    (
-                        float(grasping_cfg.recovery.fixture.half_extents_mm[0]),
-                        float(grasping_cfg.recovery.fixture.half_extents_mm[1]),
-                        float(grasping_cfg.recovery.fixture.half_extents_mm[2]),
-                    ),
-                    float(grasping_cfg.recovery.fixture.max_nudge_mm),
-                )
-                if grasping_cfg.recovery.fixture is not None
-                else None
-            ),
-            # The push a campaign makes when nobody asks for another distance; the fixture's max_nudge_mm above is
-            # the ceiling a request is held to (push_planner.resolve_push_distance). Without a fixture: 30 mm, under
-            # the hard cap of 50 mm.
-            push_distance_mm=(
-                float(grasping_cfg.recovery.fixture.push_distance_mm)
-                if grasping_cfg.recovery.fixture is not None
-                else 30.0
-            ),
-        ),
-        uncertainty=EffectiveUncertaintyConfig(
-            enabled=bool(grasping_cfg.uncertainty.enabled),
-            # When the layer is enabled its own key wins; otherwise the
-            # value mirrors ``decision.auto_uncertainty_threshold``.
-            fail_closed_threshold=(
-                float(grasping_cfg.uncertainty.fail_closed_threshold)
-                if bool(grasping_cfg.uncertainty.enabled)
-                else float(grasping_cfg.decision.auto_uncertainty_threshold)
-            ),
-            apply_modes=tuple(
-                grasping_cfg.uncertainty.apply_modes
-            ),
-            weights=(
-                (
-                    "depth_confidence",
-                    float(grasping_cfg.uncertainty.weights.depth_confidence),
-                ),
-                (
-                    "mask_confidence",
-                    float(grasping_cfg.uncertainty.weights.mask_confidence),
-                ),
-                (
-                    "occlusion_corridor_risk",
-                    float(
-                        grasping_cfg.uncertainty.weights.occlusion_corridor_risk
-                    ),
-                ),
-                (
-                    "feasibility_margin",
-                    float(grasping_cfg.uncertainty.weights.feasibility_margin),
-                ),
-                (
-                    "verification_residual",
-                    float(
-                        grasping_cfg.uncertainty.weights.verification_residual
-                    ),
-                ),
-                (
-                    "topology_risk",
-                    float(grasping_cfg.uncertainty.weights.topology_risk),
-                ),
-                (
-                    "semantic_confidence",
-                    float(
-                        grasping_cfg.uncertainty.weights.semantic_confidence
-                    ),
-                ),
-            ),
-            ranking_penalty_weight=float(
-                grasping_cfg.uncertainty.ranking_penalty_weight
-            ),
-            recovery_aggressive_threshold=float(
-                grasping_cfg.uncertainty.recovery_aggressive_threshold
-            ),
-            channel_disagreement_threshold=float(
-                grasping_cfg.uncertainty.channel_disagreement_threshold
-            ),
-            calibration_artifact_path=(
-                grasping_cfg.uncertainty.calibration_artifact_path
-            ),
-        ),
-        # Drift + OOD watchdog overlay.
-        watchdog=EffectiveWatchdogConfig(
-            mode=str(grasping_cfg.watchdog.mode),
-            window_size=int(grasping_cfg.watchdog.window_size),
-            min_samples_for_trend=int(
-                grasping_cfg.watchdog.min_samples_for_trend
-            ),
-            calibration_delta_moderate_mm=float(
-                grasping_cfg.watchdog.calibration_delta_moderate_mm
-            ),
-            calibration_delta_high_mm=float(
-                grasping_cfg.watchdog.calibration_delta_high_mm
-            ),
-            calibration_delta_severe_mm=float(
-                grasping_cfg.watchdog.calibration_delta_severe_mm
-            ),
-            depth_confidence_shift_moderate=float(
-                grasping_cfg.watchdog.depth_confidence_shift_moderate
-            ),
-            depth_confidence_shift_high=float(
-                grasping_cfg.watchdog.depth_confidence_shift_high
-            ),
-            depth_confidence_shift_severe=float(
-                grasping_cfg.watchdog.depth_confidence_shift_severe
-            ),
-            fail_closed_rate_moderate=float(
-                grasping_cfg.watchdog.fail_closed_rate_moderate
-            ),
-            fail_closed_rate_high=float(
-                grasping_cfg.watchdog.fail_closed_rate_high
-            ),
-            fail_closed_rate_severe=float(
-                grasping_cfg.watchdog.fail_closed_rate_severe
-            ),
-            hand_eye_residual_trend_moderate_mm=float(
-                grasping_cfg.watchdog.hand_eye_residual_trend_moderate_mm
-            ),
-            hand_eye_residual_trend_high_mm=float(
-                grasping_cfg.watchdog.hand_eye_residual_trend_high_mm
-            ),
-            hand_eye_residual_trend_severe_mm=float(
-                grasping_cfg.watchdog.hand_eye_residual_trend_severe_mm
-            ),
-            verification_residual_trend_moderate_mm=float(
-                grasping_cfg.watchdog.verification_residual_trend_moderate_mm
-            ),
-            verification_residual_trend_high_mm=float(
-                grasping_cfg.watchdog.verification_residual_trend_high_mm
-            ),
-            verification_residual_trend_severe_mm=float(
-                grasping_cfg.watchdog.verification_residual_trend_severe_mm
-            ),
-            ood_score_moderate=float(
-                grasping_cfg.watchdog.ood_score_moderate
-            ),
-            ood_score_high=float(
-                grasping_cfg.watchdog.ood_score_high
-            ),
-            ood_score_severe=float(
-                grasping_cfg.watchdog.ood_score_severe
-            ),
-            block_modes=tuple(grasping_cfg.watchdog.block_modes),
-        ),
-        performance=EffectivePerformanceConfig(
-            enabled=bool(grasping_cfg.performance.enabled),
-            decision_latency_slo_ms=float(
-                grasping_cfg.performance.decision_latency_slo_ms
-            ),
-            ranking_latency_slo_ms=float(
-                grasping_cfg.performance.ranking_latency_slo_ms
-            ),
-            fusion_latency_slo_ms=float(
-                grasping_cfg.performance.fusion_latency_slo_ms
-            ),
-            decision_timeout_ms=float(
-                grasping_cfg.performance.decision_timeout_ms
-            ),
-            ranking_timeout_ms=float(
-                grasping_cfg.performance.ranking_timeout_ms
-            ),
-            fusion_timeout_ms=float(
-                grasping_cfg.performance.fusion_timeout_ms
-            ),
-            model_fallback_policy=str(
-                grasping_cfg.performance.model_fallback_policy
-            ),
-            fusion_fallback_policy=str(
-                grasping_cfg.performance.fusion_fallback_policy
-            ),
-            emit_breach_events=bool(
-                grasping_cfg.performance.emit_breach_events
-            ),
-            breach_window_size=int(
-                grasping_cfg.performance.breach_window_size
-            ),
-        ),
+        # Whether the camera section fuses its cameras; whether another camera's view was actually fused depends on the
+        # rig delivering, a runtime fact no config snapshot can see.
+        fusion_enabled=bool(fusion),
+        recovery_orchestrator=replace(recovery, critical_parts=bool(critical_parts)),
     )
 
 
@@ -637,11 +134,10 @@ def build_config_frame_resolver(
 
     The calibration is declared on the rig, ``camera.cameras.rigs[<primary>].extrinsics``. An
     eye_to_hand rig gives a :class:`StaticCameraToBaseResolver`; an eye_in_hand rig gives an
-    :class:`EyeInHandFrameResolver`, which composes the tool pose. It does not wait for
-    ``fusion.enabled``: this resolver is what turns every grasp into the base frame, and
-    ``fusion.enabled`` gates only the other cameras' resolvers (:func:`build_config_frame_resolvers`).
-    ``grasping_cfg`` is kept for its callers and not read, because the calibration is not declared
-    in the grasping block.
+    :class:`EyeInHandFrameResolver`, which composes the tool pose. Every cell builds it, one camera or
+    several: this resolver is what turns every grasp into the base frame, and a fused cell builds the
+    other cameras' beside it (:func:`build_config_frame_resolvers`). ``grasping_cfg`` is kept for its
+    callers and not read, because the calibration is not declared in the grasping block.
 
     Returns ``None`` when no camera section is handed in or the primary rig declares no
     calibration. Fail-closed: a declared artifact that does not load raises at construction, naming
@@ -657,55 +153,23 @@ def build_config_frame_resolver(
     return _resolver_for_rig(primary, extrinsics)
 
 
-def build_config_frame_resolvers(
-    grasping_cfg: Optional[RobotGraspingConfig],
-    *,
-    camera: "Maybe[CameraConfig]" = UNSET,
-) -> dict[str, "FrameResolver"]:
-    """A ``{camera_id -> FrameResolver}`` map for every camera ``grasping.fusion.cameras`` fuses.
+def build_config_frame_resolvers(camera: "Maybe[CameraConfig]" = UNSET) -> dict[str, "FrameResolver"]:
+    """A ``{camera_id -> FrameResolver}`` map for every camera the cell fuses, the primary among them.
 
-    Each enabled camera's resolver is built from its rig's calibration,
-    ``camera.cameras.rigs[<id>].extrinsics``, through the one loader and by mounting, as
-    :func:`build_config_frame_resolver` does. Returns ``{}`` (byte-identical) when ``grasping_cfg``
-    is ``None``, fusion is disabled, or the map is empty; disabled cameras are skipped.
+    The cameras are :func:`~src.robot.execution.camera_fusion.fused_cameras`: every enabled rig that declares its
+    calibration, RGB-D or stereo, where two or more do (the owner, 2026-10-16: no switch). Each resolver is built from
+    its rig's ``camera.cameras.rigs[<id>].extrinsics``, through the one loader and by mounting, as
+    :func:`build_config_frame_resolver` does. ``{}`` where the cell fuses none, or no camera section is handed in.
 
-    Fail-closed, because an incomplete multi-view map must not run silently: a map that names
-    cameras with no camera section handed in raises, and so do an id that names no rig, a rig that
-    declares no calibration, and an artifact that does not load.
+    Fail-closed: a declared artifact that does not load raises at construction, naming the rig key.
     """
-    if grasping_cfg is None:
-        return {}
-    fusion_cfg = getattr(grasping_cfg, "fusion", None)
-    if fusion_cfg is None or not bool(getattr(fusion_cfg, "enabled", False)):
-        return {}
-    cameras = getattr(fusion_cfg, "cameras", None) or {}
-    if not cameras:
-        return {}
+    from src.robot.execution.camera_fusion import fused_cameras  # noqa: PLC0415
+
     if not chosen(camera):
-        raise RuntimeError(
-            f"grasping.fusion.cameras names {sorted(cameras)} and no camera section was handed in, so their "
-            "calibrations, declared on their rigs as camera.cameras.rigs[<id>].extrinsics, cannot be read. "
-            "Pass camera= the camera section of the same tree."
-        )
+        return {}
     rigs = {rig.rig_id: rig for rig in camera.cameras.rigs}
-    resolvers: dict[str, "FrameResolver"] = {}
-    for cam_id, cam_cfg in cameras.items():
-        if not bool(getattr(cam_cfg, "enabled", True)):
-            continue
-        if cam_id not in rigs:
-            raise RuntimeError(
-                f"grasping.fusion.cameras names {cam_id!r}, which is not a rig in camera.cameras.rigs "
-                f"({sorted(rigs)}), so its calibration has nowhere to be declared."
-            )
-        extrinsics = getattr(rigs[cam_id], "extrinsics", None)
-        if extrinsics is None:
-            raise RuntimeError(
-                f"grasping.fusion.cameras names {cam_id!r} and camera.cameras.rigs[{cam_id!r}].extrinsics is not "
-                "declared, so the multi-view resolver map would be incomplete. Calibrate the camera and paste the "
-                "block the calibration CLI prints, or set the camera enabled: false in grasping.fusion.cameras."
-            )
-        resolvers[cam_id] = _resolver_for_rig(cam_id, extrinsics)
-    return resolvers
+    return {cam_id: _resolver_for_rig(cam_id, rigs[cam_id].extrinsics)
+            for cam_id in fused_cameras(camera.cameras.rigs, camera.cameras.primary_rig_id)}
 
 
 def build_runtime(
@@ -740,7 +204,6 @@ def build_runtime(
         calculator=calculator,
         perception=perception,
         max_attempts=resolved_max_attempts,
-        grasp_sampling_mode=profile.sampling_mode,
         standoff_mm=standoff_mm,
         retreat_mm=retreat_mm,
         policy=policy,
@@ -771,11 +234,11 @@ def build_runtime(
     policy_built = runtime.orchestrator.policy
     pre_open = getattr(policy_built, "pre_open_width_mm", None) if policy_built is not None else None
     logger.info(
-        "runtime pick service built: arm=%s gripper=%s sampling=%s max_attempts=%d "
+        "runtime pick service built: arm=%s gripper=%s mode=%s max_attempts=%d "
         "standoff=%.1f mm retreat=%.1f mm frame_resolver=%s pre_open=%s",
         type(arm).__name__ if arm is not None else "from-config",
         type(gripper).__name__ if gripper is not None else "from-config",
-        profile.sampling_mode.value, int(resolved_max_attempts), float(standoff_mm), float(retreat_mm),
+        profile.mode.value, int(resolved_max_attempts), float(standoff_mm), float(retreat_mm),
         type(frame_resolver).__name__ if frame_resolver is not None else "none",
         f"{float(pre_open):.2f} mm" if pre_open is not None else "none",
     )
@@ -787,17 +250,19 @@ def apply_orchestrator_overlays(
     grasping_cfg: Optional[RobotGraspingConfig],
     *,
     resolved_mode: "GraspMode",
-    primary_camera_id: str | None = None,
     #: The camera section of the same tree, whose rigs declare each fused camera's calibration.
     camera: "Maybe[CameraConfig]" = UNSET,
     #: How far past the TCP the guard holds the jaw (``planning.hand.hand_past_the_tcp_mm``): the calculator's jaw stands
-    #: there too (``build_gripper_geometry``).
+    #: there too (``gripper_model.jaw_envelope``).
     hand_past_the_tcp_mm: float = 0.0,
-    #: The registry's housing along the closing axis (``build_gripper_geometry``); ``None`` where it says none.
+    #: The registry's housing along the closing axis (``gripper_model.jaw_envelope``); ``None`` where it says none.
     palm_thickness_mm: float | None = None,
-    #: The fingers and the housing as the hand's guard bundle measures them (``build_gripper_geometry``); ``None`` where
-    #: none was measured.
+    #: The fingers and the housing as the hand's guard bundle measures them (``gripper_model.jaw_envelope``); ``None``
+    #: where none was measured.
     hand_steps: "HandSteps | None" = None,
+    #: The tree the cell is built from: the hand its calculator plans (``gripper_model.jaw_envelope``) and the bench its
+    #: parts stand on (``support_resolver.bench_height_mm``). ``None`` plans the 2F-85 over a bench at 0 mm.
+    robot_cfg: "RobotConfig | None" = None,
 ) -> None:
     """Apply the orchestrator overlays in place.
 
@@ -817,25 +282,21 @@ def apply_orchestrator_overlays(
     #
     # Set first, before any of the optional overlays below: a pick path that does not know its own
     # end effector or its own table is wrong regardless of which advanced block is enabled.
-    runtime.orchestrator.gripper_model = build_gripper_geometry(grasping_cfg.gripper_geometry,
-                                                                past_the_tcp_mm=hand_past_the_tcp_mm,
-                                                                palm_thickness_mm=palm_thickness_mm,
-                                                                hand_steps=hand_steps)
+    runtime.orchestrator.gripper_model = jaw_envelope(robot_cfg, past_the_tcp_mm=hand_past_the_tcp_mm,
+                                                      palm_thickness_mm=palm_thickness_mm, hand_steps=hand_steps)
     if hand_past_the_tcp_mm > 0.0:
         logger.info("the guard holds the jaw's grasp centre %.2f mm past the declared TCP: the calculator plans the hand "
                     "there too (the preflight's grasp centre row names the difference)", float(hand_past_the_tcp_mm))
-    runtime.orchestrator.support_config = grasping_cfg.support
-    # A task follows its parts from pick to pick where the cell asks (``follow_parts``, the owner, 2026-10-09): the built
-    # cell carries the block and the task reads it there, so the switch reaches the run this cell runs.
-    follow = getattr(grasping_cfg, "follow_parts", None)
-    runtime.orchestrator.follow_parts = follow if getattr(follow, "enabled", False) is True else None
-    # The parts beside the named ones read off the depth (``name_neighbours``, the owner, 2026-10-12).
-    runtime.orchestrator.name_neighbours = bool(getattr(grasping_cfg, "name_neighbours", False))
+    runtime.orchestrator.declared_support = DeclaredSupport(height_mm=bench_height_mm(robot_cfg),
+                                                            container=grasping_cfg.support.container)
+    # A task follows its parts from pick to pick (the owner, 2026-10-09), and a frame carries the parts beside the named
+    # ones, read off the depth (the owner, 2026-10-12): every built cell's since 2026-10-17, as the owner's ran them.
+    runtime.orchestrator.follow_parts = True
+    runtime.orchestrator.name_neighbours = True
 
-    # The learned grasp ranker, in shadow. Loaded eagerly and fail-safe, exactly as the
-    # success-probability model below is: a missing artifact, a spec that disagrees with the model's
-    # own column list, or any I/O error yields ``None`` plus one warning, and ``None`` in this slot
-    # is the byte-identical path: nothing is scored and no telemetry key appears.
+    # The learned grasp ranker, in shadow. Loaded eagerly and fail-safe: a missing artifact, a spec that disagrees with
+    # the model's own column list, or any I/O error yields ``None`` plus one warning, and ``None`` in this slot is the
+    # byte-identical path: nothing is scored and no telemetry key appears.
     #
     # Disabled by default. It changes no ordering and no decision; it is watched on real picks
     # through `would_change_top1` and nothing more.
@@ -844,212 +305,32 @@ def apply_orchestrator_overlays(
     runtime.orchestrator.deep_ranker_context = DeepRankerContext.from_config(
         getattr(grasping_cfg, "deep_ranker", None))
 
-    # Eagerly load the success-probability shadow model. The loader is
-    # fail-safe: a missing artifact, schema mismatch, or any I/O error
-    # yields ``None`` and a single ``WARNING`` log entry. ``None`` is
-    # then plumbed into the orchestrator slot, which means the runtime
-    # path is byte-identical (no metadata mutation, no telemetry on the
-    # report). The mode label is the raw resolved mode value so the
-    # predictor's one-hot bucketing sees the operator's intent rather
-    # than the schema default.
-    sm_cfg = grasping_cfg.success_model
-    # Thread the configured lifecycle_phase (duck-typed via getattr so the execution layer stays free of
-    # config-schema imports; defaults to "shadow", byte-identical). canary/active still fail closed to
-    # ctx=None unless the artifact carries a valid promotion.json.
-    lifecycle_phase = str(getattr(sm_cfg, "lifecycle_phase", "shadow"))
-    shadow_ctx = try_load_shadow_success_context(
-        enabled=bool(sm_cfg.enabled),
-        artifact_dir=str(sm_cfg.artifact_dir),
-        mode_label=resolved_mode.value,
-        version_label="v1",
-        lifecycle_phase=lifecycle_phase,
-    )
-    if shadow_ctx is not None:
-        runtime.orchestrator.shadow_success_context = shadow_ctx
-    # Bounded probability-blend reranker config, wired only when the
-    # operator opted in via ``success_model.ranking_blend_enabled=True``.
-    # The carrier validates the contract (weight in [0.0, 0.5],
-    # dense-only modes). With ``enabled=False`` the orchestrator slot
-    # stays at its default ``None`` so
-    # :func:`maybe_blend_rerank_candidates` returns ``(candidates,
-    # None)``: the silent byte-identical path.
-    if bool(sm_cfg.ranking_blend_enabled):
-        runtime.orchestrator.ranking_blend_config = RankingBlendConfig(
-            enabled=True,
-            weight=float(sm_cfg.ranking_blend_weight),
-            modes=tuple(sm_cfg.ranking_blend_modes),
-        )
-    # Per-candidate uncertainty re-rank config, the consumer of the
-    # corridor-risk producer. Wired only when ``grasping.uncertainty.rerank_enabled``.
-    # The producer (GraspCalculator.corridor_risk_per_candidate) is turned on by the
-    # calculator's owner at construction (the sim runners read the same flag); when
-    # the producer is off the re-rank no-ops (skip_reason=missing_uncertainty).
-    # Default-off leaves the slot ``None``, which is the byte-identical path.
-    unc_cfg = grasping_cfg.uncertainty
-    if bool(getattr(unc_cfg, "rerank_enabled", False)):
-        runtime.orchestrator.uncertainty_rerank_config = UncertaintyRerankConfig(
-            enabled=True,
-            weight=float(unc_cfg.rerank_weight),
-            modes=tuple(unc_cfg.rerank_modes),
-        )
-    # Multi-camera geometry fusion. It changes the grasp candidates themselves by giving the
-    # generator each object's surface as every camera that can identify it sees it: measured on
-    # the datagen reference, top-1 is 43.50 % single-view against 55.93 % fused.
+    # Multi-camera fusion, by itself wherever the camera section declares two or more enabled, calibrated rigs, RGB-D or
+    # stereo (the owner, 2026-10-16: no switch). It changes the grasp candidates themselves by giving the generator each
+    # object's surface as every camera that can identify it sees it: measured on the datagen reference, top-1 is
+    # 43.50 % single-view against 55.93 % fused.
     #
-    # It needs ``fusion.enabled`` as well as its own switch. ``build_config_frame_resolvers`` builds
-    # the other cameras' CAMERA to BASE resolvers only while ``fusion.enabled`` is on and returns an
-    # empty map otherwise, and a camera with no resolver has its view dropped at the pick with a
-    # warning, so this switch alone leaves the cell single-view (``CameraFusionPlan`` names it).
-    #
-    # The per-camera resolver map is built here rather than in the loop because it is fail-closed
-    # at construction: an enabled camera whose calibration artifact will not load raises while an
-    # operator is watching, instead of degrading to single-view later. The perception rig itself is
-    # not config, it is a live device handle, so the caller passes it in; until it does, the loop
-    # logs that it is running single-view rather than pretending to fuse.
-    geometry_cfg = getattr(grasping_cfg.fusion, "geometry", None)
-    if geometry_cfg is not None and bool(getattr(geometry_cfg, "enabled", False)):
-        runtime.orchestrator.fusion_geometry_config = geometry_cfg
-        runtime.orchestrator.camera_frame_resolvers = build_config_frame_resolvers(grasping_cfg, camera=camera)
-        # What the config asked for, separately from what resolved. See
-        # `BinPickingOrchestrator.configured_camera_ids`: the refusal policy needs the requested
-        # set, not the resolver map, which is empty whenever `fusion.enabled` is false. Enabled
-        # cameras only: a camera switched off was not asked for.
-        _fusion = getattr(grasping_cfg, "fusion", None)
-        _cameras = getattr(_fusion, "cameras", None) or {}
-        # Every camera except the primary. The map names the cell's whole camera inventory, the
-        # primary included, so that one list answers "how many cameras does this cell have" and the
-        # simulator and a real cell mean the same thing by it. What this attribute means is narrower:
-        # which cameras a pick waits for. The primary delivers through `perception`, never through
-        # the extra-camera rig, so expecting it there makes it permanently missing, which is a
-        # warning on every pick under `degrade` and a raised refusal on every pick under `refuse`.
-        runtime.orchestrator.configured_camera_ids = tuple(
-            sorted(cam_id for cam_id, cam in _cameras.items()
-                   if bool(getattr(cam, "enabled", True)) and cam_id != primary_camera_id))
-    # The shortfall is reported once at construction, not once per pick.
-    #
-    # `on_camera_unavailable` governs the case where a camera the config asked for did not deliver.
-    # It cannot govern the case where no second camera was ever asked for, because a cell with one
-    # camera is a legitimate cell and refusing it would be wrong. Single-view is a measured cost
-    # rather than a neutral choice: on the datagen reference, top-1 goes 43.50 % single-view
-    # against 55.93 % fused. An operator who believes they built a multi-camera cell and
-    # built a one-camera cell has no other signal.
-    #
-    # One line at construction: a warning below two calibrated cameras, info otherwise. It sits
-    # next to where the resolvers are built and fires whether or not fusion geometry is enabled, so
-    # the case of fusion enabled with no second camera is named.
-    _fusion_all = getattr(grasping_cfg, "fusion", None)
-    _all_cameras = getattr(_fusion_all, "cameras", None) or {}
-    # A camera counts when its rig declares a calibration: the map names which cameras take part,
-    # and the calibration is declared on the rig. With no camera section handed in, no camera can be
-    # counted as calibrated.
-    _rigs = {rig.rig_id: rig for rig in camera.cameras.rigs} if chosen(camera) else {}
-    _calibrated = sorted(cam_id for cam_id, cam in _all_cameras.items()
-                         if bool(getattr(cam, "enabled", True))
-                         and getattr(_rigs.get(cam_id), "extrinsics", None) is not None)
-    # An eye-in-hand rig is a second viewpoint from one device, so it counts. The wrist camera sees
-    # the far side of a part the fixed camera cannot, which is the whole reason fusion helps.
-    _eih = sorted(cam_id for cam_id in _calibrated
-                  if str(getattr(getattr(_rigs[cam_id], "extrinsics", None), "mounting_mode", "")) == "eye_in_hand")
-    if len(_calibrated) < 2:
-        logger.warning(
-            "this cell has %d calibrated camera(s) (%s) and will grasp SINGLE-VIEW. MEASURED on the "
-            "datagen reference, fusing a second view moves top-1 from 43.50 %% to 55.93 %%. Add a "
-            "camera to grasping.fusion.cameras and declare its calibration on its rig, "
-            "camera.cameras.rigs[<id>].extrinsics, or accept single-view deliberately.",
-            len(_calibrated), ", ".join(_calibrated) or "none")
-    else:
-        logger.info("this cell has %d calibrated camera(s): %s (%d eye-in-hand)",
-                    len(_calibrated), ", ".join(_calibrated), len(_eih))
+    # The per-camera resolver map is built here rather than in the loop because it is fail-closed at construction: a
+    # camera whose calibration artifact will not load raises while an operator is watching, instead of degrading to
+    # single-view later. The other cameras' rig is a live device handle, so the caller passes it in; until it does,
+    # the loop logs that it is running single-view rather than pretending to fuse.
+    from src.robot.execution.camera_fusion import CameraFusionPlan, gives_depth  # noqa: PLC0415
 
-    # Always set ``mode_label`` so the orchestrator can route its mode-aware gate, the approach
-    # validation below (``mode_label in _approach_path_modes``), correctly.
-    runtime.orchestrator.mode_label = str(resolved_mode.value)
-
-    # Clutter-aware target ordering, assigned to ``target_ordering`` below. The orchestrator
-    # carries the ordering path: a ``target_ordering`` slot, a blocker graph, and `select_target`,
-    # which re-picks the winner when a lower-scoring grasp unlocks more of the scene. Every runtime
-    # field maps 1:1 onto the schema block, same names and same defaults, and ``apply_modes`` is
-    # enforced here so a block outside its modes stays byte-identical rather than half-wired.
-    #
-    # Ordering cannot be judged on one pick. It changes which object is taken first, so a
-    # single-target scene shows nothing by construction and a lift count over one pick is the wrong
-    # metric entirely. The measurement is a full bin-clearing sequence.
-    #
-    # Directional occlusion, the scoring half only. `analyze_corridor` and the per-candidate stamp
-    # live in the calculator; this overlay switches them on and sets their geometry, which the call
-    # site otherwise takes from a default-constructed `CorridorAnalysisConfig()`. The runtime
-    # fields map 1:1 onto the schema block, `blocked_confidence_threshold` included.
-    #
-    # `hard_reject_enabled` is deliberately not wired here and stays in UNWIRED_SWITCHES. It is
-    # what lets the score refuse a candidate, and a run that moves both the ranking and the
-    # rejection answers neither question. Wire it once the score itself is trusted.
-    occ_cfg = grasping_cfg.occlusion
-    if bool(occ_cfg.directional_enabled) and resolved_mode.value in occ_cfg.apply_modes:
-        runtime.orchestrator.corridor_config = CorridorAnalysisConfig(
-            radius_mm=float(occ_cfg.corridor_radius_mm),
-            step_mm=float(occ_cfg.corridor_step_mm),
-            max_distance_mm=float(occ_cfg.corridor_max_distance_mm),
-            mask_fusion_weight=float(occ_cfg.mask_fusion_weight),
-            partial_confidence_threshold=float(occ_cfg.partial_confidence_threshold),
-            blocked_confidence_threshold=float(occ_cfg.hard_reject_confidence_threshold),
-        )
-
-    # Feasibility, the reachability re-rank. Its consumer is otherwise a GraspCalculator
-    # constructor argument; supplied per call from here, like corridor_config, so wiring it once
-    # wires it for every caller.
-    #
-    # Expect it to cost picks, and enable it on that understanding. calculator.py records the trap:
-    # the ik_quality sub-signal demotes a good overhead top-down grasp, because such a grasp is
-    # itself near-singular (high Jacobian condition number), so demoting a high condition number
-    # demotes exactly the grasp that is wanted. It is wired so the claim can be re-measured through
-    # config. It stays `enabled: false` in robot.yaml.
-    feas_cfg_block = grasping_cfg.feasibility
-    if (
-        bool(feas_cfg_block.enabled)
-        and float(feas_cfg_block.weight) > 0.0
-        and resolved_mode.value in feas_cfg_block.apply_modes
-    ):
-        runtime.orchestrator.feasibility_config = FeasibilityScoreConfig(
-            ik_quality_enabled=bool(feas_cfg_block.ik_quality_enabled),
-            ik_quality_weight=float(feas_cfg_block.ik_quality_weight),
-            joint_margin_enabled=bool(feas_cfg_block.joint_margin_enabled),
-            joint_margin_weight=float(feas_cfg_block.joint_margin_weight),
-            swept_approach_enabled=bool(feas_cfg_block.swept_approach_enabled),
-            swept_approach_weight=float(feas_cfg_block.swept_approach_weight),
-        )
-        runtime.orchestrator.feasibility_weight = float(feas_cfg_block.weight)
-
-    ord_cfg = grasping_cfg.ordering
-    if bool(ord_cfg.enabled) and resolved_mode.value in ord_cfg.apply_modes:
-        runtime.orchestrator.target_ordering = TargetOrderingConfig(
-            enabled=True,
-            unlock_weight=float(ord_cfg.unlock_weight),
-            max_local_score_drop=float(ord_cfg.max_local_score_drop),
-            blocker_graph=BlockerGraphConfig(
-                mask_adjacency_enabled=bool(ord_cfg.blocker_graph.mask_adjacency_enabled),
-                depth_only_enabled=bool(ord_cfg.blocker_graph.depth_only_enabled),
-                corridor_overlap_enabled=bool(ord_cfg.blocker_graph.corridor_overlap_enabled),
-                adjacency_radius_px=int(ord_cfg.blocker_graph.adjacency_radius_px),
-                depth_tolerance_mm=float(ord_cfg.blocker_graph.depth_tolerance_mm),
-            ),
-        )
-
-    # Dense-mode swept-volume approach/retreat validator. Set the carrier + the dense-only
-    # apply_modes when enabled; the orchestrator gates per-pick on ``mode_label in _approach_path_modes``,
-    # so non-dense / single-object picks stay byte-identical even when this is wired. Independent of
-    # fusion (it needs only the per-frame neighbour masks the calculator already consumes).
-    av_cfg = getattr(grasping_cfg, "approach_validation", None)
-    if av_cfg is not None and bool(getattr(av_cfg, "enabled", False)):
-        from src.robot.grasping.motion.trajectory_safety import ApproachPathPolicy
-
-        runtime.orchestrator.approach_path_policy = ApproachPathPolicy(
-            standoff_mm=float(av_cfg.standoff_mm),
-            retreat_mm=float(av_cfg.retreat_mm),
-            num_approach_samples=int(av_cfg.num_approach_samples),
-            num_retreat_samples=int(av_cfg.num_retreat_samples),
-            collision_margin_mm=float(av_cfg.collision_margin_mm),
-        )
-        runtime.orchestrator._approach_path_modes = frozenset(av_cfg.apply_modes)
+    if chosen(camera):
+        plan = CameraFusionPlan.from_config(camera.cameras.rigs, primary_rig_id=camera.cameras.primary_rig_id)
+        if plan.cameras:
+            runtime.orchestrator.camera_frame_resolvers = build_config_frame_resolvers(camera)
+            logger.info("%s", plan.render())
+        else:
+            # One line at construction. A cell with one camera is a legitimate cell, and a wrist camera fuses its own
+            # looks; a cell that declares two or more enabled rigs that give depth and fuses none was meant to, and has
+            # no other signal. A stereo pair whose stereo calibration is not written gives none: the base profile's.
+            enabled = [rig for rig in camera.cameras.rigs if bool(rig.enabled) and gives_depth(rig)]
+            if len(enabled) >= 2:
+                logger.warning("%s MEASURED on the datagen reference, fusing a second view moves top-1 from 43.50 %% to "
+                               "55.93 %%.", plan.refusal())
+            else:
+                logger.info("%s", plan.render())
 
     live = [slot for slot in _OVERLAY_SLOTS if getattr(runtime.orchestrator, slot, None) is not None]
     logger.info(

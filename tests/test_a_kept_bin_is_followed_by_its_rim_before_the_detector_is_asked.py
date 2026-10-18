@@ -7,12 +7,13 @@ of it lands in the frame unhidden, at least 90 % of that reads within 10 mm of w
 farther (a wall that is gone) and its median colour stands within dE 25 of the one kept, the bin stands where it stood
 and is followed there (``by`` ``depth``). Anything else asks the detector, as before, with today's bounds against the
 bin the survey found: a bin moved a little is followed, one moved too far, taken away, swapped for another size or
-height, or for a bin of another colour, is lost, and the part goes back where it was gripped. A bin hidden by what
-stands in front of it asks the detector too; so does one that creeps, which is lost once it stands too far from where
-the survey found it. A frame that cannot be taken is a fault of the cell, as a locate that raises is. The motions, the
-place and the guard are untouched: only who answers "is it still there" changed. The lost bins here are lost with
-``robot.place.relocate`` off, as before; on (the owner, 2026-10-09), a bin lost is looked for again first
-(``tests/test_a_bin_that_moved_is_found_again_before_the_drop.py``).
+height, or for a bin of another colour, is lost and looked for again (the owner, 2026-10-09; every cell since
+2026-10-17), and where it is found nowhere the part goes back where it was gripped. A bin hidden by what stands in
+front of it asks the detector too; so does one that creeps, which is lost once it stands too far from where the survey
+found it and is then found again where it stands. A frame that cannot be taken is a fault of the cell, as a locate that
+raises is. The motions, the place and the guard are untouched: only who answers "is it still there" changed. A bin
+moved too far is found again (``tests/test_a_bin_that_moved_is_found_again_before_the_drop.py``); the lost bins here
+are found nowhere.
 
 The camera is :class:`tests._task_fakes.MeasuringLocator`, a wrist camera over a bench it ray casts, so the rim is read
 from the pixels it was placed from, as on the cell; the bounds are read on synthetic depth beside it.
@@ -43,7 +44,6 @@ from tests._task_fakes import (
     bin_object,
     do0_changes,
     motions,
-    placing,
     run,
 )
 
@@ -59,15 +59,12 @@ def _key(joints: JointPositions) -> tuple[float, ...]:
 
 
 def _task(picks: Any = ("part",), *, scene: "BinScene | None" = None, scope: str = "once",
-          measure_raises: "BaseException | None" = None, relocate: bool = True, **keywords: Any) -> Any:
-    """A task into the yellow bin on a wrist camera that reads its rim (:class:`MeasuringLocator`); with ``relocate``
-    off, on a cell that keeps the old rule for a lost bin."""
+          measure_raises: "BaseException | None" = None, **keywords: Any) -> Any:
+    """A task into the yellow bin on a wrist camera that reads its rim (:class:`MeasuringLocator`)."""
     from src.robot.execution.task import PlaceAt
 
     log: list[Any] = []
     arm = TaskArm(log, fk_table={_key(L1): AT_L1, _key(L2): AT_L2})
-    if not relocate:
-        placing(arm, relocate=False)
     scene = scene if scene is not None else BinScene()
     locator = MeasuringLocator(scene, arm=arm, log=log, measure_raises=measure_raises)
     ran = run(picks, place=PlaceAt(camera="yellow bin"), scope=scope, arm=arm, wrist=True, looks=(L1, L2),
@@ -135,11 +132,10 @@ class ABinThatChangedTests(unittest.TestCase):
         self.assertEqual(["yellow bin", "yellow bin"], ran.locator.asked)
         np.testing.assert_allclose((BIN_CENTRE[0] + 40.0, BIN_CENTRE[1]), _line_in(ran)[1][:2], atol=10.0)
 
-    def test_a_bin_moved_too_far_taken_away_or_another_in_its_place_is_lost_as_before(self) -> None:
+    def test_a_bin_taken_away_or_another_in_its_place_is_lost_as_before(self) -> None:
         from src.robot.execution.task import TaskStop
 
         changes = (
-            ("moved 150 mm", lambda scene: scene.move(150.0), "moved_too_far"),
             ("taken away", lambda scene: scene.take_away(), "not_seen"),
             ("60 mm lower", lambda scene: scene.move(0.0, rim_mm=BIN_RIM_MM - 60.0), "footprint_changed"),
             ("another footprint", lambda scene: scene.move(0.0, size_xy=(200.0, 120.0)), "footprint_changed"),
@@ -149,14 +145,15 @@ class ABinThatChangedTests(unittest.TestCase):
         for name, change, why in changes:
             with self.subTest(name):
                 scene = BinScene()
-                ran = _task((Pick("part", then=lambda change=change, scene=scene: change(scene)),), scene=scene,
-                            relocate=False)
+                ran = _task((Pick("part", then=lambda change=change, scene=scene: change(scene)),), scene=scene)
 
                 self.assertIs(TaskStop.TARGET_LOST, ran.report.stop, ran.report.sentence)
                 self.assertEqual([(False, "detector")], _checks(ran))
                 self.assertEqual([{"look": look_label(L1), "why": why, "phrase": "yellow bin"}],
                                  ran.hooks.of("task.target_lost"))
-                self.assertEqual(["yellow bin", "yellow bin"], ran.locator.asked, "the detector was not asked")
+                self.assertEqual(["yellow bin", "yellow bin"], ran.locator.asked[:2], "the detector was not asked")
+                self.assertEqual([False], [said["found"] for said in ran.hooks.of("task.target_relocated")],
+                                 "the bin was not looked for again, or was found")
                 self.assertEqual(["task.put_back", "task.return_started", "task.returned", "task.part_finished"],
                                  ran.names()[-4:])
                 self.assertEqual(2, do0_changes(ran.log), "the part was not let go where it was gripped")
@@ -175,18 +172,22 @@ class ABinThatChangedTests(unittest.TestCase):
         self.assertEqual(["yellow bin", "yellow bin"], ran.locator.asked)
 
     def test_a_bin_that_creeps_60_mm_twice_is_lost_against_where_the_survey_found_it(self) -> None:
+        """Lost at the second check, 120 mm from where the survey found it, and looked for again: kept where it stands
+        now, it is followed there by its rim."""
         from src.robot.execution.task import TaskStop
 
         scene = BinScene()
         ran = _task((Pick("part", then=lambda: scene.move(60.0)), Pick("part", then=lambda: scene.move(60.0)),
-                     "part"), scene=scene, scope="until_empty", relocate=False)
+                     "part", "empty", "empty"), scene=scene, scope="until_empty")
 
-        self.assertIs(TaskStop.TARGET_LOST, ran.report.stop, ran.report.sentence)
-        self.assertEqual(1, ran.report.parts_placed)
-        self.assertEqual([(True, "detector"), (False, "detector")], _checks(ran))
+        self.assertIs(TaskStop.NOTHING_LEFT, ran.report.stop, ran.report.sentence)
+        self.assertEqual(3, ran.report.parts_placed)
+        self.assertEqual([(True, "detector"), (False, "detector"), (True, "depth"), (True, "depth")], _checks(ran))
         self.assertAlmostEqual(120.0, ran.hooks.of("task.target_checked")[1]["moved_mm"], delta=3.0)
-        self.assertEqual("moved_too_far", ran.hooks.of("task.target_lost")[0]["why"])
-        self.assertEqual(2, len(ran.locator.measured), "the rim was not read first before each drop")
+        relocated = ran.hooks.of("task.target_relocated")
+        self.assertEqual([True], [said["found"] for said in relocated])
+        self.assertAlmostEqual(120.0, relocated[0]["moved_mm"], delta=3.0)
+        self.assertEqual(4, len(ran.locator.measured), "the rim was not read first before each drop")
 
     def test_a_frame_that_cannot_be_taken_for_the_rim_is_a_fault_of_the_cell(self) -> None:
         from src.robot.execution.task import TaskStop

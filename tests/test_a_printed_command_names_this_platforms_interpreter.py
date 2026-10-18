@@ -40,7 +40,7 @@ def _each_refusal() -> dict[str, str]:
 
     said: dict[str, str] = {}
     said["gate command"] = gate_command(arm="ur5e", hand="robotiq_2f85", coupling_mm=0.0, approach="+Z",
-                                        closing="+X", planner_margin_mm=4.0, guard_margin_mm=10.0, attach_spheres=0)
+                                        closing="+X", planner_margin_mm=4.0, guard_margin_mm=10.0)
     with tempfile.TemporaryDirectory() as folder:
         try:
             retract_table.read_arm_retract(Path(folder) / "retract.yaml", "ur5e")

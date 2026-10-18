@@ -1,4 +1,4 @@
-"""Every model path the shipped config names must be one the fetch script can produce.
+"""Every model the shipped config names must be read from where the fetch script puts it.
 
 Measured on 2026-09-08, before this existed, three of them could not be. The base profile set
 ``local: true`` on `objectdetector`, `segmenter` and `stt`, pointing at
@@ -7,14 +7,13 @@ repository or is created by anything. The detector's ``model_id`` was the empty 
 could load neither locally nor from the hub. A cell built from the shipped tree could not assemble a
 perception stack at all.
 
-The check asks the fetch script, it does not keep a copy of the answer. A list of expected paths
-written here would be a second declaration of the layout, maintained by whoever remembers this file
-exists. `Weights.local_dir` computes where a model lands, so the config is compared against the thing
-that puts it there.
+Since 2026-10-17 a block names its model by ``model_id`` alone, and every model is read from one folder,
+``models.weights_root`` (``src/models/weights.py``). The check asks the fetch script, it does not keep a copy of the
+answer: `Weights.local_dir` computes where a model lands, and the resolver's `model_folder` where it is read, so the
+two are compared against each other.
 
-The loader reads a path against the config folder, and the shipped tree names the weights under
-``${WILLY_PROJECT_ROOT}``, the repository (``src/config/paths.py``), so the loaded value is the absolute
-path of the file, compared as such.
+The shipped tree names the folder under ``${WILLY_PROJECT_ROOT}``, the repository (``src/config/paths.py``), so the
+loaded value is the absolute path, compared as such.
 """
 
 from __future__ import annotations
@@ -37,98 +36,76 @@ sys.path.insert(0, str(_REPO))
 
 from scripts.model_weights import fetch as fetch_script  # noqa: E402
 from scripts.model_weights.fetch import CATALOGUE, PACKAGED_FILES  # noqa: E402
+from src.models.weights import WeightsKind, fixed_file, model_folder  # noqa: E402
 from src.utility.paths import weights_root  # noqa: E402
 
+#: What each block's model is for: the folder under the weights root the resolver reads it from.
+_KINDS: dict[str, WeightsKind] = {"segmenter": "segmentation", "stt": "speech", "rtdetr": "detection", "vlm": "vlm"}
 
-def _blocks() -> list[tuple[str, str | None, str | None, bool | None]]:
-    """Every config block that names a model, as (name, model_id, model_path, local)."""
+
+def _blocks() -> list[tuple[str, str]]:
+    """Every config block that names a model, as (name, model_id)."""
     from src.config.loader import load_config
 
     models = load_config().models
-    out = []
-    for name in ("objectdetector", "segmenter", "stt", "rtdetr", "oneformer"):
-        block = getattr(models, name, None)
-        if block is not None:
-            out.append((name, getattr(block, "model_id", None),
-                        getattr(block, "model_path", None), getattr(block, "local", None)))
-    vlm = models.pipeline.zero_shot.vlm if models.pipeline is not None else None
-    if vlm is not None:
-        out.append(("vlm", vlm.model_id, vlm.model_path, vlm.local))
+    out = [(name, getattr(models, name).model_id) for name in ("segmenter", "stt", "rtdetr")
+           if getattr(models, name, None) is not None]
+    out.append(("vlm", models.pipeline.zero_shot.vlm.model_id))
     return out
 
 
 class EveryNamedModelIsInTheCatalogueTests(unittest.TestCase):
     def test_every_model_id_the_config_names_can_be_fetched(self) -> None:
-        """A `local: true` path that no command produces is worse than `local: false`, which at
-        least downloads. This is the half that makes `local: true` honest."""
+        """Nothing downloads at run time, so a model no command fetches is a model a cell can never load."""
         catalogue = {w.repo_id for w in CATALOGUE}
-        missing = sorted(
-            f"{name}: {model_id}" for name, model_id, _path, _local in _blocks()
-            if model_id and model_id not in catalogue
-        )
+        missing = sorted(f"{name}: {model_id}" for name, model_id in _blocks() if model_id not in catalogue)
         self.assertEqual(
             missing, [],
-            "the config names a model the fetch script cannot download, so its local path can "
-            "never come into existence. Add it to CATALOGUE in scripts/model_weights/fetch.py.",
+            "the config names a model the fetch script cannot download, so its folder can never come into "
+            "existence. Add it to CATALOGUE in src/models/weights.py.",
         )
 
     def test_no_block_names_a_model_by_nothing(self) -> None:
-        """`objectdetector` shipped with `model_id: ""` and a path to a directory that does not
-        exist, which is neither a local model nor a remote one."""
-        for name, model_id, path, _local in _blocks():
+        """`objectdetector` once shipped with `model_id: ""`, which is neither a local model nor a remote one; the
+        schema refuses an empty id since."""
+        for name, model_id in _blocks():
             with self.subTest(block=name):
-                self.assertTrue(model_id or path, f"{name} names neither a model id nor a path")
+                self.assertTrue(model_id, f"{name} names no model")
 
 
-class EveryLocalPathIsWhereTheFetchPutsItTests(unittest.TestCase):
-    def test_a_local_block_points_at_the_directory_the_fetch_script_writes(self) -> None:
+class EveryModelIsReadWhereTheFetchPutsItTests(unittest.TestCase):
+    def test_every_block_is_read_from_the_folder_the_fetch_script_writes(self) -> None:
         root = weights_root()
         by_id = {w.repo_id: w for w in CATALOGUE}
         checked = 0
-        for name, model_id, path, local in _blocks():
-            if not local or not model_id or model_id not in by_id:
-                continue
+        for name, model_id in _blocks():
             with self.subTest(block=name):
-                expected = by_id[model_id].local_dir(root).as_posix()
-                self.assertEqual(
-                    Path(path).as_posix(), expected,
-                    f"{name} is local: true at a path the fetch script does not produce",
-                )
+                self.assertEqual(by_id[model_id].local_dir(root), model_folder(model_id, kind=_KINDS[name], root=root),
+                                 f"{name} is read from a folder the fetch script does not write")
                 checked += 1
-        self.assertGreaterEqual(checked, 3, "a test over no local block passes loudest")
+        self.assertGreaterEqual(checked, 4, "a test over no block passes loudest")
 
-    def test_the_speech_section_names_the_voice_detector_where_the_fetch_puts_it(self) -> None:
+    def test_the_voice_detector_is_read_where_the_fetch_puts_it(self) -> None:
+        entry = next(f for f in PACKAGED_FILES if f.key == "silero-vad")
+        self.assertEqual(entry.local_path(weights_root()), fixed_file("silero-vad", root=weights_root()),
+                         "the voice detector is not read from the file `fetch.py silero-vad` writes")
+
+    def test_the_shipped_weights_folder_is_inside_the_repository(self) -> None:
+        """The whole point of the location: deleting the repository takes the weights with it. A folder outside it
+        is a download that survives, which is what the move into the repository was for."""
         from src.config.loader import load_config
 
-        stt = load_config().models.stt
-        entry = next(f for f in PACKAGED_FILES if f.key == "silero-vad")
-        self.assertEqual(
-            Path(stt.vad_model_path).as_posix(),
-            entry.local_path(weights_root()).as_posix(),
-            "models.stt.vad_model_path is not the file `fetch.py silero-vad` writes",
-        )
-
-    def test_every_local_path_is_inside_the_weights_root(self) -> None:
-        """The whole point of the location: deleting the repository takes the weights with it. A
-        path outside it is a download that survives, which is what this move was for."""
-        root = weights_root().as_posix()
-        for name, _model_id, path, local in _blocks():
-            if not local or not path:
-                continue
-            with self.subTest(block=name):
-                self.assertTrue(
-                    Path(path).as_posix().startswith(f"{root}/"),
-                    f"{name} is local: true outside {root}, so a repo delete leaves it behind",
-                )
+        self.assertEqual(weights_root().as_posix(), load_config().models.weights_root)
+        self.assertTrue(weights_root().as_posix().startswith(f"{_REPO.as_posix()}/"), weights_root())
 
 
 class TheIgnoreListCannotEmptyAModelTests(unittest.TestCase):
-    def test_the_one_repository_with_no_safetensors_has_no_ignore_list(self) -> None:
-        """Measured against the hub: `shi-labs/oneformer_coco_swin_large` is 1.83 GB whole and
-        0.00 GB of safetensors, so a blanket `*.bin` filter fetches it empty. The filter is per
-        model for that reason, and this is the entry that proves it cannot be global."""
-        oneformer = next(w for w in CATALOGUE if "oneformer" in w.repo_id)
-        self.assertEqual(oneformer.ignore, ())
+    def test_a_repository_that_publishes_one_format_has_no_ignore_list(self) -> None:
+        """The filter is per model, never global: a repository that publishes its weights in one format must not
+        lose it to a filter meant for another's duplicate. RT-DETR's checkpoint is safetensors only, so it is fetched
+        whole (OneFormer, the entry that publishes no safetensors at all, left on 2026-10-17)."""
+        rtdetr = next(w for w in CATALOGUE if w.key == "rtdetr")
+        self.assertEqual(rtdetr.ignore, ())
 
     def test_the_filtered_ones_still_keep_a_weight_format(self) -> None:
         """A control on the entry above: every other model is filtered, and none of the filters

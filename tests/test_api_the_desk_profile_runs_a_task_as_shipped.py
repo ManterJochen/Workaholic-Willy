@@ -26,12 +26,12 @@ class TheDeskProfileDeclaresAPlaceTests(unittest.TestCase):
         tree = load_tree("console_dummy")
         self.assertTrue(tree.ok, getattr(tree, "error", tree))
         robot = tree.robot
-        self.assertEqual("drop_left", robot.default_place_pose)
-        poses = robot.named_poses
+        self.assertEqual("drop_left", robot.motion.default_place_pose)
+        poses = robot.motion.named_poses
         self.assertEqual(("Ablage links", "Parkposition"), (poses["drop_left"].label, poses["park"].label))
         # One value per joint of the arm, as the home names them (a UR's six; the console's Home reads the same).
         self.assertEqual((6, 6), (len(poses["drop_left"].joints_deg), len(poses["park"].joints_deg)))
-        self.assertIsNone(load_tree(None).robot.default_place_pose, "the base tree grew a place the cell never taught")
+        self.assertIsNone(load_tree(None).robot.motion.default_place_pose, "the base tree grew a place the cell never taught")
 
 
 class TheDeskConsoleRunsATaskTests(unittest.TestCase):

@@ -4,7 +4,7 @@ The owner's recovery of 2026-10-02: "das ganze Ding soll die Szene so verändern
 entweder das Objekt verschieben oder ein anderes Objekt nehmen, was im Weg liegt und dann das eigentliche Objekt
 aufheben." Where every grasp of a part meets a neighbour (``ALL_COLLIDED``), or every grasp of it was judged from the
 look and refused there, the pick loop takes a neighbour that stands in the way and sets it aside: for critical parts in
-place of the push, for the others where no push plans (the owner's switch of 2026-10-03, ``recovery.critical_parts``)
+place of the push, for the others where no push plans (the owner's switch of 2026-10-03, ``runtime.task.critical_parts``)
 (:meth:`~src.robot.grasping.loop.pick_loop.BinPickingOrchestrator._clear_the_blockers`). This module is what that reads,
 and nothing else:
 
@@ -58,7 +58,6 @@ __all__ = [
     "FOOT_RING_MM",
     "FOOT_RING_MIN_TABLE_SHARE",
     "STOPPED_WHERE_THE_ARM_STANDS",
-    "TOO_LONG_TO_CARRY",
     "BlockerRecord",
     "Cluster",
     "FreeSpot",
@@ -121,9 +120,6 @@ NO_BLOCKER_FREES_A_GRASP = "no_blocker_frees_a_grasp"
 NO_GRASPABLE_BLOCKER = "no_graspable_blocker"
 #: A graspable blocker, and no free seen spot to set it down on.
 NO_FREE_SPOT = "no_free_spot"
-#: The graspable blockers reach further past the fingertips than the planner models a carried part
-#: (``safety.planning_world.payload.length_mm``): carried, the rest of them would go where nobody judges it.
-TOO_LONG_TO_CARRY = "too_long_to_carry"
 #: Every graspable blocker's pick was refused before anything was sent.
 BLOCKER_NOT_REACHED = "blocker_not_reached"
 #: The last removal freed no grasp of the part and spared none of its refusals: the clearing stops (no budget, a rule).

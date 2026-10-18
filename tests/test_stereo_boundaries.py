@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,19 +45,32 @@ def _calibration_result() -> CalibrationResult:
 class StereoBoundaryTests(unittest.TestCase):
     def test_stereo_repository_roundtrip(self) -> None:
         result = _calibration_result()
-        T_cam_to_base = np.eye(4, dtype=np.float64)
-        T_cam_to_base[:3, 3] = [10.0, 20.0, 30.0]
         repository = StereoRigRepository()
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "stereo_calib.json"
-            repository.save(path, result, T_cam_to_base)
-            loaded, loaded_transform = repository.load(path)
+            repository.save(path, result)
+            written = json.loads(path.read_text(encoding="utf-8"))
+            loaded = repository.load(path)
 
+        self.assertNotIn("T_cam_to_base", written, "where the pair stands is the rig's own extrinsics")
         self.assertTrue(np.allclose(loaded.Q, result.Q))
         self.assertTrue(np.allclose(loaded.projL, result.projL))
-        self.assertTrue(np.allclose(loaded_transform, T_cam_to_base))
         self.assertEqual(loaded.frame_size, result.frame_size)
+
+    def test_a_stereomap_written_with_a_camera_to_base_still_loads_and_the_pose_is_not_read(self) -> None:
+        """Before 2026-10-17 the file could carry an optional T_cam_to_base, a second source of the pose."""
+        result = _calibration_result()
+        repository = StereoRigRepository()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "stereo_calib.json"
+            repository.save(path, result)
+            written = json.loads(path.read_text(encoding="utf-8"))
+            written["T_cam_to_base"] = np.eye(4).tolist()
+            path.write_text(json.dumps(written), encoding="utf-8")
+            loaded = repository.load(path)
+        self.assertIsInstance(loaded, CalibrationResult)
+        self.assertTrue(np.allclose(loaded.projR, result.projR))
 
     def test_rig_index_validation(self) -> None:
         sentinel = object()

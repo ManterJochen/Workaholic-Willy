@@ -4,7 +4,8 @@ The UR10, the Hand-E on its 23 mm plate with the PolyScope tool frame, the D415 
 (``config/cameras/d415_enclosure.yaml``, 3 mm of margin, placed by the recorded frames' own camera and tool poses), 3 mm
 from itself, from a declared fixture and from a box a camera saw, every joint within half a turn of home and the
 cell's payload: every guard a joint move asks (``SafetyPreflight._JOINT_MOVE_SKIP_GUARDS`` skips the others).
-``whole_path_judge`` is the switch the tests turn.
+It judges every path whole first, as every cell does since 2026-10-17; :func:`every_sample` has a preflight judge every
+sample one at a time instead, the reference the tests hold the whole-path judge to.
 
 The worlds are the three cell frames of 2026-10-07 (``tests/test_a_faster_camera_world_builds_the_same_world.py``),
 handed to the guard as the arm's refresh hands them (``live_world._guard_boxes``). Solutions come from the repository's
@@ -20,7 +21,7 @@ from typing import Any
 
 import numpy as np
 
-#: The owner's home and LOOK[0] of 2026-10-08, degrees (``robot.home_joint_positions_deg``).
+#: The owner's home and LOOK[0] of 2026-10-08, degrees (``robot.motion.home_deg``).
 HOME_DEG = (-75.10, -83.00, -72.40, -137.31, 96.02, -76.28)
 
 #: The cell's guard distances, millimetres.
@@ -37,21 +38,40 @@ def needs_the_engine() -> None:
         raise unittest.SkipTest("no exact mesh backend on this box")
 
 
-def owner_robot(*, whole: bool, fixtures: "list[dict[str, Any]] | None" = None) -> dict[str, Any]:
-    """The owner's ``robot`` block as far as the guard reads it, ``whole_path_judge`` at ``whole``."""
+def owner_robot(*, fixtures: "list[dict[str, Any]] | None" = None) -> dict[str, Any]:
+    """The owner's ``robot`` block as far as the guard reads it."""
     from tests import _cell_2026_10_01 as cell
 
     robot = cell.owner_robot(support_plane={"height_mm": 0.0, "extent_mm": [900.0, 700.0], "thickness_mm": 50.0,
                                             "center_mm": [-10.0, -585.0]})
-    robot["workspace_limits"] = {"x_min": -470.0, "x_max": 400.0, "y_min": -900.0, "y_max": -200.0, "z_min": 16.0,
-                                 "z_max": 800.0}
-    robot["home_joint_positions_deg"] = list(HOME_DEG)
+    robot["motion"]["workspace"] = {"x_min": -470.0, "x_max": 400.0, "y_min": -900.0, "y_max": -200.0, "z_min": 16.0,
+                                    "z_max": 800.0}
+    robot["motion"]["home_deg"] = list(HOME_DEG)
     safety = robot["safety"]
-    safety["joint_limits"] = {"enforce": True, "margin_deg": 5.0, "within_half_turn_of_home": True}
-    safety["payload"] = {"enforce": True, "mass_kg": 1.3, "max_mass_kg": 10.0, "cog_mm": [0.0, 0.0, 65.0]}
+    # The joint limits are the arm's own since 2026-10-17, 5 degrees in and half a turn about home, as the cell ran them.
+    safety["payload"] = {"mass_kg": 1.3, "max_mass_kg": 10.0, "cog_mm": [0.0, 0.0, 65.0]}
     safety["self_collision"].update(min_distance_mm=GUARD_MM, perceived_min_distance_mm=GUARD_MM, planner_margin_mm=0.0,
-                                    whole_path_judge=bool(whole), fixtures=list(fixtures or []))
+                                    fixtures=list(fixtures or []))
     return robot
+
+
+def every_sample(preflight: Any) -> Any:
+    """Have ``preflight`` judge as every cell did before the whole-path judge: every sample of a path one at a time from
+    the first (``SafetyPreflight._first_suspect`` answers 0, its own answer where no guard can judge a path whole), and
+    the plane and the base of mesh first asked of every configuration in turn (its exact pairs answer no question of a
+    whole path). The reference the whole-path judge is held to: the same verdict, the same sample, the same message.
+    Returns ``preflight``."""
+    from dataclasses import replace
+
+    preflight._first_suspect = lambda _configs, _arm: 0
+    whole = preflight.exact_pairs
+
+    def exact_pairs(arm: Any = None) -> Any:
+        pairs = whole(arm)
+        return None if pairs is None else replace(pairs, lows=None, near_base_from=None)
+
+    preflight.exact_pairs = exact_pairs
+    return preflight
 
 
 def tool() -> np.ndarray:
@@ -86,20 +106,21 @@ class OwnerArm:
 
         self.capabilities = RobotCapabilities(vendor="ur", model="ur10", has_native_fk=True, dof=6, controller=None, owns_a_controller=True)
         self.config = config
-        self.home_joint_positions = tuple(config.home_joint_positions)
+        self.home_joint_positions = tuple(config.motion.home_rad)
 
 
-def owner_cell(*, whole: bool, fixtures: "list[dict[str, Any]] | None" = None) -> "tuple[Any, Any]":
-    """The owner's preflight, the camera handed in, and the arm it judges."""
+def owner_cell(*, whole: bool = True, fixtures: "list[dict[str, Any]] | None" = None) -> "tuple[Any, Any]":
+    """The owner's preflight, the camera handed in, and the arm it judges; judging every sample one at a time where not
+    ``whole`` (:func:`every_sample`)."""
     from src.config.schema.robot import RobotConfig
     from src.robot.safety import SafetyPreflight
     from src.robot.safety.planning.hand import planner_hand
 
-    config = RobotConfig.model_validate(owner_robot(whole=whole, fixtures=fixtures))
-    preflight = SafetyPreflight.from_safety_config(config.safety, config.workspace_limits, hand=planner_hand(config),
+    config = RobotConfig.model_validate(owner_robot(fixtures=fixtures))
+    preflight = SafetyPreflight.from_safety_config(config.safety, config.motion.workspace, hand=planner_hand(config),
                                                    arm_model="ur10")
     preflight.set_wrist_bodies((camera_body(),))
-    return preflight, OwnerArm(config)
+    return (preflight if whole else every_sample(preflight)), OwnerArm(config)
 
 
 def nearest_solution(tcp: np.ndarray, near: "np.ndarray | Any") -> "np.ndarray | None":

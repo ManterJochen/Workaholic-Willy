@@ -19,8 +19,8 @@ exception the owner chose: a greeting typed in the chat ("Hallo Willy") waves at
 exact guard judges, and never a way back after a stop. Nothing moves on its own after a
 stop: a person says the cell is clear, then chooses Restart or Home, and the stop outlives a restart of the
 server (`python -m api` keeps it in a file). And there is **no emergency stop endpoint**: "halt now" stops the
-run and latches the arm, so nothing after the move in flight is sent, and only with `robot.ur.brake_on_halt`
-on (off as shipped) is that move braked under control; the red button at the cell stays the safety stop.
+run and latches the arm, so nothing after the move in flight is sent, and a UR brakes that move under control
+(every UR since 2026-10-17; `robot.ur.brake_on_halt` until then); the red button at the cell stays the safety stop.
 
 ## Try it without hardware
 
@@ -70,8 +70,9 @@ so a desk run proves that the console and the library agree and says nothing abo
 4. Build, read the connect preview, connect. A toggle hand asks where its jaws stand **in the browser**
    ([The jaws question](#the-jaws-question-in-the-browser)), and a cuRobo arm starts its planner by itself,
    about a minute, moving nothing.
-5. Teach the place pose by hand in Setup ([Poses and teaching](#poses-and-teaching)), declare
-   `safety.planning_world.payload.length_mm`, and give the cockpit its first command.
+5. Teach the place pose by hand in Setup ([Poses and teaching](#poses-and-teaching)), set how far the parts hang
+   past the fingertips (`robot.motion.place.part_hang_mm`; null as shipped hangs the part from the TCP, the owner's
+   cell sets 1 mm), and give the cockpit its first command.
 
 The procedures are the runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md),
 [the first pick on a physical arm](../docs/runbooks/real_cell_first_pick.md) and
@@ -84,9 +85,9 @@ The procedures are the runbooks [bringing up a cell](../docs/runbooks/cell_bring
 > open. The connect therefore takes only a token from `GET /v1/cell/connect-preview`, which lists what
 > will move. The token is single use, expires after five minutes and is void once any config value
 > changes. **There is no emergency stop endpoint.** "Halt now" (`POST /v1/cell/brake`) stops the run and
-> latches the arm: nothing after the move in flight is sent, and only with `robot.ur.brake_on_halt` on (off as
-> shipped) is that move braked under control. It is not an emergency stop; the physical button at the cell
-> stays the safety stop.
+> latches the arm: nothing after the move in flight is sent, and a UR brakes that move under control (every UR
+> since 2026-10-17; `robot.ur.brake_on_halt` until then). It is not an emergency stop; the physical button at the
+> cell stays the safety stop.
 
 ## The endpoints
 
@@ -104,10 +105,9 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `GET /v1/config/writable` | the keys this server may write, described by the library | no |
 | `PATCH /v1/config` | write a group of keys, all or none | no |
 | `GET /v1/diagnostics` | SDKs, motion stack, perception stack, controller reachability | no |
-| `GET /v1/diagnostics/route?prompt=` | which perception route a prompt would take, from the text alone | no |
 | `GET /v1/cell` | state, arm, hand, the halt latch, the planner, the stop record, the countdown, a jaws question waiting, and who holds the cell lock | no |
-| `GET /v1/cell/facts` | what this cell is: cameras and looks, the natural closing axis, push, detector, brake, carried part, motion route | no |
-| `GET /v1/cell/readiness` | the ready bar: six lights and the blockers; Start only where `ready` | no |
+| `GET /v1/cell/facts` | what this cell is: cameras and looks, the natural closing axis, push, detector, brake, motion route | no |
+| `GET /v1/cell/readiness` | the ready bar: five lights and the blockers; Start only where `ready` | no |
 | `POST /v1/cell/build?rehearse=` | assemble the cell; touches no robot. `rehearse=true` uses a desk scene | no |
 | `GET /v1/cell/connect-preview` | what connecting will move, and the token that acknowledges it | no |
 | `POST /v1/cell/connect` | `{token}`: arm, then gripper; the jaws question in the browser; then the planner start | **yes** |
@@ -117,11 +117,13 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `POST /v1/task` | a task: pick, place, return, `once` or `until_empty`; answers `202` with the run | **yes** |
 | `POST /v1/task/stop?run_id=` | stop the task after the part in hand; a Home run before its move is sent, a wave before its next swing | no |
 | `POST /v1/task/restart` | `{run_id}`: a new run of the stopped plan; first motion the planned move to the return pose | **yes** |
+| `GET /v1/task/settings` | the cell's task settings, for every browser: whether Enter starts, the mode, the place where a sentence names none, the tick for "anything", the looks, critical parts; the file a change goes to, and why none can | no |
+| `PATCH /v1/task/settings` | the settings named, written into the cell's own layer, all or none (Settings, "Auftrag"); starts nothing | no |
 | `POST /v1/pick` | `{prompt, picks}`, and `push_mm` for a `dense_clutter` push: picks only, nothing placed | **yes** |
 | `POST /v1/pick/stop?run_id=` | a pick run starts no next attempt; the motion in flight completes | no |
 | `GET /v1/runs`, `GET /v1/runs/{run_id}` | recent runs of every kind, and one run | no |
 | `WS /v1/events?run_id=&since_seq=` | replay a run's events from a sequence number, then follow it live; `run_id=cell` is the cell's own stream | no |
-| `POST /v1/cell/brake` | **halt now**: the run commands nothing more, the arm latches, and brakes a move in flight where enabled | latches; brakes where enabled |
+| `POST /v1/cell/brake` | **halt now**: the run commands nothing more, the arm latches, and a UR brakes the move in flight | latches; a UR brakes |
 | `POST /v1/cell/acknowledge` | `{cell_clear, jaws_empty}`: a person's word that the cell is clear | no |
 | `POST /v1/cell/home` | `{to}`: a planned move to Home or a taught pose; the second way back after a stop | **yes** |
 | `POST /v1/cell/wave` | Willy waves back at a greeting: two judged swings of the wrist | **yes** |
@@ -166,9 +168,11 @@ it is. The writable keys are an allowlist in [`src/config/edit.py`](../src/confi
 payload mass and centre of gravity, the three tool frame keys, each camera rig's serial number and
 whether it is enabled, which rig is primary, and the UR controller address. A `PATCH`
 takes them as a group, because the three tool frame keys only validate together, and a refused write
-leaves every file byte-identical. **A taught pose is never a `PATCH`**: `robot.named_poses` and
-`robot.default_place_pose` are written by the pose door alone, after a person guided the arm there and the
-screen cleared it ([Poses and teaching](#poses-and-teaching)).
+leaves every file byte-identical. **A taught pose is never a `PATCH`**: `robot.motion.named_poses` and
+`robot.motion.default_place_pose` are written by the pose door alone, after a person guided the arm there and the
+screen cleared it ([Poses and teaching](#poses-and-teaching)). **Nor is a task setting**: `runtime.task` is
+written by its own door, `PATCH /v1/task/settings`, into the cell's own layer
+([The cell's task settings](#the-cells-task-settings)).
 
 ## What it refuses
 
@@ -198,16 +202,14 @@ controller refused, 400 an empty patch or an empty recording, 415 a recording th
 | `restart_required` | 409 | a new task or pick while a stop record stands | Restart or Home; their first motion is the planned move to the return pose |
 | `needs_person` | 409 | a recovery of an earlier pick stopped where the arm stands | "Zelle ist frei"; no run clears it silently |
 | `jaws_question_pending` | 409 | a moving route or a teach while a jaws question, its one change or its stroke is in progress | answer the question first |
-| `part_still_held` | 409 | a toggle's count says CLOSED, the planner still models a part, a hand measures one, or the stop record believes one in a hand that measures nothing | hold the part and answer "open now", or empty the hand and say "Backen leer" |
+| `part_still_held` | 409 | a toggle's count says CLOSED, a hand measures one, or the stop record believes one in a hand that measures nothing | hold the part and answer "open now", or empty the hand and say "Backen leer" |
 | `jaws_not_confirmed` | 409 | a toggle's count nobody can vouch for, or, after a stop, jaws not answered open since | `POST /v1/cell/jaws/check` |
 | `route_refused` | 409 | the arm's place and return go through no planner that judges them: a UR on `ik` | run cuRobo; a part picked there could not be set down |
-| `carried_part_not_modelled` | 409 | a task on an arm that models no carried part | declare `safety.planning_world.payload.length_mm` |
 | `camera_target_unavailable` | 409 | a camera place on a cell with no camera to find it with (the rehearsal cell), or a wrist camera whose arm holds no frames | place at a taught pose |
 | `object_required` | 422 | a task's object is empty on a cell whose detector grounds a phrase, or a sort's rule names no kind (`detail.rule`) | name the part, or tick "everything the camera sees" (`options.pick_anything`); a sort names every kind |
-| `prompt_not_routable`, `target_not_routable` | 422 | the object, or the camera place's phrase, needs the VLM route and this cell has none | configure the VLM, or set `on_unavailable: degrade` |
-| `push_distance_refused` | 422 | a `push_mm` above the cell's `recovery.fixture.max_nudge_mm` or 50 mm, or under 10 mm; no run starts | ask within the ceiling; the message says it |
+| `push_distance_refused` | 422 | a `push_mm` above 50 mm or under 10 mm; no run starts | ask 10 to 50 mm; the message says it |
 | `unknown_pose` | 422 | a place, return or Home pose nobody taught; `detail.which` says which (`place of rule 2` for a sort's further rule) | teach it, or name a taught one |
-| `no_place_declared` | 422 | a pose place with no pose and no `robot.default_place_pose` | choose a default place, or name the pose |
+| `no_place_declared` | 422 | a pose place with no pose and no `robot.motion.default_place_pose` | choose a default place, or name the pose |
 | `closing_axis_refused` | 422 | an axis that names no direction, or one this cell's motion turns every grasp off | `x`, `-x`, `y`, `-y`, `radial`, `-radial`, `tangential`, `-tangential` |
 | `not_a_task`, `not_a_pick` | 409 | `POST /v1/task/stop` on a pick, teach or planner run; `POST /v1/pick/stop` on anything but a pick run | the other stop, or halt now |
 | `not_restartable` | 409 | a Restart of a run that is not the stop record's, or a run that keeps no plan | Restart the run the stop card names |
@@ -215,7 +217,7 @@ controller refused, 400 an empty patch or an empty recording, 415 a recording th
 | `no_question`, `question_changed`, `choice_not_offered` | 404, 409, 422 | an answer with no question waiting, to a stale question, or a choice it did not offer | read `GET /v1/cell/jaws` again |
 | `planner_not_used` | 409 | "start the planner" on an arm with no cuRobo planner | nothing to start |
 | `no_overlay` | 404 | an overlay a run did not keep | the run's events name the ones it kept |
-| `no_layer` | 422 | a taught pose or a default place under a chain with no layer of the cell's own, or a last layer git does not keep out | end the chain in a git-ignored cell layer, such as `robot/robot.cell.yaml` |
+| `no_layer` | 422 | a taught pose, a default place or a task setting under a chain with no layer of the cell's own, or a last layer git does not keep out | end the chain in a git-ignored cell layer, such as `robot/robot.cell.yaml` |
 | `no_hand_guiding`, `screen_unavailable` | 409 | a teach on an arm that cannot be guided by hand, or that screens no pose (no planner, no wrist housing) | teach on the cell's UR, with its housing declared |
 | `planner_not_ready` | 409 | a teach while cuRobo is not ready: every pose is screened at once | wait for the planner light |
 | `part_in_hand` | 409 | a teach while a part may be in the jaws | empty the hand first |
@@ -224,7 +226,7 @@ controller refused, 400 an empty patch or an empty recording, 415 a recording th
 | `wrong_token`, `not_free` | 403, 409 | a teach poll without its session's token; Save while the arm is not free | the token from `POST /v1/teach` |
 | `vlm_not_loaded` | 409 | a command on a cell whose detector is not the VLM, before "Laden"; or another checkpoint is loaded | "Laden" (`POST /v1/commands/warmup`), or rebuild the cell |
 | `vlm_unavailable`, `vlm_model_missing` | 501 | the VLM cannot answer here, or its weights are not on this machine | fill in the card by hand; `python scripts/model_weights/fetch.py vlm-4b` |
-| `not_writable`, `unknown_key` | 403, 404 | a key outside the allowlist, a taught pose's key, or no such key | edit it in YAML; teach a pose in Setup |
+| `not_writable`, `unknown_key` | 403, 404 | a key outside the allowlist, a taught pose's key, a task setting, or no such key | edit it in YAML; teach a pose in Setup; choose a task setting under Settings, "Auftrag" |
 | `invalid_value` | 422 | the loader rejected the written tree; every file is restored | the message is the loader's |
 | `empty_patch` | 400 | a `PATCH` with no values | send at least one key |
 | `cell_connected` | 409 | the primary rig or a controller address, while connected | disconnect first |
@@ -276,8 +278,7 @@ reachability check in `GET /v1/diagnostics` covers that.
 | `cameras` | every camera of the cell has a frame younger than 2 s, or the cell runs the rehearsal scene | `live`, `rehearsal`, `no_frame`, `none` |
 | `planner` | cuRobo is ready, or the arm moves nothing real (the dummy) | `ready`, `starting`, `off`, `failed`, `unplanned`, `route_refused` |
 | `gripper` | a toggle's count is open and no question waits; another hand is connected | `open_confirmed`, `jaws_unknown`, `jaws_closed`, `question_pending`, `connected`, `none` |
-| `carried_part` | the arm models a carried part, or carries nothing real | `modelled`, `not_modelled`, `not_applicable` |
-| `commands` | informational only, it never blocks | `ready`, `idle`, `loading`, `missing`, `failed`, `not_configured` |
+| `commands` | informational only, it never blocks | `ready`, `idle`, `loading`, `missing`, `failed` |
 
 The blockers are `run_active`, `cell_not_cleared`, `restart_required`, `needs_person`, `part_still_held` and
 `jaws_question_pending`, each the refusal of the same name said before a button is pressed. Only a controller
@@ -285,12 +286,11 @@ whose own fields say it can move lets anything go: a status that does not say re
 
 **The cell's facts** are `GET /v1/cell/facts`, read once after a build and once after a connect: the cameras with
 their mounting and the looks, the natural closing axis, how a part is carried to a bin (`carry`, the cell's
-`robot.place.carry`, null where it says none), the push (`can_push`, `default_mm`, `ceiling_mm`, the
+`robot.motion.place.carry`, null where it says none), the push (`can_push`, `default_mm`, `ceiling_mm`, the
 50 mm hard cap where the cell declares no fixture, `critical_parts` and `blocker_into_the_place`, the cell's switches), the detector
-(`backend`, the router, the VLM's id, and its `precision`: `fp32 weights, fp16 autocast` where
-`optim.torch_dtype` is unset, the configured dtype otherwise, `auto (the checkpoint's own)` for the VLM, both
-for a routed stack), the brake (`latches`, `brakes_in_motion`), the carried part (`modelled`, why not,
-`length_mm`) and the motion route (`planned`, `unplanned` or `refused`).
+(`backend`, the VLM's id, and its `precision`: `auto (the checkpoint's own)` for the VLM, RT-DETR's load dtype
+for the closed set, fixed in `src/models/_inference.py` at the owner's cell's `auto`), the brake (`latches`,
+`brakes_in_motion`) and the motion route (`planned`, `unplanned` or `refused`).
 
 **Disconnect, and the server's shutdown, take the cell down in one order:** a jaws question waiting is
 cancelled, before anything takes the session lock its connect holds; a teach is held at once and joined (at
@@ -305,8 +305,9 @@ cell is down.
 
 **A command is a task.** `POST /v1/task` takes `TaskIn` and answers `202` with the run (kind `task`) at once;
 everything after that arrives on the run's event stream. Start on the cockpit's card is the confirmation, and so
-is the person's Enter on a reading the reader calls `startable`, where the console's settings say Enter starts
-(see Commands): nothing else starts a task, and a parse never does. Either way the route checks every gate below.
+is the person's Enter on a reading the reader calls `startable`, where the cell's task settings say Enter starts
+(see Commands and [The cell's task settings](#the-cells-task-settings)): nothing else starts a task, and a parse
+never does. Either way the route checks every gate below.
 
 | `TaskIn` field | What it says |
 |---|---|
@@ -314,24 +315,22 @@ is the person's Enter on a reading the reader calls `startable`, where the conso
 | `object_said` | the operator's own words for it, for display |
 | `which` | the one part the operator singled out, in English ("the gray cube on top of the other one"), at most 200 characters: the detector is asked this alone; `""` (the default) is every part of the object's kind |
 | `source` | where the parts lie, in English with its preposition ("on the black mat"), at most 200 characters: every part of the kind there is grounded ("each separate gray cube on the black mat"); `""` is wherever the camera sees one |
-| `place` | `{"kind": "pose", "pose": <name or null>}`, where `null` is `robot.default_place_pose`; or `{"kind": "camera", "phrase": "blue bin", "said": ...}`, a target the camera finds, its phrase at most 200 characters |
+| `place` | `{"kind": "pose", "pose": <name or null>}`, where `null` is `robot.motion.default_place_pose`; or `{"kind": "camera", "phrase": "blue bin", "said": ...}`, a target the camera finds, its phrase at most 200 characters |
 | `more_rules` | a sort's further rules, at most 3 (`MAX_FURTHER_RULES`): each `{object, object_said, which, source, place}` as the task's own fields, which are its first rule; each part the picks grip goes to the place of its kind's rule, and two rules may share one place. Empty (the default) is a task of one kind |
 | `return_to` | `home`, or a taught pose's name |
 | `scope` | `once`, or `until_empty` |
-| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `every_look` (true with `multi_view`: every look of each pick, however safe an earlier look's grasp; with `multi_view` off it is `422 bad_request`; the console's one choice "Nur erster Blick", "Bei Bedarf", "Alle Posen" sets the two), `carry` (`via_the_look` or `over_the_rim`, how a part goes to a bin a wrist camera found; unset: the cell's `robot.place.carry`; the console's "Direkt über die Kante tragen"), `both_faces` (a program's switch; the console no longer offers it), `closing_axis`, `push_mm`, `critical_parts` (true: nothing is pushed, and a blocker is cleared instead; unset: the cell's `recovery.critical_parts`), `blocker_into_the_place` (true: a task that names no object takes a blocker as the part its pick takes and sets it down where the parts go; false: it is set aside on the support; unset: the cell's `recovery.blocker_into_the_place`, on), `rescan`, `push`, `clear` (this task's own word on looking again, pushing a boxed-in part and clearing a blocker, over the cell's `recovery.allowed_actions`; unset: the cell's), `rim_air_mm` (10 to 50, the cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
+| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `every_look` (true with `multi_view`: every look of each pick, however safe an earlier look's grasp; with `multi_view` off it is `422 bad_request`; the console's one choice "Nur erster Blick", "Bei Bedarf", "Alle Posen" sets the two), `carry` (`via_the_look` or `over_the_rim`, how a part goes to a bin a wrist camera found; unset: the cell's `robot.motion.place.carry`; the console's "Direkt über die Kante tragen"), `both_faces` (a program's switch; the console no longer offers it), `closing_axis`, `push_mm`, `critical_parts` (true: nothing is pushed, and a blocker is cleared instead; unset: the cell's `runtime.task.critical_parts`), `blocker_into_the_place` (true: a task that names no object takes a blocker as the part its pick takes and sets it down where the parts go; false: it is set aside on the support; unset: on, every cell's), `rescan`, `push`, `clear` (this task's own word on looking again, pushing a boxed-in part and clearing a blocker, over the cell's own; unset: the cell's, a rescan, and in `dense_clutter` the push and the clearing), `rim_air_mm` (0 to 50, the owner's cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
 | `command` | `{text, source, language, parsed, edited}`: the sentence it came from (at most 1000 characters, as a parse takes it), for the record only |
 
 **Refused before anything moves, in this order.** The cell's state first: `not_connected`, `run_active`,
 `halted`, `controller_stopped`, `cell_not_cleared`, `restart_required`, `needs_person`,
-`jaws_question_pending`, `part_still_held`, `jaws_not_confirmed`, `route_refused`,
-`carried_part_not_modelled`. Then the request's own: `camera_target_unavailable`, `object_required`,
-`prompt_not_routable`, `target_not_routable`, `push_distance_refused`, `unknown_pose` (the place's, then the
+`jaws_question_pending`, `part_still_held`, `jaws_not_confirmed`, `route_refused`. Then the request's own:
+`camera_target_unavailable`, `object_required`, `push_distance_refused`, `unknown_pose` (the place's, then the
 return's), `no_place_declared`, `closing_axis_refused`, `bad_request`. The run registry reads the stop record
 once more under its run lock as it starts the run, so a stop that landed between the gates and the start
-still refuses it. `prompt_not_routable` judges what the picks will ground (`task.pick_phrase`) without the "each
-separate" every task puts in front of a kind: the `which` alone, else the object where the parts lie. A which only
-the VLM grounds ("the gray cube on top of the other one", and one said by its height or its side, "the upper gray
-cube", "the cup left of the bin", "the gray cube on top") is refused on a cell without one.
+still refuses it. Every phrase is the VLM's to ground, a which ("the gray cube on top of the other one", "the cup
+left of the bin") included; a cell without the VLM's weights answers its first look with nothing and a counted
+detector failure, and the run ends `detector_failed`.
 
 **A sort is refused rule by rule**, in the same order, its own rule first: `camera_target_unavailable` once where
 any place is a camera's, `object_required` for a rule that names no kind (`detail.rule`, 1 the task's own; a sort
@@ -355,28 +354,31 @@ exactly this plan again.
 then picks, places and returns, part after part:
 
 - **A taught place pose says where the part is let go.** Where the cell declares
-  `safety.planning_world.payload.length_mm`, you teach the fingertips where the part's bottom goes, and the tool
+  `robot.motion.place.part_hang_mm`, you teach the fingertips where the part's bottom goes, and the tool
   goes there raised by how far the part reaches past them, its hang measured from what the pick's looks read
-  under it; where the cell declares none, the tool goes to the taught pose itself. With `robot.place.side_by_side` the parts lie side by side, each at a spot of its own (one
-  the camera reads free, else the next of a grid about the pose), and a place with no spot left puts the part back
-  where it was gripped and asks (`part_does_not_fit`). Both are off as shipped.
+  under it; where the cell declares none, the tool goes to the taught pose itself. With
+  `robot.motion.place.side_by_side` the parts lie side by side, each at a spot of its own 20 mm beyond the others
+  (one the camera reads free, else the next of a grid about the pose), and a place with no spot left puts the part
+  back where it was gripped and asks (`part_does_not_fit`). Both are off as shipped.
 - **A camera place goes into the bin over its rim, or below it**: the drop stands at rim + hang + air (`rim_air_mm`, the
-  task's 0 to 50, else the cell's `robot.place.rim_air_mm`, 20; no hang where the cell declares no length). With `robot.place.release_in_a_box: below_the_rim` (off as shipped) the
-  part is set down `below_the_rim_mm` (30) under the rim instead, never lower than 10 mm over what the check reads
-  inside the box, and let go over the rim wherever that cannot be: an inside the check could not read, a box full
-  to within 10 mm of its rim, a part or an open hand that would not stand inside the opening, a grasp more than
-  5 degrees off vertical, a line in refused before anything was sent. A grasp within 5 degrees of vertical is
-  turned about the vertical along `robot.natural_closing_axis`. The bin is checked again before every drop, from
+  task's 0 to 50, else the owner's cell's 20; no hang where the cell declares no length). With
+  `robot.motion.place.release_in_a_box: below_the_rim` (off as shipped) the part is set down 30 mm under the rim
+  instead, never lower than 10 mm over what the check reads inside the box, and let go over the rim wherever that
+  cannot be: an inside the check could not read, a box full to within 10 mm of its rim, a part or an open hand that
+  would not stand 10 mm inside the opening, a grasp more than 5 degrees off vertical, a line in refused before
+  anything was sent. These numbers are the owner's cell's, fixed in `src/robot/execution/place_target.py` since
+  2026-10-17. A grasp within 5 degrees of vertical is turned about the vertical along
+  `robot.motion.natural_closing_axis`. The bin is checked again before every drop, from
   the look it was found at: its rim's depth and colour on one frame first, no detector asked (`by: depth`), the
   detector wherever that is unsure (`by: detector`); moved more than min(100 mm, half its diagonal), or another
-  footprint or rim, it is lost, and looked for again with the part in the jaws (`robot.place.relocate`, on; the
-  owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu errechnen"): from the task's
-  looks once more, a bin of the size the survey found and the colour it followed, standing in no other place, is
-  kept instead and the drop planned anew over it (`task.target_relocated`). Once per part: found nowhere, or lost
-  again, the part goes back where it was gripped, the arm returns, and the task asks. With
-  `robot.place.carry: over_the_rim` (off as shipped) a part one of whose pick's looks was the bin's is carried
-  straight up and over the rim on judged lines, the bin checked on that look's frame; anything unsure there, and
-  it is carried via the bin's look as before.
+  footprint or rim, it is lost, and always looked for again with the part in the jaws (the owner, 2026-10-09:
+  "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu errechnen"; the key `robot.place.relocate`
+  left on 2026-10-17): from the task's looks once more, a bin of the size the survey found and the colour it
+  followed, standing in no other place, is kept instead and the drop planned anew over it (`task.target_relocated`).
+  Once per part: found nowhere, or lost again, the part goes back where it was gripped, the arm returns, and the
+  task asks. With `robot.motion.place.carry: over_the_rim` (off as shipped) a part one of whose pick's looks was
+  the bin's is carried straight up and over the rim on judged lines, its bottom 15 mm over the rim beyond the rim
+  air, the bin checked on that look's frame; anything unsure there, and it is carried via the bin's look as before.
 - **The bin a task kept is remembered** for the next task into the same phrase, while the same built cell, the
   same controller lock and the same config stand. That task looks at it first, from its look, and keeps it where
   its rim reads as it did, with no detector asked and no other look (`task.target_found` says `known` and `by`);
@@ -470,10 +472,9 @@ waiting on a jaws question never holds it up. It is refused only `409 not_connec
   and Connect, a rebuild and a restart of the server: the console carries a halt nobody has said the cell is
   clear of to the arm of every later build, and keeps it in its stop file. Only `POST /v1/cell/acknowledge`
   ends it.
-- **The move in flight** is the arm's. With `robot.ur.brake_on_halt: true` the UR brakes it under control
-  (`stopJ` or `stopL` at max(2.0, the move's own acceleration), from the thread that sent it) and `braking`
-  is true. **Off, as shipped**, every move is sent exactly as it always was: the move in flight runs to its
-  end, and nothing after it is sent.
+- **The move in flight** is the arm's. A UR brakes it under control (`stopJ` or `stopL` at max(2.0, the
+  move's own acceleration), from the thread that sent it) and `braking` is true: every UR since 2026-10-17,
+  when the key `robot.ur.brake_on_halt` left with the synchronous move that ran to its end.
 - **An arm without a latch** (sim, dummy) answers `latched: false`: the run commands nothing more, and the
   current motion ends first.
 
@@ -541,7 +542,7 @@ a part), `jaws_not_confirmed`, `route_refused` and `unknown_pose`. Its events ar
 **The wave** is `POST /v1/cell/wave`, `202` with a run of kind `wave`: the second wrist joint swings 15 degrees
 either way, twice, and back to where it stood, each swing a straight joint line the exact guard judges against the
 camera world before it is sent, after the countdown where one is due. The console starts it when someone greets
-Willy in the chat (`CommandOut.greeting`, see Commands). Refused as a new task is, bar a carried part:
+Willy in the chat (`CommandOut.greeting`, see Commands). Refused as a new task is:
 `not_connected`, `run_active`, `halted`, `controller_stopped`, `cell_not_cleared`, `restart_required` (a wave is
 no way back after a stop), `needs_person`, `jaws_question_pending`, `part_still_held`, `jaws_not_confirmed` and
 `route_refused`. Its events are `wave.started`, `wave.done` and `wave.refused`. `POST /v1/task/stop` ends it before
@@ -591,8 +592,8 @@ CLI programs and the examples still ask at their own terminal.
   hold, so the person holds the part first. It goes out only once the gate let it: no run holding the cell,
   the arm not halted, the controller's own fields saying it can move, and no stop record nobody has said the
   cell is clear of (at Connect too). A stopped controller gets no "open now", with nothing sent.
-- **An answer that leaves the jaws open** stamps `jaws_confirmed_at`, tells the planner the hand is empty
-  (`arm.detach_payload()`), and after `open_now` makes the next moving run count down.
+- **An answer that leaves the jaws open** stamps `jaws_confirmed_at`, and after `open_now` makes the next moving
+  run count down.
 - **`POST /v1/cell/jaws/check`** always asks, also where the count says open, and blocks until the question
   ended: give it a client timeout of at least 250 s. A hand that is not a toggle answers at once. Refused, in
   order: `not_connected`, `run_active`, `halted`, `controller_stopped`, `cell_not_cleared` (after a stop the
@@ -605,11 +606,32 @@ CLI programs and the examples still ask at their own terminal.
 
 Events on the cell stream: `cell.jaws_question {question_id, stage, at, where, reason, choices, attempt, of,
 why_again, expires_at}`, `cell.jaws_answered {question_id, choice}`, and `cell.jaws_ended {question_id,
-outcome: open | refused | no_answer | cancelled, refusal, detached}`.
+outcome: open | refused | no_answer | cancelled, refusal}`.
+
+## The cell's task settings
+
+What a task takes where its sentence says nothing is the cell's, for every browser (the owner, 2026-10-16), in
+`runtime.task` of `app/runtime.yaml` ([`src/config/schema/runtime.py`](../src/config/schema/runtime.py)): `start`
+(`enter` or `card`), `scope` (`once` or `until_empty`), `place` (`default`, `pose:<name>` or `camera:<phrase>`),
+`anything`, `looks` (`first`, `when_needed` or `every`) and `critical_parts`. The console fills every card from
+them; a card may differ for its own task, and none of them starts one.
+
+**`GET /v1/task/settings`** answers `TaskSettingsOut`: the six, the place as `{"kind": "default"}`, `{"kind":
+"pose", "pose": <name>}` or `{"kind": "camera", "phrase": <phrase>}`, the file a change is written to
+(`target_file`: the runtime overlay of the chain's last layer, `app/runtime.cell.yaml` under
+`--profile ur10,hande,cell`), and why none can be (`why_not`, `why_not_code` `no_layer`). **`PATCH
+/v1/task/settings`** takes `TaskSettingsIn`, any of the six (one left out or null keeps its value), writes them
+through the task settings' door (`set_task_settings` in [`src/config/edit.py`](../src/config/edit.py)) all or none,
+the way a taught pose is written, and answers every setting as the tree now holds it. Refused with nothing written:
+`run_active`, `empty_patch`, `unknown_pose` (a place at a pose nobody taught), `no_layer` (a chain with no layer of
+the cell's own, or a last layer git does not keep out), `invalid_value` (the loader's sentence, such as a phrase
+holding a `" #"`), and `bad_request` or `text_too_long` for a value no setting takes. The cell reads
+`critical_parts` when it is built: `GET /v1/cell/facts` says the built cell's (`push.critical_parts`), which a task
+that says nothing runs with until the next build.
 
 ## Poses and teaching
 
-**`GET /v1/poses`** answers Home (read-only, from `robot.home_joint_positions`), every taught pose (name, label,
+**`GET /v1/poses`** answers Home (read-only, from `robot.motion.home_deg`), every taught pose (name, label,
 joints in degrees, screen, note, when it was taught), the default place, whether a pose can be taught now
 (`teachable`, `why_not`, `why_not_code`) and the file a taught pose is written to, said before anyone frees the
 arm. **`PUT /v1/poses/default-place {name}`** chooses the place a task uses when its command names none
@@ -650,17 +672,16 @@ Teach events: `teach.free`, `teach.say`, `teach.outside`, `teach.inside`, `teach
 `POST /v1/commands/parse {text, source: typed | spoken, language}` hands the whole sentence, German or English,
 at most 1000 characters, to the VLM (a known sentence to a table, below), which answers `CommandOut`:
 `understood`, `intent` (`task`, `stop`, `none`), the `object` and the `place` as English phrases with the
-operator's own words and the route the detector would take, `which` (the one part the sentence singles out,
+operator's own words, `which` (the one part the sentence singles out,
 `TaskIn.which`) and `source` (where the parts lie, `TaskIn.source`), each null where the sentence says none,
 `place_pose` and `return_to` (taught poses by **name**: a spoken label comes back as its name), `scope`, `count`,
 `notes`, `startable`, the model (`model_id`, latency, attempts, `loaded_now`, `remembered`), and its raw answer.
-The object's route is that of what the picks would ground, as `POST /v1/task` judges it: the which, else the
-object where the parts lie. **Reading never starts anything**: no run, no prompt set, no cell touched. A sentence
+**Reading never starts anything**: no run, no prompt set, no cell touched. A sentence
 read as "stop" only points at the stop buttons.
 
 **A sorting sentence reads as rules** (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die blaue").
 `rules` holds one entry per kind of part, at most four, in the sentence's order: `{object, which, source, place,
-place_pose, notes}`, each phrase with its route as above, the first the reading's own fields. A task of one kind has
+place_pose, notes}`, each phrase as above, the first the reading's own fields. A task of one kind has
 one rule, a stop, a greeting or a sentence not read none. A sort starts as one `POST /v1/task`: the task's own fields
 from the first rule, `more_rules` from the rest, two of which may share one place.
 
@@ -677,10 +698,11 @@ goes to the model. **A sentence the loaded copy answered before is answered from
 `startable` is true for an understood task with no note (no retry, every word found, every pose taught, no count), a
 part named and found in the sentence, and a place, where one is named, found there too. A sort is startable only where
 every rule is: no note on any rule, each rule's part named and found, and each its place or pose, found in the
-sentence where it is a place; Enter then starts the whole sort, never its first rule alone. Where the console's settings
-say Enter starts (the browser's own setting, the default), the cockpit then asks the cell, its ready bar and its
-facts afresh and posts `POST /v1/task` at once, the mode taken from the settings (`once` for a which, whatever
-they say), the settings' place only where the sentence names none; any doubt, a reading that is not
+sentence where it is a place; Enter then starts the whole sort, never its first rule alone. Where the cell's task
+settings say Enter starts (`runtime.task.start`, the default; [The cell's task settings](#the-cells-task-settings)),
+the cockpit then asks the cell, its ready bar and its facts afresh and posts `POST /v1/task` at once, the mode taken
+from the settings (`once` for a which, whatever they say), the settings' place only where the sentence names none; a
+cockpit that has not read the settings yet starts nothing on Enter; any doubt, a reading that is not
 startable, a cell that is not ready, or on a cell that detects with the VLM a model not loaded yet, opens the card
 with its first reason instead, and a refused start opens it with the refusal. The task route checks every gate either
 way, and a reading itself still starts nothing.
@@ -699,7 +721,7 @@ is not the VLM, before "Laden"; or another checkpoint loaded: rebuild the cell),
 model that fails while answering, and a reader refusal the catalog does not know), `501 vlm_model_missing`,
 `422 text_too_long` (a sentence over 1000 characters; `detail` names the field and the limit) and
 `422 bad_request`. `GET /v1/commands/status`
-says `ready`, `idle`, `loading`, `missing`, `failed` or `not_configured`, with the cause and whether the copy is
+says `ready`, `idle`, `loading`, `missing` or `failed`, with the cause and whether the copy is
 shared with detection; `POST /v1/commands/warmup` is "Laden", refused during a run.
 
 **One VLM copy per process** reads commands and, on a cell whose detector is the VLM, detects too. A VLM cell
@@ -741,23 +763,21 @@ over the moving live picture.
   whose earlier pick stopped where the arm stands ends `recovery_needs_person`, with nothing commanded and the
   latch kept.
 - The prompt is what the detector grounds for this run. An empty prompt keeps the cell's own phrase.
-- Every pick of a run looks from the cell profile's looks (`robot.look_joint_positions_deg`), else, on a
+- Every pick of a run looks from the cell profile's looks (`robot.motion.look_deg`), else, on a
   wrist camera, from home, as a `PickRun` does. A wrist camera fuses its looks until the grasp is safe.
   `both_faces` stays off here: the console runs the fast rule, and the switch belongs to a program
   (`PickRun`, `service.pick`) or a task's Advanced options.
 - `push_mm` sets how far a `dense_clutter` push of a wrist camera's pick moves the part in this run:
-  taken as asked up to the cell's `recovery.fixture.max_nudge_mm` (50 mm on a cell that declares no
-  fixture, which the push does not need), refused above it or under 10 mm
-  (`422 push_distance_refused`, no run started), never shortened. Without it a push is the cell's
-  `push_distance_mm`, 30 mm unless the cell says otherwise, and longer, 40 then 50 mm up to the ceiling,
-  where that frees no direction. The push may rearrange the scene, and runs only where the cell's parts
-  are not critical (`recovery.critical_parts`); critical parts are never pushed, and a blocker is cleared
-  instead. A run is one campaign: its push budgets and the parts `next_target` skips are its own, and
-  `run_started` carries `push_mm` where the run asked for one.
+  taken as asked up to 50 mm, refused above it or under 10 mm (`422 push_distance_refused`, no run
+  started), never shortened. Without it a push is 30 mm, and longer, 40 then 50 mm, where that frees no
+  direction. The push may rearrange the scene, and runs only where the parts are not critical (the run's
+  choice, else the cell's `runtime.task.critical_parts`); critical parts are never pushed, and a blocker is
+  cleared instead. A run is one campaign: its push budgets are its own, and `run_started` carries `push_mm`
+  where the run asked for one.
 - Nobody is asked anything during a run, where nobody watching the console would see the question. A toggle
   hand whose jaws the program believes closed, or cannot place, ends the run before its next pick, and a
-  question inside a pick is a refusal: the hand needs a person. So is a hand nobody can vouch for, at a push
-  or before a re-pick drives the looks: a toggle's count, or a width gripper not connected or unreadable.
+  question inside a pick is a refusal: the hand needs a person. So is a hand nobody can vouch for at a push:
+  a toggle's count, or a width gripper not connected or unreadable.
   The jaws question in the browser brings a toggle's count back to open.
 - A run stops, `failed`, on a pick whose controller cannot move, whose hand needs a person, or whose push
   stopped once something may have moved: the arm stays where it stopped, the stop record stands, and a person
@@ -892,7 +912,7 @@ otherwise (fixed run and question ids, a fixed clock).
 | The cockpit, Setup and the audience window calling these routes in a browser | run on `console_dummy` (Playwright); not yet against URSim ([`frontend/README.md`](../frontend/README.md)) |
 | A sentence typed and sent with Enter starting a task with no card, and the card first where the settings say so | run on `console_dummy` (Playwright, `frontend/e2e/enter.e2e.ts`); the known sentences and the remembered answers pinned in `tests/test_api_commands.py` |
 | The task's new place, carry and end rules: below the rim, side by side, the measured hang, the carry over the rim, the look count and the check look, the bin remembered and checked by its rim | pinned by tests on the task's doubles and a ray-cast bench (`tests/test_a_part_is_set_down_below_a_box_rim.py`, `tests/test_an_until_empty_task_ends_without_a_long_search.py`, `tests/test_api_the_console_remembers_the_bin_its_last_task_kept.py` and their neighbours); not yet against URSim or the cell |
-| A sort through the console: the rules read and routed, every refusal rule by rule, each kind into its own bin, a bin found again after it moved, each place's overlay and remembered bin | pinned by tests on the scripted cell (`tests/test_api_a_sort_*.py`) and the task's doubles (`tests/test_a_sort_*.py`); the class list on the cell's detector not yet measured, nor run against URSim or the cell |
+| A sort through the console: the rules read, every refusal rule by rule, each kind into its own bin, a bin found again after it moved, each place's overlay and remembered bin | pinned by tests on the scripted cell (`tests/test_api_a_sort_*.py`) and the task's doubles (`tests/test_a_sort_*.py`); the class list on the cell's detector not yet measured, nor run against URSim or the cell |
 | Any endpoint with a physical arm, gripper or camera frame | never touched hardware |
 
 On `console_dummy` the cell response's `vendor` and the status response's `simulated` flag say that

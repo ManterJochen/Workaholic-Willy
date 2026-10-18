@@ -118,9 +118,10 @@ class ConsoleApiTests(unittest.TestCase):
         from src.config.explain import explain_in
 
         # The second key was `camera.cameras.active_rig_id` until it became `primary_rig_id`, a
-        # required string that can no longer be None. `stereomatcher.p1` is one of the 45 that
-        # still is, so the case this guard exists for is still exercised.
-        for key in ("robot.safety.payload.mass_kg", "camera.stereomatcher.p1"):
+        # required string that can no longer be None, and then `camera.stereomatcher.p1` until that
+        # block left on 2026-10-17. `hand_eye.eye_to_hand.target` is one of the keys that still holds
+        # None, so the case this guard exists for is still exercised.
+        for key in ("robot.safety.payload.mass_kg", "camera.hand_eye.eye_to_hand.target"):
             with self.subTest(key):
                 body = self.client.get("/v1/config/explain", params={"key": key}).json()
                 expected = explain_in(
@@ -132,7 +133,7 @@ class ConsoleApiTests(unittest.TestCase):
         """⛔ THE DISTINCTION THE DRIFT DESTROYED. An unconfigured ``serial_number`` IS ``null``;
         reporting that as "nobody set this" tells an operator the opposite of what the tree says."""
         body = self.client.get(
-            "/v1/config/explain", params={"key": "camera.stereomatcher.p1"}
+            "/v1/config/explain", params={"key": "camera.hand_eye.eye_to_hand.target"}
         ).json()
         self.assertIn("= None", body["text"])
 
@@ -175,7 +176,7 @@ class ConsoleApiTests(unittest.TestCase):
         body = self.client.get("/v1/config/writable").json()
         keys = {entry["key"] for entry in body}
         self.assertIn("robot.safety.payload.mass_kg", keys)
-        self.assertNotIn("robot.workspace_limits.z_min", keys)
+        self.assertNotIn("robot.motion.workspace.z_min", keys)
         for entry in body:
             self.assertGreater(len(entry["measure"]), 40, f"{entry['key']} has no real instruction")
 
@@ -202,15 +203,15 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertNotIn("tool frame", blocking)
 
     def test_a_safety_limit_is_refused_with_403_and_a_reason(self) -> None:
-        response = self.client.patch("/v1/config", json={"robot.workspace_limits.z_min": -500.0})
+        response = self.client.patch("/v1/config", json={"robot.motion.workspace.z_min": -500.0})
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["code"], "not_writable")
         self.assertIn("comment", response.json()["message"])
         # And nothing moved: the limit still reads as whatever the YAML says, not as the attempt.
         still = self.client.get(
-            "/v1/config/explain", params={"key": "robot.workspace_limits.z_min"}
+            "/v1/config/explain", params={"key": "robot.motion.workspace.z_min"}
         ).json()["value"]
-        self.assertEqual(still, self.cell.config().robot.workspace_limits.z_min)
+        self.assertEqual(still, self.cell.config().robot.motion.workspace.z_min)
         self.assertNotEqual(still, -500.0)
 
     def test_a_value_the_validators_reject_is_422_and_leaves_the_file_alone(self) -> None:
@@ -275,13 +276,16 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertIn("mushroom", schema["info"]["description"].lower())
 
     def test_no_endpoint_writes_a_motion_parameter(self) -> None:
-        """The console issues tasks, not parameters. The writable set is the whole permitted surface."""
+        """The console issues tasks, not parameters. The writable set is the whole permitted surface. Every key of how a
+        cell moves stands under ``robot.motion`` since 2026-10-17, and so does the place: how far a part hangs past the
+        fingertips (``robot.motion.place.part_hang_mm``), which a person sets in the console, moves nothing."""
         from src.config.edit import WRITABLE
 
-        forbidden = ("motion", "speed", "accel", "workspace_limits", "self_collision")
+        forbidden = ("speed", "accel", "workspace", "self_collision")
         for entry in WRITABLE:
+            moving = entry.path.startswith("robot.motion.") and not entry.path.startswith("robot.motion.place.")
             self.assertFalse(
-                any(word in entry.path for word in forbidden),
+                moving or any(word in entry.path for word in forbidden),
                 f"{entry.path} is a motion parameter and must not be writable from a browser",
             )
 

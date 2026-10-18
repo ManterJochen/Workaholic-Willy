@@ -1,7 +1,8 @@
 """The cell finds what it stands on; a library caller gets the world it always got (fix plan Track S, test 12).
 
-A cell built from its tree carries ``planning_world.perceived.support_surfaces`` (on) and ``support_allowance_mm`` (2)
-into its world, which then holds the surfaces and the bench as solids. ``WorldBuildTuning`` is the library's own: its
+A cell built from its tree finds its supports and holds them 2 mm over their band (``perceived.SUPPORT_ALLOWANCE_MM``),
+every cell since 2026-10-17, where both were keys of ``planning_world.perceived``: its world then holds the surfaces
+and the bench as solids. ``WorldBuildTuning`` is the library's own: its
 default leaves the supports off, so a caller that builds a tuning by hand gets the world of before, byte for byte. The
 fingerprints below are that world's on the owner's two recorded looks, with and without a held target (every float to a
 millionth). Commit 1d91e3a built the first; they were taken again on 2026-10-06, when the camera world's boxes came to
@@ -66,11 +67,11 @@ class TheCellGetsSupportsTests(unittest.TestCase):
         self.assertIn("support", perceived.dropped_points)
         self.assertIn("supports", perceived.to_dict())
 
-    def test_a_cell_can_turn_them_off(self) -> None:
-        config = RobotConfig.model_validate(cell.owner_robot(perceived={"support_surfaces": False}))
-        world = _live_planner_world(config, [CameraView(name="EIH_Cam", depth_source=_Silent(),
-                                                        camera_to_tool=np.eye(4))])
-        self.assertFalse(world.tuning.support_surfaces)
+    def test_no_tree_turns_them_off(self) -> None:
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            RobotConfig.model_validate(cell.owner_robot(perceived={"support_surfaces": False}))
 
 
 class TheLibraryCallerGetsTheWorldOfBeforeTests(unittest.TestCase):

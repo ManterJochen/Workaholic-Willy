@@ -23,7 +23,6 @@ export type ConnectPreviewOut = Schemas['ConnectPreviewOut']
 export type TelemetryOut = Schemas['TelemetryOut']
 export type DiagnosticsOut = Schemas['DiagnosticsOut']
 export type PerceptionStackOut = Schemas['PerceptionStackOut']
-export type RoutePreviewOut = Schemas['RoutePreviewOut']
 export type RunOut = Schemas['RunOut']
 export type RollupOut = Schemas['RollupOut']
 export type RecordOut = Schemas['RecordOut']
@@ -49,7 +48,6 @@ export type CommandProvenanceIn = Schemas['CommandProvenanceIn']
 export type CellFactsOut = Schemas['CellFactsOut']
 export type PushFactsOut = Schemas['PushFactsOut']
 export type BrakeFactsOut = Schemas['BrakeFactsOut']
-export type PayloadFactsOut = Schemas['PayloadFactsOut']
 export type RouteFactsOut = Schemas['RouteFactsOut']
 export type DetectorFactsOut = Schemas['DetectorFactsOut']
 export type RigOut = Schemas['RigOut']
@@ -70,6 +68,8 @@ export type PayloadOut = Schemas['PayloadOut']
 export type TeachIn = Schemas['TeachIn']
 export type TeachStartOut = Schemas['TeachStartOut']
 export type TeachStateOut = Schemas['TeachStateOut']
+export type TaskSettingsOut = Schemas['TaskSettingsOut']
+export type TaskSettingsIn = Schemas['TaskSettingsIn']
 export type CommandIn = Schemas['CommandIn']
 export type CommandOut = Schemas['CommandOut']
 export type CommandPhraseOut = Schemas['CommandPhraseOut']
@@ -187,10 +187,6 @@ export const api = {
 
   diagnostics: () => request<DiagnosticsOut>('GET', '/v1/diagnostics'),
 
-  /** Pure text analysis -- no GPU, no model, no image. Free to call on every keystroke. */
-  routePreview: (prompt: string) =>
-    request<RoutePreviewOut>('GET', `/v1/diagnostics/route${query({ prompt })}`),
-
   cell: () => request<CellOut>('GET', '/v1/cell'),
 
   /**
@@ -297,8 +293,7 @@ export const api = {
 
   /**
    * "Halt now": the run stops commanding and, where the arm latches, nothing after the move in flight is sent to it.
-   * Only where the arm brakes a move in flight (`robot.ur.brake_on_halt`, off as shipped) is that move braked under
-   * control. It is NOT an emergency stop. The red button at the cell is.
+   * Where the arm brakes a move in flight (every UR) that move is braked under control. It is NOT an emergency stop. The red button at the cell is.
    */
   brake: () => request<BrakeOut>('POST', '/v1/cell/brake'),
 
@@ -349,6 +344,15 @@ export const api = {
   /** Cancel: the arm is held at once; nothing is saved. */
   teachCancel: (runId: string, token: string) =>
     request<TeachStateOut>('POST', `/v1/teach/${encodeURIComponent(runId)}/cancel${query({ token })}`),
+
+  /** The cell's task settings, for every browser: what a task takes where its sentence says nothing. Moves nothing. */
+  taskSettings: () => request<TaskSettingsOut>('GET', '/v1/task/settings'),
+
+  /**
+   * Write the settings named into the cell's own layer, all or none, as a taught pose is written; the answer is every
+   * setting as the cell now holds it. Moves nothing and starts nothing: the next task takes them.
+   */
+  setTaskSettings: (change: TaskSettingsIn) => request<TaskSettingsOut>('PATCH', '/v1/task/settings', change),
 
   /**
    * What a sentence asks for, read by the VLM (a known sentence by the server's table, with no model asked). It creates

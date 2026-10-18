@@ -48,8 +48,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 __all__ = [
+    "LINE_CLEARANCE_MM",
     "LINE_MAX_CHORD_OFF_MM",
     "LINE_MAX_JOINT_STEP_RAD",
+    "MAX_DETOUR_DEG",
     "MAX_PATH_SAMPLES",
     "LineSamples",
     "PathSamples",
@@ -94,6 +96,25 @@ LINE_MAX_JOINT_STEP_RAD = 0.35
 #: executes, so it belongs where a controller runs the line; where the driver walks the joint line
 #: itself, the fill is what executes.
 LINE_MAX_CHORD_OFF_MM = 1.0
+
+#: How far every configuration of a straight joint line has to stay from the planner's world, the declared cell and
+#: the camera's, before the line runs instead of a plan, millimetres: 3, the owner's cell's since 2026-10-07 and every
+#: cell's since 2026-10-17 (``robot.safety.planned_motion.line_clearance_mm`` until then). A line that comes closer is
+#: planned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that
+#: grazes one by a millimetre passes a check that asks only for no penetration. Where only the boxes a camera saw come
+#: closer, the planner is asked again with them set aside, and the exact guard decides them at
+#: ``self_collision.perceived_min_distance_mm`` (Option 1); the exact guard keeps its own ``min_distance_mm`` from
+#: everything at every sample besides. A box the camera saw is already its surface grown by the 6 mm every camera world
+#: grows its boxes by. Not a certified distance: 0 would judge a line at no penetration, which is how a plan is judged.
+LINE_CLEARANCE_MM = 3.0
+
+#: How far any joint of a cuRobo plan may swing beyond the span between where it starts and where it ends, degrees
+#: (:func:`span_overshoot_rad`): 45, the owner's cell's and every cell's since 2026-10-17
+#: (``robot.safety.planned_motion.max_detour_deg`` until then). A plan past it is not run: the next nearest
+#: configuration is planned to instead, and where none is left the move is refused naming the joint. 45 degrees admits
+#: a plan that bends a joint around a bin wall and refuses the plan that swings the base or a wrist the long way round,
+#: which is what twisted a cable-carrying arm on the owner's cell (2026-09-24).
+MAX_DETOUR_DEG = 45.0
 
 #: Absorbs the float noise of an exact multiple: ``999.0`` computed as ``(999 / 850) * 850`` can land
 #: a machine epsilon above, and a plain ceil would then ask for one step more than the geometry needs.

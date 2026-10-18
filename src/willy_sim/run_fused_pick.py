@@ -11,9 +11,9 @@ A two-phase coordinator that reuses the existing machinery, with no new fuser or
 
 This sidesteps a structural blocker: the orchestrator binds one resolver, so the handoff is a BASE
 point rather than a second camera's surface (fusing surfaces across cameras is the pick loop's
-``grasping.fusion.geometry``, which ``run_multiview_pick --fuse-geometry`` measures). The overhead
-uses ground-truth perception, which is deterministic; swapping it for the GroundingDINO+SAM2 stack
-is a later step.
+camera fusion, which ``run_multiview_pick --fuse-geometry`` measures). The overhead
+uses ground-truth perception, which is deterministic; ``--coarse vision`` swaps it for the cell's
+own stack (the VLM, then SAM2).
 
 On-box only (needs Isaac). Run with Isaac's bundled python:
     <isaac-sim>\\python.bat -m src.willy_sim.run_fused_pick --runs 10 [--gui]
@@ -74,8 +74,8 @@ def run_fused_gate(runs: int = 10, *, headless: bool = True, data_dir: str | Non
     """Overhead coarse-localize, then wrist refine and grasp, scored on the lift gate and coarse error.
 
     ``coarse='gt'`` localizes with ground-truth perception, which is deterministic; ``coarse='vision'``
-    uses the real GroundingDINO+SAM2 stack with the text ``prompt`` for the overhead scan, which is
-    the full vision-language dual-cam pick.
+    uses the cell's own stack (the one ``cfg.models.pipeline`` builds: the VLM, then SAM2) with the text
+    ``prompt`` for the overhead scan, which is the full vision-language dual-cam pick.
     """
     print("=== DUAL-CAM FUSED pick (overhead ETH coarse-scan -> wrist EIH refine -> grasp) ===", flush=True)
     service, arm, gripper, handles, cfg, _view_pose, _cell = build_service(
@@ -134,16 +134,15 @@ def run_fused_gate(runs: int = 10, *, headless: bool = True, data_dir: str | Non
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         from src.willy_sim.perception import IsaacVisionPerceptionSource
-        from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector
-        from src.models.segmentation.realtime.segmenter import Sam2Segmenter
+        from src.models.factory import build_perception
 
         overhead = IsaacVisionPerceptionSource(
-            camera=handles.camera, detector=GroundingDinoObjectDetector(cfg.models.objectdetector),
-            segmenter=Sam2Segmenter(cfg.models.segmenter), prompt=prompt, session=arm.session,
+            camera=handles.camera, backend=build_perception(cfg.models), prompt=prompt, session=arm.session,
             warmup_steps=max(25, sim.scene_setup.render_warmup_steps),
         )
         scan_q = np.asarray(sim.park_joint_positions, dtype=np.float64)
-        print(f"overhead COARSE = real-vision (GroundingDINO+SAM2), prompt={prompt!r}", flush=True)
+        print(f"overhead COARSE = real-vision (the cell's stack: {cfg.models.pipeline.kind}, SAM2), "
+              f"prompt={prompt!r}", flush=True)
     else:
         overhead = GroundTruthPerceptionSource(
             camera=handles.camera, target_prim_path=handles.object_prim_path, session=arm.session,
@@ -291,17 +290,17 @@ def run_clutter_gate(runs: int = 10, *, headless: bool = True, data_dir: str | N
 
     # Overhead localize: a per-run _localize() returning the chosen object's BASE centroid through the
     # true extrinsic. With coarse='gt' this is ground-truth segmentation of the chosen prim. With
-    # coarse='vision', GroundingDINO detect_all finds all the cubes, an RGB colour match selects the
-    # prompted one (GroundingDINO does not colour-discriminate by label; the mean RGB per box does),
-    # and SAM2 then segments it.
+    # coarse='vision', the cell's detector (the VLM on a zero-shot tree) finds the cubes the prompt names,
+    # an RGB colour match keeps the prompted one among them (a rule GroundingDINO, the sim's detector until
+    # 2026-10-17, needed because it did not colour-discriminate by label; the mean RGB per box still checks
+    # the VLM's choice), and SAM2 then segments it.
     if coarse == "vision":
         from types import SimpleNamespace
 
-        from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector
-        from src.models.segmentation.realtime.segmenter import Sam2Segmenter
+        from src.models.factory import build_perception
 
-        detector = GroundingDinoObjectDetector(cfg.models.objectdetector)
-        segmenter = Sam2Segmenter(cfg.models.segmenter)
+        _backend = build_perception(cfg.models)
+        detector, segmenter = _backend.detector, _backend.segmenter
         color_idx = {"red": 0, "green": 1, "blue": 2}.get(
             next((w for w in prompt.lower().split() if w in ("red", "green", "blue")), "")
         )
@@ -405,54 +404,6 @@ def run_clutter_gate(runs: int = 10, *, headless: bool = True, data_dir: str | N
     )
 
 
-def run_vision_probe(*, headless: bool = True, data_dir: str | None = None,
-                     prompt: str = "a cube") -> None:
-    """Measure what GroundingDINO detects on the 3-cube clutter scene.
-
-    Prints every detection (box, label, score) and the mean RGB inside each box, which shows whether
-    GroundingDINO finds all the cubes and whether colour can be read per detection. An RGB colour
-    match is robust to GroundingDINO's weak colour grounding.
-    """
-    objects = _clutter_specs()
-    service, arm, gripper, handles, cfg, _vp, _cell = build_service(  # noqa: F841
-        headless=headless, data_dir=data_dir, objects_override=objects,
-        continuous_guard=True,  # eye-in-hand closed-form path; natural_aim does not apply here
-        camera_world=CameraWorldDecline("run_fused_pick: this runner plans without a live camera world"),
-    )
-    from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector
-
-    from src.robot.core import JointPositions
-
-    sim = cfg.robot.sim
-    overhead_cam = handles.camera
-    for fn in (lambda: overhead_cam.set_clipping_range(0.05, 1.0e6),):
-        try:
-            fn()
-        except Exception:  # noqa: BLE001
-            pass
-    arm.move_to_joints(JointPositions(np.asarray(sim.park_joint_positions, dtype=np.float64))).raise_unless_executed()
-    app = getattr(arm.session, "app", None)
-    for _ in range(max(30, sim.scene_setup.render_warmup_steps)):
-        arm.session.step(render=True)
-        if app is not None:
-            app.update()
-    frame = overhead_cam.get_current_frame()
-    rgb = np.asarray(frame["rgb"])[..., :3] if isinstance(frame, dict) and frame.get("rgb") is not None else None
-    if rgb is None:
-        raise SystemExit("overhead RGB not available")
-    bgr = rgb[..., ::-1].copy()
-    detector = GroundingDinoObjectDetector(cfg.models.objectdetector)
-    for probe_prompt in (prompt, "a cube", "the green cube", "red cube . green cube . blue cube"):
-        dets = detector.detect_all(bgr, probe_prompt)
-        print(f"\n--- detect_all(prompt={probe_prompt!r}) -> {len(dets)} detections ---", flush=True)
-        for d in dets:
-            x0, y0, x1, y1 = (int(max(0, c)) for c in d.box)
-            patch = rgb[y0:y1, x0:x1]
-            mean_rgb = np.round(patch.reshape(-1, 3).mean(axis=0), 0) if patch.size else np.array([-1, -1, -1])
-            print(f"  label={d.label!r} score={d.score:.2f} center=({d.x_center:.0f},{d.y_center:.0f}) "
-                  f"mean_rgb={mean_rgb.tolist()}", flush=True)
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description="Willy dual-cam fused pick (Isaac).")
     ap.add_argument("--runs", type=int, default=10)
@@ -461,19 +412,16 @@ def main() -> None:
     ap.add_argument("--data-dir", type=str, default=None)
     ap.add_argument("--marker", type=str, default="ground_truth", choices=["ground_truth", "aruco"])
     ap.add_argument("--coarse", type=str, default="gt", choices=["gt", "vision"],
-                    help="overhead coarse-localize perception: gt (deterministic) or vision (GroundingDINO+SAM2)")
+                    help="overhead coarse-localize perception: gt (deterministic) or vision (the cell's stack: "
+                         "the VLM, then SAM2)")
     ap.add_argument("--prompt", type=str, default="a red cube", help="text prompt (clutter selection / coarse vision)")
     ap.add_argument("--clutter", action="store_true",
                     help="multi-object scene: select + grasp the prompted object among 3 distinct cubes (P0)")
-    ap.add_argument("--probe-vision", action="store_true",
-                    help="measure GroundingDINO detect_all on the 3-cube scene (P1 design input), then exit")
     ap.add_argument("--overhead-source", type=str, default="calibrated", choices=["calibrated", "live"],
                     help="P5.4: overhead extrinsic from the persisted calibration (eth_overhead_<marker>.json) "
                          "or a live ground-truth Umeyama fit (the GT oracle)")
     args = ap.parse_args()
-    if args.probe_vision:
-        run_vision_probe(headless=not (args.gui or args.no_headless), data_dir=args.data_dir, prompt=args.prompt)
-    elif args.clutter:
+    if args.clutter:
         run_clutter_gate(runs=args.runs, headless=not (args.gui or args.no_headless),
                          data_dir=args.data_dir, marker=args.marker, prompt=args.prompt, coarse=args.coarse,
                          overhead_source=args.overhead_source)

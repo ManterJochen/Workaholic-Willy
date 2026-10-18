@@ -160,7 +160,7 @@ def admitted_arms(
 def described_home(model: "str | None") -> tuple[float, ...] | None:
     """The home ``model``'s description states, ``home_rad`` per joint in radians, or ``None`` for an arm nobody describes.
 
-    Since P0e it is the home a UR drives to where the cell declares none (``robot.home_joint_positions``); until then
+    Since P0e it is the home a UR drives to where the cell declares none (``robot.motion.home_deg``); until then
     that was the hand-kept ``HOME_JOINTS_DEFAULT``, which every UR description repeats: shoulder lift and wrist 1 at
     -pi/2, every other joint at zero.
     """

@@ -142,11 +142,8 @@ class WhatATestInjectsReachesTheArmTests(unittest.TestCase):
     def test_the_planner_it_injects_is_the_one_asked_and_closed(self) -> None:
         arm = _arm("curobo")
         planner = MagicMock()
-        planner.detach_payload.return_value = True
         arm._curobo = planner
         self.assertIs(arm._curobo_planner(), planner)
-        self.assertIs(arm.detach_payload(), True)
-        planner.detach_payload.assert_called_once_with()
         # Willy retires a planner rather than closing it, so a move still holding it starts no sidecar on it.
         arm.stop_planner()
         planner.retire.assert_called_once_with()
@@ -175,7 +172,7 @@ class WhatATestInjectsReachesTheArmTests(unittest.TestCase):
         with self.assertRaisesRegex(AttributeError, r"MotionController has no 'connection'"):
             arm._motion.connection = _connection()  # type: ignore[attr-defined]
         arm._conn = _connection()
-        arm._payload_in_planner = True  # carried since the build
+        arm._lift_judged = None  # carried since the build
         hand_made = URRobotArm.__new__(URRobotArm)
         hand_made._transport = over(_connection())  # nothing about it was built, so nothing is refused
 

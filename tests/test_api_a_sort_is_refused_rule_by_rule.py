@@ -3,7 +3,7 @@
 "Grüne Teile in die gelbe Kiste, rote in die blaue" is one task of several rules: the task's own object, which, source
 and place, and up to three ``more_rules``. The route keeps every refusal of 1.3.2 for every rule, in its order: the
 camera target the cell can find (once, where any place is a camera's), each rule's kind (a sort names every one, so
-``object_required`` names the rule), each rule's phrase and each camera place's, each taught pose a rule places at
+``object_required`` names the rule), each taught pose a rule places at
 (``unknown_pose`` naming ``place of rule 2``), a place nobody declared; then a sort on a cell whose perception grounds
 no phrase (``bad_request``) and whatever the library's plan refuses (one kind in two rules, a ``|`` or the word
 ``ambiguous`` in a phrase: ``bad_request``). The plan resolves each further rule's place as the first's and echoes it
@@ -14,8 +14,7 @@ What this file pins:
   place names none, a camera's phrase and words), echoed in ``run_started`` and the run, and handed to ``run_task`` as
   the plan's ``SortRule`` entries with the poses they name and the air over a bin's rim;
 * each refusal above, with what it names, nothing moved and no run started, and their order;
-* a Restart of a stopped sort runs every rule again, and refuses a rule the cell can no longer ground, or a sort it can
-  no longer tell apart.
+* a Restart of a stopped sort runs every rule again, and refuses a sort the cell can no longer tell apart.
 
 Honesty bucket (2): the real console, routes, registry and plan on the scripted cell of
 ``tests/_console_task_fakes.py`` and console_dummy; the library's ``run_task`` replaced where only what it was handed
@@ -30,7 +29,7 @@ from typing import Any, Iterator
 from unittest.mock import patch
 
 from tests._console_task_fakes import POSES_DEG, ConsoleCase, SightedLocator, events_of
-from tests.test_api_task_restart import _stack, clear
+from tests.test_api_task_restart import clear
 
 #: Green parts at the default place, red ones at the park pose: a sort of taught poses, which needs no camera.
 GREEN = {"object": "green part", "object_said": "grüne Teile", "place": {"kind": "pose", "pose": None}}
@@ -161,16 +160,6 @@ class ASortIsRefusedBeforeAnythingMovesTests(_SortCase):
                 self.assertIn(f"rule {rule} of the sort names no kind of part", refused["message"])
         self.assertNothingStarted(cell)
 
-    def test_a_further_rule_s_phrases_the_detector_would_ground_wrong(self) -> None:
-        cell = self.scripted()
-        refused = self.refused_sort(422, "prompt_not_routable", _sort({**RED, "object": "den roten Würfel"}))
-        self.assertIn("den roten Würfel", refused["message"])
-        self.camera(cell, "die blaue Kiste")
-        red = {**RED, "place": {"kind": "camera", "phrase": "die blaue Kiste"}}
-        refused = self.refused_sort(422, "target_not_routable", _sort(red))
-        self.assertIn("die blaue Kiste", refused["message"])
-        self.assertNothingStarted(cell)
-
     def test_a_further_rule_s_pose_nobody_taught_is_named(self) -> None:
         cell = self.scripted()
         refused = self.refused_sort(422, "unknown_pose", _sort({**RED, "place": {"kind": "pose", "pose": "nowhere"}}))
@@ -218,14 +207,11 @@ class ASortIsRefusedBeforeAnythingMovesTests(_SortCase):
         self.assertNothingStarted(cell)
 
     def test_the_rules_are_refused_in_the_order_of_1_3_2(self) -> None:
-        """Every rule's kind before any rule's phrase, every phrase before any pose, any pose before the cell's
-        grounding; the camera before the kinds."""
+        """Every rule's kind before any pose, any pose before the cell's grounding; the camera before the kinds."""
         cell = self.scripted()
         nowhere = {"kind": "pose", "pose": "nowhere"}
         self.refused_sort(422, "object_required",
                           _sort({**RED, "object": "den roten Würfel"}, {"object": " ", "place": nowhere}))
-        self.refused_sort(422, "prompt_not_routable",
-                          _sort({**RED, "place": nowhere}, {"object": "den blauen Würfel", "place": nowhere}))
         cell.service.grounds = False
         self.refused_sort(422, "unknown_pose", _sort({**RED, "place": nowhere}))
         with patch("src.robot.execution.place_target.locators_for_service", return_value=[]):
@@ -283,16 +269,6 @@ class ARestartRunsTheSortAgainTests(_SortCase):
 
         self.assertEqual({"field": "more_rules"}, refused["detail"])
         self.assertEqual(moved, cell.motions())
-        self.assertEqual(stopped["id"], self.cell.recovery.run_id)  # type: ignore[union-attr]
-
-    def test_a_restart_refuses_a_further_rule_the_cell_would_now_ground_wrong(self) -> None:
-        self.scripted()
-        with patch("api.routers.diagnostics._perception", return_value=_stack("vlm", True)):
-            stopped = self._stopped(more_rules=[{**RED, "object": "den roten Würfel"}])
-        with patch("api.routers.diagnostics._perception", return_value=_stack("grounded_sam", None)):
-            refused = self.refused(self.client.post("/v1/task/restart", json={"run_id": stopped["id"]}), 422,
-                                   "prompt_not_routable")
-        self.assertIn("den roten Würfel", refused["message"])
         self.assertEqual(stopped["id"], self.cell.recovery.run_id)  # type: ignore[union-attr]
 
 

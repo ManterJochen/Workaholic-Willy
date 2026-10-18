@@ -36,7 +36,7 @@ net. The corpus is millimetres, so this is where the conversion happens, once.
 
 Heights are above the support plane, not absolute z. The table sits at z=0 in every datagen scene,
 which is exactly what makes absolute z a trap: a net trained on it would learn "z < 5 mm is table"
-and a cell with `robot.grasping.support.height_mm` set to anything else would break it silently. x
+and a cell whose bench (`robot.safety.planning_world.support_plane`) stands anywhere else would break it silently. x
 and y are centred per sample, because an object at x=300 poses the same problem as the same object
 at x=600.
 """

@@ -172,16 +172,6 @@ class TheSharedKeysTests(unittest.TestCase):
         left, right = pose.contacts
         self.assertAlmostEqual(float(np.linalg.norm(np.asarray(right) - np.asarray(left))), 40.0)
 
-    def test_there_is_only_ONE_adapter(self) -> None:
-        """`_pick_helpers` delegates rather than keeping a copy -- a second contact synthesis would
-        have been this repo's THIRD gripper description."""
-        from src.robot.grasping.loop._pick_helpers import _grasp_point_to_grasp_pose
-        point = _point(123.0)
-        first, second = _grasp_point_to_grasp_pose(point), grasp_point_to_pose(point)
-        self.assertTrue(np.array_equal(first.position_mm, second.position_mm))
-        self.assertTrue(np.array_equal(first.rotation_matrix, second.rotation_matrix))
-        self.assertIs(first.frame, second.frame)
-
 
 class TheTransformReaderTests(unittest.TestCase):
     """⛔ THE DEFECT THAT MADE THE WHOLE DEEP PATH RETURN NOTHING, on every real pick.

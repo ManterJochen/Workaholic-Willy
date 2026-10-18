@@ -228,7 +228,7 @@ class TodaysLinesAreReadTests(unittest.TestCase):
 
 
 class AFollowedLookIsTimedAsItsGroundingTests(unittest.TestCase):
-    """A pick whose parts were followed (robot.grasping.follow_parts) says so with its own length, and that is its
+    """A pick whose parts were followed says so with its own length, and that is its
     grounding: no detector was asked."""
 
     def test_the_followed_frame_is_the_grounding_and_is_counted(self) -> None:
@@ -293,7 +293,7 @@ class TheTasksOwnWayHomeAtItsEndOpensNoPickTests(unittest.TestCase):
 
 
 class AJudgementOnASecondThreadEndsNoLineTests(unittest.TestCase):
-    """robot.motion.judge_next_leg in_settles_and_motion judges the way home on a second thread while the line out
+    """A cuRobo UR judges the way home on a second thread while the line out
     runs: what that thread writes then is no sign the line ended; the main thread's "runs as it was judged" is."""
 
     def test_the_line_out_runs_until_the_way_home_runs_as_judged(self) -> None:

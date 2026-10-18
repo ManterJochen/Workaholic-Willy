@@ -35,8 +35,9 @@ _OFFSET = (0.0, 132.0, 0.0)
 _QUAT = (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
 _TOOL = position_quaternion_to_matrix(np.asarray(_OFFSET), np.asarray(_QUAT))
 _Q = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
-_BARE: dict[str, Any] = {"enforce": False}
-_WEIGHED: dict[str, Any] = {"enforce": True, "mass_kg": 2.5, "cog_mm": (0.0, 0.0, 60.0)}
+#: A weighed tool: every connect pushes the payload since 2026-10-17 (the owner's cleanup took the switch that left a
+#: bare flange's controller payload alone), so a cell that is to connect says what its flange carries.
+_WEIGHED: dict[str, Any] = {"mass_kg": 2.5, "cog_mm": (0.0, 0.0, 60.0)}
 
 
 def _arm(source: str = "willy", *, payload: dict[str, Any] | None = None, holds_the_tool: bool | None = None,
@@ -47,7 +48,7 @@ def _arm(source: str = "willy", *, payload: dict[str, Any] | None = None, holds_
     state: dict[str, Any] = {"joints": _Q, "kinematics": chain_of("ur5e"), "tcp_register": _TOOL if holds else None}
     fake = fake_transport(**state) if offers is None else fake_transport(offers=offers, **state)
     fake.connected = False
-    tree = kit_tree("ik", safety={"payload": payload if payload is not None else _BARE},
+    tree = kit_tree("ik", safety={"payload": payload if payload is not None else _WEIGHED},
                     gripper={"tool_frame": {"source": source, "offset_mm": _OFFSET, "rotation_quat_xyzw": _QUAT}})
     return planned_arm(tree, transport=fake), fake
 
@@ -69,7 +70,7 @@ class RefusedBeforeTheTransportOpensTests(unittest.TestCase):
     def test_an_undeclared_tool_frame_is_refused(self) -> None:
         fake = fake_transport(joints=_Q, kinematics=chain_of("ur5e"))
         fake.connected = False
-        arm = planned_arm(kit_tree("ik", safety={"payload": _BARE}), transport=fake)
+        arm = planned_arm(kit_tree("ik", safety={"payload": _WEIGHED}), transport=fake)
         self._refused(arm, fake, "gripper.tool_frame.source is 'undeclared'")
 
     def test_a_payload_guard_over_a_transport_with_no_payload_register_is_refused(self) -> None:
@@ -84,12 +85,10 @@ class RefusedBeforeTheTransportOpensTests(unittest.TestCase):
 
     def test_the_control_the_same_cells_connect_once_the_contradiction_is_gone(self) -> None:
         """THE CONTROL: the tape is empty above because of the refusal, not because the fake records nothing."""
-        for payload in (_BARE, _WEIGHED):
-            with self.subTest(payload=payload):
-                arm, fake = _arm(payload=payload)
-                arm.connect()
-                self.assertEqual("connect", _verbs(fake)[0])
-                self.assertTrue(fake.is_connected)
+        arm, fake = _arm(payload=_WEIGHED)
+        arm.connect()
+        self.assertEqual("connect", _verbs(fake)[0])
+        self.assertTrue(fake.is_connected)
 
 
 def _cell(**payload: Any) -> tuple[PlannedArm, Any]:
@@ -98,7 +97,7 @@ def _cell(**payload: Any) -> tuple[PlannedArm, Any]:
 
 
 class ConnectPayloadRefuseTests(unittest.TestCase):
-    """S0 / decision D4: ``connect()`` must fail closed on ``enforce: true`` + ``mass_kg: 0.0``.
+    """S0 / decision D4: ``connect()`` must fail closed on ``mass_kg: 0.0``, on every cell since 2026-10-17.
 
     That is the SHIPPED default, and pushing ``setPayload(0.0)`` to a real controller silently
     overwrites the payload a mounted tool was configured for -- fail-OPEN in the dangerous direction.
@@ -107,25 +106,29 @@ class ConnectPayloadRefuseTests(unittest.TestCase):
     Moved from tests/test_safety_payload.py in P0g slice 15, when connect became the planned arm's.
     """
 
-    def test_enforce_true_zero_mass_refuses_before_opening_the_socket(self) -> None:
-        arm, fake = _cell(enforce=True, mass_kg=0.0)
+    def test_zero_mass_refuses_before_opening_the_socket(self) -> None:
+        arm, fake = _cell(mass_kg=0.0)
         with self.assertRaises(RobotConnectionError) as cm:
             arm.connect()
         self.assertEqual([], fake.calls("connect"))       # refused BEFORE opening anything
         self.assertEqual([], fake.calls("set_payload"))
         self.assertIn("mass_kg", str(cm.exception))
 
-    def test_enforce_true_real_mass_connects_and_pushes(self) -> None:
-        arm, fake = _cell(enforce=True, mass_kg=1.5, cog_mm=(0.0, 0.0, 40.0))
+    def test_real_mass_connects_and_pushes(self) -> None:
+        arm, fake = _cell(mass_kg=1.5, cog_mm=(0.0, 0.0, 40.0))
         arm.connect()
         self.assertEqual(1, len(fake.calls("connect")))
         self.assertEqual([(1.5, [0.0, 0.0, 40.0])], [call.args for call in fake.calls("set_payload")])
 
-    def test_enforce_false_bare_flange_connects_without_pushing(self) -> None:
-        arm, fake = _cell(enforce=False, mass_kg=0.0)
-        arm.connect()
-        self.assertEqual(1, len(fake.calls("connect")))
-        self.assertEqual([], fake.calls("set_payload"))    # enforce:false never touches controller payload
+    def test_the_bare_flange_switch_is_refused_at_load(self) -> None:
+        """A tree that still writes ``enforce`` is refused, naming what replaced it: weigh what the flange carries."""
+        from pydantic import ValidationError
+
+        from src.config.schema._removed import removed_key_sentence
+
+        with self.assertRaises(ValidationError):
+            kit_tree("ik", safety={"payload": {"enforce": False}})
+        self.assertIn("weigh what the flange carries", removed_key_sentence("robot.safety.payload.enforce") or "")
 
 
 class ConnectPayloadRollbackTests(unittest.TestCase):
@@ -141,7 +144,7 @@ class ConnectPayloadRollbackTests(unittest.TestCase):
 
     @staticmethod
     def _arm_with_payload(mass_kg: float = 2.5) -> tuple[PlannedArm, Any]:
-        return _cell(enforce=True, mass_kg=mass_kg, cog_mm=(0.0, 0.0, 60.0))
+        return _cell(mass_kg=mass_kg, cog_mm=(0.0, 0.0, 60.0))
 
     def test_successful_push_keeps_the_connection(self) -> None:
         arm, fake = self._arm_with_payload()
@@ -176,14 +179,6 @@ class ConnectPayloadRollbackTests(unittest.TestCase):
             arm.connect()
         self.assertEqual(1, len(fake.calls("disconnect")))
 
-    def test_enforce_false_never_touches_the_controller_payload(self) -> None:
-        """A genuinely bare flange is expressed by enforce: false, and then the arm must leave
-        whatever the pendant has alone."""
-        arm, fake = _cell(enforce=False, mass_kg=0.0)
-        arm.connect()
-        self.assertEqual([], fake.calls("set_payload"))
-        self.assertEqual([], fake.calls("disconnect"))
-
 
 class ConnectPayloadCogGateTests(unittest.TestCase):
     """`connect()` must refuse a declared mass with an unmeasured CoG.
@@ -202,17 +197,17 @@ class ConnectPayloadCogGateTests(unittest.TestCase):
     """
 
     def test_declared_mass_with_default_cog_is_refused_before_the_socket_opens(self) -> None:
-        arm, fake = _cell(enforce=True, mass_kg=2.2)
+        arm, fake = _cell(mass_kg=2.2)
         with self.assertRaises(RobotConnectionError) as ctx:
             arm.connect()
         self.assertEqual([], fake.calls("connect"))       # fail closed BEFORE touching the network
         self.assertEqual([], fake.calls("set_payload"))
         msg = str(ctx.exception)
         self.assertIn("cog_mm", msg)
-        self.assertIn("enforce: false", msg)       # the message must name its own escape hatch
+        self.assertIn("[0, 0, 60]", msg)       # the message says what a measured one looks like
 
     def test_a_measured_cog_connects(self) -> None:
-        arm, fake = _cell(enforce=True, mass_kg=2.2, cog_mm=(0.0, 0.0, 60.0))
+        arm, fake = _cell(mass_kg=2.2, cog_mm=(0.0, 0.0, 60.0))
         arm.connect()
         self.assertEqual([(2.2, [0.0, 0.0, 60.0])], [call.args for call in fake.calls("set_payload")])
 
@@ -221,21 +216,16 @@ class ConnectPayloadCogGateTests(unittest.TestCase):
         measurement that happens to be axis-centred on two of three axes."""
         for cog in ((3.0, 0.0, 0.0), (0.0, -4.5, 0.0), (0.0, 0.0, 1.0)):
             with self.subTest(cog=cog):
-                arm, fake = _cell(enforce=True, mass_kg=1.0, cog_mm=cog)
+                arm, fake = _cell(mass_kg=1.0, cog_mm=cog)
                 arm.connect()
                 self.assertEqual([(1.0, list(cog))], [call.args for call in fake.calls("set_payload")])
 
     def test_the_zero_mass_gate_still_fires_first_and_unchanged(self) -> None:
         """Both gates refuse a fully-default payload block; the mass one owns that message."""
-        arm, _ = _cell(enforce=True, mass_kg=0.0)
+        arm, _ = _cell(mass_kg=0.0)
         with self.assertRaises(RobotConnectionError) as ctx:
             arm.connect()
         self.assertIn("mass_kg: 0.0", str(ctx.exception))
-
-    def test_enforce_false_is_unaffected(self) -> None:
-        arm, fake = _cell(enforce=False, mass_kg=2.2)
-        arm.connect()
-        self.assertEqual([], fake.calls("set_payload"))
 
 
 class TheToolFrameIsDerivedFromTheChainTests(unittest.TestCase):

@@ -26,8 +26,8 @@ _RIG = "g5_test_rig"
 _KEY = f"camera.cameras.rigs[{_RIG!r}].extrinsics"
 
 
-def _grasping(*, fusion_enabled: bool) -> RobotGraspingConfig:
-    return RobotGraspingConfig.model_validate({"fusion": {"enabled": fusion_enabled}})
+def _grasping() -> RobotGraspingConfig:
+    return RobotGraspingConfig()
 
 
 def _camera(path: str | None) -> Any:
@@ -58,30 +58,24 @@ class TestBuildConfigFrameResolver:
 
     def test_no_camera_section_returns_none(self) -> None:
         # The calibration is declared on the rig, so a grasping block alone names no artifact to build from.
-        assert build_config_frame_resolver(_grasping(fusion_enabled=True)) is None
-
-    def test_fusion_disabled_still_builds_from_the_rig(self, tmp_path) -> None:
-        # The resolver turns every grasp into the base frame, and fusion.enabled gates only the other cameras'
-        # resolvers, so a calibrated primary gets its resolver with fusion switched off.
-        resolver = build_config_frame_resolver(_grasping(fusion_enabled=False), camera=_camera(_artifact(tmp_path)))
-        assert isinstance(resolver, StaticCameraToBaseResolver)
+        assert build_config_frame_resolver(_grasping()) is None
 
     def test_uncalibrated_primary_returns_none(self) -> None:
         # A primary that declares no calibration gets no auto-build, not an error: a desk cell passes its
         # resolver in code or needs none.
-        assert build_config_frame_resolver(_grasping(fusion_enabled=True), camera=_camera(None)) is None
+        assert build_config_frame_resolver(_grasping(), camera=_camera(None)) is None
 
     def test_declared_bad_path_raises_fail_closed(self) -> None:
         # Fail-closed: a declared but unloadable artifact must raise, not silently degrade to a cell that cannot
         # place its camera while the operator believes the camera is calibrated.
         with pytest.raises(RuntimeError, match="does not load") as caught:
             build_config_frame_resolver(
-                _grasping(fusion_enabled=True), camera=_camera("/definitely/not/a/real/extrinsics_artifact.json")
+                _grasping(), camera=_camera("/definitely/not/a/real/extrinsics_artifact.json")
             )
         assert _KEY in str(caught.value)
 
     def test_declared_valid_artifact_builds_resolver(self, tmp_path) -> None:
-        resolver = build_config_frame_resolver(_grasping(fusion_enabled=True), camera=_camera(_artifact(tmp_path)))
+        resolver = build_config_frame_resolver(_grasping(), camera=_camera(_artifact(tmp_path)))
         assert isinstance(resolver, StaticCameraToBaseResolver)
         assert resolver.transform.from_frame is Frame.CAMERA
         assert resolver.transform.to_frame is Frame.BASE

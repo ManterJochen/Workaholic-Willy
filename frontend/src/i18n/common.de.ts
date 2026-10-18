@@ -147,7 +147,6 @@ const de = {
   'diag.pipeline': 'Pipeline',
   'diag.backend': 'Erkennung',
   'diag.segmenter': 'Segmentierung',
-  'diag.router': 'Router',
   'diag.vlm': 'VLM',
   'diag.weights': 'Gewichte',
   'diag.address': 'Adresse',

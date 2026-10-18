@@ -13,12 +13,11 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { CommandOut, TaskPlanOut } from '../api/client'
+import type { CommandOut, TaskPlanOut, TaskSettingsOut } from '../api/client'
 import type { RunEvent } from '../api/events'
 import { translate } from '../i18n'
 import { clearConversation } from '../model/chat'
 import { ConfirmProvider } from '../model/confirm'
-import { DEFAULT_TASK, type TaskPrefs } from '../model/prefs'
 import { currentRule, replay, sortRules, type ChatLine, type RunView } from '../model/runModel'
 import { fakeSockets, renderWith, reply, stubApi, type ApiCall, type FakeSockets, type Route } from '../test/render'
 import { voiceFor } from './announce'
@@ -32,11 +31,10 @@ import { COCKPIT } from './i18n'
 const SENTENCE = 'Grüne Teile in die gelbe Kiste, rote in die blaue'
 const SAID = { text: SENTENCE, source: 'typed', language: 'de' } as const
 
-const route = (prompt: string) => ({ prompt, route: 'simple', reason: 'english', description: 'simple (english)', runnable: true })
-const GREEN = { phrase: 'green part', said: 'Grüne Teile', verified: true, route: route('green part') }
-const YELLOW = { phrase: 'yellow bin', said: 'in die gelbe Kiste', verified: true, route: route('yellow bin') }
-const RED = { phrase: 'red part', said: 'rote', verified: true, route: route('red part') }
-const BLUE = { phrase: 'blue bin', said: 'in die blaue', verified: true, route: route('blue bin') }
+const GREEN = { phrase: 'green part', said: 'Grüne Teile', verified: true }
+const YELLOW = { phrase: 'yellow bin', said: 'in die gelbe Kiste', verified: true }
+const RED = { phrase: 'red part', said: 'rote', verified: true }
+const BLUE = { phrase: 'blue bin', said: 'in die blaue', verified: true }
 
 /** The reader's answer to the owner's sentence: two rules, clean. */
 function sortReading(over: Partial<CommandOut> = {}): CommandOut {
@@ -87,24 +85,37 @@ const PLAN = {
   countdown: false,
 } as unknown as TaskPlanOut
 
-const ENTER: TaskPrefs = { ...DEFAULT_TASK, start: 'enter', scope: 'until_empty' }
+/** The cell's task settings: "Erst die Karte" as the stub server answers them, every other setting as shipped. */
+const CARD: TaskSettingsOut = {
+  start: 'card',
+  scope: 'once',
+  place: { kind: 'default' },
+  anything: false,
+  looks: 'when_needed',
+  critical_parts: false,
+  target_file: 'config/app/runtime.cell.yaml',
+  why_not: '',
+  why_not_code: '',
+}
+/** Enter starts, until nothing is left. */
+const ENTER: TaskSettingsOut = { ...CARD, start: 'enter', scope: 'until_empty' }
+/** What `GET /v1/task/settings` answers in the test running now. */
+let settings: TaskSettingsOut = CARD
 
 // ── the draft: every rule from the reading or the plan, and out with the task ──────────────────────────────────────
 
 describe('the draft of a sort', () => {
-  it('takes its further rules from the reading: each kind with its words and route, its place, its notes', () => {
+  it('takes its further rules from the reading: each kind with its words, its place, its notes', () => {
     const card = draftFromReading(sortReading(), SAID, ENTER)
     expect(card.moreRules).toEqual([
       {
         object: 'red part',
         objectSaid: 'rote',
         objectVerified: true,
-        objectRoute: route('red part'),
         which: '',
         source: '',
         place: { kind: 'camera', phrase: 'blue bin', said: 'in die blaue' },
         placeVerified: true,
-        placeRoute: route('blue bin'),
         notes: [],
       },
     ])
@@ -113,7 +124,7 @@ describe('the draft of a sort', () => {
   })
 
   it('takes a further rule\'s taught pose by its name, and the settings\' place where the rule names none', () => {
-    const task: TaskPrefs = { ...ENTER, place: { kind: 'pose', pose: 'park' } }
+    const task: TaskSettingsOut = { ...ENTER, place: { kind: 'pose', pose: 'park' } }
     const out = sortReading({
       rules: [
         { object: GREEN, place: YELLOW, notes: [] },
@@ -267,7 +278,6 @@ const CELL = {
   active_run_id: null as string | null,
   needs_person: '',
   halted: null,
-  payload_model: 'none',
   recovery: null,
   jaws_confirmed_at: null,
   countdown_due: false,
@@ -284,7 +294,6 @@ const READY = {
     light('cameras', 'ok', 'live'),
     light('planner', 'ok', 'ready'),
     light('gripper', 'ok', 'open_confirmed'),
-    light('carried_part', 'ok', 'modelled'),
     light('commands', 'info', 'ready'),
   ],
 }
@@ -294,10 +303,9 @@ const FACTS = {
   looks: ['look_1', 'look_2', 'look_3'],
   natural_closing_axis: '-y',
   push: { can_push: true, why_not: '', default_mm: 30, ceiling_mm: 50 },
-  detector: { backend: 'grounded_sam', router_enabled: false, vlm_model_id: null, precision: 'auto' },
+  detector: { backend: 'rtdetr', vlm_model_id: null, precision: 'auto' },
   hand_eye_warn_mm: 6,
   brake: { latches: true, brakes_in_motion: false },
-  payload: { modelled: true, declined_reason: null, length_mm: 40 },
   route: { route: 'planned', sentence: '' },
   rehearsal: false,
 }
@@ -318,9 +326,9 @@ function server(over: Record<string, Route> = {}): ApiCall[] {
     '/v1/cell/readiness': READY,
     '/v1/cell/facts': FACTS,
     '/v1/cell/status': { state: 'connected', connected: true, simulated: false, vendor: 'ur', model: 'ur10', controller_state_included: false },
+    '/v1/task/settings': () => settings,
     '/v1/poses': POSES,
     '/v1/camera/live': { rig_id: 'EIH_Cam', rigs: [], source: 'camera', reason: '', image_base64: '', width: 0, height: 0, captured_at: 0, age_s: null },
-    '/v1/diagnostics/route': (call: ApiCall) => route(new URLSearchParams(call.query).get('prompt') ?? ''),
     'POST /v1/commands/parse': sortReading(),
     'POST /v1/task': reply(202, ACCEPTED),
     ...over,
@@ -339,10 +347,11 @@ function cockpit() {
   )
 }
 
-/** Type a sentence and press Enter. */
+/** Type a sentence and press Enter; where the cell's settings say Enter starts, once the cockpit has read them. */
 async function command(text: string) {
   const box = await screen.findByRole('textbox', { name: 'Befehl an Willy' })
   await waitFor(() => expect(box.hasAttribute('disabled')).toBe(false))
+  if (settings.start === 'enter') await screen.findByText(/Enter startet sofort/)
   fireEvent.change(box, { target: { value: text } })
   fireEvent.keyDown(box, { key: 'Enter' })
 }
@@ -357,7 +366,7 @@ let sockets: FakeSockets
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('willy.taskStart', 'card')
+  settings = CARD
   clearConversation()
   sockets = fakeSockets()
 })
@@ -431,22 +440,6 @@ describe('the card of a sort', () => {
     expect(moved(calls)).toHaveLength(1)
   })
 
-  it('asks how the detector routes a row\'s kind once a person changed it, and shows it on the row', async () => {
-    const calls = server({ '/v1/diagnostics/route': (call: ApiCall) => ({ ...route(new URLSearchParams(call.query).get('prompt') ?? ''), route: 'vlm', reason: 'german' }) })
-    cockpit()
-    await command(SENTENCE)
-    const found = await screen.findByRole('region', { name: 'Verstanden' })
-    const row = () => within(within(found).getByRole('list', { name: 'Regeln' })).getAllByRole('listitem')[1]
-    expect(within(row()).queryByText('VLM')).toBeNull()
-    fireEvent.change(within(row()).getByRole('textbox', { name: 'Teil von Regel 2' }), { target: { value: 'rote Teile' } })
-    const asked = () => sent(calls, 'GET /v1/diagnostics/route').map((c) => new URLSearchParams(c.query).get('prompt'))
-    await waitFor(() => expect(asked()).toContain('rote Teile'))
-    expect(await within(row()).findByText('VLM')).toBeTruthy()
-    // The bin's phrase was not touched: its route is the reader's still, and it is not asked again.
-    expect(asked()).not.toContain('blue bin')
-    expect(moved(calls)).toHaveLength(0)
-  })
-
   it('removes a rule, and a card left with one rule looks and sends as a task of one kind', async () => {
     const { calls, card: found } = await card()
     fireEvent.click(within(found).getByRole('button', { name: 'Regel 2 entfernen' }))
@@ -503,7 +496,8 @@ describe('the card of a sort', () => {
 
 describe('Enter and a sort (the owner, 2026-10-09)', () => {
   beforeEach(() => {
-    localStorage.removeItem('willy.taskStart')
+    // The cell's settings as shipped: Enter starts, once.
+    settings = { ...CARD, start: 'enter' }
   })
 
   it('starts a clean sort at once with every rule, and says every rule it starts', async () => {

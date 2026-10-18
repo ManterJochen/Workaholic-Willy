@@ -390,28 +390,28 @@ class ARigPlacedFrameByFrameTests(unittest.TestCase):
 
 
 class TheMissingModelSaysWhereToGetItTests(unittest.TestCase):
-    def test_the_error_names_the_config_key_the_path_and_the_download(self) -> None:
+    def test_the_error_names_where_the_path_came_from_the_path_and_the_download(self) -> None:
         with self.assertRaises(FileNotFoundError) as caught:
             resolve_model_file(
                 "no/such/model.task",
-                config_key="models.handdetect.model_path",
+                config_key="the hand-landmark bundle (mediapipe-hand) under models.weights_root",
                 download_url="https://example.invalid/model.task",
             )
         message = str(caught.exception)
         for expected in (
-            "models.handdetect.model_path", "no/such/model.task", "https://example.invalid/model.task"
+            "the hand-landmark bundle (mediapipe-hand) under models.weights_root", "no/such/model.task", "https://example.invalid/model.task"
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, message)
 
     def test_an_empty_path_is_its_own_message(self) -> None:
         with self.assertRaises(FileNotFoundError) as caught:
-            resolve_model_file("", config_key="models.handdetect.model_path", download_url="u")
+            resolve_model_file("", config_key="the hand-landmark bundle (mediapipe-hand) under models.weights_root", download_url="u")
         self.assertIn("is empty", str(caught.exception))
 
     def test_an_existing_file_resolves_to_an_absolute_path(self) -> None:
         resolved = resolve_model_file(
-            __file__, config_key="models.handdetect.model_path", download_url="u"
+            __file__, config_key="the hand-landmark bundle (mediapipe-hand) under models.weights_root", download_url="u"
         )
         self.assertTrue(resolved.endswith("test_hand_detection.py"))
 

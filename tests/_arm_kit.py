@@ -12,7 +12,6 @@ the helper it replaces                                the kit builder
 ``test_ur_arm._arm``                                   :func:`bare_arm`
 ``test_camera_world_on_every_driver._ur_ik``           :func:`ik_arm`
 ``test_camera_world_on_every_driver._ur_curobo``       :func:`curobo_arm`
-``test_what_the_hand_verbs_read._payload_ur``          :func:`payload_arm`
 ``test_ur_checked_linear._arm``                        :func:`line_arm`
 ``test_the_arm_holds_its_own_steady_gate._arm``        :func:`steady_arm`
 ``test_every_verb_meets_the_camera_world._ur``         :func:`live_arm`
@@ -63,7 +62,6 @@ __all__ = [
     "kit_tree",
     "line_arm",
     "live_arm",
-    "payload_arm",
     "planned_arm",
     "steady_arm",
 ]
@@ -210,6 +208,36 @@ def _merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: What a test cell that connects declares its flange carries, the owner's cell's: every connect pushes the payload
+#: since 2026-10-17 and refuses an unweighed one (the owner's cleanup took the switch that left a bare flange alone).
+WEIGHED_PAYLOAD: dict[str, Any] = {"mass_kg": 1.3, "cog_mm": [0.0, 0.0, 65.0]}
+
+
+def without_guards(preflight: Any, *names: str) -> Any:
+    """``preflight`` without the guards called ``names``, for a test that reads something they are no part of.
+
+    Every cell wires every guard since 2026-10-17 (the owner's cleanup took the ``enforce`` switches), so a test stands
+    one down by its own hand where its tree switched it off until then: a kit arm stands at configurations the IK
+    quality guard calls near-singular (``HERE``'s wrist 2 at 0), and the file reads the gate, not that guard. Returns
+    ``preflight``."""
+    preflight._guards = tuple(guard for guard in preflight.guards if guard.name not in names)
+    return preflight
+
+
+def with_the_whole_envelope(preflight: Any) -> Any:
+    """``preflight`` holding its arm to the arm's whole joint envelope, as every cell's guard did by default until
+    2026-10-17, for a file whose scenes stand more than half a turn from home and read something else.
+
+    Every real arm keeps every full-turn joint within half a turn of home since (``GuardNumbers.half_turn_about_home``;
+    the Isaac arm states it keeps the whole envelope), and the window has its own tests
+    (``test_a_cable_is_never_wound_past_half_a_turn_of_home.py``). Returns ``preflight``."""
+    from src.robot.safety.joint_limits import JointLimitGuard
+
+    preflight._guards = tuple(JointLimitGuard(half_turn_about_home=False) if isinstance(guard, JointLimitGuard)
+                              else guard for guard in preflight.guards)
+    return preflight
+
+
 def kit_tree(route: str = "ik", *, model: str = "ur5e", ip: str = "127.0.0.1", **blocks: Any) -> RobotConfig:
     """A cell tree on ``route`` for ``model``, the 2F-85 named, with ``blocks`` merged in (``safety={...}``)."""
     base: dict[str, Any] = {"vendor": "ur", "motion": {"planner": route}, "ur": {"ip": ip, "model": model},
@@ -249,9 +277,9 @@ def planned_arm(
         is_simulated=False,
     )
     built_preflight = preflight if chosen(preflight) else SafetyPreflight.from_safety_config(
-        config.safety, config.workspace_limits, hand=planner_hand(config), arm_model=model)
+        config.safety, config.motion.workspace, hand=planner_hand(config), arm_model=model)
     home = (list(home_joints) if home_joints is not None
-            else list(config.home_joint_positions or [joint.home_rad for joint in description.joints]))
+            else list(config.motion.home_rad or [joint.home_rad for joint in description.joints]))
     # Any: a FakePlanner answers what the arm asks of a cuRobo client without being one.
     planner: Any = curobo_client_factory if chosen(curobo_client_factory) else (lambda: FakePlanner(arm=model))
     cls: Any = PlannedArm if not mixins else type(
@@ -264,7 +292,7 @@ def planned_arm(
         controller_yaw_deg=(controller_yaw_deg if chosen(controller_yaw_deg)
                             else description.base.controller_yaw_deg),
         transport=transport if transport is not None else fake_transport(),
-        guard=WorkspaceGuard(config.workspace_limits),
+        guard=WorkspaceGuard(config.motion.workspace),
         preflight=built_preflight,
         home_joints=home,
         curobo_client_factory=planner,
@@ -308,28 +336,9 @@ def curobo_arm(planner: object | None = None, *, live_world: object | None = Non
     arm._gate_planned_config = lambda pose, joints: None
     arm._plan_end_refusal = lambda goal, joints, pose: None
     arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None
-    return arm  # type: ignore[no-any-return]
-
-
-def payload_arm(*, enabled: bool = True, planner_answer: bool = True, planner_kind: str = "curobo") -> PlannedArm:
-    """The arm of tests/test_self_filter_envelope.py that attaches a part, its planner a double answering
-    ``planner_answer`` (``_payload_ur``)."""
-    from unittest.mock import MagicMock
-
-    config = kit_tree(planner_kind, safety={
-        "payload": {"enforce": False},
-        "planning_world": {
-            "enabled": True,
-            "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-            "payload": {"enabled": enabled, "length_mm": 120.0, "lateral_margin_mm": 10.0},
-        },
-    })
-    arm: Any = planned_arm(config, transport=fake_transport(joints=HERE))
-    if enabled and planner_kind == "curobo":
-        planner = MagicMock()
-        planner.attach_payload.return_value = planner_answer
-        planner.detach_payload.return_value = True
-        arm._curobo = planner
+    # The send gate asks where the arm came to rest in the path gate's metric, which a preflight with no path guard
+    # cannot say (it refuses then): a millimetre a radian here.
+    arm._preflight.joint_radii_mm = lambda _arm: (1.0,) * 6
     return arm  # type: ignore[no-any-return]
 
 
@@ -362,8 +371,7 @@ def line_arm(*, planner_kind: str = "curobo", tool_source: str = "controller", p
     controller holds the tool and reports the grasp centre's rotation, (0, pi, 0); in willy mode it runs a bare flange,
     which the declared frame's -90 degrees about X turns back to tool down, so it reports (0, pi/sqrt(2), -pi/sqrt(2)).
     """
-    config = kit_tree(planner_kind, safety={"payload": {"enforce": False}, "ik_quality": {"enforce": False}},
-                      gripper={"tool_frame": {"source": tool_source, **_PLUS_Y_TOOL}})
+    config = kit_tree(planner_kind, gripper={"tool_frame": {"source": tool_source, **_PLUS_Y_TOOL}})
     fake = fake_transport(joints=_LINE_HERE)
     here = [0.3, 0.0, 0.3, 0.0, 3.14159, 0.0]
     fake.always("controller_tcp_now", controller_matrix(here))
@@ -371,16 +379,17 @@ def line_arm(*, planner_kind: str = "curobo", tool_source: str = "controller", p
     rotation = (0.0, 3.14159265, 0.0) if tool_source == "controller" else (0.0, 2.221441469079183, -2.221441469079183)
     fake.always("read_tcp", controller_pose([0.3, 0.0, 0.3, *rotation]))
     arm: Any = planned_arm(config, transport=fake)
+    without_guards(arm._preflight, "ik_quality")
     arm.ik = RecordingIk(ik_solutions)
     if planner_kind == "curobo":
         arm._curobo = planner if planner is not None else RecordingPlanner()
     return arm  # type: ignore[no-any-return]
 
 
-def steady_arm(*, steady: bool = True, dwell: bool = True, connected: bool = True) -> PlannedArm:
+def steady_arm(*, steady: bool = True, connected: bool = True) -> PlannedArm:
     """An ik-route arm whose steady gate answers ``steady``, its preflight the steady-gate file's stand-in
     (``test_the_arm_holds_its_own_steady_gate._arm``)."""
-    config = kit_tree("ik", safety={"dwell": {"require_steady_before_motion": dwell, "steady_timeout_s": 1.5}})
+    config = kit_tree("ik")
     fake = fake_transport(joints=HERE, connected=connected)
     fake.always("wait_until_steady", steady)
     fake.always("controller_fk", controller_pose([0.3, 0.0, 0.3, 0.0, 3.14159, 0.0]))
@@ -408,7 +417,6 @@ def live_arm(world: Any, client: Any, events: list[str], *,
     one trajectory whatever it is asked, which a real planner never does, and where a plan ends has its own file.
     """
     config = kit_tree("curobo", safety={
-        "payload": {"enforce": False}, "ik_quality": {"enforce": False},
         # The margin every cuRobo cell must declare (B1 S17); the evidence check reads it to find its file (S22).
         "self_collision": {"planner_margin_mm": 4.0},
     }, gripper={"tool_frame": {"source": "controller", **_PLUS_Y_TOOL}})
@@ -418,7 +426,7 @@ def live_arm(world: Any, client: Any, events: list[str], *,
     arm: Any = planned_arm(config, transport=fake, home_joints=there, curobo_client_factory=lambda: client)
     arm.ik = lambda pose, *, seed=None: JointPositions(here)
     arm._plan_end_refusal = lambda goal, joints, pose: None
-    guard = arm._preflight
+    guard = without_guards(arm._preflight, "ik_quality")
     for name, label in (("set_perceived_obstacles", "world"), ("gate_planned_path", "gate_planned_path"),
                         ("gate_joint_path", "gate_joint_path")):
         setattr(guard, name, _recording(getattr(guard, name), label, events))

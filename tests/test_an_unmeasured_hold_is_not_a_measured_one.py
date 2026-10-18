@@ -1,4 +1,4 @@
-"""A close nothing measured is reported as unmeasured, judged as unmeasured, and carried at the width it was told.
+"""A close nothing measured is reported as unmeasured and judged as unmeasured.
 
 Owner-cell audit, reproduced on 2026-09-23 (scratchpad ``handE_toggle/repro_verify.py``, ``repro_attach.py``) on the
 owner's hand: a Hand-E on the Robotiq I/O coupling, ``jaw_io`` single_toggle on tool DO0, no feedback wired, 49.99 /
@@ -10,7 +10,8 @@ Four readers took the answers as measurements:
 * ``ObjectDetectingGripperVerifier`` passed every close as ``gripper_object_detected``;
 * ``WidthDeltaGripperVerifier`` read the 5.0 mm band against a 7.0 mm threshold and failed every close, held part or
   not, as ``jaws_collapsed_to_minimum`` (on a cell that turns verification on);
-* the policy attached the carried part 5.0 mm wide for a 40 mm grasp, so the planner lifted it about 34 mm too narrow.
+* the policy attached the carried part 5.0 mm wide for a 40 mm grasp, so the planner lifted it about 34 mm too narrow
+  (the attach left with the carried part on 2026-10-17, when no cell modelled one).
 
 The robot's own hand verbs already read the hold evidence and the measured flag; these readers now do too. Each
 red-first test says what the code before this change did. The two verifiers, and the cases that pinned them here,
@@ -53,16 +54,6 @@ def _part_sensed(*, held: bool, closed: bool = False) -> Any:
 # ---------------------------------------------------------------------------------------------------
 # The grasp policy
 # ---------------------------------------------------------------------------------------------------
-
-
-class _AttachingArm(_Arm):
-    def __init__(self) -> None:
-        super().__init__([])
-        self.attached: list[float] = []
-
-    def attach_payload(self, width_mm: float) -> bool:
-        self.attached.append(float(width_mm))
-        return True
 
 
 class _MeasuringJaws:
@@ -138,23 +129,6 @@ class ThePolicyRecordsWhatWasMeasuredTests(unittest.TestCase):
         report = GraspExecutionPolicy(arm=_Arm([]), gripper=_DetectingGripper(detects=True)).execute(_grasp())
 
         self.assertIs(True, report.object_detected)
-
-
-class ThePolicyCarriesTheWidthItKnowsTests(unittest.TestCase):
-    def test_a_toggle_attaches_the_commanded_grip_not_its_closed_band(self) -> None:
-        """Red before: the part was attached 5.0 mm wide, the band get_width_mm reports while closed."""
-        arm = _AttachingArm()
-
-        GraspExecutionPolicy(arm=arm, gripper=_toggle([]), pre_open_width_mm=49.99).execute(_grasp())
-
-        self.assertEqual([39.0], arm.attached)
-
-    def test_a_measured_width_is_still_what_is_attached(self) -> None:
-        arm = _AttachingArm()
-
-        GraspExecutionPolicy(arm=arm, gripper=_MeasuringJaws()).execute(_grasp())
-
-        self.assertEqual([38.2], arm.attached)
 
 
 # ---------------------------------------------------------------------------------------------------

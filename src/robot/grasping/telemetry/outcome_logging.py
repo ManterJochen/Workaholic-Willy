@@ -43,7 +43,6 @@ __all__ = [
     "iter_jsonl",
     "json_safe",
     "profile_metadata_from",
-    "recovery_metadata_from",
 ]
 
 
@@ -214,33 +213,6 @@ def execution_metadata_from(report: Any) -> Optional[dict[str, Any]]:
         if eg is not None:
             md["executed_grasp"] = eg
     return md or None
-
-
-def recovery_metadata_from(report: Any) -> Optional[dict[str, Any]]:
-    """Summarise a :class:`SceneRecoveryReport`."""
-
-    if report is None:
-        return None
-    plan = getattr(report, "plan", None)
-    plan_dict: Optional[dict[str, Any]] = None
-    if plan is not None:
-        plan_dict = {
-            "action": json_safe(getattr(plan, "action", None)),
-            "reason": getattr(plan, "reason", ""),
-            "nudge_offset_mm": json_safe(
-                getattr(plan, "nudge_offset_mm", None)
-            ),
-            "agitate_amplitude_mm": json_safe(
-                getattr(plan, "agitate_amplitude_mm", 0.0)
-            ),
-            "telemetry": json_safe(getattr(plan, "telemetry", {}) or {}),
-        }
-    return {
-        "plan": plan_dict,
-        "executed": bool(getattr(report, "executed", False)),
-        "outcome": getattr(report, "outcome", ""),
-        "telemetry": json_safe(getattr(report, "telemetry", {}) or {}),
-    }
 
 
 # ---------------------------------------------------------------------------

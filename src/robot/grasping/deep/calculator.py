@@ -170,7 +170,7 @@ class DeepGraspCalculator:
         self._refused_width = 0
         # An attribute, not only a config field, and the difference is a silent stand-down.
         # `pick_loop` reads `getattr(self.calculator, "camera_matrix", None)`; without the attribute
-        # that lookup returns None, `_target_cloud_base_mm` bails, and `support.refine_from_target`
+        # that lookup returns None, `_target_cloud_base_mm` bails, and the support-plane refinement
         # does nothing under a deep calculator while reporting nothing at all.
         self.camera_matrix = self.config.camera_matrix
         self._model: Any = None
@@ -641,11 +641,9 @@ class DeepGraspCalculator:
         }
         self.last_telemetry = telemetry
         if not candidates:
-            # The reasons the recovery orchestrator routes on: ALL_COLLIDED agitates the container,
-            # ALL_TABLE_CONFLICT moves to the next target and rescans, wherever the mode's profile
-            # lists those actions (no built-in one lists the agitate or the next target, so a cell
-            # built from config rescans, or plans a nudge it then refuses). A cell that can only say
-            # NO_VALID_GRASP reaches neither and retries the same thing instead of shaking the bin.
+            # The reasons the pick loop and the recovery route on: ALL_COLLIDED pushes the part inside a
+            # wrist camera's pick where the mode's profile lists the push, and every one of them rescans.
+            # A cell that can only say NO_VALID_GRASP never pushes and retries the same thing instead.
             # Same mapping the analytic path uses, from the same counters.
             return GraspResult(reasons=rejection_reasons(rejection), telemetry=telemetry)
         return GraspResult(candidates=tuple(candidates), telemetry=telemetry,

@@ -36,7 +36,7 @@ _BUILD_A_UR_ARM: dict[str, int] = {
     "test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py": 1,
     "test_a_cable_is_never_wound_past_half_a_turn_of_home.py": 1,
     "test_a_generated_view_drives_its_straight_joint_line_or_nothing.py": 1,
-    "test_a_grasp_judges_its_lift_carrying_before_it_closes.py": 2,
+    "test_a_grasp_judges_its_lift_carrying_before_it_closes.py": 1,
     "test_a_grasp_with_no_goal_on_the_arm_s_branch_takes_its_half_turned_twin.py": 1,
     "test_a_joint_path_is_judged_whole_and_sent_without_a_pause.py": 1,
     "test_a_motion_waits_for_steady_right_before_it_is_sent.py": 1,

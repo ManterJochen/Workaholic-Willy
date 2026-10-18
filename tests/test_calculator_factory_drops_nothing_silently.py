@@ -17,10 +17,10 @@ Two of the droppable kwargs change what a pick DOES:
   `corridor_risk_per_candidate` the G4 producer. Without it `--g4-rerank` reorders nothing and reports
                                 `missing_uncertainty`.
 
-The rest are analytic-only: the deep decoder predicts its own approach, closing axis and seeds, so an
-oblique sweep or a radial-closing flag genuinely has nothing to act on. Those get a log line, because
-`robot.ur3e.yaml` sets `isotropic_radial_closing: true` on a cell measured at 5/10 -> 10/10, and a
-banner printing `True` under a deep calculator is describing the other path.
+The rest are analytic-only: the deep decoder predicts its own approach, closing axis and seeds, so the
+analytic stage's view of the parts beside the one it grasps, its side approaches and the rim it cuts
+genuinely have nothing to act on. Those get a log line, because every cell's tree switches side
+approaches on, and a banner printing them under a deep calculator is describing the other path.
 """
 
 from __future__ import annotations
@@ -159,7 +159,7 @@ class OffPositionTests(unittest.TestCase):
             cfg = _config("deep", _artifact(Path(name)))
             with mock.patch("src.robot.grasping.deep.calculator.DeepGraspCalculator"):
                 with self.assertNoLogs("CalculatorFactory", level=logging.WARNING):
-                    build_calculator(cfg, camera_matrix=None, isotropic_radial_closing=False)
+                    build_calculator(cfg, camera_matrix=None)
 
 
 class CarriedTests(unittest.TestCase):
@@ -186,14 +186,14 @@ class CarriedTests(unittest.TestCase):
 class IgnoredTests(unittest.TestCase):
 
     def test_an_analytic_only_knob_is_LOGGED_rather_than_refused(self) -> None:
-        """⚠ The deep decoder predicts its own closing axis, so this one genuinely has nothing to act
-        on. Refusing it would block a legitimate config; dropping it in silence lets a banner lie."""
+        """⚠ The deep decoder plans its own approach, so this one genuinely has nothing to act on.
+        Refusing it would block a legitimate config; dropping it in silence lets a banner lie."""
         with tempfile.TemporaryDirectory() as name:
             cfg = _config("deep", _artifact(Path(name)))
             with mock.patch("src.robot.grasping.deep.calculator.DeepGraspCalculator"), \
                  self.assertLogs("CalculatorFactory", level=logging.WARNING) as caught:
-                build_calculator(cfg, camera_matrix=None, isotropic_radial_closing=True)
-        self.assertIn("isotropic_radial_closing", "\n".join(caught.output))
+                build_calculator(cfg, camera_matrix=None, side_approaches=True)
+        self.assertIn("side_approaches", "\n".join(caught.output))
 
     def test_the_two_sets_do_not_overlap(self) -> None:
         """A kwarg that is both carried and ignored would take whichever branch ran first."""
@@ -205,7 +205,8 @@ class GeometricIsUntouchedTests(unittest.TestCase):
     def test_the_geometric_branch_still_honours_EVERYTHING(self) -> None:
         """⛔ DEFAULT-OFF BYTE-IDENTICAL. `grasping.calculator` defaults to geometric and appears in
         no shipped YAML, so every measured number in this repository came through this branch. It
-        forwards `**kwargs` verbatim and this test fails if that ever becomes a filtered list."""
+        forwards `**kwargs` verbatim, the cell's rim beside them where a site passes none, and this test
+        fails if that ever becomes a filtered list."""
         seen: dict = {}
 
         class Spy:
@@ -214,8 +215,8 @@ class GeometricIsUntouchedTests(unittest.TestCase):
 
         with mock.patch("src.robot.grasping.generation.calculator.GraspCalculator", Spy):
             build_calculator(_config("geometric"), camera_matrix=None, ik_service="x",
-                             isotropic_radial_closing=True, anything_at_all=7)
-        self.assertEqual(set(seen), {"camera_matrix", "ik_service", "isotropic_radial_closing",
+                             anything_at_all=7)
+        self.assertEqual(set(seen), {"camera_matrix", "ik_service", "support_footprint_rim_mm",
                                      "anything_at_all"})
 
 

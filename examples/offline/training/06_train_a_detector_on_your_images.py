@@ -27,8 +27,8 @@ with tempfile.TemporaryDirectory() as work:
     # What the dataset holds per class and split, and every image or box left out of it, before anything trains.
     print(run.probe())
     report = run.train()
-    # The best epoch by validation mAP and where it went. A cell loads that folder through models.rtdetr.model_path,
-    # with models.detector: "rtdetr"; the class names are the dataset's.
+    # The best epoch by validation mAP and where it went. A cell loads that folder as models.rtdetr.model_id, with
+    # models.pipeline.kind: closed_set; the class names are the dataset's.
     print(report)
     written = run.write_report(report)
     print("report written to", written, "and", written.with_name("report.html"))

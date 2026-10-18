@@ -120,7 +120,7 @@ class TheCalculatorPlansTheFingersOverTheReadingTests(unittest.TestCase):
                             allowance_mm=2.0)
 
     def test_the_floor_is_the_reading_for_a_finger_and_the_solid_for_the_palm(self) -> None:
-        from src.robot.grasping.generation.support_footprint import HandFloor
+        from src.robot.grasping.generation.hand import HandFloor
 
         floor = HandFloor(solids=(self._solid(),), distance_mm=GUARD_MM, fingers_to_the_reading=True)
         xy = np.array([[0.0, -650.0]])
@@ -129,30 +129,33 @@ class TheCalculatorPlansTheFingersOverTheReadingTests(unittest.TestCase):
         off = HandFloor(solids=(self._solid(),), distance_mm=GUARD_MM)
         self.assertAlmostEqual(float(off.at(xy, fingers=True)[0]), 63.0 + GUARD_MM)
 
-    def test_sfe_plans_a_grasp_lower_where_the_fingers_go_to_the_reading(self) -> None:
-        from src.robot.grasping.generation.support_footprint import HandFloor, generate_support_footprint_grasps
+    def test_the_body_plans_a_grasp_lower_where_the_fingers_go_to_the_reading(self) -> None:
+        """The reading lets the fingers 5 mm nearer (the band and the allowance), and the part's body takes the grasp a
+        level of its search lower, 4 mm."""
+        from src.robot.grasping.generation.hand import HandFloor
+        from src.robot.grasping.generation.body_grasps import body_grasps
         from tests.test_a_grasp_keeps_the_guards_distance_from_the_support_it_holds import _box_cloud, _jaw
 
         cloud = _box_cloud(30.0)
-        held = generate_support_footprint_grasps(cloud, support_height_mm=56.0, jaw=_jaw(), max_candidates=40,
+        held = body_grasps(cloud, support_height_mm=56.0, jaw=_jaw(), max_candidates=40,
                                                  hand_floor=HandFloor((self._solid(),), GUARD_MM))
-        read = generate_support_footprint_grasps(cloud, support_height_mm=56.0, jaw=_jaw(), max_candidates=40,
+        read = body_grasps(cloud, support_height_mm=56.0, jaw=_jaw(), max_candidates=40,
                                                  hand_floor=HandFloor((self._solid(),), GUARD_MM,
                                                                       fingers_to_the_reading=True))
         self.assertTrue(held and read)
         lowest = min(float(g.position_mm[2]) for g in read)
-        self.assertLess(lowest, min(float(g.position_mm[2]) for g in held) - 4.0)
+        self.assertLessEqual(lowest, min(float(g.position_mm[2]) for g in held) - 4.0 + 1e-6)
         for grasp in read:
             self.assertGreaterEqual(56.0 + grasp.clearance_mm, 58.0 + GUARD_MM - 1e-6)
 
     def test_the_filter_holds_a_finger_to_the_reading_and_the_palm_to_the_solid(self) -> None:
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
         from src.robot.grasping.generation.scene_obstacles import envelope_verdicts
         from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
 
         cfg = hande_cell()
-        hand = build_gripper_geometry(cfg.grasping.gripper_geometry)
-        tip = float(cfg.grasping.gripper_geometry.parallel_jaw.fingertip_depth_mm)
+        hand = jaw_envelope(cfg)
+        tip = float(jaw_envelope(cfg).fingertip_depth_mm)
         down = np.column_stack([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
         # The fingertips 4 mm over the reading and its excess, 1 mm into the solid's band.
         pose = (np.array([0.0, -650.0, 58.0 + 4.0 + tip]), down)
@@ -165,13 +168,12 @@ class TheCalculatorPlansTheFingersOverTheReadingTests(unittest.TestCase):
         self.assertAlmostEqual(read.distance_mm, 4.0, delta=1e-6)
 
 
-class TheSwitchIsOnInTheShippedConfigTests(unittest.TestCase):
-    def test_the_schema_turns_it_on_and_the_calculator_reads_it(self) -> None:
-        from src.config.schema.robot.safety_schema import PerceivedWorldConfig
+class EveryCellHoldsItsFingersToTheReadingTests(unittest.TestCase):
+    def test_the_calculator_reads_it_on_every_cell(self) -> None:
+        """A key of ``planning_world.perceived`` until 2026-10-17; every cell's since, as the owner's cell ran it."""
         from src.robot.grasping.generation.scene_obstacles import SceneObstacleRules
         from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
 
-        self.assertTrue(PerceivedWorldConfig().fingers_to_the_support_reading)
         self.assertTrue(SceneObstacleRules.from_robot_config(hande_cell()).fingers_to_the_reading)
 
 
@@ -182,31 +184,28 @@ class TheFingersComeTo1mmOfTheReadingTests(unittest.TestCase):
     allowance and the 2 mm the finger floor lies under the guard's distance: 1 mm over the reading and its excess."""
 
     def test_the_shipped_config_lowers_the_fingers_floor_by_the_guards_distance_less_1_mm(self) -> None:
-        from src.config.schema.robot.safety_schema import PerceivedWorldConfig
         from src.robot.grasping.generation.scene_obstacles import SceneObstacleRules, finger_floor_drop_mm
+        from src.robot.safety.planning.perceived import FINGER_FLOOR_MM
         from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
 
-        self.assertEqual(1.0, PerceivedWorldConfig().finger_floor_mm)
+        self.assertEqual(1.0, FINGER_FLOOR_MM)
         cfg = hande_cell()
         guard = float(cfg.safety.self_collision.perceived_min_distance_mm)
         self.assertAlmostEqual(max(0.0, guard - 1.0), finger_floor_drop_mm(cfg))
         self.assertAlmostEqual(finger_floor_drop_mm(cfg), SceneObstacleRules.from_robot_config(cfg).finger_floor_drop_mm)
 
-    def test_no_drop_where_the_fingers_keep_to_the_whole_solid_or_the_floor_is_no_nearer(self) -> None:
+    def test_no_drop_where_the_floor_is_no_nearer(self) -> None:
         from src.robot.grasping.generation.scene_obstacles import finger_floor_drop_mm
 
-        def cell(on: bool, floor: float) -> SimpleNamespace:
-            return SimpleNamespace(safety=SimpleNamespace(
-                self_collision=SimpleNamespace(perceived_min_distance_mm=3.0),
-                planning_world=SimpleNamespace(perceived=SimpleNamespace(fingers_to_the_support_reading=on,
-                                                                         finger_floor_mm=floor))))
+        def cell(guard: float) -> SimpleNamespace:
+            return SimpleNamespace(safety=SimpleNamespace(self_collision=SimpleNamespace(perceived_min_distance_mm=guard)))
 
-        self.assertAlmostEqual(2.0, finger_floor_drop_mm(cell(True, 1.0)))
-        self.assertEqual(0.0, finger_floor_drop_mm(cell(False, 1.0)))
-        self.assertEqual(0.0, finger_floor_drop_mm(cell(True, 5.0)))
+        self.assertAlmostEqual(2.0, finger_floor_drop_mm(cell(3.0)))
+        # A guard keeping no more than the 1 mm the fingers keep drops nothing.
+        self.assertEqual(0.0, finger_floor_drop_mm(cell(1.0)))
 
     def test_the_world_and_the_calculator_hold_a_finger_1_mm_over_the_reading(self) -> None:
-        from src.robot.grasping.generation.support_footprint import HandFloor
+        from src.robot.grasping.generation.hand import HandFloor
         from src.robot.safety.planning.perceived import _solid_boxes
 
         solid = TheCalculatorPlansTheFingersOverTheReadingTests()._solid()

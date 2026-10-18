@@ -9,11 +9,10 @@ grasp was *found*, so it was empty; the recovery driver saw nothing to recover f
 Two invariants live here, and the second is a safety rule rather than a behaviour:
 
 1. The refusal now reaches the recovery driver as :attr:`GraspFailureReason.MOTION_PLAN_REFUSED`.
-2. It maps to ``(NEXT_TARGET, RESCAN)`` and nothing else. A refusal is fail-closed. Re-perceiving costs
-   nothing. ``NEXT_TARGET`` skips the part the planner could not reach for another of the same label,
-   never another object, and moves nothing itself: the owner allowed it here on 2026-09-29, and the next
-   pick's motion is judged in full. Every other action in the table commands motion. Widening that
-   tuple must fail a test, not pass review.
+2. It maps to ``(RESCAN,)`` and nothing else. A refusal is fail-closed. Re-perceiving costs nothing and
+   moves nothing, and the next pick's motion is judged in full. ``NEXT_TARGET``, which skipped the part the
+   planner could not reach for another of the same label, left on 2026-10-16 (the owner's cleanup); the push
+   commands motion. Widening that tuple must fail a test, not pass review.
 
 The discrimination is the delicate part: ``MotionStatus.TIMEOUT`` covers BOTH "the planner found no
 route, nothing was sent" and "the command was accepted and overran its budget", and on real hardware
@@ -163,25 +162,23 @@ class RecoveryAdapterTests(unittest.TestCase):
 class RefusalRecoversByRescanOnlyTests(unittest.TestCase):
     """The safety rule, pinned so that widening it has to be deliberate."""
 
-    def test_the_mapping_is_skip_the_part_then_rescan_and_nothing_else(self) -> None:
+    def test_the_mapping_is_the_rescan_and_nothing_else(self) -> None:
         self.assertEqual(
             RecoveryDispatcher().actions_for(
                 GraspFailureReason.MOTION_PLAN_REFUSED
             ),
-            (SceneRecoveryAction.NEXT_TARGET, SceneRecoveryAction.RESCAN),
+            (SceneRecoveryAction.RESCAN,),
         )
 
     def test_no_action_that_moves_is_reachable(self) -> None:
-        # Named individually rather than asserted as a set difference: each of these is a distinct
-        # way a fail-closed refusal would turn back into a motion. NEXT_VIEWPOINT was one until it was
-        # merged into RESCAN on 2026-09-29; NEXT_TARGET left this list the same day (owner), because it
-        # now skips the failed part for one of the same label and never switches object.
+        # Named individually rather than asserted as a set difference: each is a distinct way a fail-closed
+        # refusal would turn back into a motion. NEXT_VIEWPOINT was one until it was merged into RESCAN on
+        # 2026-09-29; CONTAINER_AGITATE left with its code on 2026-10-16.
         actions = RecoveryDispatcher().actions_for(
             GraspFailureReason.MOTION_PLAN_REFUSED
         )
         for forbidden in (
             SceneRecoveryAction.NUDGE_TARGET,
-            SceneRecoveryAction.CONTAINER_AGITATE,
         ):
             with self.subTest(action=forbidden):
                 self.assertNotIn(forbidden, actions)

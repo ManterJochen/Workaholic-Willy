@@ -67,7 +67,7 @@ def build_ranker_corpus(
     judge it before anything is fitted on it.
 
     ``mask_suffix`` selects which segmentation the clouds are cut with: ``instances`` is the
-    renderer's ground truth, ``pred_instances`` what GroundingDINO + SAM2 produced, and a cell has
+    renderer's ground truth, ``pred_instances`` what the cell's perception produced (``predict-masks``), and a cell has
     the second one. Building both and comparing isolates the features, because the candidates and
     the labels are properties of the scene geometry and stay identical between the two.
     """

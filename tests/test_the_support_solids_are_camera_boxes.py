@@ -22,10 +22,10 @@ from tests import _cell_2026_10_01 as cell
 from tests.test_the_guard_holds_the_bench import _hand_over_the_bench
 
 
-def _world(owner: cell.OwnerCell, depth: "np.ndarray | None" = None):  # noqa: ANN202
+def _world(owner: cell.OwnerCell, depth: "np.ndarray | None" = None, tuning: "dict | None" = None):  # noqa: ANN202
     look = cell.look("P1")
-    snapshot = owner.world(look, depth).world_for(self_envelope=owner.envelope(np.radians(cell.LOOK_0_DEG)),
-                                                  near_point_mm=(-165.0, -679.0, 300.0))
+    snapshot = owner.world(look, depth, tuning=tuning).world_for(
+        self_envelope=owner.envelope(np.radians(cell.LOOK_0_DEG)), near_point_mm=(-165.0, -679.0, 300.0))
     assert snapshot.perceived is not None, snapshot.reason
     return snapshot
 
@@ -47,9 +47,9 @@ class TheSolidsAreCameraBoxesTests(unittest.TestCase):
 
     def test_the_guard_judges_them_at_the_distance_it_keeps_from_what_the_camera_saw(self) -> None:
         """A cell holding declared fixtures at 10 mm and the camera's boxes at 5 mm, its fingers kept from the whole
-        solid too (``fingers_to_the_support_reading`` off): 7 mm over the bench's solid is admitted, 3 mm is refused at
-        5 mm."""
-        robot = cell.owner_robot(perceived={"fingers_to_the_support_reading": False})
+        solid too (the cell's fingers to the support's reading changed on its own wiring, every cell's since
+        2026-10-17): 7 mm over the bench's solid is admitted, 3 mm is refused at 5 mm."""
+        robot = cell.owner_robot()
         robot["safety"]["self_collision"]["min_distance_mm"] = 10.0
         owner = cell.OwnerCell(robot)
         if not owner.has_the_engine():
@@ -57,7 +57,8 @@ class TheSolidsAreCameraBoxesTests(unittest.TestCase):
         self.assertEqual(RobotConfig.model_validate(robot).safety.self_collision.perceived_min_distance_mm, 5.0)
         look = cell.look("P1")
         bench = cell.level_table(look, -4.0)  # read low, so the bench's own solid is what holds it
-        boxes = _guard_boxes(_world(owner, bench).perceived)
+        boxes = _guard_boxes(_world(owner, bench, tuning={"fingers_to_the_reading": False,
+                                                          "finger_floor_drop_mm": 0.0}).perceived)
         top = [box for box in boxes if box.name.endswith("_bench")][0]
         top_mm = float(top.center_mm[2] + top.half_extents_mm[2])
         self.assertAlmostEqual(top_mm, 7.0, places=6)
@@ -77,7 +78,9 @@ class TheSolidsAreCameraBoxesTests(unittest.TestCase):
         owner = cell.OwnerCell(robot)
         if not owner.has_the_engine():
             self.skipTest("no exact mesh engine or UR10 bundle on this box")
-        self.assertEqual(RobotConfig.model_validate(robot).safety.planning_world.perceived.finger_floor_mm, 1.0)
+        from src.robot.safety.planning.perceived import FINGER_FLOOR_MM
+
+        self.assertEqual(FINGER_FLOOR_MM, 1.0)
         bench = cell.level_table(cell.look("P1"), -4.0)
         boxes = _guard_boxes(_world(owner, bench).perceived)
         top = [box for box in boxes if box.name.endswith("_bench")][0]

@@ -1,7 +1,8 @@
 """The ready bar (``GET /v1/cell/readiness``), the cell's facts (``GET /v1/cell/facts``) and the planner run.
 
-Build plan 1.5, 1.10, 1.3.6 and item 19: six lights (the robot, the cameras, the planner, the gripper, the carried
-part and the commands) and the blockers; ``ready`` only where every light that blocks is ok and nothing blocks. It
+Build plan 1.5, 1.10, 1.3.6 and item 19: five lights (the robot, the cameras, the planner, the gripper and the
+commands; the carried part's light went on 2026-10-17, when no cell modelled one) and the blockers; ``ready`` only
+where every light that blocks is ok and nothing blocks. It
 always answers and moves nothing, and it reads the controller from the receive stream alone (``quick_robot_status``),
 never through the dashboard. What this file pins:
 
@@ -9,9 +10,9 @@ never through the dashboard. What this file pins:
   labelled as such, the dummy carrying nothing real;
 * a halt reads ``halted``, a stopped controller ``controller_stopped``, a controller that cannot be read
   ``controller_unreadable``; the dashboard is never asked;
-* a toggle hand's light follows the program's count; a carried part nobody models blocks;
+* a toggle hand's light follows the program's count;
 * each blocker of 1.5, and the commands light never blocks;
-* the facts say the route, the brake, the carried part and the rehearsal, the looks, the hand's natural axis, what a
+* the facts say the route, the brake and the rehearsal, the looks, the hand's natural axis, what a
   push may do (its ceiling the service's own, the hard cap where the cell declares no fixture) and the detector with the
   precision it runs at;
 * ``POST /v1/cell/planner`` starts cuRobo as a run that moves nothing, and Connect starts it by itself on a cuRobo arm
@@ -39,7 +40,7 @@ class TheReadyBarTests(ConsoleCase):
         answer = self.client.get("/v1/cell/readiness").json()
         self.assertFalse(answer["ready"])
         seen = lights(answer)
-        self.assertEqual({"robot", "cameras", "planner", "gripper", "carried_part", "commands"}, set(seen))
+        self.assertEqual({"robot", "cameras", "planner", "gripper", "commands"}, set(seen))
         self.assertEqual(("blocked", "not_built"), seen["robot"][:2])
         self.assertFalse(seen["commands"][2], "the commands light blocks Start")
 
@@ -51,7 +52,6 @@ class TheReadyBarTests(ConsoleCase):
         self.assertEqual(("ok", "rehearsal"), seen["cameras"][:2])
         self.assertEqual(("ok", "unplanned"), seen["planner"][:2])
         self.assertEqual(("ok", "connected"), seen["gripper"][:2])
-        self.assertEqual(("ok", "not_applicable"), seen["carried_part"][:2])
         self.assertEqual([], answer["blockers"])
         self.assertTrue(answer["ready"], answer)
 
@@ -92,30 +92,6 @@ class TheReadyBarTests(ConsoleCase):
             answer = self.client.get("/v1/cell/readiness").json()
         self.assertEqual(("blocked", "question_pending"), lights(answer)["gripper"][:2])
         self.assertIn("jaws_question_pending", [blocker["code"] for blocker in answer["blockers"]])
-
-    def test_a_carried_part_nobody_models_blocks_and_says_why(self) -> None:
-        cell = self.scripted()
-        seen = lights(self.client.get("/v1/cell/readiness").json())
-        self.assertEqual(("ok", "modelled"), seen["carried_part"][:2])
-        cell.arm.declined = "safety.planning_world.payload.length_mm is not declared"
-        answer = self.client.get("/v1/cell/readiness").json()
-        light = next(light for light in answer["lights"] if light["id"] == "carried_part")
-        self.assertEqual(("blocked", "not_modelled"), (light["state"], light["code"]))
-        self.assertIn("length_mm", light["message"])
-        self.assertFalse(answer["ready"])
-
-    def test_a_cell_that_chose_no_carried_part_says_so_and_blocks_nothing(self) -> None:
-        """The owner, 2026-10-07: payload off must drive. A grey fact on the bar, no blocker, no refusal."""
-        from types import SimpleNamespace
-
-        cell = self.scripted()
-        cell.arm.declined = "safety.planning_world.payload.enabled is false"
-        cell.arm.config = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(enabled=False))))
-        answer = self.client.get("/v1/cell/readiness").json()
-        light = next(light for light in answer["lights"] if light["id"] == "carried_part")
-        self.assertEqual(("info", "not_modelled", False), (light["state"], light["code"], light["blocks"]))
-        self.assertIn("judged as an empty one", light["message"])
-        self.assertNotIn("carried_part_not_modelled", [blocker["code"] for blocker in answer["blockers"]])
 
     def test_the_planner_light(self) -> None:
         cell = self.scripted(arm_keywords={"planner": "off"})
@@ -162,21 +138,16 @@ class TheCellFactsTests(ConsoleCase):
         self.assertTrue(facts["rehearsal"])
         self.assertEqual("unplanned", facts["route"]["route"])
         self.assertEqual({"latches": True, "brakes_in_motion": False}, facts["brake"])
-        self.assertFalse(facts["payload"]["modelled"])
+        self.assertNotIn("payload", facts, "no cell models a carried part")
         self.assertFalse(facts["wrist_camera"])
         self.assertEqual(6.0, facts["hand_eye_warn_mm"])
 
     def test_a_scripted_cell_s_facts(self) -> None:
-        cell = self.scripted(wrist=True, looks=())
+        self.scripted(wrist=True, looks=())
         facts = self.client.get("/v1/cell/facts").json()
         self.assertEqual("planned", facts["route"]["route"])
-        self.assertTrue(facts["payload"]["modelled"])
-        self.assertIsNone(facts["payload"]["declined_reason"])
         self.assertFalse(facts["rehearsal"])
         self.assertTrue(facts["wrist_camera"])
-        cell.arm.declined = "no hand modelled"
-        facts = self.client.get("/v1/cell/facts").json()
-        self.assertEqual((False, "no hand modelled"), (facts["payload"]["modelled"], facts["payload"]["declined_reason"]))
 
     def test_facts_of_nothing_built(self) -> None:
         facts = self.client.get("/v1/cell/facts")
@@ -199,25 +170,22 @@ class TheCellFactsTests(ConsoleCase):
         self.assertEqual((False, 30.0, PUSH_DISTANCE_CAP_MM), (push["can_push"], push["default_mm"], push["ceiling_mm"]))
         self.assertTrue(push["why_not"])
         detector = facts["detector"]
-        self.assertEqual(("grounded_sam", False), (detector["backend"], detector["router_enabled"]))
-        self.assertEqual("fp32 weights, fp16 autocast", detector["precision"])
+        self.assertEqual(("vlm", "Qwen/Qwen3-VL-4B-Instruct"), (detector["backend"], detector["vlm_model_id"]))
+        self.assertNotIn("router_enabled", detector)
+        self.assertEqual("auto (the checkpoint's own)", detector["precision"])
 
-    def test_the_detector_s_precision_follows_its_configured_dtype(self) -> None:
+    def test_the_detector_s_precision_is_its_fixed_load_dtype(self) -> None:
+        """No key chooses it since 2026-10-17: the VLM loads in its checkpoint's dtype, RT-DETR at the owner's cell's
+        fixed settings (``src/models/_inference.py``)."""
         from types import SimpleNamespace
 
         from api.readiness import detector_precision
+        from src.models._inference import RTDETR
 
-        def models(dtype: str | None) -> Any:
-            optim = SimpleNamespace(torch_dtype=dtype)
-            return SimpleNamespace(objectdetector=SimpleNamespace(optim=optim), rtdetr=SimpleNamespace(optim=optim))
-
-        self.assertEqual("fp32 weights, fp16 autocast", detector_precision(models(None), "grounded_sam", False))
-        self.assertEqual("float16", detector_precision(models("float16"), "grounded_sam", False))
-        self.assertEqual("auto", detector_precision(models("auto"), "rtdetr", False))
-        self.assertEqual("auto (the checkpoint's own)", detector_precision(models(None), "vlm", False))
-        self.assertEqual("VLM auto (the checkpoint's own); GroundingDINO fp32 weights, fp16 autocast",
-                         detector_precision(models(None), "vlm", True))
-        self.assertIsNone(detector_precision(None, "grounded_sam", False))
+        self.assertEqual("auto (the checkpoint's own)", detector_precision(SimpleNamespace(), "vlm"))
+        self.assertEqual(str(RTDETR.torch_dtype), detector_precision(SimpleNamespace(), "rtdetr"))
+        self.assertEqual("auto", detector_precision(SimpleNamespace(), "rtdetr"))
+        self.assertIsNone(detector_precision(None, "vlm"))
 
 
 class ThePlannerRunTests(ConsoleCase):

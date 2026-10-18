@@ -2,9 +2,9 @@
 übernehmen und das auf die neue Punktwolke werfen").
 
 * Every grasp is asked leaning about its closing axis too, a lean offered where it keeps the scene and ranked by the
-  room it keeps, vertical first on SFE's tie (``support_footprint._upright_first``), and a vertical grasp kept in the
-  list where one exists (``support_footprint._with_a_vertical``).
-* The way in is asked seen from SFE's 15 degrees off vertical on (``support_footprint._SEEN_FROM_TILT_DEG``).
+  room it keeps, vertical first on SFE's tie (``hand._upright_first``), and a vertical grasp kept in the
+  list where one exists (``body_grasps._with_a_vertical``).
+* The way in is asked seen from SFE's 15 degrees off vertical on (``hand._SEEN_FROM_TILT_DEG``).
 * Where straight down leaves fewer than three square grasps, the closing axis is rolled +-10/20/30 degrees out of the
   horizontal and the part searched again in that hand's own frame: so the pads lie on a tilted part's leaning faces.
   From a camera straight over a tilted box the lower finger's way under it is never seen, and no rolled grasp is
@@ -109,13 +109,13 @@ def _tilts(candidates: "list[Any]") -> "list[float]":
 
 
 class TheHandLeansOnSfesWholeLadderTests(unittest.TestCase):
-    """SFE's ladder to 90 degrees (``support_footprint._TILTS_DEG``, the owner, 2026-10-16: "alles von SFE"): a lean wins
+    """SFE's ladder to 90 degrees (``hand._TILTS_DEG``, the owner, 2026-10-16: "alles von SFE"): a lean wins
     only with more room, and a vertical grasp stays listed. Red before: the body leaned to 45 at most."""
 
     def _beside_a_wall(self, gap_mm: "float | None") -> "list[Any]":
-        from src.robot.grasping.generation.support_footprint import SIDE_APPROACH_SCORE_WEIGHTS
+        from src.robot.grasping.generation.hand import SIDE_APPROACH_SCORE_WEIGHTS
         from tests.test_a_side_grasp_never_goes_through_unseen_space import CYLINDER, HIGH_OVERHEAD, WALL, camera
-        from tests.test_sfe_says_why_it_refused import cylinder_beside_a_wall, hande_jaw
+        from tests._part_scenes import cylinder_beside_a_wall, hande_jaw
 
         cloud, wall = cylinder_beside_a_wall(gap_mm)
         solids = (CYLINDER,) if gap_mm is None else (CYLINDER, WALL)
@@ -139,7 +139,7 @@ class TheHandLeansOnSfesWholeLadderTests(unittest.TestCase):
 def _under_a_roof(**kwargs: Any) -> "list[Any]":
     """A 30 mm cube under a roof 76 mm over the support, reaching 50 mm either side of it along y and 120 along x, every
     point seen: the open fingers pass under the roof leaning 60 degrees, and at 45 meet it."""
-    from src.robot.grasping.generation.support_footprint import SIDE_APPROACH_SCORE_WEIGHTS
+    from src.robot.grasping.generation.hand import SIDE_APPROACH_SCORE_WEIGHTS
     from tests.test_the_hand_grasps_the_parts_own_body import _cube, _surface
 
     xs, ys = np.arange(-120.0, 120.0 + 1e-9, 2.0), np.arange(-50.0, 50.0 + 1e-9, 2.0)
@@ -150,12 +150,12 @@ def _under_a_roof(**kwargs: Any) -> "list[Any]":
 
 
 class ThePalmStaysOverTheSupportTests(unittest.TestCase):
-    """Leaning past 45 the palm becomes the hand's lowest part: SFE's ``palm_aware`` (``support_footprint._palm_low_mm``)
+    """Leaning past 45 the palm becomes the hand's lowest part: SFE's ``palm_aware`` (``hand._palm_low_mm``)
     is asked of every grasp. Red before: under the roof every lean of 75 and 90 degrees was offered, its palm 7.5 and
     20 mm under the support, and ranked first for its room."""
 
     def test_under_a_roof_only_the_lean_whose_palm_clears_the_support_is_offered(self) -> None:
-        from src.robot.grasping.generation.support_footprint import _palm_low_mm
+        from src.robot.grasping.generation.hand import _palm_low_mm
 
         found = _under_a_roof()
         self.assertTrue(found)
@@ -170,7 +170,7 @@ class ThePalmStaysOverTheSupportTests(unittest.TestCase):
 
 
 class SfesFinePassRunsWhereItRanTests(unittest.TestCase):
-    """SFE's fine pass (``support_footprint._FINE_BELOW``): where straight down and the ladder's leans leave fewer than 3
+    """SFE's fine pass (``hand._FINE_BELOW``): where straight down and the ladder's leans leave fewer than 3
     square grasps, the leans every 7.5 degrees (``BODY_FINE_TILTS_DEG``) and the rolled frames, each leaning on the
     ladder as SFE rolls on every tilt of it."""
 
@@ -216,25 +216,6 @@ class SfesFinePassRunsWhereItRanTests(unittest.TestCase):
                                for c in rolled])
 
 
-class InflatePushesEveryFaceOutTests(unittest.TestCase):
-    """``robot.grasping.geometry.inflate_mm``, as SFE pushes its prism's faces: every face out by it, the body's own
-    cells as they were (0 on the owner's cell)."""
-
-    def test_the_footprint_grows_and_the_top_does_not_rise(self) -> None:
-        from src.robot.grasping.generation.body_grasps import body_map
-        from tests.test_the_hand_grasps_the_parts_own_body import _cube, _surface
-
-        cloud = _surface(_cube, 40.0)
-        plain = body_map(cloud, 0.0, floor_margin_mm=2.0)
-        grown = body_map(cloud, 0.0, floor_margin_mm=2.0, inflate_mm=4.0)
-        assert plain is not None and grown is not None
-        plain_xy, plain_top = plain.centres()
-        grown_xy, grown_top = grown.centres()
-        self.assertAlmostEqual(float(np.ptp(plain_xy[:, 0])) + 8.0, float(np.ptp(grown_xy[:, 0])), delta=2.0)
-        self.assertAlmostEqual(float(np.ptp(plain_xy[:, 1])) + 8.0, float(np.ptp(grown_xy[:, 1])), delta=2.0)
-        self.assertLessEqual(float(grown_top.max()), float(plain_top.max()) + 1e-9)
-
-
 class AFingerGoesDownOnlyWhereACameraSawFreeTests(unittest.TestCase):
     """The owner, 2026-10-16: "nur Sachen anbieten, die auch wirklich funktionieren". Space no camera saw counts as
     standing up to the height a neighbour stands within ``_HIDDEN_BESIDE_MM`` of it, straight down too; beside a part
@@ -249,7 +230,7 @@ class AFingerGoesDownOnlyWhereACameraSawFreeTests(unittest.TestCase):
         return ~((p[:, 0] > 15.5) & (p[:, 0] < 40.0) & (p[:, 2] < 60.0))
 
     def _grasps(self, taller_beside: bool) -> "list[Any]":
-        from src.robot.grasping.generation.support_footprint import SIDE_APPROACH_SCORE_WEIGHTS
+        from src.robot.grasping.generation.hand import SIDE_APPROACH_SCORE_WEIGHTS
         from tests.test_the_hand_grasps_the_parts_own_body import _cube, _surface
 
         neighbour = None

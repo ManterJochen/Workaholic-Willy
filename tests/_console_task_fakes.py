@@ -36,7 +36,7 @@ import numpy as np
 
 from src.config.loader import active_profile, reload_config, set_active_profile
 from src.robot.core import JointPositions, MotionStatus, RobotStatus
-from src.robot.core.arm_capabilities import ArmHalted, HaltState, PayloadModel, halted_refusal
+from src.robot.core.arm_capabilities import ArmHalted, HaltState, halted_refusal
 from src.robot.core.errors import RobotConnectionError
 from src.robot.execution.autonomous_grasp.report import AutonomousGraspOutcome
 from src.robot.grasping.loop.pick_loop import PickOutcome
@@ -106,12 +106,12 @@ def dummy_tree(target: Path, *, gripper: str = "dummy", poses: bool = True, defa
     robot.write_text(text, encoding="utf-8")
     if not poses:
         return None
-    lines = ["robot:", "  named_poses:"]
+    lines = ["robot:", "  motion:", "    named_poses:"]
     for name, (label, joints) in POSES_DEG.items():
-        lines += [f"    {name}:", f"      joints_deg: [{', '.join(f'{v:.1f}' for v in joints)}]",
-                  f'      label: "{label}"', "      screen: clear"]
+        lines += [f"      {name}:", f"        joints_deg: [{', '.join(f'{v:.1f}' for v in joints)}]",
+                  f'        label: "{label}"', "        screen: clear"]
     if default_place:
-        lines.append("  default_place_pose: drop_left")
+        lines.append("    default_place_pose: drop_left")
     (target / "robot" / f"robot.{PROFILE}.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return PROFILE
 
@@ -325,12 +325,6 @@ class ConsoleArm(TaskArm):
         self.calls.append("stop_planner")
         self._planner = "off"
 
-    # ---- the carried part, as the console reads it -------------------------------------------------------------
-
-    def detach_payload(self) -> bool:
-        self.calls.append("detach_payload")
-        return super().detach_payload()
-
 
 # ---------------------------------------------------------------------------------------------------------------------
 # The scripted cell: the service
@@ -508,13 +502,12 @@ class ConsoleService(TaskService):
             self._finished(PickOutcome.NO_PERCEPTION)
             return _report(AutonomousGraspOutcome.NO_TARGET,
                            pick_report=SimpleNamespace(outcome=PickOutcome.NO_PERCEPTION, attempts=()))
-        if pick.kind == "kept_out" and self.campaign.zones.kept_out_by_a_region(label="", centre_mm=(x, y, GRASP_Z_MM)):
+        if pick.kind == "kept_out" and self.campaign.zones.excludes(label="", centre_mm=(x, y, GRASP_Z_MM)):
             # The one part seen stands in a region the task keeps out (the drop it placed it at): the pick loop skips
-            # it, and with nothing else seen the pick stops there, saying so (``PickAttempt.excluded_by_regions``).
+            # it, and with nothing else seen the pick stops there, saying so (``PickAttempt.excluded``).
             self._finished(PickOutcome.RESCANNED_EXHAUSTED)
-            row = SimpleNamespace(reasons=(), excluded_by_regions=True,
-                                  excluded="Every part the camera sees (1) stands where the task keeps out, so the "
-                                           "pick stops here.")
+            row = SimpleNamespace(reasons=(), excluded="Every part the camera sees (1) stands where the task keeps out, "
+                                                       "so the pick stops here.")
             return _report(AutonomousGraspOutcome.NO_VALID_GRASP,
                            pick_report=SimpleNamespace(outcome=PickOutcome.RESCANNED_EXHAUSTED, attempts=(row,)))
         if pick.kind == "failed":
@@ -539,7 +532,6 @@ class ConsoleService(TaskService):
             pick.on_executing()
         grasp = Pose.tool_down(x, y, GRASP_Z_MM, label="approach_01")
         above = Pose.tool_down(x, y, GRASP_Z_MM + 80.0, label="approach_00")
-        self.arm.detach_payload()
         for target, linear in ((above, False), (grasp, True)):
             moved = self.arm.move(target, linear=linear)
             if moved.status is not MotionStatus.EXECUTED:
@@ -550,7 +542,6 @@ class ConsoleService(TaskService):
                                       message=halted_refusal(latch.reason, "the jaws were not closed"))
             return self._failed(attempt, refused)
         self.jaws.set_closed(True)
-        self.arm.attach_payload(40.0)
         lifted = self.arm.move(above, linear=True)
         if lifted.status is not MotionStatus.EXECUTED:
             return self._failed(attempt, lifted)
@@ -669,10 +660,6 @@ class ScriptedCell:
         from tests._task_fakes import motions  # noqa: PLC0415
 
         return motions(self.log)
-
-    @property
-    def payload(self) -> PayloadModel:
-        return self.arm.payload_model()
 
 
 # ---------------------------------------------------------------------------------------------------------------------

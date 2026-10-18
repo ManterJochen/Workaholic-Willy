@@ -2,7 +2,7 @@
 
 A watchable record of the whole perception and grasp chain on real YCB objects:
 
-* left panel: the overhead vision view, with GroundingDINO detection boxes, SAM2 masks and the object
+* left panel: the overhead vision view, with the VLM's detection boxes, SAM2 masks and the object
   names (sugar box / tomato soup can / red cracker box), the prompted target highlighted. This is
   "what the robot sees" (the vision-language grounding).
 * right panel: a cinematic 3/4 view of the arm grasping the prompted object and lifting it. This is
@@ -12,8 +12,8 @@ Reuses ``run_dense_pick.build_service`` (``ycb=True, vision=True``), so the demo
 and never a mock. The perception panel is drawn here rather than taken from the calculator's debug
 PNG, so it shows every detection, its name and the target.
 
-On-box only (needs Isaac + the cached GroundingDINO/SAM2 weights). Run with Isaac's bundled python from
-the repo root:
+On-box only (needs Isaac + the VLM and SAM2 weights under ``models.weights_root``). Run with Isaac's
+bundled python from the repo root:
 
     <isaac-sim>\\python.bat -m src.willy_sim.run_dense_demo --prompt "the sugar box"
     ...\\python.bat -m src.willy_sim.run_dense_demo --gui     # also open the live window
@@ -40,7 +40,7 @@ _DISTRACTOR_COLORS = [(80, 170, 255), (255, 150, 70), (200, 120, 255)]  # BGR: d
 
 
 def _draw_perception_panel(rgb, segmentations, target_label, prompt, panel_h):  # noqa: ANN001, ANN202
-    """Draw GroundingDINO boxes + SAM2 masks + names on the overhead RGB; highlight the target. Returns BGR."""
+    """Draw the detector's boxes + SAM2 masks + names on the overhead RGB; highlight the target. Returns BGR."""
     import cv2  # type: ignore[import-not-found]
 
     img = np.ascontiguousarray(np.asarray(rgb)[..., ::-1]).copy()  # convert RGB to BGR for OpenCV
@@ -64,7 +64,7 @@ def _draw_perception_panel(rgb, segmentations, target_label, prompt, panel_h):  
             ty = max(20, y0 - 8)
             cv2.putText(img, tag, (x0, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 4, cv2.LINE_AA)
             cv2.putText(img, tag, (x0, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.62, col, 2, cv2.LINE_AA)
-    cap = f'Prompt: "{prompt}"   |   GroundingDINO + SAM2'
+    cap = f'Prompt: "{prompt}"   |   VLM + SAM2'
     cv2.putText(img, cap, (14, img.shape[0] - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 5, cv2.LINE_AA)
     cv2.putText(img, cap, (14, img.shape[0] - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
     # scale to the panel height, preserving aspect

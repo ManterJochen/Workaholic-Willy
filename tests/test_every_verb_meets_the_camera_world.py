@@ -50,6 +50,7 @@ from src.robot.safety.planning.perceived import WorldBuildLimits
 from src.robot.safety.planning.world import planner_cuboid
 
 from src.config.arms import load_arm
+from tests._arm_kit import with_the_whole_envelope, without_guards
 
 #: The controller's joint order as the ur5e description states it; the planner is handed it since P0e.
 _UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
@@ -134,6 +135,14 @@ class _Client:
     def set_world(self, cuboids, meshes=None):  # noqa: ANN001, ANN201
         return len(cuboids) if self.confirm_all else max(0, len(cuboids) - 1)
 
+    def set_scene(self, cuboids, meshes, voxels):  # noqa: ANN001, ANN201
+        """The boxes as ``set_world`` takes them, and the field every cell's camera world sends beside them."""
+        from types import SimpleNamespace
+
+        taken = None if voxels is None else int(np.load(voxels["path"]).shape[0])
+        return SimpleNamespace(world_set=self.set_world(cuboids, meshes) + len(meshes or ()), voxels_set=taken,
+                               reason="")
+
     def check_joints(self, configs, **asked):  # noqa: ANN001, ANN003, ANN201
         self.checked.append([[float(v) for v in c] for c in configs])
         return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="clear")
@@ -183,7 +192,7 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
     config = RobotConfig.model_validate({
         "vendor": "ur",
         "motion": {"planner": "curobo"},
-        "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False},
+        "safety": {
                    # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
                    # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
                    "self_collision": {"planner_margin_mm": 4.0}},
@@ -197,6 +206,10 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
         }},
     })
     arm = URRobotArm(config)
+    # What is read is when each verb meets the camera world; the IK quality guard is no part of it (its tree switched it
+    # off until the switch left every tree, 2026-10-17), and its scenes stand wrist 3 half a turn from home, written for
+    # an arm without the window about home (every cell's default until then).
+    with_the_whole_envelope(without_guards(arm._preflight, "ik_quality"))
     arm._conn = MagicMock()
     arm._conn.is_connected = True
     arm._conn.get_joint_positions.return_value = list(_HERE)

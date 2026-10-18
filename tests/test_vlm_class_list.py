@@ -156,7 +156,7 @@ class _Torch:
 
 def _grounder(answer: "str | list[str]", **settings: Any) -> tuple[Qwen3VLGrounder, _Processor, _Model]:
     processor, model = _Processor(answer), _Model()
-    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", local=True, **settings)
+    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", **settings)
     grounder._load = lambda: (processor, model, _Torch())  # type: ignore[method-assign]
     return grounder, processor, model
 

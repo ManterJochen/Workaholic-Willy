@@ -28,15 +28,9 @@ UR_CONNECTION_LOG_FILE: Final[str] = "ur_connection.log"
 UR_ARM_LOG_FILE: Final[str] = "ur_arm.log"
 UR_MOTION_LOG_FILE: Final[str] = "ur_motion.log"
 CUROBO_PLANNER_LOG_FILE: Final[str] = "curobo_planner.log"
-SIM_ARM_LOG_FILE: Final[str] = "sim_arm.log"
 GRIPPER_LOG_FILE: Final[str] = "gripper.log"
 SAFETY_PREFLIGHT_LOG_FILE: Final[str] = "safety_preflight.log"
 SAFETY_WORKSPACE_LOG_FILE: Final[str] = "safety_workspace.log"
-POSE_PROVIDER_LOG_FILE: Final[str] = "pose_provider.log"
-CALIBRATION_LOG_FILE: Final[str] = "calibration.log"
-GRASP_CALCULATOR_LOG_FILE: Final[str] = "grasp_calculator.log"
-MASK_ANALYZER_LOG_FILE: Final[str] = "mask_analyzer.log"
-RUNTIME_PICK_LOG_FILE: Final[str] = "runtime_pick.log"
 
 # driver selection + host readiness -------------------------------------------------------------
 #: Which vendor factory was registered and instantiated. Answers which driver a cell is
@@ -69,8 +63,6 @@ IK_SERVICE_LOG_FILE: Final[str] = "ik_service.log"
 #: the most-asked question about a running cell.
 GRASP_BUILDERS_LOG_FILE: Final[str] = "grasp_builders.log"
 GRASP_RECORD_LOG_FILE: Final[str] = "grasp_record_logging.log"
-GRASP_LATENCY_LOG_FILE: Final[str] = "grasp_latency.log"
-RL_SHADOW_LOG_FILE: Final[str] = "rl_shadow.log"
 
 # motion-stack externals ------------------------------------------------------------------------
 #: The process-isolated cuRobo sidecar: spawn, warm-up cost, and every plan it refused.

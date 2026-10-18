@@ -39,12 +39,12 @@ class ExplainNamesTheHandTests(unittest.TestCase):
         self.assertNotIn(_SCHEMA_DEFAULT, explanation.render())
 
     def test_a_key_no_hand_supplies_still_says_the_schema_default(self) -> None:
-        """⭐ THE CONTROL: a tree naming no hand, and a key outside the hand's thirteen, keep the old sentence."""
+        """⭐ THE CONTROL: a tree naming no hand, and a key outside the hand's three, keep the old sentence."""
         no_hand = _loaded(self, "robot:\n  gripper:\n    model: null\n").explain("robot.gripper.max_width_mm")
         self.assertIn(_SCHEMA_DEFAULT, no_hand.render())
         self.assertEqual(no_hand.set_in, "")
         other = _loaded(self, "robot:\n  gripper:\n    model: schunk_egu50\n").explain(
-            "robot.grasping.gripper_geometry.outer_margin_mm")
+            "robot.grasping.calculator")
         self.assertIn(_SCHEMA_DEFAULT, other.render())
 
     def test_a_stated_number_names_its_layer_and_not_the_registry(self) -> None:

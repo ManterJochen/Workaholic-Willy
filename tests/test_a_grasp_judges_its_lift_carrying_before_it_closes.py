@@ -1,30 +1,32 @@
-"""A grasp judges its lift as if the jaws held the part, before they close, and closes only where the lift would run.
+"""A grasp judges its lift before the jaws close, and closes only where the lift would run.
 
 The owner, 2026-10-01 ("Vorher prüfen"), on verifier W's M1. Option 1 lets an empty hand down a straight line into a pose
 beside a bin the camera saw, where only the camera's boxes refuse the planner's world. Once the jaws close on a part
 nothing is set aside, so the lift out of that pose, which starts there, is refused at its first sample: the arm stood
 beside the bin with the part in its jaws until a person released it (GPU, verifier W, 2026-10-01).
 
-Now the grasp asks the arm first, at the part with its jaws still open, whether the lift would run carrying the part
-(``JudgesCarriedLines.carried_line_refusal``): the lift's own judgement, with the part in the planner's world as the
-attach after the close hands it over and nothing of the camera's world set aside. Where it would be refused, the jaws
-stay open, the arm goes back up the line it came down, to the standoff, empty-handed, and the attempt ends with its own
-outcome (``PolicyOutcome.CARRIED_RETREAT_REFUSED``, ``HandlingOutcome.CARRIED_RETREAT_REFUSED``), the reason beside it,
-so the pick goes on to its next part or reports. Where it would run, the grasp closes and lifts as before. An arm that
-cannot judge (the dummy, the sim) grasps as before. Both grasps judge: the pick loop's policy and ``Robot.pick``.
+Now the grasp asks the arm first, at the part with its jaws still open, whether the lift would run once they closed
+(``JudgesCarriedLines.carried_line_refusal``): the lift's own judgement, as the line up will meet it. Where it would be
+refused, the jaws stay open, the arm goes back up the line it came down, to the standoff, empty-handed, and the attempt
+ends with its own outcome (``PolicyOutcome.CARRIED_RETREAT_REFUSED``, ``HandlingOutcome.CARRIED_RETREAT_REFUSED``), the
+reason beside it, so the pick goes on to its next part or reports. Where it would run, the grasp closes and lifts as
+before. An arm that cannot judge (the dummy, the sim) grasps as before. Both grasps judge: the pick loop's policy and
+``Robot.pick``.
+
+No part in the jaws is modelled (the owner, 2026-10-05: "mehr Griffe"; every cell since 2026-10-17): a closed hand is
+judged as an empty one, so the lift beside the bin runs, the camera's boxes set aside and the exact guard deciding, and
+what the judgement still refuses is what the line up would meet whatever the jaws hold: the bench, the exact guard.
 
 The hand here is the real ``JawIOGripper`` on a recording tool I/O, as on the owner's cell, so "jaws stayed open"
 is read off the outputs. Names new with this change are imported inside the tests.
 
 Verifier W's second round (2026-10-01) holds the rest: ``Robot.pick`` judges its line out with the decline its motions
-carry, the controller is the last thing asked before the jaws, a hand that does not measure is judged at the width its
-attach carries, an ik arm screens the lift's end and remembers nothing, and an arm that already holds a part, modelled or
-not, is judged as it stands.
+carry, the controller is the last thing asked before the jaws, and an ik arm screens the lift's end and remembers
+nothing.
 """
 
 from __future__ import annotations
 
-import math
 import unittest
 from typing import Any
 from unittest.mock import MagicMock
@@ -42,7 +44,7 @@ from src.robot.core import (
     RobotStatus,
     SafetyMode,
 )
-from src.robot.core.arm_capabilities import LineMotion, LineReading, PayloadModel
+from src.robot.core.arm_capabilities import LineMotion, LineReading
 from src.robot.core.camera_world import CameraWorldDecline
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import HoldEvidence
@@ -50,17 +52,14 @@ from src.robot.drivers.ur.pose_adapter import pose_to_urpose
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
+from tests._arm_kit import without_guards
 from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import (
-    _BENCH,
     _DECLINED,
     AWAY,
     OFF,
-    Q,
-    SeenWorldPlanner,
     _cell,
     _from,
     _needs_the_engine,
-    _seen,
 )
 from tests.test_a_stopped_controller_moves_no_jaws import _PROTECTIVE, _pulses, _toggle
 
@@ -71,11 +70,10 @@ _CAPS = RobotCapabilities(
     has_native_fk=True,
     is_simulated=False, controller=None, owns_a_controller=True,
 )
-#: What the arm says of a lift it would refuse with the part in its jaws: the planner's world, a part carried.
+#: What the arm says of a lift it would refuse: the exact guard, at the lift's first sample.
 _HELD = MotionResult.failed(
     MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO,
-    message=("the planner refused this line at sample 0 of 12: the planner's world; it stands: a part is carried, and "
-             "the carried part is the planner's alone"))
+    message="the exact guard refused this line at sample 0 of 12: the hand comes 1.2 mm from the bin's rim")
 
 
 def _mm(pose: Pose) -> "tuple[float, ...]":
@@ -84,9 +82,8 @@ def _mm(pose: Pose) -> "tuple[float, ...]":
 
 class _LineArm:
     """A UR-like arm that keeps its lines (each sample judged before one moveL) and reports a controller that can move.
-    Every call lands on the log the hand shares: ``("move", position, linear)``, ``"status"``, ``"steady"``,
-    ``"detach"``, ``("attach", width)``. ``refuse_at`` refuses the motion of that index, nothing sent; ``raise_at`` raises
-    out of it."""
+    Every call lands on the log the hand shares: ``("move", position, linear)``, ``"status"``, ``"steady"``.
+    ``refuse_at`` refuses the motion of that index, nothing sent; ``raise_at`` raises out of it."""
 
     def __init__(self, events: "list[Any]", *, refuse_at: "int | None" = None, raise_at: "int | None" = None) -> None:
         self.events = events
@@ -129,34 +126,18 @@ class _LineArm:
         self._tcp = pose
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
-    def detach_payload(self) -> bool:
-        self.events.append("detach")
-        return True
-
-    def attach_payload(self, width_mm: float) -> bool:
-        self.events.append(("attach", round(float(width_mm), 2)))
-        return True
-
-    # The whole payload capability (CarriesPayload), because an arm carries one or does not: the policy asks by
-    # isinstance, and an arm with half of it carries none.
-    def payload_declined_reason(self) -> "str | None":
-        return None
-
-    def payload_model(self) -> PayloadModel:
-        return PayloadModel.PLANNER_AND_FILTER
-
 
 class _JudgingArm(_LineArm):
-    """The same arm, judging a lift as if its jaws held the part (``JudgesCarriedLines``): ``carried`` is what it
-    answers, a refusal, ``None`` (the lift would run) or an exception it raises."""
+    """The same arm, judging a lift before its jaws close (``JudgesCarriedLines``): ``carried`` is what it answers, a
+    refusal, ``None`` (the lift would run) or an exception it raises."""
 
     def __init__(self, events: "list[Any]", *, carried: "MotionResult | BaseException | None" = None,
                  **kwargs: Any) -> None:
         super().__init__(events, **kwargs)
         self.carried = carried
 
-    def carried_line_refusal(self, pose: Pose, *, grip_width_mm: float) -> "MotionResult | None":
-        self.events.append(("judge", _mm(pose), round(float(grip_width_mm), 2)))
+    def carried_line_refusal(self, pose: Pose) -> "MotionResult | None":
+        self.events.append(("judge", _mm(pose)))
         if isinstance(self.carried, BaseException):
             raise self.carried
         return self.carried
@@ -164,8 +145,9 @@ class _JudgingArm(_LineArm):
 
 class _StopsWhileJudging(_JudgingArm):
     """The judging arm whose controller falls into a protective stop while it judges the lift, which would run: the
-    judgement is IK round trips, a world refresh and the planner's attach, check and detach, about half a second on the
-    development GPU, and a stop can fall inside it (verifier W, 2026-10-01)."""
+    judgement is IK round trips, a world refresh and the planner's check, and a stop can fall inside it (verifier W,
+    2026-10-01, who measured about half a second on the development GPU with a carried part's attach and detach in
+    it)."""
 
     def __init__(self, events: "list[Any]") -> None:
         super().__init__(events, carried=None)
@@ -175,31 +157,10 @@ class _StopsWhileJudging(_JudgingArm):
         running = super().get_robot_status()
         return _PROTECTIVE if self.stopped else running
 
-    def carried_line_refusal(self, pose: Pose, *, grip_width_mm: float) -> "MotionResult | None":
-        judged = super().carried_line_refusal(pose, grip_width_mm=grip_width_mm)
+    def carried_line_refusal(self, pose: Pose) -> "MotionResult | None":
+        judged = super().carried_line_refusal(pose)
         self.stopped = True
         return judged
-
-
-class _MeasuringHand:
-    """A gripper that measures its width, as a Robotiq on its socket does: 50 mm open, it stops on the real part, 46 mm
-    across where the grasp said 40."""
-
-    min_width_mm = 0.0
-    max_width_mm = 50.0
-    is_connected = True
-
-    def __init__(self) -> None:
-        self.width = 50.0
-
-    def width_is_measured(self) -> bool:
-        return True
-
-    def set_width_mm(self, width_mm: float, *, speed: Any = None, force: Any = None) -> None:
-        self.width = 50.0 if float(width_mm) >= 50.0 else max(float(width_mm), 46.0)
-
-    def get_width_mm(self) -> float:
-        return self.width
 
 
 def _grasp(width_mm: float = 40.0) -> GraspPoint:
@@ -229,9 +190,9 @@ def _moves(events: "list[Any]") -> "list[tuple[Any, ...]]":
 
 
 class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
-    def test_a_lift_refused_carrying_leaves_the_jaws_open_and_backs_out_up_the_line(self) -> None:
-        """⭐ Red before: the jaws closed on the part, the part was attached, and the lift was refused at its first
-        sample: the arm stood at the part with it in its jaws."""
+    def test_a_lift_that_would_be_refused_leaves_the_jaws_open_and_backs_out_up_the_line(self) -> None:
+        """⭐ Red before: the jaws closed on the part, and the lift was refused at its first sample: the arm stood at the
+        part with it in its jaws."""
         events: list[Any] = []
         jaws = _toggle(events)
         arm = _JudgingArm(events, carried=_HELD)
@@ -241,12 +202,11 @@ class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
         self.assertIs(report.outcome, getattr(PolicyOutcome, "CARRIED_RETREAT_REFUSED", "missing"), report.motion_message)
         self.assertEqual(0, _pulses(events), "the jaws were told to close")
         self.assertFalse(jaws.jaws_closed)
-        self.assertFalse([e for e in events if isinstance(e, tuple) and e[0] == "attach"], "a part was attached")
         self.assertEqual(_moves(events), [("move", _STANDOFF, False), ("move", _PART, True), ("move", _STANDOFF, True)],
                          "down the line to the part, and back up the same line to the standoff")
         self.assertEqual([_mm(p) for p in report.waypoints], [_STANDOFF, _PART, _STANDOFF])
         self.assertIs(report.motion_status, MotionStatus.SELF_COLLISION_REJECTED)
-        for said in ("as if the jaws held the part", "a part is carried", "jaws stayed open",
+        for said in ("judged at the part before the jaws close", "the bin's rim", "jaws stayed open",
                      "back up the line it came down"):
             self.assertIn(said, report.motion_message)
         self.assertIsNone(report.object_detected)
@@ -263,7 +223,7 @@ class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
 
         self.assertIs(report.outcome, PolicyOutcome.EXECUTED, report.motion_message)
         judged = [e for e in events if isinstance(e, tuple) and e[0] == "judge"]
-        self.assertEqual(judged, [("judge", _LIFT, 39.0)], "the lift to its top, at the width the attach carries")
+        self.assertEqual(judged, [("judge", _LIFT)], "the lift to its top")
         at_part = events.index(("move", _PART, True))
         judge = events.index(judged[0])
         close = _toggle_change(events)
@@ -286,7 +246,6 @@ class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
         self.assertIn("protective_stop=True", report.motion_message)
         self.assertEqual(0, _pulses(events), "the jaws closed on an arm that cannot lift")
         self.assertFalse(jaws.jaws_closed)
-        self.assertFalse([e for e in events if isinstance(e, tuple) and e[0] == "attach"], "a part was attached")
         self.assertEqual([_mm(p) for p in report.waypoints], [_STANDOFF, _PART], "the arm stands at the part")
 
     def test_a_lift_that_would_run_is_closed_on_and_lifted_as_before(self) -> None:
@@ -298,7 +257,6 @@ class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
 
         self.assertIs(report.outcome, PolicyOutcome.EXECUTED, report.motion_message)
         self.assertEqual(1, _pulses(events))
-        self.assertIn(("attach", 39.0), events)
         self.assertEqual(_moves(events), [("move", _STANDOFF, False), ("move", _PART, True), ("move", _LIFT, True)])
 
     def test_an_arm_that_cannot_judge_grasps_as_before(self) -> None:
@@ -324,7 +282,8 @@ class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
         self.assertIs(report.outcome, PolicyOutcome.MOTION_FAILED)
         self.assertEqual(0, _pulses(events))
         self.assertIs(report.motion_status, MotionStatus.SELF_COLLISION_REJECTED)
-        for said in ("as if the jaws held the part", "jaws stayed open", "the line back up", "the bench"):
+        for said in ("judged at the part before the jaws close", "the bin's rim", "jaws stayed open", "the line back up",
+                     "the bench"):
             self.assertIn(said, report.motion_message)
         self.assertEqual([_mm(p) for p in report.waypoints], [_STANDOFF, _PART], "the back out never ran")
 
@@ -338,15 +297,15 @@ class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
         self.assertIs(report.outcome, PolicyOutcome.MOTION_FAILED)
         self.assertEqual(0, _pulses(events))
         self.assertIsInstance(report.error, RuntimeError)
-        for said in ("as if the jaws held the part", "jaws stayed open", "the line back up to the standoff raised",
-                     "the RTDE link dropped"):
+        for said in ("judged at the part before the jaws close", "jaws stayed open",
+                     "the line back up to the standoff raised", "the RTDE link dropped"):
             self.assertIn(said, report.motion_message)
         self.assertNotIn("empty-handed", report.motion_message, "a back-out that raised is no back-out")
         self.assertEqual([_mm(p) for p in report.waypoints], [_STANDOFF, _PART])
 
     def test_a_refusal_that_ends_its_sentence_is_not_ended_twice(self) -> None:
-        """The camera world's refusal and the driver's carried-part refusal end with a full stop; what the grasp adds
-        starts a sentence of its own after it, and no sentence ends twice."""
+        """The camera world's refusal and the driver's own refusals end with a full stop; what the grasp adds starts a
+        sentence of its own after it, and no sentence ends twice."""
         events: list[Any] = []
         ended = MotionResult.failed(MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO,
                                     message="Refused before planning: nothing declined one. Nothing moved.")
@@ -401,25 +360,7 @@ class ThePolicyJudgesTheLiftBeforeItClosesTests(unittest.TestCase):
         report = _policy(arm, jaws, retreat_steps=4).execute(_grasp())
 
         self.assertIs(report.outcome, PolicyOutcome.EXECUTED, report.motion_message)
-        self.assertEqual([e for e in events if isinstance(e, tuple) and e[0] == "judge"], [("judge", _LIFT, 39.0)])
-
-    def test_the_lift_is_judged_at_the_width_the_attach_after_the_close_carries(self) -> None:
-        """⭐ A hand that does not measure its width is attached after the close at the width it was told, so the lift is
-        judged at exactly that: the box the attach hands the planner, the lift's own part. Red before: the toggle's lift
-        was judged 40 mm across and lifted 39 (verifier W, 2026-10-01). A hand that measures is attached at what it
-        measures, which nobody knows before the close; the part's own width stands in for it there, never a narrower
-        one than the jaws are told."""
-        cases = (("a toggle", {}, None, 39.0, 39.0), ("a toggle told 46 mm", {"close_width_mm": 46.0}, None, 46.0, 46.0),
-                 ("a hand that measures", {}, _MeasuringHand(), 40.0, 46.0))
-        for name, kwargs, hand, judged, attached in cases:
-            with self.subTest(name):
-                events: list[Any] = []
-                arm = _JudgingArm(events, carried=None)
-                gripper = hand if hand is not None else _toggle(events)
-                report = GraspExecutionPolicy(arm=arm, gripper=gripper, **kwargs).execute(_grasp())
-                self.assertIs(report.outcome, PolicyOutcome.EXECUTED, report.motion_message)
-                self.assertEqual([e[2] for e in events if isinstance(e, tuple) and e[0] == "judge"], [judged])
-                self.assertEqual([e[1] for e in events if isinstance(e, tuple) and e[0] == "attach"], [attached])
+        self.assertEqual([e for e in events if isinstance(e, tuple) and e[0] == "judge"], [("judge", _LIFT)])
 
     def test_a_policy_with_no_gripper_closes_nothing_and_judges_nothing(self) -> None:
         events: list[Any] = []
@@ -479,21 +420,11 @@ class RobotPickJudgesTheLineOutBeforeItClosesTests(unittest.TestCase):
         from tests.test_robot_pick_and_place import _Log, _LoggedHand, _RecordingArm
 
         class _Judging(_RecordingArm):
-            def carried_line_refusal(self, pose: Pose, *, grip_width_mm: float) -> "MotionResult | None":
-                self.log.entries.append(("judge", _mm(pose), round(float(grip_width_mm), 2)))
+            def carried_line_refusal(self, pose: Pose) -> "MotionResult | None":
+                self.log.entries.append(("judge", _mm(pose)))
                 if isinstance(carried, BaseException):
                     raise carried
                 return carried
-
-            def attach_payload(self, width_mm: float) -> bool:
-                self.log.entries.append(("attach", round(float(width_mm), 2)))
-                return True
-
-            def payload_declined_reason(self) -> "str | None":
-                return None
-
-            def payload_model(self) -> PayloadModel:
-                return PayloadModel.PLANNER_AND_FILTER
 
         log = _Log()
         arm = _Judging(log)
@@ -501,7 +432,7 @@ class RobotPickJudgesTheLineOutBeforeItClosesTests(unittest.TestCase):
         hand = _LoggedHand(log, **{"hold": HoldEvidence.HELD, "width_mm": 39.0, **hand})
         return Robot.from_parts(arm=arm, gripper=hand, lock_key=None), log
 
-    def test_a_line_out_refused_carrying_closes_nothing_and_backs_out(self) -> None:
+    def test_a_line_out_that_would_be_refused_closes_nothing_and_backs_out(self) -> None:
         """⭐ Red before: the jaws closed at 39 mm, then the line out was refused and the arm stood with the part."""
         handling = _handling()
         robot, log = self._robot(_HELD)
@@ -515,8 +446,8 @@ class RobotPickJudgesTheLineOutBeforeItClosesTests(unittest.TestCase):
         self.assertEqual(moves, [((400.0, 0.0, 180.0), False), ((400.0, 0.0, 100.0), True),
                                  ((400.0, 0.0, 180.0), True)])
         self.assertNotIn(("set_width", 39.0), log.entries, "the jaws were told to close")
-        self.assertIn(("judge", (400.0, 0.0, 180.0), 40.0), log.entries)
-        for said in ("as if the jaws held the part", "a part is carried", "jaws stayed open"):
+        self.assertIn(("judge", (400.0, 0.0, 180.0)), log.entries)
+        for said in ("judged at the part before the jaws close", "the bin's rim", "jaws stayed open"):
             self.assertIn(said, report.message)
 
     def test_a_line_out_that_would_run_picks_as_before(self) -> None:
@@ -526,7 +457,7 @@ class RobotPickJudgesTheLineOutBeforeItClosesTests(unittest.TestCase):
                                  quaternion_xyzw=np.array([1.0, 0.0, 0.0, 0.0]), frame=Frame.BASE), 40.0)
         self.assertIs(report.outcome, handling.HandlingOutcome.EXECUTED, report.render())
         self.assertIn(("set_width", 39.0), log.entries)
-        judge = log.entries.index(("judge", (400.0, 0.0, 180.0), 40.0))
+        judge = log.entries.index(("judge", (400.0, 0.0, 180.0)))
         self.assertLess(judge, log.entries.index(("set_width", 39.0)))
 
     def test_a_back_out_refused_too_says_both_and_closes_nothing(self) -> None:
@@ -545,7 +476,7 @@ class RobotPickJudgesTheLineOutBeforeItClosesTests(unittest.TestCase):
                                  quaternion_xyzw=np.array([1.0, 0.0, 0.0, 0.0]), frame=Frame.BASE), 40.0)
         self.assertIs(report.outcome, handling.HandlingOutcome.MOTION_REFUSED)
         self.assertNotIn(("set_width", 39.0), log.entries)
-        for said in ("as if the jaws held the part", "jaws stayed open", "the bench"):
+        for said in ("judged at the part before the jaws close", "the bin's rim", "jaws stayed open", "the bench"):
             self.assertIn(said, report.message)
 
     def test_a_line_out_nobody_could_judge_closes_nothing_and_backs_out(self) -> None:
@@ -578,20 +509,6 @@ class RobotPickJudgesTheLineOutBeforeItClosesTests(unittest.TestCase):
         self.assertEqual(moves, [(_PICK_STANDOFF, False), (_PICK_AT, True)], "nothing after the judgement")
         self.assertIn("the wrist camera stayed silent", report.message)
 
-    def test_the_line_out_is_judged_at_the_width_the_attach_after_the_close_carries(self) -> None:
-        """⭐ A hand that does not measure its width is attached at what it was told, so the line out is judged at that
-        width: the box the attach hands the planner. Red before: judged 40 mm across, carried 39. A hand that measures
-        keeps the part's own width as the stand-in for what it will measure, never narrower than it is told."""
-        for name, hand, judged, attached in (("a hand that does not measure", {"measured": False}, 39.0, 39.0),
-                                              ("a hand that measures", {"measured": True}, 40.0, 39.0)):
-            with self.subTest(name):
-                handling = _handling()
-                robot, log = self._robot(None, **hand)
-                report = robot.pick(_pick_pose(), 40.0)
-                self.assertIs(report.outcome, handling.HandlingOutcome.EXECUTED, report.render())
-                self.assertEqual([e[2] for e in log.entries if e[0] == "judge"], [judged])
-                self.assertEqual([e[1] for e in log.entries if e[0] == "attach"], [attached])
-
     def test_a_refusal_that_ends_its_sentence_is_not_ended_twice(self) -> None:
         handling = _handling()
         ended = MotionResult.failed(MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO,
@@ -614,14 +531,13 @@ class RobotPickOnTheUrArmJudgesWithItsOwnDeclineTests(unittest.TestCase):
     _BENCH_DECLINE = "a known part on a clear table, no camera"
 
     @staticmethod
-    def _pick(joints: "list[float]", *, modelled: bool = False, **kwargs: Any) -> "tuple[Any, list[Any], Any, Any]":
+    def _pick(joints: "list[float]", **kwargs: Any) -> "tuple[Any, list[Any], Any, Any]":
         """The owner-like UR10 standing at ``joints`` beside the 30 mm bin the camera saw, no live world wired, the
-        owner's toggle in hand (as ``connect_cell`` hands it to the arm), picking the part right under its tool;
-        ``modelled`` on a cell that models the carried part."""
+        owner's toggle in hand (as ``connect_cell`` hands it to the arm), picking the part right under its tool."""
         from src.robot.execution.robot import Robot
         from tests.test_what_the_hand_verbs_read import running_normally
 
-        arm, planner = _modelled_cell() if modelled else _cell()
+        arm, planner = _cell()
         _standing_at(arm, planner, joints)
         running_normally(arm._conn)
         arm._drive_curobo = lambda pose, **_: MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
@@ -645,26 +561,8 @@ class RobotPickOnTheUrArmJudgesWithItsOwnDeclineTests(unittest.TestCase):
                 self.assertTrue(jaws.jaws_closed)
                 self.assertEqual(arm._motion.move_to.call_count, 2, "a moveL down and a moveL up")
 
-    def test_beside_the_bin_a_declined_pick_backs_out_on_the_carried_part(self) -> None:
-        """The decline lets the judgement run; beside the bin, on a cell that models the carried part, it refuses on the
-        part it judged carried, and the sentence says so, not that nothing declined the camera world."""
-        handling = _handling()
-        report, events, arm, jaws = self._pick(OFF, modelled=True, decline=self._BENCH_DECLINE)
-
-        self.assertIs(report.outcome, getattr(handling.HandlingOutcome, "CARRIED_RETREAT_REFUSED", "missing"),
-                      report.render())
-        self.assertEqual(0, _pulses(events))
-        self.assertFalse(jaws.jaws_closed)
-        for said in ("as if the jaws held the part", "at sample 0 of", "a part is carried", "The jaws stayed open"):
-            self.assertIn(said, report.message)
-        self.assertNotIn("no live camera world", report.message)
-        self.assertNotIn("..", report.message)
-        self.assertEqual(arm._motion.move_to.call_count, 2, "a moveL down and the same line back up")
-        self.assertIs(arm.payload_model(), PayloadModel.NONE)
-        self.assertFalse(arm._closed_on_part)
-
-    def test_beside_the_bin_on_a_cell_that_models_no_part_the_pick_closes_and_lifts(self) -> None:
-        """⭐ The owner, 2026-10-05 ("mehr Griffe"): the same pick on a cell that models no carried part is judged as an
+    def test_beside_the_bin_a_declined_pick_closes_and_lifts(self) -> None:
+        """⭐ The owner, 2026-10-05 ("mehr Griffe"; every cell since 2026-10-17): the pick beside the bin is judged as an
         empty hand is, carrying too: one change of DO0, a moveL down and one up."""
         handling = _handling()
         report, events, arm, jaws = self._pick(OFF, decline=self._BENCH_DECLINE)
@@ -694,210 +592,73 @@ def _standing_at(arm: Any, planner: Any, joints: "list[float]") -> Pose:
                 quaternion_xyzw=np.asarray(here.quaternion_xyzw), frame=Frame.BASE, label="lift")
 
 
-class _CarryingPlanner(SeenWorldPlanner):
-    """The planner double, taking the carried part the arm hands it as the glue does."""
-
-    def attach_payload(self, joints: Any, dims_mm: Any, centre_mm: Any) -> bool:
-        self.calls.append(("attach", list(joints), list(dims_mm), list(centre_mm)))
-        self.carries_part = True
-        return True
-
-
-def _modelled_cell() -> "tuple[Any, _CarryingPlanner]":
-    """The owner-like arm at Q beside the 30 mm bin, on a cell that models the carried part (a 120 mm length)."""
-    _needs_the_engine()
-    from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
-
-    from tests._plan_end import OPEN_WORKSPACE
-    from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import KNOWN_OPEN
-
-    arm: Any = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur",
-        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
-        "workspace_limits": OPEN_WORKSPACE,
-        "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
-                    "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
-                                   "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0},
-                   "planning_world": {"payload": {"length_mm": 120.0}}},
-    }))
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(Q)
-    arm._conn.moveJ.return_value = True
-    boxes = _seen(30.0)
-    arm._preflight.set_perceived_obstacles(boxes)
-    planner = _CarryingPlanner(arm, (_BENCH, *boxes))
-    planner.here = list(Q)
-    arm._curobo = planner
-    arm.set_hand(KNOWN_OPEN)
-    return arm, planner
-
-
-class TheUrArmJudgesALiftAsIfItCarriedThePartTests(unittest.TestCase):
-    def test_beside_the_bin_the_lift_is_refused_carrying_and_runs_empty_handed(self) -> None:
-        """⭐ At OFF beside the bin 30 mm away, on a cell that models the carried part: empty-handed the lift's moveL is
-        admitted (Option 1); judged as if the jaws held a part it is refused at its first sample, a part carried, and
-        nothing is sent either way."""
-        arm, planner = _modelled_cell()
-        lift = _standing_at(arm, planner, OFF)
-
-        with arm.without_camera_world(_DECLINED):
-            refused = arm.carried_line_refusal(lift, grip_width_mm=40.0)
-
-        self.assertIsNotNone(refused)
-        assert refused is not None
-        self.assertFalse(refused.ok)
-        self.assertIs(refused.status, MotionStatus.SELF_COLLISION_REJECTED)
-        for said in ("at sample 0 of", "the planner's world", "a part is carried"):
-            self.assertIn(said, refused.message or "")
-        arm._motion.move_to.assert_not_called()
-        arm._conn.moveJ.assert_not_called()
-        self.assertEqual(planner.set_aside(), [], "nothing set aside while it judged carrying")
-        self.assertIs(arm.payload_model(), PayloadModel.NONE)
-        self.assertIsNone(arm._attached_payload)
-        self.assertFalse(arm._closed_on_part, "the arm forgot the part it judged with")
-
-        with arm.without_camera_world(_DECLINED):
-            moved = arm.move(lift, linear=True)
-        self.assertTrue(moved.ok, moved.message)
-        arm._motion.move_to.assert_called_once()
-
-    def test_on_a_cell_that_models_no_part_the_lift_is_judged_as_an_empty_hand_is(self) -> None:
-        """⭐ The owner, 2026-10-05 ("mehr Griffe"): the same lift beside the bin, on a cell that models no carried part,
-        runs as it runs empty-handed, the camera's boxes set aside and the exact guard deciding. Nothing is sent."""
+class TheUrArmJudgesALiftAsTheLineUpWillMeetItTests(unittest.TestCase):
+    def test_beside_the_bin_the_lift_is_judged_as_an_empty_hand_is(self) -> None:
+        """⭐ The owner, 2026-10-05 ("mehr Griffe"; every cell since 2026-10-17): the lift beside the bin runs as it runs
+        empty-handed, the camera's boxes set aside and the exact guard deciding. Nothing is sent."""
         arm, planner = _cell()
-        self.assertIsNotNone(arm.payload_declined_reason())
         lift = _standing_at(arm, planner, OFF)
         with arm.without_camera_world(_DECLINED):
-            self.assertIsNone(arm.carried_line_refusal(lift, grip_width_mm=40.0))
+            self.assertIsNone(arm.carried_line_refusal(lift))
         arm._motion.move_to.assert_not_called()
         arm._conn.moveJ.assert_not_called()
-        self.assertFalse(arm._closed_on_part, "the arm forgot the part it judged with")
+        self.assertNotEqual(planner.set_aside(), [], "the camera's boxes were set aside, as for an empty hand")
 
-    def test_away_from_the_bin_the_lift_would_run_carrying(self) -> None:
+    def test_away_from_the_bin_the_lift_would_run(self) -> None:
         arm, planner = _cell()
         lift = _standing_at(arm, planner, AWAY)
         with arm.without_camera_world(_DECLINED):
-            self.assertIsNone(arm.carried_line_refusal(lift, grip_width_mm=40.0))
+            self.assertIsNone(arm.carried_line_refusal(lift))
         arm._motion.move_to.assert_not_called()
-        self.assertFalse(arm._closed_on_part)
-
-    def test_a_cell_that_models_the_part_hands_it_to_the_planner_for_the_judgement_and_takes_it_back(self) -> None:
-        arm, planner = _modelled_cell()
-        self.assertIsNone(arm.payload_declined_reason(), "this cell models the carried part")
-        lift = _standing_at(arm, planner, OFF)
-        carried_while_judged: list[bool] = []
-        original = planner.check_joint_path
-
-        def check(samples: Any, **kwargs: Any) -> Any:
-            carried_while_judged.append(planner.carries_part)
-            return original(samples, **kwargs)
-
-        planner.check_joint_path = check  # type: ignore[method-assign]
-        with arm.without_camera_world(_DECLINED):
-            refused = arm.carried_line_refusal(lift, grip_width_mm=40.0)
-        self.assertIsNotNone(refused)
-        self.assertEqual(carried_while_judged, [True], "the planner held the part while it judged the lift")
-        names = [call[0] for call in planner.calls if call[0] in ("attach", "detach", "check")]
-        self.assertEqual(names, ["attach", "check", "detach"])
-        self.assertFalse(planner.carries_part)
-        self.assertIs(arm.payload_model(), PayloadModel.NONE)
-
-    def test_an_arm_already_holding_a_part_is_judged_as_it_stands_and_keeps_it(self) -> None:
-        """Whatever says a part is held: the arm's model, the jaws closed on a part nobody models, or a part only the
-        planner still holds. Nothing is handed over or taken back, and every mark stays (verifier W, 2026-10-01: the
-        last two were unpinned; without them the judgement forgot the jaws had closed, or attached a second part)."""
-        with self.subTest("a part the arm and the planner model"):
-            arm, planner = _modelled_cell()
-            lift = _standing_at(arm, planner, OFF)
-            self.assertTrue(arm.attach_payload(40.0))
-            planner.calls.clear()
-            with arm.without_camera_world(_DECLINED):
-                self.assertIsNotNone(arm.carried_line_refusal(lift, grip_width_mm=40.0))
-            self.assertFalse([call for call in planner.calls if call[0] in ("attach", "detach")])
-            self.assertTrue(planner.carries_part)
-            self.assertIs(arm.payload_model(), PayloadModel.PLANNER_AND_FILTER)
-
-        with self.subTest("the jaws closed on a part nobody models"):
-            arm, planner = _cell()
-            lift = _standing_at(arm, planner, OFF)
-            self.assertFalse(arm.attach_payload(40.0), "this cell models no carried part")
-            self.assertTrue(arm._closed_on_part)
-            handed: list[str] = []
-            attach, detach = arm.attach_payload, arm.detach_payload
-            arm.attach_payload = lambda width: handed.append("attach") or attach(width)
-            arm.detach_payload = lambda: handed.append("detach") or detach()
-            with arm.without_camera_world(_DECLINED):
-                # Judged as an empty hand is (the owner, 2026-10-05): it runs beside the bin.
-                self.assertIsNone(arm.carried_line_refusal(lift, grip_width_mm=40.0))
-            self.assertEqual(handed, [], "nothing handed over or taken back")
-            self.assertTrue(arm._closed_on_part, "the arm still knows its jaws closed on a part")
-
-        with self.subTest("a part only the planner still holds, its detach never confirmed"):
-            arm, planner = _modelled_cell()
-            lift = _standing_at(arm, planner, OFF)
-            planner.carries_part = True
-            planner.calls.clear()
-            with arm.without_camera_world(_DECLINED):
-                self.assertIsNotNone(arm.carried_line_refusal(lift, grip_width_mm=40.0))
-            self.assertFalse([call for call in planner.calls if call[0] in ("attach", "detach")])
-            self.assertTrue(planner.carries_part, "the planner still holds its part")
-            self.assertIsNone(arm._attached_payload)
-            self.assertFalse(arm._closed_on_part)
 
     def test_a_decline_handed_to_the_verb_is_the_decline_its_move_would_carry(self) -> None:
         """⭐ ``carried_line_refusal(..., camera_world=CameraWorldDecline(...))`` answers what ``move(pose, linear=True,
         camera_world=...)`` answers. Red before: the verb took no decline, so with no live world wired every judgement
         read the camera world MISSING and refused (verifier W, 2026-10-01)."""
         decline = CameraWorldDecline(_DECLINED)
-        arm, planner = _modelled_cell()
-        self.assertIsNone(arm.carried_line_refusal(_standing_at(arm, planner, AWAY), grip_width_mm=40.0,
-                                                   camera_world=decline))
-        refused = arm.carried_line_refusal(_standing_at(arm, planner, OFF), grip_width_mm=40.0, camera_world=decline)
-        assert refused is not None
-        self.assertIn("a part is carried", refused.message or "")
+        arm, planner = _cell()
+        for joints in (AWAY, OFF):
+            with self.subTest(joints=joints):
+                self.assertIsNone(arm.carried_line_refusal(_standing_at(arm, planner, joints), camera_world=decline))
+        self.assertTrue(planner.named("check"), "the lifts were judged")
         arm._motion.move_to.assert_not_called()
 
         arm._live_world = MagicMock()  # a live world wired: a declined motion is refused, as move refuses it
         planner.calls.clear()
-        refused = arm.carried_line_refusal(_standing_at(arm, planner, AWAY), grip_width_mm=40.0, camera_world=decline)
+        refused = arm.carried_line_refusal(_standing_at(arm, planner, AWAY), camera_world=decline)
         assert refused is not None
         self.assertIs(refused.status, MotionStatus.UNSUPPORTED)
         self.assertFalse(planner.named("check"), "nothing was judged")
-        self.assertFalse(arm._closed_on_part)
 
     def test_a_lift_with_no_camera_world_is_refused_as_its_move_would_be(self) -> None:
         """The verb answers what ``move(pose, linear=True)`` answers: on cuRobo with no live world wired and nothing
         declined, the camera world's own refusal, before anything is handed over or judged."""
         arm, planner = _cell()
         lift = _standing_at(arm, planner, OFF)
-        refused = arm.carried_line_refusal(lift, grip_width_mm=40.0)
+        refused = arm.carried_line_refusal(lift)
         assert refused is not None
         self.assertIs(refused.status, MotionStatus.UNSUPPORTED)
         self.assertFalse(planner.named("check"), "nothing was judged")
-        self.assertFalse(arm._closed_on_part)
 
-    def test_a_pose_not_in_base_is_refused_before_anything_is_handed_over(self) -> None:
-        arm, planner = _modelled_cell()
+    def test_a_pose_not_in_base_is_refused_before_anything_is_judged(self) -> None:
+        arm, planner = _cell()
         lift = _standing_at(arm, planner, OFF)
         tool = Pose(position_mm=lift.position_mm, quaternion_xyzw=lift.quaternion_xyzw, frame=Frame.TOOL)
         with arm.without_camera_world(_DECLINED):
-            refused = arm.carried_line_refusal(tool, grip_width_mm=40.0)
+            refused = arm.carried_line_refusal(tool)
         assert refused is not None
         self.assertIs(refused.status, MotionStatus.INVALID_TARGET)
-        self.assertFalse([call for call in planner.calls if call[0] == "attach"])
+        self.assertFalse(planner.named("check"), "nothing was judged")
 
-    def test_the_policy_on_the_owners_arm_beside_the_bin_backs_out_without_closing(self) -> None:
-        """⭐ The whole grasp on the UR driver: the line down to the pose beside the bin runs empty-handed, the lift
-        judged carrying is refused, the jaws stay open, and the line back up runs, one moveL each way: on a cell that
-        models the carried part (Option 1)."""
+    def test_the_policy_on_the_owners_arm_beside_the_bin_closes_and_lifts(self) -> None:
+        """⭐ The whole grasp on the UR driver: the line down to the pose beside the bin runs, the lift judged before the
+        jaws close would run as it runs empty-handed (Option 1, every cell since 2026-10-17), the jaws close once, and
+        the lift runs, one moveL each way. Red on a cell that modelled the carried part: the jaws stayed open and the
+        arm backed out."""
         from src.geometry.quaternion import to_rotation_matrix
         from tests.test_what_the_hand_verbs_read import running_normally
 
-        arm, planner = _modelled_cell()
+        arm, planner = _cell()
         _standing_at(arm, planner, OFF)
         running_normally(arm._conn)
         arm._drive_curobo = lambda pose, **_: MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
@@ -912,17 +673,10 @@ class TheUrArmJudgesALiftAsIfItCarriedThePartTests(unittest.TestCase):
         with arm.without_camera_world(_DECLINED):
             report = GraspExecutionPolicy(arm=arm, gripper=jaws).execute(grasp)
 
-        self.assertIs(report.outcome, getattr(PolicyOutcome, "CARRIED_RETREAT_REFUSED", "missing"),
-                      report.motion_message)
-        self.assertEqual(0, _pulses(events))
-        self.assertFalse(jaws.jaws_closed)
-        self.assertEqual(arm._motion.move_to.call_count, 2, "one moveL down to the part, one back up")
-        self.assertIn("a part is carried", report.motion_message)
-        self.assertIs(arm.payload_model(), PayloadModel.NONE)
-        self.assertTrue(np.allclose(report.waypoints[-1].position_mm,
-                                    np.asarray(part.position_mm) - turned[:, 2] * 80.0, atol=1e-6),
-                        "back at the standoff")
-        self.assertTrue(math.isfinite(float(report.waypoints[-1].position_mm[2])))
+        self.assertIs(report.outcome, PolicyOutcome.EXECUTED, report.motion_message)
+        self.assertEqual(1, _pulses(events))
+        self.assertTrue(jaws.jaws_closed)
+        self.assertEqual(arm._motion.move_to.call_count, 2, "one moveL down to the part, one up")
 
 
 def _ik_arm() -> Any:
@@ -935,14 +689,16 @@ def _ik_arm() -> Any:
 
     arm: Any = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10"}, "motion": {"planner": "ik"},
-        "workspace_limits": {**OPEN_WORKSPACE, "z_max": 1000.0},
+        "ur": {"model": "ur10"}, "motion": {"planner": "ik", "workspace": {**OPEN_WORKSPACE, "z_max": 1000.0}},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0}},
+        "safety": {"self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 4.0,
+                                      "planner_margin_mm": 4.0}},
     }))
+    # What is read is how a lift is judged; the IK quality guard is no part of it (its tree switched it off until the
+    # switch left every tree, 2026-10-17).
+    without_guards(arm._preflight, "ik_quality")
     arm._conn = MagicMock()
     arm._conn.is_connected = True
     arm._conn.get_joint_positions.return_value = list(AWAY)
@@ -967,10 +723,9 @@ class OnTheIkPlannerTheJudgementRemembersNothingTests(unittest.TestCase):
         self.assertIsNone(arm._gate_pose(part, MotionCommand.MOVE_TO), "the line down to the part is gated, commanded")
         self.assertIs(arm._preflight._last_target_pose, part)
 
-        self.assertIsNone(arm.carried_line_refusal(self._at(400.0, "the lift's top"), grip_width_mm=40.0))
+        self.assertIsNone(arm.carried_line_refusal(self._at(400.0, "the lift's top")))
 
         self.assertIs(arm._preflight._last_target_pose, part, "a lift only judged is no place the arm was sent")
-        self.assertFalse(arm._closed_on_part)
 
     def test_a_lift_it_would_refuse_is_refused_by_the_guard_the_move_meets(self) -> None:
         _needs_the_engine()
@@ -978,7 +733,7 @@ class OnTheIkPlannerTheJudgementRemembersNothingTests(unittest.TestCase):
         part = self._at(300.0, "the part")
         arm._gate_pose(part, MotionCommand.MOVE_TO)
 
-        refused = arm.carried_line_refusal(self._at(1400.0, "a top past the workspace"), grip_width_mm=40.0)
+        refused = arm.carried_line_refusal(self._at(1400.0, "a top past the workspace"))
 
         assert refused is not None
         self.assertIs(refused.status, MotionStatus.WORKSPACE_REJECTED)

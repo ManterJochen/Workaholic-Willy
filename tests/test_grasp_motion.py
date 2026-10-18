@@ -255,7 +255,7 @@ class TheCellTests(unittest.TestCase):
         self.assertEqual(GraspMotion(standoff_mm=60.0), cell.motion)
 
     def test_a_tree_that_did_not_load_and_a_non_tree_are_refused(self) -> None:
-        refused = _console_dummy().with_values({"robot.grasping.max_attempts": -1})
+        refused = _console_dummy().with_values({"robot.grasping.default_mode": ""})
         self.assertFalse(refused.ok)
         with self.assertRaises(ConfigError):
             Cell.from_tree(refused)

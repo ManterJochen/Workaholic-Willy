@@ -244,24 +244,31 @@ class WorkspaceSafetyGuardTests(unittest.TestCase):
 
 class WorkspaceMarginTests(unittest.TestCase):
     def test_from_safety_config_shrinks_box_by_margin(self) -> None:
-        cfg = RobotSafetyConfig.model_validate(
-            {"limits": {"workspace_margin_mm": 50.0}}
-        )
+        """Every cell's 20 mm (``WORKSPACE_MARGIN_MM``; the owner's cleanup of 2026-10-17 took the key)."""
+        from src.robot.safety.workspace import WORKSPACE_MARGIN_MM
+
+        self.assertEqual(20.0, WORKSPACE_MARGIN_MM)
         limits = WorkspaceLimitsConfig(
             x_min=-500.0, x_max=500.0,
             y_min=-500.0, y_max=500.0,
             z_min=100.0, z_max=600.0,
         )
-        pf = SafetyPreflight.from_safety_config(cfg, limits, arm_model=None)
-        # A pose at x=460 is inside the original ±500 box but OUTSIDE
-        # the shrunk box (x_max - 50 = 450). The workspace guard must
+        pf = SafetyPreflight.from_safety_config(RobotSafetyConfig(), limits, arm_model=None)
+        # A pose at x=490 is inside the original ±500 box but OUTSIDE
+        # the shrunk box (x_max - 20 = 480). The workspace guard must
         # reject it.
         ctx = SafetyContext(
-            command=MotionCommand.MOVE_TO, target_pose=_pose(460.0, label="edge"),
+            command=MotionCommand.MOVE_TO, target_pose=_pose(490.0, label="edge"),
         )
         decision = pf.evaluate(ctx)
         self.assertFalse(decision.accepted)
         self.assertIs(decision.reason, SafetyReason.WORKSPACE)
+
+    def test_the_margin_key_is_refused(self) -> None:
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            RobotSafetyConfig.model_validate({"limits": {"workspace_margin_mm": 50.0}})
 
 
 class AsMotionResultTests(unittest.TestCase):

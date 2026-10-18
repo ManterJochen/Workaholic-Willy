@@ -18,10 +18,10 @@
 # not be: the measured ur3e cell runs x from 100 to 400 with a table in front of it, and nothing
 # behind. MEASURE YOUR CELL AND SHRINK THIS, in the directions your room actually has.
 #
-# ⛔ WHAT IS DELIBERATELY ABSENT. home_joint_positions, park_joint_positions, the camera poses and the
+# ⛔ WHAT IS DELIBERATELY ABSENT. motion.home_deg, park_joint_positions, the camera poses and the
 # scene layout are NOT set here, because every one of them is a fact about a cell that does not exist
 # yet. They inherit the base tree, which was authored for a UR5e -- see the note on
-# home_joint_positions in robot_schema.py, which measured that default putting a UR3e grasp centre at
+# motion.home_deg in robot_schema.py, which measured that default putting a UR3e grasp centre at
 # 93.4 % of its reach. Set them from your own cell before running a real pick.
 
 robot:
@@ -34,21 +34,14 @@ robot:
     # robot.gripper.model and robot_model (willy_sim.grippers.sim_mount_for). A hand the sim has no mount
     # for, the Hand-E today, is refused by name before the Isaac boot.
 
-  workspace_limits:
-    x_min: -292.6
-    x_max: 292.6
-    y_min: -292.6
-    y_max: 292.6
-    z_min: 100.0             # table clearance, carried from the base tree: a fact about a room
-    z_max: 390.8
-
-  # Inside the box above by construction: 60 % of the way out and up. Replace it with a pose you have
-  # actually retreated to.
-  safe_pose:
-    x: 0.0
-    y: -175.6
-    z: 274.5
-
   safety:
     payload:
       max_mass_kg: 3.0      # UR3 datasheet
+  motion:
+    workspace:
+      x_min: -292.6
+      x_max: 292.6
+      y_min: -292.6
+      y_max: 292.6
+      z_min: 100.0             # table clearance, carried from the base tree: a fact about a room
+      z_max: 390.8

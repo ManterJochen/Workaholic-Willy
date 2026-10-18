@@ -352,8 +352,8 @@ class SelfCollisionGuardTests(unittest.TestCase):
         self.assertIsNone(hit_natural)
 
     def test_kuka_no_arm_chain_still_checks_tool_and_fixtures(self) -> None:
-        # KUKA has no DH table; arm-vs-arm coverage is absent, but the
-        # tool capsule still pairs against the base and fixtures.
+        # KUKA has no description; arm-vs-arm coverage and the base are absent, but the
+        # tool capsule still pairs against the fixtures.
         fx = FixtureBoxConfig(
             name="enclosure",
             center_mm=(400.0, 0.0, 300.0),
@@ -408,13 +408,17 @@ class SelfCollisionGuardTests(unittest.TestCase):
             guard._exact_mesh_backend("ur3e")
         self.assertIn("one safety preflight per arm", str(caught.exception))
 
-    def test_kinematics_base_yaw_rotates_arm_capsules(self) -> None:
+    def test_the_base_yaw_rotates_arm_capsules(self) -> None:
         # The base-frame reconcile rotates the DH arm-link capsules about +Z. 180 deg -> [-x, -y, z]
-        # (the measured Isaac-UR5e-USD-vs-official-UR-DH offset). Default 0.0 leaves the capsules untouched.
+        # (the measured Isaac-UR5e-USD-vs-official-UR-DH offset, the Isaac arm's own number since 2026-10-17).
+        # A real arm's 0.0 leaves the capsules untouched.
+        from src.willy_sim.guard_numbers import ISAAC
+
         joints = JointPositions([0.1, -1.2, 1.4, -1.7, -1.57, 0.0])
         ctx = self._ctx(pose=_pose(), joints=joints, arm=_sim_arm())
         base = SelfCollisionGuard(SelfCollisionSafetyConfig())
-        rot = SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_base_yaw_deg=180.0))
+        rot = SelfCollisionGuard(SelfCollisionSafetyConfig(), base_yaw_deg=ISAAC.base_yaw_deg)
+        self.assertEqual((0.0, 180.0), (base.base_yaw_deg, rot.base_yaw_deg))
         caps0 = base._ur_arm_capsules(ctx)
         caps180 = rot._ur_arm_capsules(ctx)
         assert caps0 is not None and caps180 is not None  # for type-checkers
@@ -424,65 +428,56 @@ class SelfCollisionGuardTests(unittest.TestCase):
             np.testing.assert_allclose(c1.p1, [-c0.p1[0], -c0.p1[1], c0.p1[2]], atol=1e-6)
             self.assertEqual(c0.radius_mm, c1.radius_mm)  # pure rotation: radius unchanged
 
-    def test_tool_capsule_geometry_is_config_driven(self) -> None:
-        # tool_length_mm / tool_radius_mm flow into the tool capsule.
-        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(tool_length_mm=200.0, tool_radius_mm=40.0))
-        cap = guard._tool_capsule(self._ctx(pose=_pose()))
-        self.assertIsNotNone(cap)
-        assert cap is not None  # for type-checkers
-        self.assertEqual(cap.radius_mm, 40.0)
-        # Identity quat -> tool +Z is the approach; the capsule runs BACK from the TCP toward the
-        # flange, so tcp z=300 - 200 mm -> z=100. (This assertion read +200 -> 500 until 2026-08-09;
-        # see the direction test below for why that was wrong.)
-        self.assertAlmostEqual(float(cap.p1[2]), 100.0, places=3)
+    def test_the_fingers_lie_along_the_closing_axis_as_the_hands_registry_file_says(self) -> None:
+        """The capsule proxy's tool is the hand's fingers from its registry file (since 2026-10-17, the owner's cell's
+        ``tool_model: finger``): along the grasp's closing axis (R[:, 0]), centred on the TCP, as long as the open jaw
+        is across its fingers' outer faces and as thick as a finger is wide. A guard built with no hand models the hand
+        every arm bundle carries, the 2F-85: 85 + 2 x 31.35 = 147.7 mm and 13.5 mm, where the 150 and 16 measured off
+        its USD stood."""
+        from src.config.schema.robot import RobotConfig
+        from src.robot.safety.planning.hand import planner_hand
 
-    def test_tool_capsule_runs_from_the_grasp_centre_TOWARD_THE_FLANGE(self) -> None:
-        """The tool's material lies BEHIND the grasp centre, and the capsule must lie where it does.
+        for hand, span, radius in ((None, 147.7, 13.5), ("robotiq_hande", 49.99 + 2 * 10.80, 29.24 / 2)):
+            with self.subTest(hand=hand or "none"):
+                if hand is None:
+                    guard = SelfCollisionGuard(SelfCollisionSafetyConfig())
+                else:
+                    named = planner_hand(RobotConfig.model_validate({"gripper": {
+                        "model": hand, "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}]}}))
+                    guard = SelfCollisionGuard(SelfCollisionSafetyConfig(), hand=named)
+                cap = guard._tool_capsule(self._ctx(pose=_pose()))
+                assert cap is not None  # for type-checkers
+                self.assertAlmostEqual(radius, cap.radius_mm, places=9)
+                # A rod along base X (identity quat: closing = +X), centred on the TCP at (400, 0, 300).
+                np.testing.assert_allclose(cap.p0, [400.0 - span / 2.0, 0.0, 300.0], atol=1e-9)
+                np.testing.assert_allclose(cap.p1, [400.0 + span / 2.0, 0.0, 300.0], atol=1e-9)
 
-        ``ctx.target_pose`` is the commanded pose, and every pose this stack commands is the TCP --
-        the grasp centre, between the fingers. The gripper body, the coupling and the flange are all
-        on the far side of it, along -approach; ahead of it there is only the small fingertip overhang
-        and then the object.
+    def test_the_base_is_a_column_up_to_the_shoulder_the_description_places(self) -> None:
+        """The capsule proxy's base: from the mounting face to the shoulder joint of the arm's description (its first
+        joint's ``d_m``), 80 mm round; none for an arm nobody describes, whose base is not guessed."""
+        guard = SelfCollisionGuard(SelfCollisionSafetyConfig())
+        for model, shoulder in (("ur5e", 162.5), ("ur10", 127.3)):
+            with self.subTest(model=model):
+                base = guard._base_capsule(model)
+                assert base is not None  # for type-checkers
+                np.testing.assert_allclose(base.p0, [0.0, 0.0, 0.0], atol=1e-12)
+                np.testing.assert_allclose(base.p1, [0.0, 0.0, shoulder], atol=1e-9)
+                self.assertEqual(80.0, base.radius_mm)
+        self.assertIsNone(guard._base_capsule(None))
 
-        MEASURED 2026-08-09 by running the guard: rooted at the TCP and run FORWARD, a top-down grasp
-        at (300, 0, 37) produced a capsule to (300, 0, -113) at r=70 -- 113 mm of phantom solid tool
-        below the table surface, where the object and the table are and the gripper is not, while the
-        real 2F-85 body (z 37..169) went unmodelled entirely. Wrong in both directions at once: it
-        invents collisions where the gripper is absent and misses them where it is present.
-        """
-        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(tool_length_mm=150.0, tool_radius_mm=70.0))
-        # A top-down grasp: 180 deg about Y, so the TCP's +Z (approach) points along base -Z.
-        pose = Pose(
-            position_mm=np.array([300.0, 0.0, 37.0]),
-            quaternion_xyzw=np.array([0.0, 1.0, 0.0, 0.0]),
-            frame=Frame.BASE,
-            label="topdown-grasp",
-        )
-        cap = guard._tool_capsule(self._ctx(pose=pose))
-        assert cap is not None  # for type-checkers
-        lowest = min(float(cap.p0[2]), float(cap.p1[2]))
-        highest = max(float(cap.p0[2]), float(cap.p1[2]))
-        self.assertAlmostEqual(lowest, 37.0, places=3, msg="the capsule must not reach below the TCP")
-        self.assertAlmostEqual(highest, 187.0, places=3, msg="it must extend up toward the flange")
-        self.assertGreaterEqual(lowest, 0.0, "no part of the modelled tool may sit below the table")
+    def test_the_capsule_keys_are_refused_naming_where_their_numbers_come_from(self) -> None:
+        from pydantic import ValidationError
 
-    def test_finger_tool_model_lays_capsule_along_closing_axis(self) -> None:
-        # tool_model='finger' -> a thin capsule ALONG the grasp closing axis (R[:, 0]),
-        # length tool_finger_span_mm, radius tool_finger_radius_mm. Identity quat -> closing = +X.
-        guard = SelfCollisionGuard(
-            SelfCollisionSafetyConfig(
-                tool_model="finger", tool_finger_radius_mm=16.0, tool_finger_span_mm=150.0
-            )
-        )
-        cap = guard._tool_capsule(self._ctx(pose=_pose()))
-        self.assertIsNotNone(cap)
-        assert cap is not None  # for type-checkers
-        self.assertEqual(cap.radius_mm, 16.0)
-        # Horizontal rod along base X (closing), centred on the tcp (400,0,300): endpoints +/-75 mm in X.
-        self.assertAlmostEqual(float(cap.p0[0]), 325.0, places=3)
-        self.assertAlmostEqual(float(cap.p1[0]), 475.0, places=3)
-        self.assertAlmostEqual(float(cap.p0[2]), 300.0, places=3)
-        self.assertAlmostEqual(float(cap.p1[2]), 300.0, places=3)
+        from src.config.schema._removed import removed_key_sentence
+
+        for key, said in (("tool_model", "registry file"), ("tool_finger_span_mm", "registry file"),
+                          ("tool_length_mm", "registry file"), ("base_height_mm", "arm's description"),
+                          ("link_radii_mm", "60 mm"), ("kinematics_base_yaw_deg", "guard_numbers.py"),
+                          ("whole_path_judge", "judged whole first")):
+            with self.subTest(key=key):
+                with self.assertRaises(ValidationError):
+                    RobotSafetyConfig.model_validate({"self_collision": {key: None}})
+                self.assertIn(said, removed_key_sentence(f"robot.safety.self_collision.{key}") or "")
 
     def test_broadphase_cull_matches_brute(self) -> None:
         # The broadphase sphere cull is conservative -> byte-identical verdict to the brute path.
@@ -561,15 +556,16 @@ class SelfCollisionGuardTests(unittest.TestCase):
 
 
 class SelfCollisionWiringTests(unittest.TestCase):
-    def test_enforce_true_registers_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate({"self_collision": {"enforce": True}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
+    def test_every_cell_wires_the_guard(self) -> None:
+        pf = SafetyPreflight.from_safety_config(RobotSafetyConfig(), WorkspaceLimitsConfig(), arm_model=None)
         self.assertIn("self_collision", pf.guard_names)
 
-    def test_enforce_false_omits_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate({"self_collision": {"enforce": False}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
-        self.assertNotIn("self_collision", pf.guard_names)
+    def test_the_switch_that_left_it_out_is_refused(self) -> None:
+        """No cell switches a guard off since 2026-10-17 (the owner's cleanup)."""
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            RobotSafetyConfig.model_validate({"self_collision": {"enforce": False}})
 
 
 if __name__ == "__main__":

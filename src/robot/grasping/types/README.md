@@ -30,7 +30,7 @@ Nothing here imports another grasping tier, so every tier can depend on these na
 | --- | --- | --- | --- |
 | `GraspPoint` | a generator, or `GraspPoint(...)` | `pose()` | the tool `Pose` in the grasp's frame: +Z approach, +X closing axis |
 | `GraspResult` | the calculator | read `candidates`, `reasons`, `is_success` | ranked candidates, or typed reasons for none |
-| `GraspSamplingMode` | `resolve_grasp_sampling_mode(value)` | `mode_to_dense_sampling(mode)` | the calculator's `True`, `False` or `None` |
+| `GraspSamplingMode` | each grasp mode's profile | read its value | the label a report and a record carry |
 | `PerceptionSource` | your camera adapter | `acquire()` | `PerceptionFrame` |
 | `MultiCameraPerceptionSource` | your rig, or `MappedCameraRig` | `acquire_all()` | a tuple of `CameraObservation` |
 
@@ -74,16 +74,10 @@ the loop instead of being retried.
 
 ## `GraspSamplingMode`
 
-A typed name for the calculator's `dense_sampling` switch:
-
-| Mode | `dense_sampling` | Strings accepted |
-| --- | --- | --- |
-| `AUTO` | `None`, decide per scene | `auto`, and `None` itself |
-| `SINGLE_OBJECT` | `False` | `single`, `single_object`, and `False` |
-| `DENSE_CLUTTER` | `True` | `dense`, `dense_clutter`, and `True` |
-
-Strings are case-insensitive. Anything else, an integer included, raises `ValueError` naming the forms
-that are accepted.
+The sampling each grasp mode names, the label its reports and records carry: `easy` single_object, `auto` auto,
+`dense_clutter` dense_clutter. It chose the calculator's sampler until 2026-10-16, when the silhouette stage left with
+its dense and geometry-first samplers (the owner's cleanup); the part's body over its support grasps every part alike,
+so no stage samples by it, and a mode differs from another in its recovery alone.
 
 ## What a camera hands the loop
 
@@ -95,7 +89,7 @@ before any grasp overwrite (`surface_depth_map`). A segmentation needs only a `.
 `MultiCameraPerceptionSource.acquire_all()` returns one `CameraObservation` per camera that answered,
 and the two Protocols are separate because fusing a bin needs the cameras at the same moment.
 `camera_id` is a contract, not a label: it must name a camera the loop holds a resolver for, which on a
-config-built cell is a rig id in `robot.grasping.fusion.cameras`. A frame whose id has no resolver is
+config-built cell is the rig id of a camera it fuses. A frame whose id has no resolver is
 dropped and named, never fused at a guessed position.
 
 ## What it refuses
@@ -103,8 +97,7 @@ dropped and named, never fused at a guessed position.
 | Refusal | When | What to do |
 | --- | --- | --- |
 | `ValueError` from `GraspPoint` | a zero `approach` or `axis`, a negative width, a score outside `[0, 1]` | fix the value |
-| `ValueError` from `resolve_grasp_sampling_mode` | a value outside the accepted forms | use a mode name or a bool |
-| a camera absent from `acquire_all()` | it produced no frame; `MappedCameraRig.last_failures` says why | the loop applies `fusion.geometry.on_camera_unavailable` (`degrade` or `refuse`) |
+| a camera absent from `acquire_all()` | it produced no frame; `MappedCameraRig.last_failures` says why | the loop warns of it with that reason and goes on with the cameras that did |
 
 ## Status
 
@@ -120,7 +113,7 @@ dropped and named, never fused at a guessed position.
 | --- | --- |
 | [`grasp_point.py`](grasp_point.py) | `GraspPoint`, `GraspFrame` |
 | [`feedback.py`](feedback.py) | `GraspResult`, `GraspFailureReason` |
-| [`modes.py`](modes.py) | `GraspSamplingMode`, `resolve_grasp_sampling_mode`, `mode_to_dense_sampling` |
+| [`modes.py`](modes.py) | `GraspSamplingMode` |
 | [`perception.py`](perception.py) | `PerceptionFrame`, `PerceptionSource`, `MultiCameraPerceptionSource`, `CameraObservation`, `MappedCameraRig` |
 
 ## Details

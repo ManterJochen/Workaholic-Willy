@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -20,7 +20,6 @@ from src.robot.grasping.telemetry.outcome_logging import (
     iter_jsonl,
     json_safe,
     profile_metadata_from,
-    recovery_metadata_from,
 )
 
 
@@ -82,23 +81,6 @@ _LEGACY_VERIFICATION_BLOCK: dict[str, Any] = {
     "reason": "object_detected",
     "telemetry": {},
 }
-
-
-@dataclass
-class _RecoveryPlan:
-    action: str = "rescan"
-    reason: str = "no_grasp_found"
-    nudge_offset_mm: Optional[tuple] = None
-    agitate_amplitude_mm: float = 0.0
-    telemetry: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _RecoveryReport:
-    plan: _RecoveryPlan
-    executed: bool = True
-    outcome: str = "completed"
-    telemetry: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _grasp_point() -> GraspPoint:
@@ -239,14 +221,6 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(meta["frame"], "base")
         self.assertEqual(meta["label"], "cup")
 
-    def test_recovery_metadata(self) -> None:
-        report = _RecoveryReport(plan=_RecoveryPlan(action="rescan"))
-        meta = recovery_metadata_from(report)
-        assert meta is not None
-        self.assertTrue(meta["executed"])
-        self.assertEqual(meta["outcome"], "completed")
-        self.assertEqual(meta["plan"]["action"], "rescan")
-
 
 # ---------------------------------------------------------------------------
 # GraspAttemptRecord
@@ -359,9 +333,8 @@ class GraspAttemptRecordTests(unittest.TestCase):
             refinement=dict(_LEGACY_REFINEMENT_BLOCK),
             verification=dict(_LEGACY_VERIFICATION_BLOCK),
             recovery_actions=[
-                recovery_metadata_from(
-                    _RecoveryReport(plan=_RecoveryPlan(action="next_target"))
-                ),
+                {"action": "rescan", "outcome": "recovered_success", "step_result": "completed", "executed": True,
+                 "failure_reason": "no_valid_grasp", "plan_reason": "dispatcher:rescan"},
             ],
             extra={"operator": "tim"},
         )

@@ -14,7 +14,7 @@ The shape mirrors ``GeneratorTraining``: keyword-only factories, one verb, a fro
 separate methods. The dataset is a COCO or YOLO folder (``datasets.py``), all of its classes or those ``classes=``
 names; the plan is recipe ``v1`` at a tier, with ``epochs=``, ``batch=``, ``image_size=`` and anything else chosen in
 :class:`DetectorPlanOverrides` winning (``plan.py``). The model in ``out_dir`` loads in ``RtDetrObjectDetector`` and
-through ``models.detector: "rtdetr"`` with ``models.rtdetr.model_path``.
+on a cell through ``models.pipeline.kind: closed_set`` with ``models.rtdetr.model_id`` naming the folder.
 """
 
 from __future__ import annotations

@@ -13,11 +13,11 @@ allowed stays reachable.
 
 What must hold after the removal, and is pinned here:
 
-* a tree that still writes one of the removed keys is refused at load with the sentence that replaces it, and a
-  preset and `python -m src.config explain` say the same sentence;
-* a tree, a preset or a caller that still names a removed mode is refused with the mode to name instead;
-* `dense_clutter` allows `nudge_target`, and the recovery gate lets it through there and nowhere else (for
-  `ALL_COLLIDED`, the one failure the dispatcher offers it for since 2026-09-29);
+* a tree that still writes one of the removed keys is refused at load with the sentence that replaces it, and
+  `python -m src.config explain` says the same sentence;
+* a tree or a caller that still names a removed mode is refused with the mode to name instead;
+* `dense_clutter` allows `nudge_target`, and the push gate (`push_permitted`) lets it through there and nowhere else:
+  the push runs inside the pick attempt;
 * a record logged before the removal still audits and still classifies, whatever retired string it carries;
 * nothing that took a refiner, a tracker or a post-lift frame still accepts one.
 
@@ -31,10 +31,8 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import inspect
-import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import yaml
 from pydantic import BaseModel
@@ -53,7 +51,7 @@ _REMOVED = {
         "verification", "vision_displacement_iou_max", 0.2),
 }
 
-#: What a loader or a preset names when a key is refused: the key itself, or the block it sat in when
+#: What a loader names when a key is refused: the key itself, or the block it sat in when
 #: that block left too. ``verification`` left whole on 2026-09-29, so its keys are refused as the block.
 _REFUSED_AS = {
     "robot.grasping.closed_loop": "robot.grasping.closed_loop",
@@ -155,40 +153,7 @@ class TheSentencesSayWhatToDoTests(unittest.TestCase):
 
 
 class TheSameSentenceWhereverTheKeyIsWrittenTests(unittest.TestCase):
-    """A preset is validated outside the tree loader, and `explain` answers without loading: both say it too."""
-
-    _BASE = {"vendor": "dummy", "gripper": {"vendor": "none"}}
-
-    def _preset_refusal(self, grasping: dict) -> str:
-        from pydantic import ValidationError
-
-        from src.robot.grasping.replay import presets
-
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "old.yaml").write_text(yaml.safe_dump({"grasping": grasping}), encoding="utf-8")
-            with mock.patch.object(presets, "_PRESETS_DIR", Path(tmp)):
-                with self.assertRaises(ValidationError) as caught:
-                    presets.validate_preset("old", base=self._BASE)
-        return " ".join(str(caught.exception).split())
-
-    def test_a_preset_that_still_writes_one_is_refused_with_its_sentence(self) -> None:
-        for dotted, (block, key, value) in _REMOVED.items():
-            with self.subTest(key=dotted):
-                said = self._preset_refusal({block: {key: value}} if block else {key: value})
-                self.assertEqual(said.count("removed on purpose"), 1)
-                self.assertIn(REMOVED_KEYS[_REFUSED_AS[dotted]], said)
-
-    def test_a_preset_error_beside_it_keeps_its_own_words(self) -> None:
-        """Only the removed key gains a sentence: a typo beside it is still a bare unknown key."""
-        said = self._preset_refusal({"closed_loop": {"enabled": True}, "defualt_mode": "auto"})
-        self.assertEqual(said.count("removed on purpose"), 1)
-        self.assertIn("grasping.defualt_mode Extra inputs are not permitted [type=extra_forbidden", said)
-        self.assertIn(REMOVED_KEYS["robot.grasping.closed_loop"], said)
-
-    def test_a_preset_typo_alone_is_the_error_it_always_was(self) -> None:
-        said = self._preset_refusal({"defualt_mode": "auto"})
-        self.assertNotIn("removed on purpose", said)
-        self.assertIn("errors.pydantic.dev", said)
+    """`explain` answers without loading: it says the sentence too."""
 
     def test_explain_answers_with_the_sentence_rather_than_a_near_miss(self) -> None:
         from src.config.explain import explain
@@ -212,7 +177,8 @@ class TheSameSentenceWhereverTheKeyIsWrittenTests(unittest.TestCase):
 
 
 class ARemovedModeIsRefusedWithItsReplacementTests(_ScratchTree):
-    """Wherever a mode is named: the tree's `default_mode`, a mode list, a preset, and a caller."""
+    """Wherever a mode is named: the tree's `default_mode` and a caller. The one mode list of the schema,
+    `recovery.apply_modes`, left with the recovery block on 2026-10-16."""
 
     def _refusal(self, edit) -> str:  # noqa: ANN001
         _write_grasping(self.root, edit)
@@ -229,31 +195,6 @@ class ARemovedModeIsRefusedWithItsReplacementTests(_ScratchTree):
                 self.assertIn(REMOVED_GRASP_MODES[mode], message)
                 self.assertIn(_MODES[mode], message)
 
-    def test_a_mode_list_that_names_one_is_refused_with_the_sentence(self) -> None:
-        for block, key in (("recovery", "apply_modes"), ("feasibility", "apply_modes"), ("occlusion", "apply_modes"),
-                           ("ordering", "apply_modes"), ("uncertainty", "apply_modes"),
-                           ("uncertainty", "rerank_modes"), ("success_model", "apply_modes"),
-                           ("success_model", "ranking_blend_modes"),
-                           ("approach_validation", "apply_modes"), ("watchdog", "block_modes")):
-            with self.subTest(block=block, key=key):
-                with self.assertRaises(ValueError) as caught:
-                    RobotGraspingConfig.model_validate({block: {key: ["dense_clutter", "dense_autonomous"]}})
-                said = " ".join(str(caught.exception).split())
-                self.assertIn(f"{block}.{key} names the grasp mode 'dense_autonomous', removed on purpose", said)
-                self.assertIn("name dense_clutter instead", said)
-
-    def test_a_preset_that_names_one_is_refused_by_its_validation(self) -> None:
-        from pydantic import ValidationError
-
-        from src.robot.grasping.replay import presets
-
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "old.yaml").write_text("grasping:\n  default_mode: closed_loop\n", encoding="utf-8")
-            with mock.patch.object(presets, "_PRESETS_DIR", Path(tmp)):
-                with self.assertRaises(ValidationError) as caught:
-                    presets.validate_preset("old", base={"vendor": "dummy", "gripper": {"vendor": "none"}})
-        self.assertIn(REMOVED_GRASP_MODES["closed_loop"], " ".join(str(caught.exception).split()))
-
     def test_a_caller_that_names_one_is_refused_before_anything_is_built(self) -> None:
         from src.robot.execution.autonomous_grasp import GraspMode, resolve_grasp_mode
 
@@ -267,66 +208,31 @@ class ARemovedModeIsRefusedWithItsReplacementTests(_ScratchTree):
                     self.assertIn(replacement, said)
         self.assertEqual({mode.value for mode in GraspMode}, {"easy", "auto", "dense_clutter"})
 
-    def test_the_shipped_tree_and_presets_name_none(self) -> None:
-        from src.robot.grasping.replay.presets import list_presets, validate_all_presets
-
+    def test_the_shipped_tree_names_none(self) -> None:
         self._assert_loads(load_robot_section)
-        self.assertEqual(sorted(validate_all_presets()), sorted(list_presets()))
-        self.assertNotIn("verification_heavy", list_presets())
 
 
 class NudgeTargetBelongsToDenseClutterTests(unittest.TestCase):
     """The owner's decision: the push `dense_autonomous` alone allowed moved to the dense mode that stays."""
 
-    def _plan(self, mode):  # noqa: ANN001, ANN202
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-        from src.robot.execution.autonomous_grasp.config import _profile_for
-        from src.robot.grasping.recovery.orchestrator import RecoveryDispatcher, RecoveryOrchestrator
-        from src.robot.grasping.recovery.policy import (
-            FixtureEnvelope,
-            SceneRecoveryAction,
-            SceneRecoveryContext,
-            SceneRecoveryPlan,
-            SceneRecoveryPolicy,
-        )
-        from src.robot.grasping.types.feedback import GraspFailureReason
-
-        class _Nudge:
-            def plan(self, context: SceneRecoveryContext) -> SceneRecoveryPlan:
-                return SceneRecoveryPlan(action=SceneRecoveryAction.NUDGE_TARGET, reason="nudge")
-
-        policy = SceneRecoveryPolicy(
-            enabled=True, allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,), max_recovery_actions=1,
-            apply_modes=("auto", "dense_clutter"),
-            fixture=FixtureEnvelope(center_mm=(0.0, 0.0, 200.0), half_extents_mm=(300.0, 300.0, 100.0),
-                                    max_nudge_mm=8.0),
-        )
-        orchestrator = RecoveryOrchestrator(dispatcher=RecoveryDispatcher(),
-                                            strategies={SceneRecoveryAction.NUDGE_TARGET: _Nudge()})
-        return orchestrator.next_step(SceneRecoveryContext(
-            profile=_profile_for(mode), policy=policy, last_outcome=AutonomousGraspOutcome.NO_VALID_GRASP,
-            failure_reasons=(GraspFailureReason.ALL_COLLIDED,),
-        ))
-
     def test_the_dense_clutter_profile_allows_it(self) -> None:
         from src.robot.execution.autonomous_grasp.config import GraspMode, _profile_for
 
         # `next_viewpoint` left it on 2026-09-29, merged into `rescan` (cleanup phase 4); `next_target` joined
-        # the same day (owner).
-        self.assertEqual(_profile_for(GraspMode.DENSE_CLUTTER).recovery_allowed_actions,
-                         ("rescan", "next_target", "nudge_target"))
+        # the same day (owner) and left on 2026-10-16 (the owner's cleanup).
+        self.assertEqual(_profile_for(GraspMode.DENSE_CLUTTER).recovery_allowed_actions, ("rescan", "nudge_target"))
 
-    def test_the_recovery_gate_lets_it_through_in_dense_clutter_only(self) -> None:
-        from src.robot.execution.autonomous_grasp.config import GraspMode
-        from src.robot.grasping.recovery.policy import SceneRecoveryAction
+    def test_the_push_gate_lets_it_through_in_dense_clutter_only(self) -> None:
+        from src.robot.execution.autonomous_grasp.config import GraspMode, _profile_for
+        from src.robot.grasping.recovery.policy import SceneRecoveryAction, SceneRecoveryPolicy, push_permitted
 
-        plan = self._plan(GraspMode.DENSE_CLUTTER)
-        self.assertIsNotNone(plan)
-        assert plan is not None
-        self.assertIs(plan.action, SceneRecoveryAction.NUDGE_TARGET)
+        policy = SceneRecoveryPolicy(enabled=True, allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
+                                     max_recovery_actions=1)
+        self.assertTrue(push_permitted(_profile_for(GraspMode.DENSE_CLUTTER), policy))
         for mode in (GraspMode.AUTO, GraspMode.EASY):
             with self.subTest(mode=mode):
-                self.assertIsNone(self._plan(mode), f"{mode.value} let a push through its profile gate")
+                self.assertFalse(push_permitted(_profile_for(mode), policy),
+                                 f"{mode.value} let a push through its profile gate")
 
 
 class OldRecordsStillAuditTests(unittest.TestCase):
@@ -358,13 +264,6 @@ class OldRecordsStillAuditTests(unittest.TestCase):
         again = GraspAttemptRecord.from_json(record.to_json())
         self.assertEqual(again, record)
         self.assertIs(classify_record(again).primary, FailureRootCause.COLLISION_REJECTION)
-
-    def test_the_synthetic_soak_still_accepts_the_retired_mode(self) -> None:
-        from src.robot.grasping.replay.soak import SoakScenarioSpec
-
-        spec = SoakScenarioSpec(name="old", mode="dense_autonomous", attempts=1,
-                                failure_class_weights={"refinement_diverged": 1.0})
-        self.assertEqual(spec.mode, "dense_autonomous")
 
     def test_no_writer_fills_the_refinement_block_any_more(self) -> None:
         from src.robot.execution.autonomous_grasp.record_logging import to_attempt_record

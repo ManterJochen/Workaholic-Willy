@@ -26,7 +26,7 @@ kommen ... das muss dann als Schalter eingestellt werden können". Pinned here, 
   the push leg at 4.5 mm (URSim, 2026-10-03).
 * **Judged ahead**: before P0, the move there and every contact leg are judged from where the arm stands, each from
   where the one before ends (``JudgesLinesAhead``); a refusal there moves nothing.
-* **The switch** (``robot.grasping.recovery.critical_parts``, and a console run's own word): not critical, a boxed-in
+* **The switch** (``runtime.task.critical_parts``, and a console run's own word): not critical, a boxed-in
   part is pushed first and a blocker is cleared where no push plans; critical, nothing is pushed and a blocker is
   cleared instead.
 """
@@ -275,16 +275,10 @@ class BesideANamedPartTheFingersComeDownAsAGraspsDoTests(unittest.TestCase):
         from src.robot.grasping.recovery.push_gate import PushCell
         from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
 
+        # The fingers come to a named part on every cell since 2026-10-17 (``perceived.fingers_touch_parts`` left).
         cell = PushCell.from_robot_config(hande_cell())
         assert isinstance(cell, PushCell), cell
         self.assertEqual(SOFT_SLACK_MM, cell.named_part_clearance_mm)
-        on = hande_cell()
-        perceived = on.safety.planning_world.perceived.model_copy(update={"fingers_touch_parts": False})
-        world = on.safety.planning_world.model_copy(update={"perceived": perceived})
-        off = on.model_copy(update={"safety": on.safety.model_copy(update={"planning_world": world})})
-        cell = PushCell.from_robot_config(off)
-        assert isinstance(cell, PushCell), cell
-        self.assertIsNone(cell.named_part_clearance_mm)
 
 
 #: A low post 3 mm off the part's +y face, beside its trailing half: the neighbour that blocked the grasp, which the
@@ -443,7 +437,7 @@ class TheArmJudgesEveryLineFromWhereTheOneBeforeEndsTests(unittest.TestCase):
         self.asked = asked
         return SimpleNamespace(
             _motion_planner="curobo", _preflight=object(), _transport=SimpleNamespace(is_connected=True),
-            config=SimpleNamespace(motion_limits=SimpleNamespace(max_velocity=0.5)),
+            config=SimpleNamespace(motion=SimpleNamespace(max_velocity=0.5)),
             _curobo_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
             _route_to_the_nearest_goal=route_to, _judge_linear_move=judge_line, ik=ik,
         )
@@ -542,16 +536,25 @@ class TheCampaignCarriesTheSwitchAndTheLongestPushTests(unittest.TestCase):
         self.assertTrue(self._gate(critical, critical_parts=None).critical_parts)
         self.assertTrue(self._gate(self._service(), critical_parts=True).critical_parts)
 
-    def test_the_config_key_reaches_the_effective_config(self) -> None:
-        from src.config.schema.robot.grasping_schema import GraspingRecoveryConfig, RobotGraspingConfig
-        from src.robot.execution.autonomous_grasp.builders import build_effective_config
-        from src.robot.execution.autonomous_grasp.config import GraspMode
+    def test_the_cells_word_reaches_the_effective_config(self) -> None:
+        """``runtime.task.critical_parts`` (app/runtime.yaml) is the cell's word since 2026-10-16, where it was
+        ``robot.grasping.recovery.critical_parts``: it reaches the effective config of a service built from config,
+        false where the runtime says nothing."""
+        from src.config.schema.robot import RobotConfig
+        from src.config.schema.runtime import RuntimeConfig, TaskConfig
+        from src.robot.execution.autonomous_grasp import AutonomousGraspService
+        from tests.test_grasping_config_wiring import _calc_and_perception
 
-        self.assertFalse(GraspingRecoveryConfig().critical_parts)
-        cfg = RobotGraspingConfig(recovery=GraspingRecoveryConfig(enabled=True, critical_parts=True))
-        effective = build_effective_config(cfg, resolved_mode=GraspMode.DENSE_CLUTTER, resolved_max_attempts=3)
-        assert effective is not None
-        self.assertTrue(effective.recovery_orchestrator.critical_parts)
+        def critical(**runtime: Any) -> bool:
+            calculator, perception = _calc_and_perception()
+            cfg = RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping={"default_mode": "dense_clutter"})
+            service = AutonomousGraspService.from_robot_config(cfg, calculator=calculator, perception=perception,
+                                                               **runtime)
+            return service.effective_config.recovery_orchestrator.critical_parts
+
+        self.assertFalse(critical())
+        self.assertFalse(critical(app_runtime=RuntimeConfig()))
+        self.assertTrue(critical(app_runtime=RuntimeConfig(task=TaskConfig(critical_parts=True))))
 
 
 if __name__ == "__main__":

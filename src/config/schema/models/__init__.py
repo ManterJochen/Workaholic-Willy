@@ -1,21 +1,23 @@
 from .models_schema import (
-    GestureDetectConfig,
-    HandDetectConfig,
-    InferenceOptimization,
+    DEFAULT_WEIGHTS_ROOT,
+    ModelId,
     ObjectDetectorConfig,
-    OneFormerConfig,
     PipelineConfig,
     SegmenterConfig,
+    SpeechLanguage,
     SpeechToTextConfig,
+    VlmConfig,
+    ZeroShotPipelineConfig,
 )
 
 __all__ = [
-    "GestureDetectConfig",
-    "HandDetectConfig",
-    "InferenceOptimization",
+    "DEFAULT_WEIGHTS_ROOT",
+    "ModelId",
     "ObjectDetectorConfig",
-    "OneFormerConfig",
     "PipelineConfig",
     "SegmenterConfig",
+    "SpeechLanguage",
     "SpeechToTextConfig",
+    "VlmConfig",
+    "ZeroShotPipelineConfig",
 ]

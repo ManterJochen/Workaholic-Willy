@@ -17,12 +17,14 @@ a typed refusal rather than an `AttributeError` three frames down.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from types import MappingProxyType, TracebackType
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.execution.cell_lock import CellLock, cell_lock_key
-from src.robot.execution.lifecycle import ConnectedCell, ConnectStage
+from src.robot.execution.lifecycle import ConnectedCell, ConnectStage, TeardownReport, release_perception
 from src.robot.execution.real_cell.preflight import (
     PreflightReport,
     run_config_preflight,
@@ -32,6 +34,7 @@ from src.robot.safety import SafetyAttestation
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from pathlib import Path
 
+    from src.config.cell import LoadedCell
     from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
     from src.config.tree import LoadedTree
@@ -41,7 +44,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.execution.autonomous_grasp.config import GraspMode
     from src.robot.grasping.motion.grasp_motion import GraspMotion
 
-__all__ = ["Cell", "CellNotBuilt"]
+__all__ = ["Cell", "CellNotBuilt", "ConnectedArms"]
 
 #: What a rehearsal drives. The vendor is overridden on the operator's own config rather than a
 #: separate config tree being loaded, so a rehearsal exercises the cell they actually have.
@@ -121,6 +124,11 @@ class Cell:
     #: one a bin needs -- was to bypass `Cell` and call `build_real_cell` by hand.
     mode: "Maybe[GraspMode | str]" = UNSET
     _service: Any = field(default=None, repr=False)
+    #: The arms of a cell of several arms by name, the first at the cell's frame and this cell itself (:meth:`from_cell`);
+    #: empty for a cell of one arm.
+    _arms: "dict[str, Cell]" = field(default_factory=dict, repr=False, compare=False)
+    #: 4x4, millimetres: where this arm's base stands in its cell's frame; ``None`` for a cell of one arm.
+    _in_cell: Any = field(default=None, repr=False, compare=False)
 
     # --- factories ---------------------------------------------------------------------------
 
@@ -163,6 +171,61 @@ class Cell:
             raise ConfigError(f"the tree did not load, so it describes no cell:\n{tree.error}")
         return cls.from_robot_config(tree.robot, prompt=prompt, app_config=tree.app_config, data_dir=tree.root,
                                      motion=motion, mode=mode)
+
+    @classmethod
+    def from_cell(
+        cls, cell: "Maybe[str | Path | LoadedCell]" = UNSET, *, prompt: "Maybe[str]" = UNSET,
+        motion: "Maybe[GraspMotion]" = UNSET, mode: "Maybe[GraspMode | str]" = UNSET,
+    ) -> "Cell":
+        """A cell of several arms (owner, 2026-10-15): each arm a cell of one arm on its own tree, with the world the arms'
+        layers share turned into its base, and this cell the first arm's.
+
+        ```python
+        cell = Cell.from_cell("clip")             # unset: the cell WILLY_CELL names
+        cell.build()                              # every arm; a fixed camera the arms share is opened once
+        with cell.connected():                    # every controller's lock, every arm, then the cell's reservations
+            print(cell.arms["werker"].robot.home().render())
+        ```
+
+        Where no arm is named, the first is meant: this cell's own verbs (:meth:`preflight`, :attr:`service`,
+        :attr:`robot`, ...) are the first arm's, and every arm's are its own in :attr:`arms`.
+
+        Args:
+            cell (Maybe[str | Path | LoadedCell]): The cell file, its name in ``<tree>/cells/``, or a loaded cell; unset is
+                the cell ``WILLY_CELL`` names (default: UNSET).
+            prompt (Maybe[str]): What the picks look for; unset lets the build supply its own (default: UNSET).
+            motion (Maybe[GraspMotion]): How the picks move; unset is the cell's own (default: UNSET).
+            mode (Maybe[GraspMode | str]): The grasp mode each arm's service is built in (default: UNSET).
+
+        Returns:
+            Cell: The first arm's cell, not built, every arm in :attr:`arms`.
+
+        Raises:
+            ConfigError: The cell does not load, an arm is not placed in it yet (the sentence names the command that
+                touches it in), its base tilts against the first, or its world does not load in its base.
+        """
+        from src.config.cell import LoadedCell, load_cell  # noqa: PLC0415
+        from src.config.loader import ConfigError  # noqa: PLC0415
+        from src.robot.execution.arm_registration import base_in_cell, registration_file  # noqa: PLC0415
+        from src.robot.execution.cell_world import arm_tree  # noqa: PLC0415
+
+        loaded = cell if isinstance(cell, LoadedCell) else load_cell(cell)
+        if not loaded.ok:
+            raise ConfigError(f"the cell did not load, so it names no arms: {loaded.error}")
+        arms: dict[str, Cell] = {}
+        for name in loaded.names:
+            in_cell = base_in_cell(loaded, name)
+            if in_cell is None:
+                raise ConfigError(
+                    f"the arm {name!r} is not placed in the cell yet: guide both arms onto the same marks (python -m "
+                    f"src.robot.execution.real_cell.register --cell {loaded.path} --arm {name}), which writes "
+                    f"{registration_file(loaded, name)}")
+            one = cls.from_tree(arm_tree(loaded, name, in_cell), prompt=prompt, motion=motion, mode=mode)
+            one._in_cell = in_cell
+            arms[name] = one
+        first = arms[loaded.frame_arm.name]
+        first._arms = arms
+        return first
 
     @classmethod
     def from_robot_config(
@@ -260,13 +323,22 @@ class Cell:
         """Construct the service: drivers, perception, the grasp stack. Idempotent: a repeat call returns the service
         already built, since a second build would open a second camera on a device that has only one.
 
+        A cell of several arms builds every arm, the first first, each seeing the fixed cameras the arms before it opened
+        (``Camera.sharing``); where one does not build, the arms built before it give their cameras back.
+
         Returns:
-            AutonomousGraspService: The pick service, also :attr:`service`.
+            AutonomousGraspService: The pick service, also :attr:`service`; the first arm's in a cell of several arms.
 
         Raises:
             CameraRefused: A camera the cell needs cannot be given.
             RobotConnectionError: This machine is not ready for the arm's vendor.
         """
+        if self._arms:
+            return self._build_every_arm()
+        return self._build_one()
+
+    def _build_one(self) -> Any:
+        """Build this one arm's service, as :meth:`build` does for a cell of one arm."""
         if self._service is None:
             from src.robot.execution.autonomous_grasp import (  # noqa: PLC0415
                 build_real_cell,
@@ -293,6 +365,23 @@ class Cell:
                 if chosen(self.app_config):
                     extra["app_config"] = self.app_config
                 self._service = build_real_cell(self.robot_config, data_dir=self.data_dir, **extra, **motion)
+        return self._service
+
+    def _build_every_arm(self) -> Any:
+        """Build every arm of a cell of several arms in the file's order, or none."""
+        from src.camera.orchestration.camera import Camera  # noqa: PLC0415
+
+        built: list[Cell] = []
+        try:
+            for one in self._arms.values():
+                with Camera.sharing([camera for done in built for camera in done.cameras]):
+                    one._build_one()
+                built.append(one)
+        except BaseException:
+            for one in built:
+                release_perception(one._service)
+                one._service = None
+            raise
         return self._service
 
     def abilities(self) -> "CellAbilities":
@@ -327,31 +416,56 @@ class Cell:
 
     def connected(
         self, *, announce: "Callable[[ConnectStage], None] | None" = None
-    ) -> ConnectedCell:
+    ) -> "ConnectedCell | ConnectedArms":
         """The cell, connected, for the duration of a ``with`` block.
 
         The cross-process lock first when the cell owns a controller, then the arm, then the hand; on the way out the
         hand, the arm, the cameras, and the lock. A simulated or dummy cell takes no lock, so two rehearsals can run at
-        once.
+        once. A cell of several arms takes every controller's lock first, then each arm and its hand in the cell file's
+        order, then the cell's reservations; all arms come up or none (:class:`ConnectedArms`).
 
         Args:
             announce (Callable[[ConnectStage], None] | None): Called with each stage as the connect reaches it
                 (default: None).
 
         Returns:
-            ConnectedCell: The context manager; inside it :attr:`service` picks and :attr:`robot` moves.
+            ConnectedCell | ConnectedArms: The context manager; inside it :attr:`service` picks and :attr:`robot` moves.
 
         Raises:
             CellNotBuilt: :meth:`build` has not run.
             CellBusy: On entering the block: another process holds the controller's lock.
             NoRealGripper: On entering the block: the tree names a hand this arm cannot drive.
         """
+        if self._arms:
+            for one in self._arms.values():
+                one._require_built("connected()")
+            return ConnectedArms(self._arms, announce=announce)
         service = self._require_built("connected()")
         key = cell_lock_key(self.robot_config)
         lock = CellLock(key, owner="Cell") if key else None
         return ConnectedCell(service, lock=lock, announce=announce)
 
+    def halt(self, reason: str) -> None:
+        """Halt every arm of the cell at once: each latches, sends nothing more and switches no output until a person
+        clears it at the console (``SupportsHalt``). An arm that keeps no latch is left as it is.
+
+        Args:
+            reason (str): Why, as the latch keeps it.
+
+        Raises:
+            CellNotBuilt: :meth:`build` has not run.
+        """
+        from src.robot.execution.together import halt_arms  # noqa: PLC0415
+
+        halt_arms((one.arm for one in (self._arms.values() if self._arms else (self,))), reason)
+
     # --- what was built ----------------------------------------------------------------------
+
+    @property
+    def arms(self) -> "Mapping[str, Cell]":
+        """The arms of a cell of several arms by name, the first at the cell's frame and this cell itself, each a cell
+        of one arm with its own tree, service and robot (:meth:`from_cell`); empty for a cell of one arm."""
+        return MappingProxyType(self._arms)
 
     @property
     def service(self) -> Any:
@@ -434,3 +548,86 @@ class Cell:
                 f"preflight() deliberately runs before anything is constructed."
             )
         return self._service
+
+
+@dataclass
+class ConnectedArms:
+    """A cell of several arms, connected for the duration of a ``with`` block (owner, 2026-10-15).
+
+        with cell.connected() as live:
+            live.arms["werker"].service.pick()
+        print({name: report.render() for name, report in live.teardown.items()})
+
+    Every controller's lock first, then each arm and its hand in the cell file's order, then the cell's reservations
+    (``CellMotion``): any refusal on the way takes down what came up, so all arms are up or none. The way out is the way
+    in reversed: the reservations, each arm from the last, the locks.
+    """
+
+    #: Each arm's built cell, by name, the first at the cell's frame.
+    cells: "Mapping[str, Cell]"
+    #: Narration hook, forwarded to every arm's connect. See :class:`ConnectStage`.
+    announce: "Callable[[ConnectStage], None] | None" = None
+    #: Each arm's connected session while the block runs, by name.
+    arms: "dict[str, ConnectedCell]" = field(default_factory=dict)
+    #: The cell's reservations while the block runs (``CellMotion``).
+    motion: Any = None
+    #: Each arm's teardown, filled in on exit.
+    teardown: "dict[str, TeardownReport] | None" = None
+    _down: Any = field(default=None, repr=False)
+
+    def __getitem__(self, name: str) -> "Cell":
+        """The arm ``name``'s built cell, for its verbs (``arms["werker"].robot``) and its pick service.
+
+        Args:
+            name (str): The arm's name in the cell file.
+
+        Returns:
+            Cell: That arm's cell of one arm.
+
+        Raises:
+            KeyError: The cell has no arm of that name.
+        """
+        return self.cells[name]
+
+    def halt_every_arm(self, reason: str) -> None:
+        """Halt every arm of the cell at once, as :meth:`Cell.halt` does: what ``together()`` does where a step fails.
+
+        Args:
+            reason (str): Why, as each arm's latch keeps it.
+        """
+        from src.robot.execution.together import halt_arms  # noqa: PLC0415
+
+        halt_arms((one.arm for one in self.cells.values()), reason)
+
+    def __enter__(self) -> "ConnectedArms":
+        from src.robot.execution.cell_motion import CellMotion, MovingArm  # noqa: PLC0415
+        from src.robot.execution.together import live_cell  # noqa: PLC0415
+
+        down = ExitStack()
+        try:
+            # First in, so last out: the arms' own sessions inside it name no cell of their own for together().
+            down.enter_context(live_cell(self))
+            for name, one in self.cells.items():
+                key = cell_lock_key(one.robot_config)
+                if key:
+                    lock = CellLock(key, owner=f"Cell {name}")
+                    lock.acquire()
+                    down.callback(lock.release)
+            for name, one in self.cells.items():
+                self.arms[name] = down.enter_context(ConnectedCell(one.service, announce=self.announce))
+            self.motion = CellMotion([MovingArm(name, one.arm, one._in_cell) for name, one in self.cells.items()])
+            self.motion.install()
+            down.callback(self.motion.uninstall)
+        except BaseException:
+            down.close()
+            raise
+        self._down = down
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
+                 tb: TracebackType | None) -> None:
+        try:
+            self._down.close()
+        finally:
+            self.teardown = {name: session.teardown for name, session in self.arms.items()
+                             if session.teardown is not None}

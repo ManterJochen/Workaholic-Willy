@@ -6,10 +6,11 @@ planner world has to leave out to reach one. ``Locator.locate(prompt)`` answers 
 would have taken, through the same RealSense source, so the warm-ups, the intrinsics, the labels, the mask
 completion, the shutter stamp and the wrist check are the pick frame's.
 
-The locator never opens or releases a camera; the caller owns the device. It refuses what it cannot place: a rig
-with no depth of its own, a rig that declares no calibration, a wrist rig with no reader of the arm's TCP, and a wrist
-rig whose calibration was not solved against the cell's flange to TCP. An empty result is an answer and says it
-cannot be told apart from a detector that failed.
+The locator never opens or releases a camera; the caller owns the device. It refuses what it cannot place: a camera
+that hands out a raw stereo pair rather than depth, a rig that declares no calibration, a wrist rig with no reader of
+the arm's TCP, and a wrist rig whose calibration was not solved against the cell's flange to TCP. A stereo rig's own
+owner (``Camera.from_tree``) hands out depth, read through its stereo calibration, and is located as an RGB-D one is.
+An empty result is an answer and says it cannot be told apart from a detector that failed.
 
 ``Located.scene(i, robot_config)`` is the step from seeing a part to picking it: object i's surface as the grasp
 ``Scene``, the other objects as its obstacles, and a candidate's ``pose()`` and ``grip_width_mm`` as what
@@ -534,6 +535,10 @@ class Located:
     #: The frame this was placed from (a look around's: the last look that saw the part), which :meth:`scene` reads the
     #: parts the prompt did not name in; ``None`` where none was kept (a double, or no look reached).
     _frame: "_Frame | None" = field(default=None, repr=False)
+    #: The frames of a look around's other looks, which vouch with :attr:`_frame` for what the looks saw: a finger or a
+    #: lean of :meth:`scene` goes only through space a ray of one of them reached, as every camera of a pick vouches at
+    #: the cell (``calculator.compute(scene_views=)``). Empty for one locate.
+    _other_frames: "tuple[_Frame, ...]" = field(default=(), repr=False)
 
     def split(self, prompt: str) -> "dict[str, tuple[int, ...]]":
         """Which objects each description of a class-list prompt located.
@@ -594,7 +599,7 @@ class Located:
 
         Returns:
             Scene: The object's measured surface, extruded down to the support, the jaw the cell's
-                ``grasping.gripper_geometry`` describes, every other located object as observed obstacle points.
+                registry file describes, every other located object as observed obstacle points.
                 ``scene.grasps()`` ranks the grasps (always the geometric generator, which ``SceneGrasps.generator``
                 says); ``scene.part_bottom_mm`` is what a set-down hangs the part from. An object with no surface under
                 its mask gives a scene with no grasps.
@@ -603,7 +608,7 @@ class Located:
             LocatorRefused: This ``Located`` was :attr:`refused`; the message is the reason.
             IndexError: ``target`` is out of range.
 
-        Where the cell names how its hand and camera naturally stand (``robot.natural_closing_axis``) every grasp is
+        Where the cell names how its hand and camera naturally stand (``robot.motion.natural_closing_axis``) every grasp is
         turned the way round nearer it. Object 0's scene of a look around chooses along the axis the looks judged its
         grasp along, and ``grasps()`` refuses any other (``ValueError``), so the grasp gripped is the grasp judged.
         """
@@ -626,11 +631,14 @@ class Located:
 
     def _seen_beside(self, scene: Scene, index: int, robot_config: Any, others: "list[np.ndarray]") -> Scene:
         """``scene`` with what this frame shows beside object ``index`` that nobody segmented, by the planner world's
-        rules (``robot.grasping.scene_obstacles``, the cell fixes' Track A), the support it stands on as the camera
-        world finds it, and the frame's own corridor test for side approaches. ``scene`` as it is where the tree turns
-        the rules off, no frame was kept, or the object has no pixels in it (an object only an earlier look saw)."""
+        rules (the cell fixes' Track A), the support it stands on as the camera
+        world finds it, and the seen test of this frame and a look around's other looks, which the part's body asks of
+        every lean and of every open finger over the part's outline, as the cell's stage does. ``scene`` as it is where
+        no frame was kept or the object has no pixels in it (an object only an earlier look saw); without the rules, the
+        seen test alone."""
         from src.robot.grasping.generation.scene_obstacles import (  # noqa: PLC0415
             SceneObstacleRules,
+            SeenInAnyFrame,
             corridor_seen_in,
             scene_obstacle_points,
         )
@@ -639,11 +647,10 @@ class Located:
         mask = np.asarray(self.objects[index].mask).astype(bool)
         if frame is None or mask.shape != np.shape(frame.depth_mm) or not mask.any():
             return scene
-        if scene._side_approaches:  # noqa: SLF001 (the scene's own switch, set by from_robot_config)
-            scene = replace(scene, _corridor_seen=corridor_seen_in(frame.depth_mm, frame.intrinsics,
-                                                                   frame.camera_to_base))
-        if not bool(getattr(robot_config.grasping, "scene_obstacles", False)):
-            return scene
+        here = corridor_seen_in(frame.depth_mm, frame.intrinsics, frame.camera_to_base)
+        looks = tuple(corridor_seen_in(other.depth_mm, other.intrinsics, other.camera_to_base)
+                      for other in self._other_frames)
+        scene = replace(scene, _corridor_seen=SeenInAnyFrame((here, *looks)) if looks else here)
         rules = SceneObstacleRules.from_robot_config(robot_config)
         points = self.objects[index].points_base_mm
         model = _support_model(frame, robot_config, points)
@@ -784,28 +791,34 @@ class Located:
 
 def _support_model(frame: _Frame, robot_config: Any, target_points: np.ndarray) -> Any:
     """The surfaces ``frame`` shows the parts standing on, as the cell's camera world finds them on a build of the same
-    frame (``support_surfaces.find_supports``), the target's own box held out; ``None`` where the tree turns support
-    surfaces off or declares no bench."""
-    from src.robot.safety.planning.perceived import DepthView, WorldBuildTuning  # noqa: PLC0415
+    frame (``support_surfaces.find_supports``, at the camera world's own numbers, ``perceived.CAMERA_*``), the target's
+    own box held out; ``None`` where the tree has no planning world or declares no bench."""
+    from src.robot.safety.planning.perceived import (  # noqa: PLC0415
+        CAMERA_BOX_MARGIN_MM,
+        CAMERA_CLUSTER_VOXEL_MM,
+        CAMERA_MAX_BOXES,
+        CAMERA_MIN_POINTS,
+        CAMERA_PIXEL_STRIDE,
+        CAMERA_VOXEL_MM,
+        SUPPORT_ALLOWANCE_MM,
+        DepthView,
+        WorldBuildTuning,
+    )
     from src.robot.safety.planning.reservation import planner_world_limits  # noqa: PLC0415
     from src.robot.safety.planning.self_envelope import ROBOT_BASES  # noqa: PLC0415
     from src.robot.safety.planning.support_surfaces import find_supports, lowest_tenth_mm  # noqa: PLC0415
+    from src.robot.safety.planning.world import planning_world_on  # noqa: PLC0415
 
     world = getattr(robot_config.safety, "planning_world", None)
-    perceived = getattr(world, "perceived", None)
-    if world is None or not bool(getattr(world, "enabled", False)) or perceived is None:
-        return None
-    if not bool(getattr(perceived, "support_surfaces", False)):
+    if not planning_world_on(world):
         return None
     limits = planner_world_limits(robot_config)
     if limits is None:
         return None
     tuning = WorldBuildTuning(
-        pixel_stride=int(perceived.pixel_stride), voxel_size_mm=float(perceived.voxel_size_mm),
-        cluster_voxel_mm=float(perceived.cluster_voxel_mm), min_points=int(perceived.min_points),
-        margin_mm=float(perceived.margin_mm), max_boxes=int(perceived.max_boxes),
-        floor_to_plane=bool(perceived.floor_to_plane), support_surfaces=True,
-        support_allowance_mm=float(perceived.support_allowance_mm))
+        pixel_stride=CAMERA_PIXEL_STRIDE, voxel_size_mm=CAMERA_VOXEL_MM, cluster_voxel_mm=CAMERA_CLUSTER_VOXEL_MM,
+        min_points=CAMERA_MIN_POINTS, margin_mm=CAMERA_BOX_MARGIN_MM, max_boxes=CAMERA_MAX_BOXES, floor_to_plane=True,
+        support_surfaces=True, support_allowance_mm=SUPPORT_ALLOWANCE_MM)
     selected = getattr(robot_config, "arm", None)
     model_name = (selected.model if selected is not None else "").lower()
     keep_out: tuple[KeepOutBox, ...] = ()
@@ -835,7 +848,7 @@ def _on_view(view: Any, method: str, *args: Any, **keywords: Any) -> None:
 
 
 class _DepthOnly:
-    """The camera's handle, refusing a frame that carries a stereo pair and no depth before the source reads it."""
+    """The camera's handle, refusing a frame that carries a raw stereo pair and no depth before the source reads it."""
 
     def __init__(self, handle: Any, camera: str) -> None:
         self._handle = handle
@@ -846,8 +859,9 @@ class _DepthOnly:
         frame = self._handle.grab()
         if getattr(frame, "depth", None) is None and hasattr(frame, "left") and hasattr(frame, "right"):
             raise LocatorRefused(
-                f"camera {self._camera!r} answered with a stereo pair, which carries no depth of its own, so nothing "
-                "it sees can be placed in BASE: locate with an RGB-D rig")
+                f"camera {self._camera!r} answered with a raw stereo pair, two images and no depth, so nothing it "
+                "sees can be placed in BASE: locate with the rig's own owner, Camera.from_tree(tree, rig_id=...), which "
+                "reads a stereo rig's depth through its stereo calibration")
         return frame
 
     def kept(self, frame: Any) -> Any:
@@ -922,13 +936,13 @@ class Locator:
         """A locator over one open camera and a backend you built.
 
         Args:
-            camera (Any): An open owner answering ``rig_id``, ``source``, ``handle()`` and ``calibration()``, as
-                :class:`Camera` does.
+            camera (Any): An open owner answering ``rig_id``, ``handle()`` and ``calibration()``, and
+                ``gives_depth``, as :class:`Camera` does.
             backend (Any): A perception backend with ``perceive(image_bgr, prompt)``.
             tool_pose (Maybe[Callable[[], Pose]]): The arm's ``get_tcp_pose``, read at each shutter to place a wrist
                 camera's frame; required for a camera on the wrist, ignored for a fixed one (default: UNSET).
-            attempts (Maybe[int]): How many more frames a wrist camera takes while the tool moved; unset is the schema's
-                ``perceived.fresh_frame_attempts`` (default: UNSET).
+            attempts (Maybe[int]): How many more frames a wrist camera takes while the tool moved; unset is every
+                cell's ``shutter_motion.FRESH_FRAME_ATTEMPTS`` (default: UNSET).
             tool_frame (Maybe[Any]): The cell's ``robot.gripper.tool_frame``; a wrist camera's calibration must have
                 been solved against it. Required on the wrist, ignored for a fixed camera (default: UNSET).
             view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it
@@ -938,21 +952,21 @@ class Locator:
             Locator: The locator; the view gets the camera once every refusal passed.
 
         Raises:
-            LocatorRefused: A rig with no depth, a wrist rig with no TCP reader, or a wrist rig whose calibration was
-                not solved against ``tool_frame``.
+            LocatorRefused: A camera that hands out a raw stereo pair, a wrist rig with no TCP reader, or a wrist rig
+                whose calibration was not solved against ``tool_frame``.
             RigNotCalibrated: The rig declares no calibration; it names its key.
         """
         rig_id = str(getattr(camera, "rig_id", "camera"))
-        source = getattr(camera, "source", "rgbd")
-        if source != "rgbd":
+        if not bool(getattr(camera, "gives_depth", True)):
             raise LocatorRefused(
-                f"camera {rig_id!r} is a {source!r} rig, which carries no depth of its own, so nothing it sees can be "
-                "placed in BASE: locate with an RGB-D rig")
+                f"camera {rig_id!r} hands out a raw stereo pair, two images and no depth, so nothing it sees can be "
+                "placed in BASE: locate with the rig's own owner, Camera.from_tree(tree, rig_id=...), which reads a "
+                "stereo rig's depth through its stereo calibration")
         calibration = camera.calibration()
         if not chosen(attempts):
-            from src.config.schema.robot.safety_schema import PerceivedWorldConfig
+            from src.robot.core.shutter_motion import FRESH_FRAME_ATTEMPTS
 
-            attempts = int(PerceivedWorldConfig.model_fields["fresh_frame_attempts"].default)
+            attempts = FRESH_FRAME_ATTEMPTS
         reader = None
         if str(calibration.mounting_mode) == "eye_in_hand":
             if not chosen(tool_pose) or not callable(tool_pose):
@@ -1058,8 +1072,7 @@ class Locator:
         """Check every camera, then build the backend ``models_cfg`` describes once and hand it to a locator each."""
         if not cameras:
             raise LocatorRefused("no camera was handed in, so there is nothing to locate with and no model is loaded")
-        attempts = int(robot_cfg.safety.planning_world.perceived.fresh_frame_attempts)
-        checked = [cls.from_parts(camera=camera, backend=None, tool_pose=tool_pose, attempts=attempts,
+        checked = [cls.from_parts(camera=camera, backend=None, tool_pose=tool_pose,
                                   tool_frame=robot_cfg.gripper.tool_frame) for camera in cameras]
         from src.models.perception_spec import PerceptionSpec
 
@@ -1166,7 +1179,7 @@ class Locator:
             looks (Look | None): One look or several: ``JointPositions``, or ``"home"``. ``None`` takes the pose the arm
                 stands at as the one look (default: None).
             robot (Any): The connected :class:`Robot` that moves the camera; it must keep its robot section
-                (``Robot.from_tree``) and its hand must be a parallel jaw.
+                (``Robot.from_tree``).
             both_faces (bool): Look on until both jaw contact faces of the chosen grasp were seen, and refuse a part no
                 look showed both of: the switch for safety-critical processes (default: False).
             closing_axis (Maybe[ClosingAxisLike]): Judge only the grasps closing along this axis (``"-y"``, ...), as
@@ -1180,8 +1193,7 @@ class Locator:
                 :attr:`Located.refused`, and nothing may be planned on it.
 
         Raises:
-            LocatorRefused: ``robot`` keeps no robot section, or its hand is not a parallel jaw; raised before anything
-                moves.
+            LocatorRefused: ``robot`` keeps no robot section; raised before anything moves.
             ValueError: ``looks`` names no look, an entry is not a look, or ``closing_axis`` names no axis; raised
                 before anything moves.
             TypeError: A look entry or a ``closing_axis`` of another type, raised before anything moves.
@@ -1592,22 +1604,13 @@ def _faces_refusal(verdict: "_Verdict | None") -> str:
 
 def _judged_on(robot: Any) -> Any:
     """The robot section a look's grasp is judged on (the hand, the support, the floor, as the cell plans them), refused
-    before anything moves where no grasp could be judged on it: no section, or a hand that is no parallel jaw, since
-    ``Located.scene`` plans jaw grasps only (``SupportFootprintJaw.from_robot_config``, the same refusal)."""
+    before anything moves where the robot keeps none."""
     config = getattr(robot, "robot_config", None)
     if config is None:
         raise LocatorRefused(
             "a look around judges each look's grasp on the hand and the support the cell describes, and this robot "
             "keeps no robot section: build it with Robot.from_tree(tree, ...), or pass robot_config= to "
             "Robot.from_parts")
-    from src.robot.grasping.generation.support_footprint import SupportFootprintJaw  # noqa: PLC0415
-
-    try:
-        SupportFootprintJaw.from_robot_config(config)
-    except ValueError as exc:
-        raise LocatorRefused(
-            f"a look around judges each look's grasp as Located.scene plans it, for a parallel jaw, and this cell's "
-            f"hand is none ({exc}); nothing was moved: locate() finds the part without judging a grasp") from exc
     return config
 
 
@@ -1889,14 +1892,13 @@ class _Looking:
             WRIST_VIEW_MIN_SCORE,
             WRIST_VIEW_NEIGHBOUR_MM,
             WRIST_VIEW_SCORE_VOXEL_MM,
-            AssociationMetric,
             ViewCandidates,
             fuse_scene_clouds,
         )
 
         fused, associations = fuse_scene_clouds(
             list(clouds), [ViewCandidates("the looks before", tuple(part.fusion_cloud() for part in self.parts))],
-            metric=AssociationMetric.OVERLAP, min_score=WRIST_VIEW_MIN_SCORE, neighbour_mm=WRIST_VIEW_NEIGHBOUR_MM,
+            min_score=WRIST_VIEW_MIN_SCORE, neighbour_mm=WRIST_VIEW_NEIGHBOUR_MM,
             score_voxel_mm=WRIST_VIEW_SCORE_VOXEL_MM,
         )
         assignment = associations[0].assignment
@@ -1954,7 +1956,8 @@ class _Looking:
         return verdict
 
     def _located(self, *, refused: str = "", hand_eye_gap_mm: "float | None" = None, views_file: str = "") -> Located:
-        """What the looks located so far, as one :class:`Located`: the frame of the last look the part was seen from.
+        """What the looks located so far, as one :class:`Located`: the frame of the last look the part was seen from,
+        the frames of the other looks beside it.
 
         Where no look was reached no frame was taken, and its stamp is when the looking ended.
         """
@@ -1967,10 +1970,12 @@ class _Looking:
         else:
             base = placed.located
         objects = tuple(part.as_object() for part in self.parts) if self.latest is not None else base.objects
+        others = tuple(other.located._frame for _, other in self.frames  # noqa: SLF001 (this module's own frames)
+                       if other is not placed and other.located._frame is not None)  # noqa: SLF001
         return replace(base, objects=objects, looks=tuple(self.visited), looks_fused=fused,
                        jaw_faces_seen=None if self.verdict is None else self.verdict.faces_seen, refused=refused,
                        hand_eye_gap_mm=hand_eye_gap_mm, generated_view_deg=self.generated_view_deg,
-                       views_file=views_file, closing_axis=self.closing_axis)
+                       views_file=views_file, closing_axis=self.closing_axis, _other_frames=others)
 
     def faces_refusal(self) -> str:
         """With ``both_faces``, why the part is refused: the contact face(s) of its grasp no look showed."""

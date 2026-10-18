@@ -1,18 +1,23 @@
 """Which cameras feed a cell's live planner world, and the world they feed.
 
-Every enabled RGB-D rig that declares its calibration feeds the world of a cell that enables it, the
-primary first. A rig's own `enabled` decides, not `grasping.fusion.cameras`, which names what fusion
-takes. A fixed camera is placed by its CAMERA to BASE, and a camera on the wrist frame by frame, by its
-CAMERA to TOOL and the tool pose each frame is stamped with.
+Every enabled rig that declares its calibration feeds the world of a cell that declares its bench
+(``safety.planning_world.support_plane``), the primary first: an RGB-D rig with its own depth, and a stereo rig with the
+depth its stereo calibration gives (`StereoDepthStreamer`, 2026-10-17), which its owner refuses to open before that
+calibration is written. A rig's own `enabled` decides, as it decides which cameras a cell fuses
+(`camera_fusion.fused_cameras`). A fixed camera is placed by its CAMERA to BASE, and a camera on the
+wrist frame by frame, by its CAMERA to TOOL and the tool pose each frame is stamped with.
 
 It lives in `execution` rather than in `autonomous_grasp` so that `Robot` can be handed the same world:
 `Robot`'s import guard forbids that package, the camera package and the calibration package. Rigs,
 cameras and calibrations are therefore taken by duck typing, and nothing here imports them.
 
 Every camera in a world has to answer. One camera that stays blind, silent or stale refuses the whole
-world, is asked `fresh_frame_attempts` more times, and then every refreshing motion raises
-`CameraWorldUnavailable` naming it. A cell that enables the world and calibrates a second rig therefore
+world, is asked `FRESH_FRAME_ATTEMPTS` more times, and then every refreshing motion raises
+`CameraWorldUnavailable` naming it. A cell that declares its bench and calibrates a second rig therefore
 stops every planned motion when that rig fails.
+
+Every cell's world is tuned alike, at the numbers of the owner's cell (``perceived.CAMERA_*``, fixed by the owner's
+cleanup of 2026-10-17): no key of a tree tunes it.
 """
 
 from __future__ import annotations
@@ -23,11 +28,24 @@ from typing import TYPE_CHECKING, Any
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import create_robot_logger
+from src.robot.core.shutter_motion import FRESH_FRAME_ATTEMPTS
 from src.robot.safety.planning.depth_source import RigDepthSource
 from src.robot.safety.planning.fine_world import FINE_REACH_MM
 from src.robot.safety.planning.live_world import CameraView, LivePlannerWorld
-from src.robot.safety.planning.perceived import WorldBuildTuning
-from src.robot.safety.planning.reservation import PlannerReservation, planner_world_limits
+from src.robot.safety.planning.perceived import (
+    CAMERA_BOX_MARGIN_MM,
+    CAMERA_CLUSTER_VOXEL_MM,
+    CAMERA_FIELD_VOXEL_MM,
+    CAMERA_FRAME_MAX_AGE_MS,
+    CAMERA_MAX_BOXES,
+    CAMERA_MIN_POINTS,
+    CAMERA_PIXEL_STRIDE,
+    CAMERA_VOXEL_MM,
+    FINGER_CONTACT_MM,
+    SUPPORT_ALLOWANCE_MM,
+    WorldBuildTuning,
+)
+from src.robot.safety.planning.reservation import planner_world_limits
 from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -61,8 +79,8 @@ class CameraWorldPlan:
         reason (str): Why there is no world; empty when there is one (default: "").
         asked (bool): Whether the cell asked for a world: the block and its ``perceived`` half on, and a support plane
             declared (default: False).
-        calibrated (tuple[str, ...]): Every enabled RGB-D rig that declares its calibration; a cuRobo cell with one and
-            no world is refused (default: ()).
+        calibrated (tuple[str, ...]): Every enabled rig that declares its calibration; a cuRobo cell with one and no
+            world is refused (default: ()).
         primary_rig_id (str): The primary rig's id (default: "").
     """
 
@@ -76,8 +94,8 @@ class CameraWorldPlan:
     #: Whether the cell asked for a world: the block and its `perceived` half on, and a support plane
     #: declared. A cell that did not ask is told nothing; one that asked and gets no world is told why.
     asked: bool = False
-    #: Every enabled RGB-D rig that declares its calibration, whether or not the world takes it. A
-    #: cuRobo cell with one and no world is refused (:meth:`refusal`).
+    #: Every enabled rig that declares its calibration, whether or not the world takes it. A cuRobo
+    #: cell with one and no world is refused (:meth:`refusal`).
     calibrated: tuple[str, ...] = ()
     #: The primary rig's id, for the refusal sentence.
     primary_rig_id: str = ""
@@ -96,22 +114,12 @@ class CameraWorldPlan:
         """
         calibrated = tuple(
             str(rig.rig_id) for rig in rigs
-            if bool(getattr(rig, "enabled", False)) and getattr(rig, "source", None) == "rgbd"
-            and getattr(rig, "extrinsics", None) is not None
+            if bool(getattr(rig, "enabled", False)) and getattr(rig, "extrinsics", None) is not None
         )
         primary = str(primary_rig_id)
-        world_cfg = getattr(getattr(robot_cfg, "safety", None), "planning_world", None)
-        if world_cfg is None or not bool(getattr(world_cfg, "enabled", False)):
-            return cls((), reason="safety.planning_world.enabled is false, so this cell has no live planner world",
-                       calibrated=calibrated, primary_rig_id=primary)
-        perceived = getattr(world_cfg, "perceived", None)
-        if perceived is None or not bool(getattr(perceived, "enabled", False)):
-            return cls((), reason=(
-                "safety.planning_world.perceived.enabled is false, so no camera feeds the planner world"),
-                calibrated=calibrated, primary_rig_id=primary)
         if planner_world_limits(robot_cfg) is None:
             return cls((), reason=(
-                "safety.planning_world declares no support_plane, so no perceived world can be built"),
+                "safety.planning_world declares no support_plane, so this cell has no live planner world"),
                 calibrated=calibrated, primary_rig_id=primary)
 
         wired: list[str] = []
@@ -119,11 +127,8 @@ class CameraWorldPlan:
         # The primary first. The sort is stable, so every other rig keeps its place in the camera section.
         for rig in sorted(rigs, key=lambda each: str(each.rig_id) != primary_rig_id):
             rig_id = str(rig.rig_id)
-            source = getattr(rig, "source", None)
             if not bool(getattr(rig, "enabled", False)):
                 left_out.append((rig_id, "enabled: false"))
-            elif source != "rgbd":
-                left_out.append((rig_id, f"a {source} rig, which carries no depth of its own"))
             elif getattr(rig, "extrinsics", None) is None:
                 left_out.append((rig_id, f"not calibrated, {_rig_key(rig_id)} is not declared"))
             else:
@@ -131,7 +136,7 @@ class CameraWorldPlan:
 
         if not wired:
             return cls((), tuple(left_out), asked=True, reason=(
-                "no enabled RGB-D rig declares its calibration, so no camera can feed the planner world"),
+                "no enabled rig declares its calibration, so no camera can feed the planner world"),
                 calibrated=calibrated, primary_rig_id=primary)
         if wired[0] != primary_rig_id:
             why = dict(left_out).get(primary_rig_id, "not a rig in camera.cameras.rigs")
@@ -155,8 +160,8 @@ class CameraWorldPlan:
             return None
         return (
             f"this cell plans with cuRobo and calibrates {', '.join(repr(rig) for rig in self.calibrated)}, and no "
-            f"live camera world comes of it: {self.reason}. Once a rig is calibrated its world is mandatory: enable "
-            "safety.planning_world with a support_plane and perceived.enabled, with the primary rig "
+            f"live camera world comes of it: {self.reason}. Once a rig is calibrated its world is mandatory: declare "
+            "safety.planning_world.support_plane, with the primary rig "
             f"{self.primary_rig_id!r} among the calibrated ones, or remove the rig's extrinsics while it is not used"
         )
 
@@ -228,9 +233,10 @@ class CameraWorldWiring:
             handle = owner.handle()
             if _answers_with_a_stereo_pair(handle):
                 return cls(None, planner=planner, reason=(
-                    f"camera {rig_id!r} answers with a stereo pair, which carries no depth of its own, so a world "
-                    "built on it would stop every planned motion. Wire an RGB-D camera, or turn "
-                    "safety.planning_world.perceived off"))
+                    f"camera {rig_id!r} answers with a raw stereo pair, two images and no depth, so a world built on "
+                    "it would stop every planned motion: hand in the camera's own owner (Camera.from_config), which "
+                    "reads a stereo rig's depth through its stereo calibration, or switch this rig off "
+                    f"(camera.cameras.rigs[{rig_id!r}].enabled: false)"))
             calibration = owner.calibration()
             if str(calibration.mounting_mode) != "eye_in_hand":
                 views.append(CameraView(name=rig_id, depth_source=RigDepthSource(handle),
@@ -291,7 +297,8 @@ class OpenedCameras:
 
 
 def _answers_with_a_stereo_pair(handle: Any) -> bool:
-    """Whether one grab from this rig is a stereo pair: two images and no depth. A failed grab says nothing.
+    """Whether one grab from this rig is a raw stereo pair: two images and no depth, as a stereo catalogue's owner
+    (``FrameProvider``) hands out. A failed grab says nothing.
 
     A rig that cannot answer while the cell is built is judged at the motion, where the refresh asks it
     again and raises if it stays silent. Only a rig that did answer, with two images and no depth, is
@@ -318,7 +325,7 @@ def _slab_over_the_workspace(robot_cfg: "RobotConfig") -> None:
     plane = robot_cfg.safety.planning_world.support_plane
     if plane is None:
         return
-    workspace = robot_cfg.workspace_limits
+    workspace = robot_cfg.motion.workspace
     cx, cy = (float(v) for v in (getattr(plane, "center_mm", None) or (0.0, 0.0)))
     ex, ey = (float(v) for v in plane.extent_mm)
     slab_x, slab_y = (cx - ex / 2.0, cx + ex / 2.0), (cy - ey / 2.0, cy + ey / 2.0)
@@ -328,7 +335,7 @@ def _slab_over_the_workspace(robot_cfg: "RobotConfig") -> None:
     over_y = min(slab_y[1], box_y[1]) - max(slab_y[0], box_y[0])
     said = (f"safety.planning_world.support_plane stands at centre ({cx:g}, {cy:g}) mm with extent {ex:g} x {ey:g} mm, "
             f"x {slab_x[0]:g} to {slab_x[1]:g} and y {slab_y[0]:g} to {slab_y[1]:g}, and the workspace box "
-            f"(robot.workspace_limits) spans x {box_x[0]:g} to {box_x[1]:g} and y {box_y[0]:g} to {box_y[1]:g}")
+            f"(robot.motion.workspace) spans x {box_x[0]:g} to {box_x[1]:g} and y {box_y[0]:g} to {box_y[1]:g}")
     if over_x <= 0.0 or over_y <= 0.0:
         raise SupportSlabMissesTheWorkspace(
             f"{said}: the slab covers none of it, so the planner holds a bench where no part stands and none under "
@@ -348,53 +355,47 @@ def _finger_floor_drop_mm(robot_cfg: "RobotConfig") -> float:
 
 
 def _live_planner_world(robot_cfg: "RobotConfig", views: Sequence[CameraView]) -> LivePlannerWorld:
-    """The world source over ``views``, tuned by the cell's `safety.planning_world`.
+    """The world source over ``views``: the cell's declared `safety.planning_world`, tuned as every cell's camera world
+    is (``perceived.CAMERA_*``).
 
-    The plan has already checked that the block is on. A declared bench slab that covers none of the workspace box is
-    refused here, before any world is built (:class:`SupportSlabMissesTheWorkspace`).
+    The plan has already checked that the cell declares its bench. A declared bench slab that covers none of the
+    workspace box is refused here, before any world is built (:class:`SupportSlabMissesTheWorkspace`).
     """
     world_cfg = robot_cfg.safety.planning_world
-    perceived = world_cfg.perceived
     limits = planner_world_limits(robot_cfg)
     if limits is None:
         raise ValueError("safety.planning_world declares no support_plane, so no perceived world can be built")
     _slab_over_the_workspace(robot_cfg)
-    if float(perceived.voxel_field_mm) > 0.0:
-        # Pay the distance-transform import here, where a cell is being built and a tenth of a second
-        # costs nothing. Measured against the real planner: the first field a cell builds took 139.6 ms
-        # and every one after it 6.3 ms, and the difference is this import, which would otherwise land
-        # on the first motion instead of on the build.
-        import scipy.ndimage  # noqa: F401, PLC0415 (imported for its cost, not for its names)
+    # Pay the distance-transform import here, where a cell is being built and a tenth of a second costs nothing.
+    # Measured against the real planner: the first field a cell builds took 139.6 ms and every one after it 6.3 ms, and
+    # the difference is this import, which would otherwise land on the first motion instead of on the build.
+    import scipy.ndimage  # noqa: F401, PLC0415 (imported for its cost, not for its names)
+
     return LivePlannerWorld(
         cameras=tuple(views),
-        declared=tuple(build_planner_cuboids(
-            world_cfg, robot_cfg.safety.self_collision.fixtures,
-            max_cuboids=PlannerReservation.from_config(robot_cfg=robot_cfg).cuboid_slots,
-        )),
+        declared=tuple(build_planner_cuboids(world_cfg)),
         limits=limits,
         declared_meshes=tuple(build_planner_meshes(world_cfg)),
         tuning=WorldBuildTuning(
-            pixel_stride=int(perceived.pixel_stride),
-            voxel_size_mm=float(perceived.voxel_size_mm),
-            cluster_voxel_mm=float(perceived.cluster_voxel_mm),
-            min_points=int(perceived.min_points),
-            margin_mm=float(perceived.margin_mm),
+            pixel_stride=CAMERA_PIXEL_STRIDE,
+            voxel_size_mm=CAMERA_VOXEL_MM,
+            cluster_voxel_mm=CAMERA_CLUSTER_VOXEL_MM,
+            min_points=CAMERA_MIN_POINTS,
+            margin_mm=CAMERA_BOX_MARGIN_MM,
             # The fingers to a named part's measured surface, and past it by the finger contact (the owner, 2026-10-05).
-            part_soft_mm=(float(perceived.margin_mm) + float(perceived.finger_contact_mm)
-                          if bool(getattr(perceived, "fingers_touch_parts", False)) else 0.0),
+            part_soft_mm=CAMERA_BOX_MARGIN_MM + FINGER_CONTACT_MM,
             # The fingers to a support's reading and excess, not to its solid (the owner, 2026-10-05), and to 1 mm of it
             # (2026-10-06): the solid's top lowered for them by the guard's distance less that.
-            fingers_to_the_reading=bool(getattr(perceived, "fingers_to_the_support_reading", False)),
+            fingers_to_the_reading=True,
             finger_floor_drop_mm=_finger_floor_drop_mm(robot_cfg),
-            max_boxes=int(perceived.max_boxes),
-            voxel_field_mm=float(perceived.voxel_field_mm),
-            floor_to_plane=bool(perceived.floor_to_plane),
-            support_surfaces=bool(perceived.support_surfaces),
-            support_allowance_mm=float(perceived.support_allowance_mm),
+            max_boxes=CAMERA_MAX_BOXES,
+            voxel_field_mm=CAMERA_FIELD_VOXEL_MM,
+            floor_to_plane=True,
+            support_surfaces=True,
+            support_allowance_mm=SUPPORT_ALLOWANCE_MM,
             # Near a motion's goal the guard holds every pixel the cameras measured, at 2 mm (``fine_world``).
             fine_reach_mm=FINE_REACH_MM,
         ),
-        max_age_ms=float(perceived.max_age_ms),
-        fresh_frame_attempts=int(perceived.fresh_frame_attempts),
-        require_registration=bool(getattr(world_cfg, "require_registration", True)),
+        max_age_ms=CAMERA_FRAME_MAX_AGE_MS,
+        fresh_frame_attempts=FRESH_FRAME_ATTEMPTS,
     )

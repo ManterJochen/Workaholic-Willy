@@ -86,7 +86,7 @@ class TheCompositionCarriesTheRetractTests(unittest.TestCase):
 
     def test_the_hand_brings_its_own_retract(self) -> None:
         composed = self.module.compose_sidecar_config(
-            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, attach_spheres=0, default_q=_CHOSEN,
+            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, default_q=_CHOSEN,
         )
         cspace = composed["robot_cfg"]["kinematics"]["cspace"]
         self.assertEqual(cspace["default_joint_position"], _CHOSEN)
@@ -97,7 +97,7 @@ class TheCompositionCarriesTheRetractTests(unittest.TestCase):
     def test_without_one_the_descriptor_keeps_its_own(self) -> None:
         """⭐ THE CONTROL. Every cell that names no retract, and every test that composes without one, is unchanged."""
         composed = self.module.compose_sidecar_config(
-            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, attach_spheres=0,
+            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0,
         )
         cspace = composed["robot_cfg"]["kinematics"]["cspace"]
         self.assertEqual(cspace["default_joint_position"], [0.0, -1.0, 0.9, 0.0, 0.0, 0.0])
@@ -109,7 +109,7 @@ class TheCompositionCarriesTheRetractTests(unittest.TestCase):
         cspace["retract_config"] = cspace.pop("default_joint_position")
 
         composed = self.module.compose_sidecar_config(
-            config, bodies=[_HAND], margin_mm=0.0, attach_spheres=0, default_q=_CHOSEN,
+            config, bodies=[_HAND], margin_mm=0.0, default_q=_CHOSEN,
         )
         written = composed["robot_cfg"]["kinematics"]["cspace"]
         self.assertEqual(written["retract_config"], _CHOSEN)
@@ -120,31 +120,31 @@ class TheCompositionCarriesTheRetractTests(unittest.TestCase):
         config["robot_cfg"]["kinematics"]["cspace"].pop("default_joint_position")
         with self.assertRaises(self.module.BodyLinkError):
             self.module.compose_sidecar_config(
-                config, bodies=[_HAND], margin_mm=0.0, attach_spheres=0, default_q=_CHOSEN,
+                config, bodies=[_HAND], margin_mm=0.0, default_q=_CHOSEN,
             )
 
     def test_a_retract_of_the_wrong_length_is_refused_rather_than_padded(self) -> None:
         """⭐ THE CONTROL. Six joints is what this arm has; anything else is a pose for another robot."""
         with self.assertRaises(self.module.BodyLinkError) as caught:
             self.module.compose_sidecar_config(
-                copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, attach_spheres=0, default_q=[0.0, 0.0, 0.0],
+                copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, default_q=[0.0, 0.0, 0.0],
             )
         self.assertIn("6", str(caught.exception))
 
     def test_a_retract_that_is_not_numbers_is_refused(self) -> None:
         with self.assertRaises(self.module.BodyLinkError):
             self.module.compose_sidecar_config(
-                copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, attach_spheres=0,
+                copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0,
                 default_q=[0.0, "somewhere", 0.0, 0.0, 0.0, 0.0],
             )
 
     def test_the_retract_is_the_only_thing_it_changes(self) -> None:
         """A composition that quietly edited anything else would be impossible to review."""
         without = self.module.compose_sidecar_config(
-            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, attach_spheres=0,
+            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0,
         )
         with_retract = self.module.compose_sidecar_config(
-            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, attach_spheres=0, default_q=_CHOSEN,
+            copy.deepcopy(_ARM), bodies=[_HAND], margin_mm=0.0, default_q=_CHOSEN,
         )
         for config in (without, with_retract):
             config["robot_cfg"]["kinematics"]["cspace"].pop("default_joint_position")

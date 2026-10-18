@@ -23,7 +23,7 @@ _Q = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
 
 
 def _tree(hand: str = "robotiq_2f85", **gripper: Any) -> Any:
-    return kit_tree("ik", safety={"payload": {"enforce": True, "mass_kg": 1.5, "cog_mm": (0.0, 0.0, 60.0)},
+    return kit_tree("ik", safety={"payload": {"mass_kg": 1.5, "cog_mm": (0.0, 0.0, 60.0)},
                                   "self_collision": {"backend": "fcl"}},
                     gripper={"model": hand, "tool_frame": {"source": "willy", "offset_mm": _OFFSET,
                                                           "rotation_quat_xyzw": _QUAT}, **gripper})

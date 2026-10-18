@@ -1,4 +1,4 @@
-"""The VLM route's testable half: response parsing and the on_unavailable contract.
+"""The VLM's testable half: response parsing, and what a VLM that cannot load says.
 
 No weights, no GPU, no network. Every rejection asserted here is a box that would otherwise have become
 a grasp pose, so the tests are written from that angle rather than as JSON-parsing trivia.
@@ -6,13 +6,10 @@ a grasp pose, so the tests are written from that angle rather than as JSON-parsi
 
 from __future__ import annotations
 
-import logging
 import unittest
 
-from src.models.perception_backend import PerceivedObject
 from src.models.vlm import (
     VLM_NOMINAL_SCORE,
-    GuardedVlmBackend,
     VlmUnavailableError,
     extract_json_payload,
     parse_grounding_response,
@@ -228,98 +225,22 @@ class BoxParsingTests(unittest.TestCase):
         self.assertEqual(parse("I'm sorry, I cannot see a red cube in this image."), [])
 
 
-class _FakeBackend:
-    def __init__(self, objects=(), error: BaseException | None = None) -> None:
-        self.objects, self.error, self.calls = objects, error, 0
+class AVlmThatCannotLoadTests(unittest.TestCase):
+    """Nothing grounds in its place (2026-10-17: GroundingDINO, the guard and its ``degrade`` left)."""
 
-    def perceive(self, image_bgr, prompt):  # noqa: ANN001
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        return tuple(self.objects)
-
-
-class OnUnavailableTests(unittest.TestCase):
-    """refuse | degrade -- the owner's stated contract, including that degrade must be loud."""
-
-    def test_working_vlm_is_passed_straight_through(self) -> None:
-        sentinel = (PerceivedObject(detection=None, segmentation=None),)  # type: ignore[arg-type]
-        guard = GuardedVlmBackend(vlm=_FakeBackend(sentinel), model_id="qwen")
-        self.assertEqual(guard.perceive(None, "the broken part"), sentinel)
-        self.assertFalse(guard.degraded)
-
-    def test_refuse_raises_rather_than_returning_empty(self) -> None:
+    def test_the_refusal_names_the_model_and_the_cause_and_offers_no_fallback(self) -> None:
         """'no objects found' and 'I could not look' are different answers."""
-        guard = GuardedVlmBackend(vlm=_FakeBackend(error=OSError("no weights")), model_id="qwen")
-        with self.assertRaises(VlmUnavailableError) as caught:
-            guard.perceive(None, "the broken part")
-        self.assertIn("qwen", str(caught.exception))
-        self.assertIn("on_unavailable=degrade", str(caught.exception))
+        error = VlmUnavailableError("qwen", OSError("no weights"))
+        self.assertIn("'qwen'", str(error))
+        self.assertIn("OSError: no weights", str(error))
+        self.assertIn("refuses rather than guessing", str(error))
+        self.assertNotIn("degrade", str(error))
+        self.assertIsInstance(error.cause, OSError)
 
-    def test_degrade_falls_back_and_warns_every_single_time(self) -> None:
-        """A one-shot warning scrolls away and the run then looks normal for an hour."""
-        fallback = _FakeBackend(())
-        guard = GuardedVlmBackend(
-            vlm=_FakeBackend(error=OSError("no weights")), model_id="qwen",
-            degrade=True, fallback_factory=lambda: fallback,
-        )
-        with self.assertLogs("src.models.vlm.availability", level=logging.WARNING) as first:
-            guard.perceive(None, "the broken part")
-        with self.assertLogs("src.models.vlm.availability", level=logging.WARNING) as second:
-            guard.perceive(None, "the broken part")
-        self.assertTrue(guard.degraded)
-        self.assertEqual(fallback.calls, 2)
-        for captured in (first, second):
-            self.assertTrue(any("DEGRADED" in line and "WRONG object" in line
-                                for line in captured.output))
+    def test_there_is_no_guard_to_degrade_through(self) -> None:
+        import src.models.vlm as vlm
 
-    def test_a_failed_load_is_not_retried_on_every_pick(self) -> None:
-        vlm = _FakeBackend(error=OSError("no weights"))
-        guard = GuardedVlmBackend(vlm=vlm, model_id="qwen", degrade=True,
-                                  fallback_factory=lambda: _FakeBackend(()))
-        for _ in range(3):
-            guard.perceive(None, "the broken part")
-        self.assertEqual(vlm.calls, 1, "a multi-second load must not be re-attempted per pick")
-
-    def test_the_fallback_is_never_built_while_the_vlm_works(self) -> None:
-        """The reason it is a factory: eager construction loads GroundingDINO AND SAM2 on a healthy
-        cell, spending seconds and VRAM on a path that never runs."""
-        built = []
-
-        def factory():
-            built.append(1)
-            return _FakeBackend(())
-
-        guard = GuardedVlmBackend(vlm=_FakeBackend(()), model_id="qwen",
-                                  degrade=True, fallback_factory=factory)
-        guard.perceive(None, "the broken part")
-        self.assertEqual(built, [], "the fallback must not be constructed unless it is used")
-
-    def test_the_fallback_is_built_once_across_many_degraded_picks(self) -> None:
-        built = []
-
-        def factory():
-            built.append(1)
-            return _FakeBackend(())
-
-        guard = GuardedVlmBackend(vlm=_FakeBackend(error=OSError("no weights")), model_id="qwen",
-                                  degrade=True, fallback_factory=factory)
-        for _ in range(3):
-            guard.perceive(None, "the broken part")
-        self.assertEqual(len(built), 1)
-
-    def test_degrade_without_a_fallback_is_refused_at_construction(self) -> None:
-        with self.assertRaises(ValueError):
-            GuardedVlmBackend(vlm=_FakeBackend(()), model_id="qwen", degrade=True)
-
-    def test_unexpected_errors_are_not_swallowed_into_a_fallback(self) -> None:
-        """Only missing-dependency / missing-weights / out-of-VRAM shapes degrade. A bug must surface."""
-        guard = GuardedVlmBackend(
-            vlm=_FakeBackend(error=ValueError("a real bug")), model_id="qwen",
-            degrade=True, fallback_factory=lambda: _FakeBackend(()),
-        )
-        with self.assertRaises(ValueError):
-            guard.perceive(None, "the broken part")
+        self.assertFalse(hasattr(vlm, "GuardedVlmBackend"))
 
 
 class ImportHygieneTests(unittest.TestCase):

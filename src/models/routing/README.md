@@ -1,106 +1,53 @@
-# Which model answers a prompt (`src/models/routing`)
+# What the command reader reads off a phrase (`src/models/routing`)
 
-Decides, from the prompt text alone and before any weights load, whether a prompt goes to the fast phrase
-grounder (GroundingDINO then SAM2) or to the vision-language model. No model, no image, no network: the
-same prompt always gets the same route, the reason, and the words that decided it.
+Two readings of a phrase, from its words alone: is it English, and does it carry a quantifier. No model, no
+image, no network: the same phrase always reads the same way, and a wrong reading names the word that caused it.
 
 ```python
-from src.models.routing import RuleBasedRouter
+from src.models.routing import analyse
 
-decision = RuleBasedRouter().route("greif den kaputten Wuerfel")
-print(decision.describe())    # vlm (non_english)
-decision.route                # Route.VLM
-decision.reason               # RouteReason.NON_ENGLISH
-decision.to_dict()            # JSON-safe: the perception event and the attempt record carry it
+analyse("den kaputten Wuerfel").non_english    # True: German words
+analyse("all screws").has_quantifier           # True: "all" belongs in a task's scope
+analyse("red cube").to_dict()                  # {'non_english': False, 'has_quantifier': False}
 ```
 
-The decision travels with the pick, so an operator who sees a slow one can find which word chose the
-expensive route. The console answers `GET /v1/diagnostics/route?prompt=...` the same way, loading
-nothing.
+The command reader ([`../vlm/command.py`](../vlm/command.py)) asks both of every phrase it would hand the
+detector: the object, where the parts lie, the one part a sentence singles out, and a place the camera finds. A
+phrase that is not English, or that carries a quantifier, is asked again once, saying what was wrong, because the
+detector is asked in English and "all", "every" and "both" belong in the task's scope.
 
-## Why a rule and not a cascade
+## The vocabularies
 
-The phrase grounder is fast and reliable on short noun phrases. On anything else it fails confidently: a
-high-scoring box on the wrong object, never an error. "Try the cheap one and fall back if the result
-looks bad" needs the cheap stage to fail loudly, and it does not; the failure is a robot grasping the
-wrong thing while the record says it succeeded. So the choice is made from the prompt, before either
-model runs. [`vlm/`](../vlm/README.md) has the measured case.
+| Reading | Fires on |
+| --- | --- |
+| `non_english` | a German word with no English reading ("der", "nicht", "kaputte", "wuerfel", ...), or any letter outside ASCII |
+| `has_quantifier` | "all", "every", "each", "both", "any", "several", "many", "few", "none", and the German "alle", "jeder", "beide", "mehrere", ... |
 
-## The rules
-
-The first property that matches wins, most specific first, and its name becomes the reason:
-
-| Reason | Fires on | Why the phrase grounder cannot do it |
-| --- | --- | --- |
-| `non_english` | German vocabulary, or any non-ASCII letter | its text encoder is English-trained |
-| `relative_clause` | "that", "which", "welche" | reference, not description |
-| `negation` | "not", "without", "nicht", "ohne" | a caption has no NOT |
-| `state_word` | "broken", "empty", "kaputt" | a judgement about condition |
-| `comparative` | "largest", "leftmost", "groesste" | it needs candidates compared |
-| `spatial_relation` | "behind", "next to", "hinter" | it relates two objects |
-| `quantifier` | "every", "all", "alle" | scope over a set |
-| `conjunction` | "and", "or", "und" | two targets in one phrase |
-| `multi_attribute` | `MULTI_ATTRIBUTE_THRESHOLD` attributes or more, 3 today | binding becomes the hard part |
-| `too_long` | more than `MAX_SIMPLE_WORDS` words, 6 today | it stopped being a noun phrase |
-| `plain_noun_phrase` | none of the above | the simple route |
-
-An empty prompt routes simple with the reason `empty_prompt`: routing is not validation, and sending a
-caller's bug to the expensive route would hide it. Umlauts and eszett fold to ASCII digraphs first, so
-"Wuerfel" and the umlaut spelling take the same route.
-
-**A class list is routed description by description** (the sorting package, 2026-10-09). A sort grounds
-every rule's kind of part, and a task every bin it looks for, in one call: `"green part | red part"`
-(`src.models.vlm.qwen.class_list_prompt`). Each description is routed on its own, and the list goes to the
-VLM where any one of them needs it, with that description's reason and signals, the first in the list's
-order. Where none does it routes simple, with the whole list's signals. Summed, `"green part | red part |
-blue part"` would read as one phrase binding three colours (`multi_attribute`) and `"small red cube | small
-green cube | small blue cube"` as one nine-word instruction (`too_long`), though GroundingDINO grounds
-each description as a phrase of its own (`"green part . red part . blue part"`). A prompt of one
-description routes as it always did. `rules.route` reads the descriptions with `classes_of`, imported when
-it routes, since `vlm.command` imports this package.
-
-## Where it runs
-
-Only inside `models.pipeline`, and only with `zero_shot.backend: vlm`: routing with nowhere better to
-send a hard prompt is a decision nothing can act on, and the schema refuses that combination by name.
-[`config/models/object.yaml`](../../../config/models/object.yaml) ships `router.enabled: false`, so the
-shipped stack grounds every prompt with GroundingDINO. The schema field defaults to `true`; the file is
-what a build reads.
+Umlauts and eszett fold to ASCII digraphs first, so "Wuerfel" and the umlaut spelling read the same. The reader
+adds the cell's own German words that read as English here (`GERMAN_WORDS` in `command.py`: "schrauben", "mutter").
 
 ## Traps
 
-**The thresholds are judgement, not measurement.** Where GroundingDINO's accuracy falls off on a given
-cell's scenes is unmeasured. `MAX_SIMPLE_WORDS` and `MULTI_ATTRIBUTE_THRESHOLD` are exported so they can
-be argued with in one place.
+**Only English and German are recognised.** Another language is caught only by its letters outside ASCII, so an
+accentless phrase in a third language reads as English.
 
-**Only English and German are recognised.** Another language is caught only by its non-ASCII letters,
-so an accentless prompt in a third language routes simple and grounds badly.
+**A false `non_english` costs a second question**, so the German vocabulary holds only words with no English
+reading: "die", "in", "an", "so", "war", "hat" and "leg" are left out on purpose.
 
-**A false `non_english` is the costly mistake**, since it slows every English pick. The German vocabulary
-holds only words with no English reading: "die", "in", "an", "so", "war", "hat" and "leg" are left out
-on purpose.
+## Where this came from
 
-**`models.pipeline.router.route_non_english_to_vlm` reaches nothing.** The router takes no configuration
-and the builder passes it none, so the non-English rule applies whatever that key says.
-
-## Replacing the rules
-
-`PromptRouter` is a Protocol because the rules are a starting point. Whatever replaces them must stay
-small, since it runs on every pick to decide whether to load a model of billions of parameters: a
-distilled encoder or a linear model over embeddings, at millisecond scale. Uncertainty must fall to
-`VLM`, because a wrong `SIMPLE` grasps the wrong object while a wrong `VLM` costs seconds. Label such a
-judge from measured grounding accuracy, not from an opinion of which prompts look hard.
+These are the vocabularies of the prompt router, which sent a plain English noun phrase to GroundingDINO and
+everything else to the VLM. Both left on 2026-10-17 (the owner's cleanup): the VLM grounds every phrase, and only
+the two readings the command reader asks are kept, word for word.
 
 ## Files
 
 | File | Holds |
 | --- | --- |
-| [`decision.py`](decision.py) | `Route`, `RouteReason`, `PromptSignals`, `RouteDecision` and the `PromptRouter` seam |
-| [`rules.py`](rules.py) | the vocabularies, `analyse()`, the thresholds and `RuleBasedRouter` |
-| [`normalize.py`](normalize.py) | `normalize_simple_prompt()`: lower case, one space, one trailing period, for the simple route only |
+| [`rules.py`](rules.py) | the vocabularies, `PromptSignals` and `analyse()` |
 
 ## Details
 
-- [`../vlm/`](../vlm/README.md), the expensive route; [`../README.md`](../README.md), the perception layer
-- Tests: `tests/test_prompt_router.py`, `tests/test_route_visibility.py`, `tests/test_api_perception_route.py`,
-  `tests/test_a_class_list_is_routed_by_each_of_its_descriptions.py`
+- [`../vlm/`](../vlm/README.md), the command reader and the detector; [`../README.md`](../README.md), the
+  perception layer
+- Tests: `tests/test_a_phrase_reads_as_english_or_not_and_with_a_quantifier_or_not.py`, `tests/test_vlm_command.py`

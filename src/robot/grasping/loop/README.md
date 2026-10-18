@@ -31,9 +31,8 @@ It prints `pick_started`, `attempt_started`, `perceived`, `ranked` with the cand
 | --- | --- | --- | --- |
 | `BinPickingOrchestrator` | the pick service | `run()` | `PickReport` with a `PickOutcome` |
 | a listener | your function taking a `PickProgress` | `service.attach_progress_listener(fn)` | events while the pick runs |
-| `TargetOrderingConfig` | `robot.grasping.ordering` | `select_target(candidates=..., config=...)` | `OrderingDecision` |
 | `LookedAround` | `orch.look_around()`, on a wrist camera | `orch.go_on_with(looked)`; read `orch.looked_around` after the pick | the looks visited, the grasp they judged, the looks refused, the generated view, the move back, and how many targets each look saw (`targets_by_look`) |
-| the recovery hand-over | the pick service, per pick | `orch.push_gate`, `orch.exclusion_zones`; read `orch.pushes` and `orch.failed_part` after the pick | what each push the pick considered came to (`PickPush`), and the part it failed on, which `next_target` skips |
+| the recovery hand-over | the pick service, per pick | `orch.push_gate`, `orch.exclusion_zones` (the regions the task keeps out); read `orch.pushes` after the pick | what each push the pick considered came to (`PickPush`) |
 
 The orchestrator depends only on the `RobotArm` Protocol, a calculator and a perception Protocol, which
 is how the simulation runners and a real cell share one loop.
@@ -52,13 +51,13 @@ A fixed camera never moves to look again. Another view comes from a second camer
 
 With an IK service wired, the calculator drops an unreachable candidate and the next ranked one stands;
 without one, the motion planner is the first to refuse it. `IK_FAILED` means every candidate was
-unreachable, and it arrives with `RESCAN_RECOMMENDED`. With the swept-path validator on, the loop executes the first candidate whose
-approach is clear.
+unreachable, and it arrives with `RESCAN_RECOMMENDED`.
 
 `PickOutcome` is the typed end: `EXECUTED`, `RESCANNED_EXHAUSTED`, `NO_PERCEPTION`,
 `ABORTED`, `CANCELLED`, `OBJECT_NOT_DETECTED`, `EXECUTION_FAILED`, `CAMERA_FRAME_REJECTED`,
-`APPROACH_PATH_BLOCKED`, `CONTROLLER_NOT_OPERATIONAL`, `GRIPPER_FAULT`. `RELOCATED_EXHAUSTED` left with the
-relocate path; a record it ended reads `no_valid_grasp`.
+`CONTROLLER_NOT_OPERATIONAL`, `GRIPPER_FAULT`. `RELOCATED_EXHAUSTED` left with the relocate path; a record
+it ended reads `no_valid_grasp`. `APPROACH_PATH_BLOCKED` left on 2026-10-16 with the swept-path validator
+that ended an attempt with it.
 `CANCELLED` is an operator's stop between attempts, kept apart from `ABORTED` so a stop button never counts
 as a failed execution. `CONTROLLER_NOT_OPERATIONAL` stops the loop retrying into a controller that has
 protective-stopped. `GRIPPER_FAULT` is a hand that needs a person: a gripper that raised while it was
@@ -70,7 +69,7 @@ stops on it.
 
 | Action | When |
 | --- | --- |
-| `executed`, `object_not_detected`, `camera_frame_rejected`, `approach_path_blocked`, `gripper_fault`, `execution_failed` | the execution policy's outcome |
+| `executed`, `object_not_detected`, `camera_frame_rejected`, `gripper_fault`, `execution_failed` | the execution policy's outcome |
 | `rescan`, `exhausted` | no candidate stood: a fresh frame follows, or the pick ends |
 | `controller_not_operational` | the attempt did not execute and the controller cannot move; on the way to a look it reads `look_refused` |
 | `look_refused` | a wrist pick reached none of its looks; a motion to a look, to the generated view or back failed once it may have been commanded, or was refused by its verb before any command; or the controller stopped on the way (outcome `CONTROLLER_NOT_OPERATIONAL`). Nothing was perceived there and nothing else was commanded |
@@ -121,7 +120,7 @@ the push read its candidates. So the grasp judged is the grasp executed.
   `PickAttempt.withheld` says it on every attempt that found no grasp, also when the frame failed on
   another part. A part the axis refused is the frame's failure only where no other part failed for its
   own reason, whichever order the camera lists them in.
-- **The cell's natural orientation** (`natural_closing_axis`, set from `robot.natural_closing_axis` by
+- **The cell's natural orientation** (`natural_closing_axis`, set from `robot.motion.natural_closing_axis` by
   `RuntimePickService.from_robot_config`) turns every grasp, where no program names an axis, to the wrist
   half-turn whose tool +X lies nearer it; none is left out or tilted. Beside the simulator's twist
   (`align_closing_to_base_x`, any true value) it turns no grasp, while a push still takes its way round,
@@ -159,8 +158,8 @@ flowchart LR
     B --> A
 ```
 
-- **Early stop.** Each look is fused with every earlier look and, where `grasping.fusion.geometry` is on,
-  with the fixed cameras, acquired once per pick. The grasp is computed again on what they saw together,
+- **Early stop.** Each look is fused with every earlier look and, where the cell fuses fixed cameras,
+  with them, acquired once per pick. The grasp is computed again on what they saw together,
   and the looking stops at the first look whose grasp is valid with no rescan reason. An uncertain grasp
   or no candidate goes on to the next look.
 - **Every look** (`orch.every_look`, handed per pick by the service and taken back; the console's "Alle
@@ -168,8 +167,8 @@ flowchart LR
   and the pick goes on with the judgement of the last, fused over every look; the generated view still
   follows only where that is not safe enough. A fixed camera, and a pick handed no looks, ignore it.
   `LookedAround.every_look` says it ran; the service reports `telemetry['every_look']`.
-- **A weak look** (`orch.weak_look`, set where the cell is built from `robot.grasping.weak_look_trigger`,
-  off by default; the owner's automatic trigger, 2026-10-08 night). On a wrist pick handed looks, a valid
+- **A weak look** (`orch.weak_look`, on in every cell built from a tree; the owner's automatic trigger,
+  2026-10-08 night). On a wrist pick handed looks, a valid
   grasp whose view of the part is weak carries `ACTIVE_PERCEPTION_RECOMMENDED`, so the looking goes on
   (`_weak_look`): depth on less than 85 % of the look's own mask (`WEAK_LOOK_DEPTH_SHARE`), a part
   standing more than 1.5 times its footprint's short side over its support with no side of it seen
@@ -187,7 +186,7 @@ flowchart LR
 - **All the data.** The support plane is refined from the part's cloud fused over two or more looks, and
   the neighbours every look saw reach the candidate filter, so a part only an earlier look saw stays an
   obstacle.
-- **The footprint less the rim** (`robot.grasping.geometry.footprint_rim_mm`, 0.0 by default; the owner,
+- **The footprint less the rim** (2.0 mm on every cell, `footprint_rim.FOOTPRINT_RIM_MM`; the owner,
   2026-10-09). Where the calculator cuts a rim off the support-footprint stage's input
   (`GraspCalculator.support_footprint_rim_mm`, read by `_footprint_rim_mm`), every look keeps each surface
   less its mask's rim beside it (`_LookView.footprints`, `generation/footprint_rim.py`) and says in one INFO
@@ -239,12 +238,11 @@ flowchart LR
   the looks' surfaces of the part. Above `HAND_EYE_DRIFT_WARN_MM` (6 mm, in
   [`multiview/association.py`](../multiview/association.py)) a WARNING says the calibration may have
   drifted. Nothing else is done about it.
-- **Handed on.** `look_around()` is a wrist camera's and raises `ValueError` on a fixed camera. The
-  decision path decides on its judgement and hands it to the next `run()` only through
-  `go_on_with(looked)`. A wrist pick handed no looks looks from where the arm stands and rescans there, as
+- **Handed on.** `look_around()` is a wrist camera's and raises `ValueError` on a fixed camera. A caller
+  that looked first hands its judgement to the next `run()` only through `go_on_with(looked)`. A wrist pick handed no looks looks from where the arm stands and rescans there, as
   it always did.
 - **Following the parts a task kept** (`orch.follow`, `orch.follow_looks`, handed per pick by the service and
-  taken back; `robot.grasping.follow_parts`, off by default; the owner, 2026-10-09). `follow` is the parts
+  taken back; every cell's; the owner, 2026-10-09). `follow` is the parts
   the task's last pick kept (`src/robot/perception/kept_scene.KeptScene`): the first look of the pick's
   first look sequence, and only that look, hands the camera source a follow, which finds them again with
   SAM2 on their boxes and no detector where nothing changed in depth and every part passes every check, and
@@ -257,11 +255,12 @@ flowchart LR
   that does not say it follows parts (`follows_parts`) grounds every frame, said once. `LookedAround`
   carries `followed`, `follow_why` (what the first look came to, or why it grounded) and `looks_followed`;
   each PERCEIVED event carries the source's route, `followed` or `grounded`, where a follow was handed.
-- **The task's own places hidden from the detector** (`orch.hide_own_places`, set where the cell is built
-  from `robot.grasping.hide_own_places`, off by default; the owner, 2026-10-08 night). Every acquire, a
+- **The task's own places hidden from the detector** (`orch.hide_own_places`, on in every cell built from a
+  tree; the owner, 2026-10-08 night). Every acquire, a
   wrist look's and a fixed camera's, hands the camera source a `hide` (`_hidden`): the regions
   `exclusion_zones` keeps out of every label (the task's bin, the circles about its drops), placed in the
-  frame by the frame resolver at its stamped pose, against the declared support (`support_config`). The
+  frame by the frame resolver at its stamped pose, against the declared support (`declared_support`, the cell's
+  bench and bin). The
   source paints them over the copy of the frame its detector reads
   (`src/robot/perception/realsense_source.kept_out_pixels`); the segmenter, the depth and every check
   after them read the real frame. Nothing is handed with the switch off or no such region, and, said once,
@@ -308,15 +307,10 @@ frame, and where that look's grasps are refused ahead the part or the scene is p
 of the three once, the line in first and the route last, and runs the route it judged where nothing changed
 since (the judge chain of 2026-10-08, [guide 05](../../../../docs/guide/05-pick-loop.md) 6.4).
 
-Two recovery actions reach into the loop, and only where the service arms them
-([recovery/](../recovery/README.md)):
+The recovery reaches into the loop through the push and the clearing of a blocker, both handed by the
+service per pick ([recovery/](../recovery/README.md)):
 
-- **`next_target`** skips a failed part: beside the label gate, the loop passes over a segmentation of
-  the same label whose centre lies in an exclusion zone. With only excluded parts left, the pick stops
-  and says so. On a wrist camera the new part gets the look sequence again: the early stop, at most one
-  generated view. Before it drives the looks again, the service reads a toggle's count, and one nobody
-  can vouch for ends the pick as a gripper fault before any look is driven.
-- **The owner's switch** (2026-10-03, `PushGate.critical_parts`, from `recovery.critical_parts` or the
+- **The owner's switch** (2026-10-03, `PushGate.critical_parts`, from `runtime.task.critical_parts` or the
   run): parts that are not critical are **pushed first**, and the push may rearrange the scene; where no
   push plans, a blocker is cleared. **Critical parts are never pushed**, and a blocker is cleared instead.
   Both run on a part that failed `ALL_COLLIDED` and on one whose every grasp was refused ahead
@@ -328,8 +322,7 @@ Two recovery actions reach into the loop, and only where the service arms them
   blanked, says frees a grasp of the part or spares one of its refusals, and on an arm that models a carried
   part no longer past the fingertips than that model. Where no one removal frees a grasp, the calculator is
   asked once with every candidate blanked, and where that frees one, the nearest goes first. Its grasps are
-  tried best first, each judged from the look before the arm leaves for it, at most
-  `recovery.blocker_grasp_tries` (3). It is gripped by the policy with the part back in the planner world and
+  tried best first, each judged from the look before the arm leaves for it, at most three. It is gripped by the policy with the part back in the planner world and
   the blocker held out of it, set down by the place verb on a free spot the camera saw or at
   `blocker_place`, and the arm goes back to its look and looks again. No budget: each removal has to spare
   some of the part's refusals, a blocker set down is never taken again, and the clearing stops with a typed
@@ -340,7 +333,7 @@ Two recovery actions reach into the loop, and only where the service arms them
   reads the pick's stop check between its legs: a stop asked for ends it where the arm stands. The events:
   `ATTEMPT_FINISHED` with action `clear_blocker` and `blocker` (`set_aside` or the stop's code),
   `blocker_at_mm`, `set_down`, `looked_again` or `blocker_reason` in `extra`. With `blocker_is_the_pick`
-  (a task that takes every part into one place, `recovery.blocker_into_the_place`, the owner, 2026-10-06) the
+  (a task that takes every part into one place, the owner, 2026-10-06, unless its run unticks it) the
   blocker is the part the pick takes: gripped, lifted and reported executed on its own grasp and cloud
   (action `blocker_picked`, `blocker: taken_as_the_pick`), set down by the caller where its parts go; only a
   part the detector named is taken so, and no free spot is asked for. Nothing in a region the task keeps out is
@@ -386,44 +379,26 @@ in flight; the physical stop button does that.
 
 ## Which object first
 
-A look's parts are computed in the camera's order and the best grasp is taken, unless the cell takes the
-first good part (`robot.grasping.first_good_part`, on in the shipped tree: the owner's "speed first" of
-2026-10-08). Then the parts are computed one at a time in the order they stand apart, those the hand
-closes across first and the less crowded first, and the first whose result is full, carries no rescan
-reason and scores `good_part_score` (0.6) or more is taken; the rest are not computed. None good, the
-best is taken. With `fine_pass_waits` SFE's fine search waits while another part may have a full
-result: a part whose coarse grid found few grasps gets it only where no part has a full result with a
-grasp, and the choice is then the one of before. A frame with no grasp is computed whole and fails as it
-always did; a later look of a wrist pick computes only the part it keeps; the selector below computes
-every part.
+A look's parts are computed in the camera's order and the best grasp is taken, unless the loop takes the
+first good part (`lazy_objects`, every cell's: the owner's "speed first" of 2026-10-08). Then the parts are
+computed one at a time in the order they stand apart, those the hand closes across first and the less crowded
+first, and the first whose result has a grasp, carries no rescan reason and scores 0.6 (`GOOD_PART_SCORE`;
+`robot.grasping.good_part_score` until 2026-10-17) or more is taken; the rest are not computed. None good, the
+best is taken. A frame with no grasp is computed whole and fails as it always did; a later look of a wrist
+pick computes only the part it keeps; the selector below computes every part.
 
-Each part's support-footprint search runs on the cell's worker processes where the cell started them
-(`robot.grasping.workers`; `orch.sfe_workers`, which `build_real_cell` sets): the loop hands the pool to the
-calculator with every ranking and every asking again of the same frame, a blocker's grasps included, and the
-answer is the one process's ([generation/](../generation/README.md)). With none the loop hands nothing, and
-the calculator is asked as before.
-
-`target_selector.py` runs when several objects are graspable at once. It estimates how much removing
-each one would unblock the others and returns an `OrderingDecision`: the chosen index, the scores, the
-mode (`single_best` or `clutter_aware`) and a reason (`local_max`, `unlock_swap`, `guard_blocked_swap`,
-`no_candidates` or `disabled`). It is pure: no input or output and no robot state.
-
-The defaults reduce to taking the best grasp, byte for byte: `enabled` is false and `unlock_weight` is
-`0.0`, so the blocker graph is built and multiplied by zero. Of the three blocker signals,
-`mask_adjacency_enabled` and `depth_only_enabled` work when switched on; `corridor_overlap_enabled` is
-accepted and does nothing. Ordering can only change a decision where two graspable objects block each
-other, and with a target label the choice is made before ordering is asked.
+The clutter-aware ordering that could pick another of several graspable objects (`target_selector.py`,
+`robot.grasping.ordering`) left on 2026-10-16: with a target named, which every task does, the choice was
+made before it was asked.
 
 ## What it refuses
 
 | Refusal | When | What to do |
 | --- | --- | --- |
 | `CAMERA_FRAME_REJECTED` | the chosen grasp is still in the camera frame on a cell that requires BASE | check the camera's declared calibration |
-| `APPROACH_PATH_BLOCKED` | every ranked candidate's approach sweep hits the scene cloud | clear the scene or re-perceive |
 | `CONTROLLER_NOT_OPERATIONAL` | the controller is stopped or powered off | a person clears the stop |
 | `GRIPPER_FAULT` | the gripper raised, a toggle hand believes its jaws closed and nobody at a terminal said otherwise, or a push found nobody can vouch for the hand (a toggle's count, a width-measuring gripper not connected or unreadable) | look at the hand, then run from a terminal or connect again |
 | `RESCANNED_EXHAUSTED`, `NO_VALID_GRASP`, `withheld` naming the axis | the program's `closing_axis` left the part no grasp within 30 deg | name an axis the part's grasps close along, or none |
-| `RuntimeError` | a configured fused camera delivered no frame and `on_camera_unavailable` is `refuse` | see [`multiview/`](../multiview/README.md) |
 | `look_refused`, `EXECUTION_FAILED` or `CONTROLLER_NOT_OPERATIONAL` | a wrist pick reached none of its looks, a look motion may have moved the arm, or the controller stopped on the way | read the motion status on the attempt; teach looks the planner admits; a stopped controller needs a person |
 | `faces_unseen`, `RESCANNED_EXHAUSTED` | `both_faces` was asked and no view showed both jaw contact faces | give the pick a look that faces the missing side, or leave the switch off |
 | `ValueError`, nothing moved | `look_around()` on a fixed camera; `both_faces` or a `closing_axis` with a motion that yaws every grasp (`align_closing_to_base_x`); a `closing_axis` or a hand-set `natural_closing_axis` that names no axis (`TypeError` for a value of another type); `go_on_with` of a look sequence that is not the last one open | fix the call |
@@ -434,13 +409,11 @@ other, and with a target label the choice is made before ordering is asked.
 | --- | --- |
 | The loop, its outcomes and the progress events | measured in simulation: every Isaac pick runs through it |
 | `CONTROLLER_NOT_OPERATIONAL` | measured against real controller software: a protective stop in URSim |
-| Clutter-aware ordering | never touched hardware: tested on synthetic scenes, no measured scene where order matters |
-| The first good part and the fine search waiting | pinned by tests on stand-in calculators and a ray-cast bench; not yet run on the grasp bench or the cell |
-| SFE's units on worker processes | pinned by tests: the recorded Zollstock looks and a ray-cast frame of four parts give the one process's answer to the bit with a pool of two; timed on the morning's look of 2026-10-08 at a desk; not yet run on the cell |
+| The first good part | pinned by tests on stand-in calculators and a ray-cast bench; not yet run on the grasp bench or the cell |
 | The wrist looks, the generated view, the move back and `both_faces` | pinned by tests on fake arms and cameras, and the Isaac arm generates no view; never touched hardware |
-| Following a task's parts, the later looks' projected boxes and the kept part first | pinned by tests on a ray-cast bench through the real source (`tests/test_a_later_look_follows_the_parts_its_first_look_saw.py`); off by default; never touched hardware |
-| Every look, and the weak-look trigger | pinned by tests on the ray-cast bench (`tests/test_a_wrist_pick_drives_every_look_where_asked.py`, `tests/test_a_weak_look_sends_the_pick_on_to_its_next_look.py`); the trigger is off by default, its thresholds the map's, measured on one recorded frame of the cell (the picked cube: none fires); never touched hardware |
-| The task's own places hidden from the detector | pinned by tests on the ray-cast bench through the real source (`tests/test_the_tasks_own_places_are_hidden_from_the_detector.py`); off by default; needs the backend change that hands the detector a copy (`detects_on_a_copy`); never touched hardware |
+| Following a task's parts, the later looks' projected boxes and the kept part first | pinned by tests on a ray-cast bench through the real source (`tests/test_a_later_look_follows_the_parts_its_first_look_saw.py`); on in every cell built from a tree since 2026-10-17, and switched on in the trees the owner's cell ran from 2026-10-12 to 10-15 (the replay bank's); not yet measured from its logs |
+| Every look, and the weak-look trigger | pinned by tests on the ray-cast bench (`tests/test_a_wrist_pick_drives_every_look_where_asked.py`, `tests/test_a_weak_look_sends_the_pick_on_to_its_next_look.py`); the trigger is on in every cell built from a tree since 2026-10-17, its thresholds the map's, measured on one recorded frame of the cell (the picked cube: none fires); switched on in the trees the owner's cell ran from 2026-10-12 to 10-15; not yet measured from its logs |
+| The task's own places hidden from the detector | pinned by tests on the ray-cast bench through the real source (`tests/test_the_tasks_own_places_are_hidden_from_the_detector.py`); on in every cell built from a tree since 2026-10-17; needs the backend change that hands the detector a copy (`detects_on_a_copy`); switched on in the trees the owner's cell ran from 2026-10-12 to 10-15; not yet measured from its logs |
 | The push inside a wrist camera's attempt | pinned by tests with a fake arm and a fake live world; ran on URSim CB3 on 2026-10-02, a recorded look standing in for the camera ([`probe_push_on_the_mat.py`](../../../../scripts/ursim/probe_push_on_the_mat.py)); never touched hardware |
 
 ## Files
@@ -449,13 +422,6 @@ other, and with a target label the choice is made before ordering is asked.
 | --- | --- |
 | [`pick_loop.py`](pick_loop.py) | `BinPickingOrchestrator`, `PickReport`, `PickOutcome`, `PickAttempt`, `LookedAround`, `judged_faces_turned_away` |
 | [`progress.py`](progress.py) | `PickStage`, `PickProgress`, `emit` |
-| [`target_selector.py`](target_selector.py) | `select_target`, `TargetOrderingConfig`, `OrderingDecision`, the blocker graph |
-| [`_pick_helpers.py`](_pick_helpers.py) | a chosen `GraspPoint` to a `GraspPose`, and successes to `TargetCandidate` records |
-| [`_shadow_aggregator.py`](_shadow_aggregator.py) | the observe-only telemetry the loop emits for the learning tools |
-
-The shadow aggregator owns no state: every per-pick slot stays on the orchestrator, because the pick
-service reads several of them by name, and moving one would drop telemetry with no error. Every shadow
-producer swallows its own exceptions so it cannot break a pick, which is why the aggregator logs.
 
 ## Details
 
@@ -469,10 +435,9 @@ producer swallows its own exceptions so it cannot break a pick, which is why the
   after its close ([`motion/`](../motion/README.md)).
 - [The console](../../../../api/README.md) streams `PickStage` over a WebSocket.
 - [Guide 05, the pick loop](../../../../docs/guide/05-pick-loop.md), and
-  [the grasping config reference](../../../../docs/grasping-config-reference.md) for `ordering`.
+  [the grasping config reference](../../../../docs/grasping-config-reference.md).
 - Tests: `tests/test_pick_loop.py`, `tests/test_pick_progress.py`,
-  `tests/test_pick_loop_controller_state.py`, `tests/test_t4_target_selector.py`,
-  `tests/test_t4_pick_loop_ordering.py`, `tests/test_a_wrist_pick_looks_until_its_grasp_is_safe.py`,
+  `tests/test_pick_loop_controller_state.py`, `tests/test_a_wrist_pick_looks_until_its_grasp_is_safe.py`,
   `tests/test_a_wrist_pick_runs_end_to_end.py`, `tests/test_both_jaw_faces_are_seen.py`,
   `tests/test_the_generated_view_moves_on_its_straight_joint_line_only.py`,
   `tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py`,

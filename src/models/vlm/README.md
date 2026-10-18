@@ -1,14 +1,14 @@
-# The vision-language route for hard prompts (`src/models/vlm`)
+# The vision-language model, the cell's grounder (`src/models/vlm`)
 
-A vision-language model (Qwen3-VL) used as a detector: it reads a prompt a phrase grounder cannot
-represent, such as a negation, a comparison or German, and answers with boxes. Boxes are what the
-two-stage backend already hands to the segmenter, so this replaces the detector stage and nothing
-downstream changes. A cell switches it on in config; you rarely construct it yourself.
+A vision-language model (Qwen3-VL) used as a detector: it reads any prompt, a negation, a comparison or German
+included, and answers with boxes. Boxes are what the two-stage backend already hands to the segmenter, so it is the
+detector stage and nothing downstream changes. It is the shipped stack (`models.pipeline.kind: zero_shot`), and since
+2026-10-17 the only one that reads free text; you rarely construct it yourself.
 
 ```python
 from willy import ObjectDetector, load_tree
 
-tree = load_tree().with_values({"models.pipeline.zero_shot.backend": "vlm"})   # or set it in object.yaml
+tree = load_tree()                                                              # kind: zero_shot, as shipped
 detector = ObjectDetector.from_config(tree)                                     # Qwen3-VL grounds, SAM2 cuts
 found = detector.detect(image_bgr, prompt="the broken part", segment=True)     # no score: a VLM writes boxes
 ```
@@ -22,9 +22,9 @@ from src.models.vlm import Qwen3VLGrounder
 backend = TwoStageBackend(detector=Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct"), segmenter=segmenter)
 ```
 
-[`routing/`](../routing/README.md) decides which prompts reach this route when both are configured, and
-[detect_with_a_prompt.py](../../../examples/offline/perception/detect_with_a_prompt.py) takes `vlm` or `router` as
-its third argument.
+The weights are read from the model's id under `models.weights_root` (`vlm/Qwen--Qwen3-VL-4B-Instruct`, which
+`python scripts/model_weights/fetch.py vlm-4b` writes), else from the Hugging Face cache, and nothing downloads.
+[detect_with_a_prompt.py](../../../examples/offline/perception/detect_with_a_prompt.py) runs it on any image you name.
 
 **The same copy reads the operator's commands.** A process holds one Qwen3-VL (`shared_vlm()`): the build takes
 its grounder from it, and the console's command reader asks it a text-only question, so a cell whose detector is
@@ -39,7 +39,7 @@ reading = understand("Leg den grünen Würfel in die blaue Kiste", ask=ask, pose
 print(reading)                                      # object 'green cube', place 'blue bin', scope once
 ```
 
-## Why the route exists
+## Why it is the only grounder
 
 A phrase grounder does not fail on a prompt it cannot represent. It returns a confident box on the wrong
 object, and nothing downstream (not the gate, not the record, not the operator) can tell that from a
@@ -47,33 +47,28 @@ right answer. Measured in simulation with
 [`run_attribute_pick`](../../willy_sim/run_attribute_pick.py): four objects of one size, a red and a blue
 cube and a red and a blue cylinder, so only the conjunction names one.
 
-| Prompt | Route | Intended object lifted | Wrong object lifted |
+| Prompt | Grounder | Intended object lifted | Wrong object lifted |
 | --- | --- | --- | --- |
-| `"the red cube"` | phrase grounder | 0 of 10 | 10 of 10, each reported a success |
+| `"the red cube"` | GroundingDINO, the phrase grounder | 0 of 10 | 10 of 10, each reported a success |
 | `"the red cube"` | VLM | 10 of 10 | 0 |
-| `"der rote Wuerfel"` | phrase grounder | 0 of 10 | 0: no target, no motion |
+| `"der rote Wuerfel"` | GroundingDINO, the phrase grounder | 0 of 10 | 0: no target, no motion |
 | `"der rote Wuerfel"` | VLM | 10 of 10 | 0 |
 
 On one rendered frame of that scene, eight prompts each naming one object in English or German, the VLM
 grounded 5 of 8 and the phrase grounder 2 of 8. Every VLM miss put a cylinder prompt on the cube of the
 same colour: the colour bound, the shape did not, on a frame where the circles and squares are plainly
 distinct ([the frame](../../../docs/assets/attribute_scene.png)). The phrase grounder did get
-`"the red cylinder"` right where the VLM did not, so neither route is strictly better.
+`"the red cylinder"` right where the VLM did not. GroundingDINO, the router that sent plain English to it and the
+fallback to it left on 2026-10-17 all the same (the owner's cleanup): the owner's cell detected with the VLM alone.
 
 ## What it refuses
 
-`models.pipeline.zero_shot.vlm.on_unavailable` decides what happens when the model cannot load:
-
-| Mode | Behaviour |
-| --- | --- |
-| `refuse`, the default | raises `VlmUnavailableError` with the cause: weights missing, a dependency absent, or no VRAM |
-| `degrade` | falls back to the phrase grounder and warns on every use, so a degraded run never looks normal |
-
-"No objects found" and "I could not look" are different answers, and a pick must not read the second as
-the first. Refuse is the default because the prompts that reach this route are the ones the phrase
-grounder gets confidently wrong: a quiet fallback means grasping something the operator did not ask for.
-Only those three causes degrade; any other exception is a bug and surfaces. `degrade` without a
-`models.objectdetector` block is refused when the stack is built, since there is nothing to fall back to.
+A VLM that cannot load (its weights missing, a dependency absent, no VRAM) refuses, and nothing grounds in its place.
+A grounding raises inside the detector, which the two-stage backend counts and answers with no objects, so the
+console's task ends `detector_failed` on the count, never "nothing left"; a command is refused with
+`VlmUnavailableError`'s sentence, the cause in it. "No objects found" and "I could not look" are different answers,
+and a pick must not read the second as the first. `on_unavailable: degrade`, which grounded with GroundingDINO
+instead, left with GroundingDINO; the owner's cell ran `refuse`.
 
 ## The parsing is the hard part
 
@@ -110,10 +105,9 @@ image tokens), and "What colour is the object in the middle of this picture? Ans
 most 3 new tokens, under the same generate lock. A colour word and not a yes or a no, which an instruct model gives too
 easily. Its time on the cell's 8B is unmeasured (about 0.3 to 1.5 s estimated).
 
-**Following asks no VLM.** A task that follows its parts (`robot.grasping.follow_parts`) has the boxes of the parts the
-VLM grounded cut by SAM2 alone: `GuardedVlmBackend.segment_boxes` forwards to the VLM route's segmenter and never loads
-the VLM, and a degraded guard cuts nothing, so the frame is grounded by the fallback, warned about as ever. The VLM stays
-the grounding of record: the first pick of a task, every trigger and every end check ask it.
+**Following asks no VLM.** A task that follows its parts, as every task on a cell built from a tree does since
+2026-10-17 (`robot.grasping.follow_parts` until then), has the boxes of the parts the VLM grounded cut by SAM2 alone: `TwoStageBackend.segment_boxes` hands them to the segmenter and never asks the VLM.
+The VLM stays the grounding of record: the first pick of a task, every trigger and every end check ask it.
 
 **One call for several kinds** (the sorting package, the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die
 blaue"). A class list, `class_list_prompt(["green part", "red part"])` or `"green part | red part"`, grounds every rule's
@@ -125,8 +119,7 @@ one description is asked with `GROUNDING_INSTRUCTION`, byte for byte as before. 
 are one object, and where that object carries two descriptions every one of its boxes is `ambiguous`
 (`AMBIGUOUS_LABEL`), as is a box the model named by none. `ambiguous` is no description's: no rule takes such a part, and
 it stays an obstacle. A description that holds the bar or the word `ambiguous` is refused by `class_list_prompt`.
-GroundingDINO gets a class list as a caption of one phrase each (`"green part . red part"`) and its boxes pass the same
-rule, and the router routes each description on its own ([routing/](../routing/README.md)). How well the cell's 8B, or
+How well the cell's 8B, or
 the 4B, keeps two colours apart in one call is not measured: `tests/test_vlm_class_list_inference.py` is written and has
 not run.
 
@@ -154,8 +147,8 @@ measured to answer them ([`known.py`](known.py), below); no other word list read
   where the parts lie, or a phrase for the detector (object, from, which, place) that is not English or carries a
   quantifier is asked again once, saying what was wrong;
   a German command's phrase made of the command's own words alone was copied, not translated. Word lists check
-  the answer, never the sentence: `GERMAN_WORDS` (German part, colour and material words the router reads as
-  English), `SHARED_WORDS` (words English shares, such as "Box", which are no copy) and `ANY_PART_WORDS` (a word
+  the answer, never the sentence: `GERMAN_WORDS` (German part, colour and material words the phrase reading takes
+  for English, [`../routing/`](../routing/README.md)), `SHARED_WORDS` (words English shares, such as "Box", which are no copy) and `ANY_PART_WORDS` (a word
   for any part names none, so the card asks what to pick). A second bad answer is "not understood", and the card
   is filled in by hand.
 - **Read narrowly.** A place whose own words are a taught pose's label is that pose, with no second question. A
@@ -213,17 +206,16 @@ allocated. `forget()` drops what the holder knows and unloads nothing: a test's 
 
 Every token of an answer is one pass of the model, and the passes are the time: about 46 ms a pass with the 4B on the
 dev box's RTX 5080 (2026-10-09, its CPU busy with other work; 32 ms on a quiet box) and about 140 ms with the cell's
-8B, against about 0.25 s to read the image and the instruction. Four keys of the `vlm` block decide how an answer is
-written. A build hands them to the process's one copy (`Qwen3VLGrounder.configure`), and so do a command and "Laden"
-(`holder._answer_as`), so a cell whose detector is not the VLM, or a routed cell before its first VLM prompt, reads its
-commands as its block says too. The owner's cell sets both lookups to 10 (2026-10-08) and keeps the stop at its
-default; its decode graphs are delivered `off` and go on (`auto`) once they pass their check on the cell's 8B:
+8B, against about 0.25 s to read the image and the instruction. Four settings decide how an answer is written. They
+were keys of the `vlm` block until 2026-10-17 and are fixed since at the owner's cell's values (the owner's cleanup):
+every copy is built with them (`Qwen3VLGrounder`'s defaults, [`qwen.py`](qwen.py)), so a grounding, a command and
+"Laden" answer alike, whatever the cell's detector:
 
-| Key | Default | What it does | Measured with the 4B, 90 calls on the cell's frames |
+| Setting | The owner's cell's, fixed | What it does | Measured with the 4B, 90 calls on the cell's frames |
 | --- | --- | --- | --- |
-| `stop_at_answer_end` | `true` | a grounding answer ends where its JSON array closes, a command's reading where its object closes | the same boxes and cards, one pass sooner |
-| `prompt_lookup_tokens` | `0` | proposes a grounding answer's next tokens from the answer so far and checks them in one pass | 3025 passes instead of 6773; 42 of 90 answers byte-identical, a coordinate's last digit moves |
-| `text_prompt_lookup_tokens` | `0` | the same for a command's reading | 67 sentences of the tests and the cell's logs: 1458 passes instead of 2539, 3 readings otherwise (below) |
+| `stop_at_answer_end` | on | a grounding answer ends where its JSON array closes, a command's reading where its object closes | the same boxes and cards, one pass sooner |
+| `prompt_lookup_tokens` | 10 | proposes a grounding answer's next tokens from the answer so far and checks them in one pass | 3025 passes instead of 6773; 42 of 90 answers byte-identical, a coordinate's last digit moves |
+| `text_prompt_lookup_tokens` | 10 | the same for a command's reading | 67 sentences of the tests and the cell's logs: 1458 passes instead of 2539, 3 readings otherwise (below) |
 | `decode_graphs` | `auto` | each pass as CUDA graphs, the attention over the answer as before | every answer byte-identical; 19.7 ms a pass instead of 46.3 |
 
 **The text lookup and today's instruction.** Measured on ten commands with the earlier instruction, every reading was
@@ -231,8 +223,8 @@ byte-identical; with the compact one of 2026-10-08, 3 of 67 came out otherwise: 
 Matte in die gelbe Kiste" said `"object_said":"Alle grauen Würfel von der schwarzen Matte"` where the plain answer
 said `"graue Würfel von der schwarzen Matte"` (not in the sentence, so the card asks), "Alle Würfel und Zylinder, in
 die gelbe Kiste." likewise with "Alle", and "Leg den Becher in die Kiste neben Ablage links" placed the cup in `"bin
-next to Ablage links"` where the plain answer said `"bin"`. So it stays off by default, and a cell that turns it on
-reads those sentences differently from the plain model.
+next to Ablage links"` where the plain answer said `"bin"`. The owner's cell ran the lookup at 10 all the same, so its
+readings of those sentences are the lookup's, not the plain model's.
 
 **How the lookup proposes** (`_AnswerLookup`, through transformers' assisted decoding, which keeps the proposals the
 model itself would write and one token of its own). transformers' own prompt lookup takes the first match from the
@@ -257,8 +249,9 @@ of the card for each layer and length.
 So the graphs launch the plain pass's kernels, in its order, on its data, and the answers are byte-identical: all 90
 calls with and without the answer lookup, and the command readings. The first pass of each shape is also compared
 with the plain pass bit for bit (logits and cache) before graphs answer, and logged (`decode graphs for 1 token(s) a
-pass ... bit for bit`). `auto` decodes with graphs on a CUDA card of compute capability 8.0 or newer where that check
-matched; `on` on any CUDA card, a check that differed only warned; `off` as before. A capture or a pass that fails
+pass ... bit for bit`). The cell's `auto` decodes with graphs on a CUDA card of compute capability 8.0 or newer
+where that check matched; `configure` also takes `on` (any CUDA card, a check that differed only warned) and `off`
+(as before), for a measurement. A capture or a pass that fails
 cuts the cache back to before the pass, runs it plainly and turns graphs off until the copy is loaded again; the
 decision and every check are logged in `vlm_grounder.log`.
 
@@ -286,56 +279,50 @@ Measured on that card against the real 4B weights: a load of 6.3 to 7.3 s, a pea
 command is answered, about 2.2 s per command on a free card and 5.5 to 19 s while another GPU job runs, answers
 of 53 to 73 tokens. The cell PC's card is unmeasured, beside SAM2, Whisper, the cuRobo sidecar and the desktop.
 
-**The `on_unavailable` contract does not fire through the composed stack.** `TwoStageBackend` turns a detector
-that raises, a VLM that cannot load included, into "no objects" before `GuardedVlmBackend` sees it, and counts it
-(`failures`, `last_failure`): a pick reads nothing found, and the console's task ends `detector_failed` on the
-count instead of "nothing left". Whether the guard should see the load error first is open.
-
 **The schema default and the shipped value differ.** The schema names the 4B FP8 variant;
 [`config/models/object.yaml`](../../../config/models/object.yaml) ships the 4B bf16 checkpoint, which
 the coordinate space in `qwen.py` is written for. FP8 needs `compressed-tensors`, which `requirements.txt`
 does not install.
 
-**`preload: false` is the default**, so the model loads on the first prompt that reaches this route, a
-one-off pause mid-session. `preload: true` loads it when the cell is built, except under
-`router.enabled`, where the route stays lazy.
+**The model loads at its first prompt**, a one-off pause mid-session (6.3 to 7.3 s for the 4B on the dev box),
+never when the cell is built: `preload`, which could load it at the build, left on 2026-10-17 at the owner's cell's
+`false`.
 
 ## Status
 
 | Capability | Evidence |
 | --- | --- |
-| The route picking the intended object, and the grounding table above | measured in simulation |
+| The VLM picking the intended object, and the grounding table above | measured in simulation |
 | The coordinate space, against real weights on a synthetic scene (IoU about 0.87) | measured in simulation (`tests/test_vlm_inference.py`) |
-| The route on a real cell's camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
+| The VLM on a real cell's camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
 | The command reader against the real 4B weights: German part nouns translated, a spoken label read back as the pose's name, the load and the VRAM | measured on the development box's RTX 5080 (`tests/test_vlm_command_inference.py`); not on the cell PC |
 | The decode graphs: every answer byte-identical, 19.7 ms a pass instead of 46.3 | measured with the 4B on the development box's RTX 5080, 90 calls on the cell's frames (`tests/test_vlm_decode_graphs_inference.py`); the cell's 8B and card not measured |
 | The known sentences: each of the 7 measured sentences the table takes reads as the 4B read it, its near misses go to the model, and nothing is loaded | pinned by tests against the 4B's recorded answers (`tests/test_vlm_command.py`); the 8B's words for the same sentences not measured |
 | Remembered answers: the same question to the same loaded copy is answered once | pinned by tests on a stand-in model (`tests/test_vlm_command.py`, `tests/test_api_commands.py`) |
 | One call for several kinds: the class-list instruction, one description byte for byte as before, `ambiguous` for an object two descriptions claim | pinned by tests on a stand-in model through the real grounder and parser (`tests/test_vlm_class_list.py`, `tests/test_a_sorts_pick_prompt_passes_only_its_kinds.py`); against real weights not measured (`tests/test_vlm_class_list_inference.py` has not run) |
 
-The parser, the coordinate space and the unavailability contract are also tested without a GPU, and no
-module here imports torch or transformers at import time, so a cell that never sends a hard prompt never
-pays for the model. `tests/test_vlm_inference.py` needs CUDA and the weights, and skips without them.
+The parser, the coordinate space and the refusals are also tested without a GPU, and no module here imports
+torch or transformers at import time, so nothing pays for the model before its first prompt. `tests/test_vlm_inference.py` needs CUDA and the weights, and skips without them.
 
 ## Files
 
 | File | Holds |
 | --- | --- |
-| [`qwen.py`](qwen.py) | `Qwen3VLGrounder`: `detect_all(bgr, prompt)`, the shape GroundingDINO has; `answer_text`, a text-only answer; `name_colour(bgr, box)`, one colour word; a load guarded by a lock, one inference at a time, `unload()`; loads on first call unless `preload`; how answers are written (`configure`): the stop at the answer's end, the answer lookup, and `_DecodeGraphs`, each decode pass as CUDA graphs; one call for several kinds: `class_list_prompt`, `classes_of`, `grounding_instruction` |
+| [`qwen.py`](qwen.py) | `Qwen3VLGrounder`: `detect_all(bgr, prompt)`, the shape RT-DETR's wrapper has; `answer_text`, a text-only answer; `name_colour(bgr, box)`, one colour word; a load guarded by a lock, one inference at a time, `unload()`; loads on first call; how answers are written, at the owner's cell's values (`configure`): the stop at the answer's end, the answer lookup, and `_DecodeGraphs`, each decode pass as CUDA graphs; one call for several kinds: `class_list_prompt`, `classes_of`, `grounding_instruction` |
 | [`holder.py`](holder.py) | `VlmHolder` and `shared_vlm()`: the process's one copy, shared by detection and the command reader; `grounder_for`, `status_for`, `load_for`, `asker_for`, `release_unless_requested`, `forget` |
 | [`command.py`](command.py) | the command reader: `understand`, `read_command`, `COMMAND_INSTRUCTION`, the answer model, the checks, the retry and the notes; `startable`; the remembered answers (`_Remembering`, `forget_remembered_answers`) |
 | [`known.py`](known.py) | the known sentences: `read_known`, `known_answer`, the closed grammar and its measured words (`KNOWN_PARTS`, `KNOWN_COLOURS`, `KNOWN_PLACES`); pure, nothing loaded |
 | [`parsing.py`](parsing.py) | `parse_grounding_response`, `CoordinateSpace`, `VLM_NOMINAL_SCORE`; a class list's rule, `claimed_once` and `AMBIGUOUS_LABEL`; runs without a GPU |
-| [`availability.py`](availability.py) | `GuardedVlmBackend` and `VlmUnavailableError`; the fallback is built only when needed; `reader_availability`, whether a command can be read now, and the reader's refusals |
+| [`availability.py`](availability.py) | `VlmUnavailableError`; `reader_availability`, whether a command can be read now, and the reader's refusals |
 
 ## Details
 
-- [`../routing/`](../routing/README.md) decides which route a prompt needs, before any weights load
+- [`../routing/`](../routing/README.md) reads a phrase's language and quantifier for the command reader
 - [`../README.md`](../README.md) is the perception layer and its factory
-- Weights: `python scripts/model_weights/fetch.py vlm-4b`
+- Weights: `python scripts/model_weights/fetch.py vlm-4b` (`vlm-8b`, the owner's cell's), under `models.weights_root`
 - The console's commands: [`api/README.md`](../../../api/README.md), Commands
 - Tests: `tests/test_vlm_grounding.py`, `tests/test_vlm_inference.py`, `tests/test_vlm_command.py`,
   `tests/test_vlm_holder.py`, `tests/test_vlm_command_inference.py` (real weights, skips without them),
   `tests/test_a_failed_detector_is_not_nothing_found.py`, `tests/test_a_clean_holder_loads_nothing_at_build.py`;
   what an answer costs: `tests/test_vlm_answer_speed.py`, `tests/test_vlm_decode_graphs.py` (no card) and their
-  `_inference` twins (real weights), and `tests/test_a_command_reads_with_the_vlm_blocks_answer_settings.py`
+  `_inference` twins (real weights), and `tests/test_a_command_reads_with_the_cells_answer_settings.py`

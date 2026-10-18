@@ -30,7 +30,7 @@ class ARetractChangeIsNamedTests(unittest.TestCase):
         (change,) = retract_changes(committed, merged)
         said = change.render()
         expected = evidence_path(arm="ur5e", hand="robotiq_2f85", coupling_mm=0.0, approach="+Z", closing="+X",
-                                 planner_margin_mm=4.0, attach_spheres=0).name
+                                 planner_margin_mm=4.0).name
         for part in ("ur5e", "robotiq_2f85", "+Z+X", "4 mm", expected):
             self.assertIn(part, said)
 
@@ -44,7 +44,7 @@ class ARetractChangeIsNamedTests(unittest.TestCase):
     def test_the_chooser_prints_what_it_moved(self) -> None:
         done = run(["ur5e", "--hand", "robotiq_2f85", *_Z], moved=(("ur5e", "robotiq_2f85"),))
         self.assertEqual(done.code, 0, done.out)
-        self.assertIn("ur5e_robotiq_2f85_c0mm_+Z+X_m4mm_a0.json", done.out)
+        self.assertIn("ur5e_robotiq_2f85_c0mm_+Z+X_m4mm.json", done.out)
 
 
 if __name__ == "__main__":  # pragma: no cover

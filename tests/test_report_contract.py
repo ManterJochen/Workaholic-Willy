@@ -295,9 +295,9 @@ class ProtocolsAreNotVacuousTests(unittest.TestCase):
         self.assertIsInstance(PreflightReport.__new__(PreflightReport), Rendered)
 
     def test_structured_has_real_members(self) -> None:
-        from src.robot.grasping.decision import DecisionReport
+        from src.robot.execution.autonomous_grasp.report import AutonomousGraspReport
 
-        self.assertIsInstance(DecisionReport.__new__(DecisionReport), Structured)
+        self.assertIsInstance(AutonomousGraspReport.__new__(AutonomousGraspReport), Structured)
 
     def test_the_two_halves_are_genuinely_disjoint(self) -> None:
         """The evidence, kept executable AND kept from going stale.
@@ -486,17 +486,12 @@ class NoWrapperDeclaresACalleesDefaultTests(unittest.TestCase):
     def _pairs(self) -> list[tuple[str, Any, str, Any]]:
         from src.robot.execution.autonomous_grasp import build_real_cell
         from src.robot.execution.cell import Cell
-        from src.robot.grasping.generation.support_footprint import (
-            generate_support_footprint_grasps,
-        )
+        from src.robot.grasping.generation.body_grasps import body_grasps
         from src.robot.grasping.scene import Scene
 
         return [
             ("Cell.prompt", Cell, "prompt", build_real_cell),
-            ("Scene.grasps.max_candidates", Scene.grasps, "max_candidates",
-             generate_support_footprint_grasps),
-            ("Scene.grasps.palm_aware", Scene.grasps, "palm_aware",
-             generate_support_footprint_grasps),
+            ("Scene.grasps.max_candidates", Scene.grasps, "max_candidates", body_grasps),
         ]
 
     def test_the_wrapper_declares_unset_and_the_callee_declares_the_value(self) -> None:

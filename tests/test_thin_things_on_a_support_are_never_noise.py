@@ -24,6 +24,13 @@ from tests import _cell_2026_10_01 as cell
 #: The mat's outline in the owner's looks, BASE millimetres.
 _MAT_X, _MAT_Y = (-411.3, 143.7), (-871.5, -509.1)
 
+#: How near the guard lets a link come to a seen box on the owner's cell, mm (``perceived_min_distance_mm``, lever 3 of
+#: 2026-10-12). Every camera world grows its boxes by 6 mm since 2026-10-17 (``perceived.CAMERA_BOX_MARGIN_MM``, the
+#: owner's lever B of 2026-10-07), and a pin's tip seen through a 10 mm voxel then stands up to 1.6 mm over its box:
+#: 4 of 8 noise draws at (40, -790), measured 2026-10-17, against 0.4 mm under it at the 8 mm this test was written
+#: with. Within this distance no link reaches the tip, so the pin is held this far under it.
+_CELL_SEEN_DISTANCE_MM = 2.0
+
 
 def _world(depth: np.ndarray) -> Any:
     owner = cell.owner_cell()
@@ -60,7 +67,9 @@ class ThinThingsOnTheMatAreHeldTests(unittest.TestCase):
             with self.subTest(at=(x, y)):
                 mat = cell.local_reading(look, x, y, 0.0, 25.0)
                 world = _world(cell.with_solids(look, cylinders=[(x, y, 1.5, mat, mat + 20.0)], seed=35))
-                self.assertTrue(_held(world, (x, y, mat + 19.5), seen_only=True), "the pin left the world")
+                tip = mat + 20.0
+                self.assertTrue(_held(world, (x, y, tip - _CELL_SEEN_DISTANCE_MM - 0.5), seen_only=True),
+                                "the pin left the world")
 
     def test_5_mm_squares_1_to_3_mm_over_the_solid_are_held(self) -> None:
         look = cell.look("P1")

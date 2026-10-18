@@ -96,23 +96,19 @@ def pick_view(scene: BinScene, tcp: Pose, label: str, *, rig: str = "wrist", sta
 
 
 def hande_tree(*, length_mm: "float | None" = None, **place: Any) -> Any:
-    """The robot tree of the repository's Hand-E profile, its ``robot.place`` set as ``place`` says.
+    """The robot tree of the repository's Hand-E profile, its ``robot.motion.place`` set as ``place`` says.
 
-    The profile declares no carried part, so a place stands the tool where it says; with ``length_mm`` the tree declares
-    how far its parts hang past the fingertips (``safety.planning_world.payload.length_mm``), and a place stands the
-    part's bottom there (the owner, 2026-10-14)."""
+    ``length_mm`` is how far the tree declares its parts hang past the fingertips (``robot.place.part_hang_mm``), and a
+    place stands the part's bottom there (the owner, 2026-10-14); ``None`` declares none, so a place stands the tool
+    where it says."""
     from src.config import load_tree
     from src.config.schema.robot.place_schema import RobotPlaceConfig
 
     loaded = load_tree("hande")
     assert loaded.ok, loaded
-    robot = loaded.robot.model_copy(update={"place": RobotPlaceConfig(**place)})
-    if length_mm is None:
-        return robot
-    world = robot.safety.planning_world
-    payload = world.payload.model_copy(update={"length_mm": float(length_mm)})
-    safety = robot.safety.model_copy(update={"planning_world": world.model_copy(update={"payload": payload})})
-    return robot.model_copy(update={"safety": safety})
+    hang = None if length_mm is None else float(length_mm)
+    motion = loaded.robot.motion.model_copy(update={"place": RobotPlaceConfig(**{"part_hang_mm": hang, **place})})
+    return loaded.robot.model_copy(update={"motion": motion})
 
 
 class AgainWorld:

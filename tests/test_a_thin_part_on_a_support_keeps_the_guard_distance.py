@@ -81,15 +81,14 @@ def _deepest(boxes: Any, poses: "list[tuple[float, np.ndarray]]") -> np.ndarray:
 def _world_boxes(depth: np.ndarray, near: np.ndarray, *, allowance: float = 2.0, held: bool = True,
                  reading: bool = False) -> Any:
     """The guard's boxes of the look with ``depth`` drawn in. ``reading`` holds the fingers to the support's reading as
-    the shipped cell does (``fingers_to_the_support_reading``, 1 mm over it); off, every link keeps the guard's distance
-    from the whole solid, the allowance's own proof."""
-    from src.config.schema.robot import RobotConfig
-
+    every cell does since 2026-10-17 (1 mm over it); off, every link keeps the guard's distance from the whole solid, the
+    allowance's own proof. Both, and the allowance, are the cell's fixed numbers changed on its own wiring."""
     owner = cell.owner_cell()
     look = cell.look("P1")
-    config = RobotConfig.model_validate(cell.owner_robot(perceived={"support_allowance_mm": allowance,
-                                                                    "fingers_to_the_support_reading": reading}))
-    snapshot = owner.world(look, depth, config=config).world_for(
+    tuning: dict[str, Any] = {"support_allowance_mm": allowance, "fingers_to_the_reading": reading}
+    if not reading:
+        tuning["finger_floor_drop_mm"] = 0.0
+    snapshot = owner.world(look, depth, tuning=tuning).world_for(
         self_envelope=owner.envelope(np.radians(cell.LOOK_0_DEG)), near_point_mm=near)
     assert snapshot.perceived is not None, snapshot.reason
     boxes = _guard_boxes(snapshot.perceived)
@@ -140,8 +139,8 @@ class AThinPartOnTheMatKeepsTheGuardsDistanceTests(unittest.TestCase):
         gehen" (2026-10-05): the fingers keep 1 mm over the support's reading and its excess, not the guard's distance
         from the whole solid. What the band took for the support, a part 2 to 6 mm thick lying flat that no box holds,
         is the support for them too: the hand meets it, at the worst pressing into its top by the band. A part the
-        detector names stands as a part (its fingers' rule, ``fingers_touch_parts``); a cell whose mat holds thin parts
-        nobody names sets ``perceived.finger_floor_mm`` back to the guard's distance or turns the reading off."""
+        detector names stands as a part (its fingers' rule); on a mat that holds thin parts nobody names the fingers
+        come so near them too, as on every cell since 2026-10-17 (``perceived.FINGER_FLOOR_MM``)."""
         (two,) = _keeps(40.0, -790.0, (15.0, 15.0, 2.0), (0.0,), reading=True)
         self.assertGreaterEqual(two, 1.0)
         (six,) = _keeps(40.0, -790.0, (15.0, 15.0, 6.0), (0.0,), reading=True)

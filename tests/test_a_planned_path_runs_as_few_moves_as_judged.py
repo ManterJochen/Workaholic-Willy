@@ -39,7 +39,7 @@ from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.path_samples import simplify_joint_path, waypoint_path_samples
 from src.robot.safety.planning import JointCheckVerdict, StateRefusal, StateRefusalKind, StateWhere
-from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm
+from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm, with_the_whole_envelope
 from tests._fake_transport import Raises, fake_transport
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 
@@ -209,7 +209,7 @@ def _refused(reason: str = "the double refuses") -> JointCheckVerdict:
 
 def _tree() -> RobotConfig:
     """A ur5e cell on cuRobo, its workspace box open so the box never decides a test about the path."""
-    return kit_tree("curobo", safety={"payload": {"enforce": False}}, workspace_limits=OPEN_WORKSPACE)
+    return kit_tree("curobo", safety={}, motion={"workspace": OPEN_WORKSPACE})
 
 
 def _on_curobo(planner: _Planner) -> Any:
@@ -263,9 +263,13 @@ class JudgedIsExecutedTests(unittest.TestCase):
         self.assertTrue(result.ok, result.message)
         (execute,) = planner.named("execute")
         executed = execute[1]
-        self.assertEqual([tuple(_HERE), tuple(_THERE)], [tuple(w) for w in executed])
+        # Every cuRobo arm gates its own sends: the gate found the arm at the list's first waypoint, so one moveJ runs,
+        # to its end (``PlannedArm._sent_waypoints``).
+        self.assertEqual([tuple(_THERE)], [tuple(w) for w in executed])
         self.assertEqual(1, len(judged), "the shortened list was judged more than once, or not at all")
-        self.assertIs(judged[0], executed, "the list the gate judged is not the list that ran")
+        self.assertEqual([tuple(_HERE), tuple(_THERE)], [tuple(w) for w in judged[0]])
+        self.assertEqual([tuple(w) for w in judged[0][1:]], [tuple(w) for w in executed],
+                         "the list the gate judged is not the list that ran")
 
     def test_the_planner_judges_the_legs_that_run_in_the_world_it_already_holds(self) -> None:
         planner = _Planner(_line(_HERE, _THERE, 41))
@@ -276,7 +280,8 @@ class JudgedIsExecutedTests(unittest.TestCase):
         step = arm._preflight.path_step_mm
         reach = arm._preflight.joint_radii_mm(arm)
         assert step is not None and reach is not None
-        expected = waypoint_path_samples(execute[1], reach_mm=reach, max_step_mm=step).configs
+        # The legs that run start where the gate found the arm, the judged list's first waypoint.
+        expected = waypoint_path_samples([list(_HERE), *execute[1]], reach_mm=reach, max_step_mm=step).configs
         self.assertEqual(list(expected), check[1])
         self.assertIs(False, check[2], "the planner refreshed its world after the gate had judged against it")
         self.assertEqual(["plan", "check", "execute"], [call[0] for call in planner.calls])
@@ -304,9 +309,9 @@ class JudgedIsExecutedTests(unittest.TestCase):
         result = self._move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
         (execute,) = planner.named("execute")
-        self.assertIs(dense, execute[1], "the dense plan was not the one that ran")
+        self.assertEqual(dense[1:], execute[1], "the dense plan was not the one that ran")
         self.assertEqual(2, len(judged))
-        self.assertIs(judged[-1], execute[1])
+        self.assertIs(dense, judged[-1])
         checks = planner.named("check")
         self.assertEqual(2, len(checks), "the dense plan ran without the planner judging its legs")
         step, reach = arm._preflight.path_step_mm, arm._preflight.joint_radii_mm(arm)
@@ -321,7 +326,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         result = self._move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
         (execute,) = planner.named("execute")
-        self.assertIs(dense, execute[1])
+        self.assertEqual(dense[1:], execute[1])
         self.assertEqual(2, len(judged[0]))
         self.assertIs(dense, judged[1])
         self.assertEqual(1, len(planner.named("check")), "a list the local gate refused was sent to the planner")
@@ -349,7 +354,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         self._move(arm, _THERE)
         self.assertEqual(1, len(judged))
         self.assertEqual(1, len(planner.named("check")))
-        self.assertIs(planner.trajectory, planner.named("execute")[0][1])
+        self.assertEqual(planner.trajectory[1:], planner.named("execute")[0][1])
 
     def test_a_bent_plan_keeps_its_corner(self) -> None:
         corner = [_HERE[0] + 0.5, *_HERE[1:]]
@@ -358,7 +363,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         arm, _ = _arm(planner)
         self._move(arm, end)
         executed = [tuple(w) for w in planner.named("execute")[0][1]]
-        self.assertEqual([tuple(_HERE), tuple(corner), tuple(end)], executed)
+        self.assertEqual([tuple(corner), tuple(end)], executed)
 
     def test_no_step_means_no_planner_question_as_on_a_joint_move(self) -> None:
         """Where no step derives the local gate has refused already; the planner is not a second voice."""
@@ -397,10 +402,13 @@ class JudgedIsExecutedTests(unittest.TestCase):
         self.assertNotIn("long way round", said)
 
     def test_a_joint_turning_the_long_way_round_is_a_warning(self) -> None:
-        """A joint target a full turn and a bit away inside a window of two turns: the one move still left that can."""
+        """A joint target a full turn and a bit away inside a window of two turns: the one move still left that can. The
+        arm's whole envelope, as the Isaac arm runs it: a real arm keeps half a turn about home, and turns such a target
+        onto its twin inside."""
         end = [*_HERE[:5], _HERE[5] + 2 * math.pi - 0.3]
         planner = _Planner(_line(_HERE, end, 41))
         arm, _ = _arm(planner)
+        with_the_whole_envelope(arm._preflight)
         with arm.without_camera_world(_DECLINED), self.assertLogs(LOGGER_NAME, level="WARNING") as logs:
             result = arm.move_to_joints(JointPositions(end))
         self.assertTrue(result.ok, result.message)
@@ -427,7 +435,7 @@ def test_with_the_real_local_gate_a_plan_that_shortens_back_into_the_refused_lin
     assert len(planner.lines) == 2, "the line and the shortened list were not both judged at the clearance"
     assert [len(configs) > 2 for configs in planner.lines] == [True, True]
     (execute,) = planner.named("execute")
-    assert execute[1] is dense, "the plan ran shortened into the line the planner refused"
+    assert execute[1] == dense[1:], "the plan ran shortened into the line the planner refused"
 
 
 @pytest.mark.skipif(mesh_backend_status("ur5e") != "ok", reason="no exact mesh backend on this box")
@@ -442,7 +450,7 @@ def test_with_the_real_local_gate_a_clear_line_runs_and_nothing_is_planned() -> 
     ((_, configs, _, clearance),) = planner.named("check")
     assert clearance == 3.0, "the line was not judged at the shipped clearance"
     (execute,) = planner.named("execute")
-    assert len(execute[1]) == 2
+    assert len(execute[1]) == 1, "a clear line runs as one moveJ to its end"
     np.testing.assert_allclose(execute[1][-1], _THERE, atol=1e-6)
     np.testing.assert_allclose(configs[-1], execute[1][-1], atol=0.0)
 
@@ -542,7 +550,7 @@ class ExecuteSaysHowFarItGotTests(unittest.TestCase):
         self.assertEqual([([w], 0.4, 0.3) for w in self._PLAN], sent)
 
     def test_the_arm_hands_its_planner_its_own_controller_state(self) -> None:
-        arm: Any = planned_arm(kit_tree("curobo", safety={"payload": {"enforce": False}}),
+        arm: Any = planned_arm(kit_tree("curobo", safety={}),
                                curobo_client_factory=MagicMock)
         planner = arm._curobo_planner()
         self.assertEqual(arm._controller_state_text, planner._controller_state)

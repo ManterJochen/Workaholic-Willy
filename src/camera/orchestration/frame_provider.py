@@ -13,7 +13,7 @@ from src.camera.orchestration.camera import (
     Camera,
     CameraRigConfig,
     PeekFrame,
-    create_streamer,
+    create_device_streamer,
 )
 from src.camera.setup.image_taking.frames import AnyFrame, StereoFrame
 
@@ -43,9 +43,10 @@ class FrameProvider:
     streamers under ``camera.setup``, and :meth:`rig` hands one rig to a consumer as a `RigHandle`.
     """
 
-    #: The streamer a rig names, built in the camera owner's module, the one module that constructs
-    #: device streamers. A class attribute, so device doubles can stand behind the catalogue.
-    _create_streamer = staticmethod(create_streamer)
+    #: The device's own streamer, built in the camera owner's module, the one module that constructs
+    #: device streamers: a stereo rig's raw pair, which this catalogue rectifies and triangulates
+    #: through its `StereoCam3D`. A class attribute, so device doubles can stand behind the catalogue.
+    _create_streamer = staticmethod(create_device_streamer)
 
     def __init__(
         self,

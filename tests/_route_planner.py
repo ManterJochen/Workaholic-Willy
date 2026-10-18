@@ -33,6 +33,15 @@ def line(start: "list[float] | tuple[float, ...]", end: "list[float] | tuple[flo
     return out
 
 
+def the_planner_holds_more(arm: Any) -> Any:
+    """Have ``arm`` ask the planner beside the exact guard on every line and goal, as a cell whose planner holds what the
+    guard does not (a mesh, the bench where the arm comes near it): a scene a planner double refuses is then the
+    planner's to refuse. Mesh first stands aside there and nowhere else (``PlannedArm._mesh_first_refusal``); until
+    2026-10-17 it stood aside by itself for every double that could not say whether it carried a part. Returns ``arm``."""
+    arm._mesh_first_refusal = lambda _planner, _configs: "unit double: the planner holds what the exact guard does not"
+    return arm
+
+
 def _straight(configs: "list[tuple[float, ...]]", tol: float = 1e-9) -> bool:
     """Whether every configuration lies on the straight joint line from the first to the last."""
     start, end = configs[0], configs[-1]

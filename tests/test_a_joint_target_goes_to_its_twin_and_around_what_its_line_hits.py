@@ -15,13 +15,14 @@ What a joint move on a cuRobo cell does since 85f082b, held here on the kit's pl
   pendant shows joints in degrees. The range is read per joint off the description (``limit_deg``), a full turn either
   way on every UR today, so a joint another vendor rates past a turn is held to its own range and not to a UR's (the
   owner, 2026-09-25; the bound was a full turn on every arm before).
-* The straight joint line from where the arm stands is judged by both authorities, the planner at
-  ``safety.planned_motion.line_clearance_mm`` from its world rather than at no contact: the line runs as one ``moveJ``
+* The straight joint line from where the arm stands is judged by both authorities, the planner at every cell's 3 mm
+  (``path_samples.LINE_CLEARANCE_MM``) from its world rather than at no contact: the line runs as one ``moveJ``
   nobody planned, and a line that grazes an obstacle by a millimetre passes a check that asks only for no contact.
   Where it passes it runs as that one ``moveJ``.
 * Where the line collides, by either authority, cuRobo plans to the same target in joint space instead of the move
-  being refused; the plan is held to ``safety.planned_motion.max_detour_deg``, its legs are judged, and exactly that
-  list runs through the planner glue, at the speed ``robot.motion_limits`` allows. A line refused for anything but a
+  being refused; the plan is held to every cell's 45 degrees (``path_samples.MAX_DETOUR_DEG``), its legs are judged,
+  and exactly that list runs through the planner glue, at the speed ``robot.motion.max_velocity`` allows. A line
+  refused for anything but a
   collision, and a planner that cannot be reached for one, is not planned around.
 """
 
@@ -38,8 +39,9 @@ from src.config.arms import load_arm
 from src.config.schema.robot import RobotConfig
 from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionSent, MotionStatus
 from src.robot.core.errors import RobotMotionRejected
+from src.robot.safety.path_samples import LINE_CLEARANCE_MM, MAX_DETOUR_DEG
 from src.robot.safety.planning import CuroboUnavailableError, StateRefusal, StateRefusalKind, StateWhere
-from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm
+from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm, with_the_whole_envelope
 from tests._fake_transport import chain_of, fake_transport
 from tests._plan_end import OPEN_WORKSPACE
 from tests._route_planner import RoutePlanner, line
@@ -56,8 +58,8 @@ _DEGREES = [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 
 def _arm(planner: RoutePlanner, *, safety: "dict[str, Any] | None" = None,
          home: "list[float] | None" = None) -> Any:
-    config = kit_tree("curobo", safety={"payload": {"enforce": False}, **(safety or {})},
-                      workspace_limits=OPEN_WORKSPACE)
+    config = kit_tree("curobo", safety={**(safety or {})},
+                      motion={"workspace": OPEN_WORKSPACE})
     arm: Any = planned_arm(config, transport=fake_transport(joints=planner.here, kinematics=chain_of("ur5e")),
                            home_joints=home)
     arm._curobo = planner
@@ -82,7 +84,7 @@ def _rated(axis: int, limit_deg: "tuple[float, float]") -> Any:
 class TheTwinTests(unittest.TestCase):
     def test_a_joint_outside_the_cable_window_runs_as_its_twin_inside_and_the_log_says_so(self) -> None:
         planner = RoutePlanner(here=_HERE)
-        arm = _arm(planner, safety={"joint_limits": {"within_half_turn_of_home": True}}, home=list(_HERE))
+        arm = _arm(planner, home=list(_HERE))
         station = [*_THERE[:5], math.radians(-200.0)]
         with self.assertLogs(LOGGER_NAME, level="INFO") as logs:
             result = _move(arm, station)
@@ -100,7 +102,7 @@ class TheTwinTests(unittest.TestCase):
     def test_the_same_station_is_refused_where_the_arm_does_not_turn_it(self) -> None:
         """The control, as the arm stood before the wrap: the guard refuses the number, which is not the pose."""
         planner = RoutePlanner(here=_HERE)
-        arm = _arm(planner, safety={"joint_limits": {"within_half_turn_of_home": True}}, home=list(_HERE))
+        arm = _arm(planner, home=list(_HERE))
         arm._twin_near_the_arm = lambda joints, here: (joints, "")
         result = _move(arm, [*_THERE[:5], math.radians(-200.0)])
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status, result.message)
@@ -135,7 +137,7 @@ class TheTwinTests(unittest.TestCase):
         """Wrist 3 at 5 rad is inside its rating and outside the half turn about home, so alone it would turn; beside
         four values in degrees it is left as written, and the refusal says what the caller sent."""
         planner = RoutePlanner(here=_HERE)
-        arm = _arm(planner, safety={"joint_limits": {"within_half_turn_of_home": True}}, home=list(_HERE))
+        arm = _arm(planner, home=list(_HERE))
         written = [5.0, -90.0, 90.0, -90.0, -90.0, 0.0]
         with self.assertNoLogs(LOGGER_NAME, level="INFO"):
             turned, said = arm._twin_near_the_arm(JointPositions(written), _HERE)
@@ -182,7 +184,9 @@ class ThePlanAroundTests(unittest.TestCase):
         np.testing.assert_allclose(asked[1], _THERE, atol=0.0)
         self.assertIs(False, asked[2], "the plan refreshed the world the line was judged in")
         (execute,) = planner.named("execute")
-        self.assertEqual(3, len(execute[1]), "the plan's corner was dropped, or the plan was not shortened")
+        # The corner and the end: the plan's first waypoint is where the gate found the arm (every cuRobo arm gates its
+        # own sends), so no moveJ goes to it.
+        self.assertEqual(2, len(execute[1]), "the plan's corner was dropped, or the plan was not shortened")
         self.assertIs(MotionCommand.MOVE_JOINTS, execute[2])
         np.testing.assert_allclose(execute[3].values, _THERE, atol=0.0)
         self.assertEqual([], arm._transport.sent, "a waypoint went round the planner glue's execute")
@@ -303,7 +307,8 @@ class ThePlanAroundTests(unittest.TestCase):
         result = _move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
         (execute,) = planner.named("execute")
-        self.assertEqual(21, len(execute[1]), "the plan ran shortened into the line the planner refused")
+        # The 21 cuRobo returned, less the first, where the gate found the arm.
+        self.assertEqual(20, len(execute[1]), "the plan ran shortened into the line the planner refused")
         self.assertEqual([3.0, 3.0, 0.0], [c[3] for c in planner.named("check") if len(c[1]) > 1])
 
     def test_home_is_planned_around_too_and_reads_move_home(self) -> None:
@@ -326,7 +331,7 @@ class ThePlanAroundTests(unittest.TestCase):
         result = _move(arm, _THERE)
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status, result.message)
         self.assertIn("swings wrist_3_joint 80.0 deg beyond the span", result.message or "")
-        self.assertIn("max_detour_deg of 45", result.message or "")
+        self.assertIn("the 45 deg any joint of a plan may swing past its span", result.message or "")
         self.assertEqual([], planner.named("execute"))
         self.assertEqual([], arm._transport.sent)
 
@@ -412,7 +417,7 @@ class TheDestinationIsGatedFirstTests(unittest.TestCase):
         the guard refuses it; it is inside the full turn the UR is rated for, so it does not read as degrees."""
         target = [*_THERE[:5], math.pi]
         planner = RoutePlanner(here=_HERE)
-        arm = _arm(planner, safety={"joint_limits": {"within_half_turn_of_home": True}}, home=list(_HERE))
+        arm = _arm(planner, home=list(_HERE))
         result = _move(arm, target)
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status, result.message)
         self.assertNotIn("reads as degrees", result.message or "")
@@ -420,9 +425,11 @@ class TheDestinationIsGatedFirstTests(unittest.TestCase):
         self.assertEqual([], arm._transport.sent)
 
     def test_the_same_target_runs_where_no_half_turn_is_kept(self) -> None:
-        """The control: the refusal above is the guard's, not the target's."""
+        """The control: the refusal above is the guard's, not the target's. The arm held to its whole envelope, as the
+        Isaac arm is (every real arm keeps the window since 2026-10-17)."""
         target = [*_THERE[:5], math.pi]
         arm = _arm(RoutePlanner(here=_HERE))
+        with_the_whole_envelope(arm._preflight)
         result = _move(arm, target)
         self.assertTrue(result.ok, result.message)
         self.assertEqual([target], arm._transport.sent)
@@ -458,14 +465,17 @@ class TheDestinationIsGatedFirstTests(unittest.TestCase):
         self.assertEqual([], arm._transport.sent)
 
     def test_a_home_written_in_degrees_names_each_joint_and_the_key_that_takes_degrees(self) -> None:
+        """On an arm held to its whole envelope, as the Isaac arm is: on a real arm the window about such a home leaves
+        no range, and ``create_arm`` refuses the arm at build, naming the home (``test_safety_joint_limits.py``)."""
         planner = RoutePlanner(here=_HERE)
         arm = _arm(planner, home=list(_DEGREES))
+        with_the_whole_envelope(arm._preflight)
         with arm.without_camera_world(_DECLINED):
             result = arm.move_to_home()
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status, result.message)
         self.assertIs(MotionCommand.MOVE_HOME, result.command)
         self.assertIn("shoulder_lift_joint at -90 rad, rated -360 to 360 deg", result.message or "")
-        self.assertIn("robot.home_joint_positions_deg takes the pendant's degrees", result.message or "")
+        self.assertIn("robot.motion.home_deg takes the pendant's degrees", result.message or "")
         self.assertEqual([], arm._transport.sent)
 
     def test_the_rated_range_is_the_descriptions_per_joint(self) -> None:
@@ -479,24 +489,22 @@ class TheDestinationIsGatedFirstTests(unittest.TestCase):
 
 
 class TheLineTests(unittest.TestCase):
-    def test_a_clear_line_is_judged_at_the_configured_clearance_and_runs_as_one_movej(self) -> None:
-        for clearance, safety in ((3.0, {}), (25.0, {"planned_motion": {"line_clearance_mm": 25.0}})):
-            with self.subTest(clearance_mm=clearance):
-                planner = RoutePlanner(here=_HERE)
-                arm = _arm(planner, safety=safety)
-                with self.assertLogs(LOGGER_NAME, level="INFO") as logs:
-                    result = _move(arm, _THERE)
-                self.assertTrue(result.ok, result.message)
-                self.assertIn("move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s))",
-                              "\n".join(logs.output))
-                (lined,) = planner.lines()
-                self.assertEqual(clearance, lined[3])
-                self.assertIs(False, lined[2], "the planner refreshed a world the path gate had already judged in")
-                np.testing.assert_allclose(lined[1][0], _HERE, atol=0.0)
-                np.testing.assert_allclose(lined[1][-1], _THERE, atol=0.0)
-                self.assertEqual([_THERE], arm._transport.sent)
-                self.assertEqual([], planner.named("plan_joint"))
-                self.assertEqual([], planner.named("execute"))
+    def test_a_clear_line_is_judged_at_the_line_clearance_and_runs_as_one_movej(self) -> None:
+        planner = RoutePlanner(here=_HERE)
+        arm = _arm(planner)
+        with self.assertLogs(LOGGER_NAME, level="INFO") as logs:
+            result = _move(arm, _THERE)
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s))",
+                      "\n".join(logs.output))
+        (lined,) = planner.lines()
+        self.assertEqual(LINE_CLEARANCE_MM, lined[3])
+        self.assertIs(False, lined[2], "the planner refreshed a world the path gate had already judged in")
+        np.testing.assert_allclose(lined[1][0], _HERE, atol=0.0)
+        np.testing.assert_allclose(lined[1][-1], _THERE, atol=0.0)
+        self.assertEqual([_THERE], arm._transport.sent)
+        self.assertEqual([], planner.named("plan_joint"))
+        self.assertEqual([], planner.named("execute"))
 
     def test_home_is_judged_the_same_way_and_reads_move_home(self) -> None:
         planner = RoutePlanner(here=_HERE)
@@ -510,33 +518,17 @@ class TheLineTests(unittest.TestCase):
         self.assertEqual([_THERE], arm._transport.sent)
 
 
-    def test_a_clearance_of_zero_judges_the_line_as_a_plan_is_judged(self) -> None:
-        """The control, green before this change too: 0 asks the planner exactly as every joint line was asked."""
-        planner = RoutePlanner(here=_HERE)
-        planner.line_clear = lambda start, end: False  # refuses only at a clearance, so 0 passes
-        arm = _arm(planner, safety={"planned_motion": {"line_clearance_mm": 0.0}})
-        result = _move(arm, _THERE)
-        self.assertTrue(result.ok, result.message)
-        self.assertEqual([], planner.lines())
-        (checked,) = planner.named("check")
-        self.assertEqual(0.0, checked[3])
-        np.testing.assert_allclose(checked[1][-1], _THERE, atol=0.0)
+class TheNumbersTests(unittest.TestCase):
+    def test_every_cell_keeps_3_mm_on_a_line_and_45_degrees_on_a_plan(self) -> None:
+        """The owner's cell's numbers since 2026-10-05, every cell's since 2026-10-17 (``path_samples``)."""
+        self.assertEqual((3.0, 45.0), (LINE_CLEARANCE_MM, MAX_DETOUR_DEG))
 
-
-class TheConfigTests(unittest.TestCase):
-    def test_the_keys_default_to_the_planners_clearance_and_45_degrees(self) -> None:
-        planned = RobotConfig.model_validate({"vendor": "ur"}).safety.planned_motion
-        self.assertEqual((3.0, 45.0), (planned.line_clearance_mm, planned.max_detour_deg))
-
-    def test_a_bound_of_nothing_and_a_clearance_the_planner_cannot_ask_are_refused(self) -> None:
+    def test_the_old_keys_are_refused(self) -> None:
         from pydantic import ValidationError
 
-        for block in ({"max_detour_deg": 0.0}, {"max_detour_deg": -5.0}, {"line_clearance_mm": -1.0},
-                      {"line_clearance_mm": 150.0}, {"surplus": 1}):
+        for block in ({"max_detour_deg": 45.0}, {"line_clearance_mm": 3.0}, {"mesh_first": True}):
             with self.subTest(block=block), self.assertRaises(ValidationError):
                 RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": block}})
-        zero = RobotConfig.model_validate({"vendor": "ur", "safety": {"planned_motion": {"line_clearance_mm": 0.0}}})
-        self.assertEqual(0.0, zero.safety.planned_motion.line_clearance_mm, "0 judges a line as a plan is judged")
 
 
 if __name__ == "__main__":

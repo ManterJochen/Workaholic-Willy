@@ -1,31 +1,21 @@
 """What the recovery loop of a cell built from config can actually do, pinned at the service.
 
 The mode's built-in behaviour profile (`_PROFILES` in `autonomous_grasp/config.py`) is the outer gate of
-`RecoveryOrchestrator.next_step`, and `recovery.allowed_actions` cannot widen it. The owner's decisions of
-2026-09-29 changed four things here:
+`RecoveryOrchestrator.next_step`. Since 2026-10-16 no key sets a cell's recovery (the owner's cleanup): a cell built
+from config runs `CELL_RECOVERY`, the values the owner's cell ran, a rescan once and a push twice a pick, at most two
+actions, in `auto` and `dense_clutter`. `next_target`, `container_agitate` and the fixture box left that day.
 
-* `next_target` joined the auto and dense_clutter profiles.
-* A refusal before anything moved falls through to the next action instead of ending the loop.
-* The nudge is offered for `ALL_COLLIDED` only.
-* `container_agitate` without a declared container is refused when the config loads.
+MEASURED through `AutonomousGraspService._run_with_recovery` with a scripted pick:
 
-MEASURED through `AutonomousGraspService._run_with_recovery` with a scripted pick. The service plans `rescan`
-and `next_target` directly and every other action through a strategy (per-action mode, part B of 2026-09-30), and
-hands the loop its memory of failed parts: the part the pick loop names (`failed_part`) goes into the campaign's
-exclusion zones. A scripted pick names no part. So:
+* a failed pick rescans once, in `auto` and in `dense_clutter`, and a second failure ends the loop for want of an
+  action (`recovery_exhausted`);
+* `nudge_target` is never planned by this loop: the push runs inside the pick attempt (the pick loop's push gate), so
+  for `ALL_COLLIDED` the loop goes on to the rescan and the arm never moves from here;
+* `easy` never recovers.
 
-* `next_target` next to `rescan` is planned and refused before anything moves (the pick named no failed part),
-  then the rescan runs.
-* `next_target` alone is planned and refused, and the failed pick is final.
-* `container_agitate` without a declared container is refused at load. With one declared it loads and is
-  never planned, because no built-in profile lists it, and the arm never moves.
-* `nudge_target`, with a fixture or, since 2026-10-01, without one, is never planned by this loop: no strategy
-  plans it, since the push runs inside the pick attempt (the pick loop's push gate), so for `ALL_COLLIDED` the loop
-  goes on to the rescan and the arm never moves from here. For `NO_VALID_GRASP` it is not offered at all.
-
-The pick itself is scripted (`_pick_inner` replaced on the instance) because what is pinned here is
-the loop around it, not perception or motion; the loop, the orchestrator, the dispatcher, the
-profile and the executor are the real ones a cell built from config runs.
+The pick itself is scripted (`_pick_inner` replaced on the instance) because what is pinned here is the loop around
+it, not perception or motion; the loop, the orchestrator, the dispatcher and the profile are the real ones a cell
+built from config runs.
 """
 
 from __future__ import annotations
@@ -37,22 +27,15 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from pydantic import ValidationError
-
 from src.config.schema.robot import RobotConfig
 from src.geometry import Frame, Pose
 from src.robot.execution.autonomous_grasp import (
     AutonomousGraspOutcome,
     AutonomousGraspService,
 )
+from src.robot.execution.autonomous_grasp.config import CELL_RECOVERY
 from src.robot.grasping.types.feedback import GraspFailureReason
 from tests.test_grasping_config_wiring import _calc_and_perception
-
-_FIXTURE = {
-    "center_mm": [0.0, -700.0, 150.0],
-    "half_extents_mm": [300.0, 300.0, 300.0],
-    "max_nudge_mm": 30.0,
-}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -63,7 +46,6 @@ class _ScriptedReport:
     pick_report: Any
     telemetry: dict = dataclasses.field(default_factory=dict)
     recovery_actions: tuple = ()
-    uncertainty: Any = None
 
 
 def _failed(reason: GraspFailureReason) -> _ScriptedReport:
@@ -78,7 +60,7 @@ def _succeeded() -> _ScriptedReport:
 
 
 class _CountingArm:
-    """Counts every move; a refused recovery must leave this at zero."""
+    """Counts every move; the recovery loop must leave this at zero."""
 
     def __init__(self) -> None:
         self.moves: list[Any] = []
@@ -95,27 +77,10 @@ class _CountingArm:
         return SimpleNamespace(status="EXECUTED")
 
 
-_CONTAINER = {"interior_min_mm": [-200.0, -900.0, 20.0], "interior_max_mm": [200.0, -500.0, 180.0]}
-
-
-def _service(
-    mode: str, allowed: list[str], *, fixture: bool = False, container: bool = False
-) -> AutonomousGraspService:
-    recovery: dict[str, Any] = {"enabled": True, "allowed_actions": allowed}
-    if fixture:
-        recovery["fixture"] = dict(_FIXTURE)
-    grasping: dict[str, Any] = {"default_mode": mode, "recovery": recovery}
-    if container:
-        grasping["support"] = {"container": dict(_CONTAINER)}
-    cfg = RobotConfig(
-        vendor="dummy",
-        gripper={"vendor": "none"},
-        grasping=grasping,
-    )
+def _service(mode: str) -> AutonomousGraspService:
+    cfg = RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping={"default_mode": mode})
     calculator, perception = _calc_and_perception()
-    return AutonomousGraspService.from_robot_config(
-        cfg, calculator=calculator, perception=perception
-    )
+    return AutonomousGraspService.from_robot_config(cfg, calculator=calculator, perception=perception)
 
 
 def _run(
@@ -135,95 +100,53 @@ def _run(
     return report, calls["n"]
 
 
-class AConfigBuiltRecoveryPlansOnlyWhatItsProfileAllows(unittest.TestCase):
-    def test_next_target_beside_rescan_is_refused_then_the_rescan_runs(self) -> None:
-        # The dispatcher lists NEXT_TARGET first for NO_VALID_GRASP and the profile allows it; the scripted pick
-        # names no failed part to skip, so it is refused before anything moves and falls through.
-        service = _service("dense_clutter", ["next_target", "rescan"])
-        report, picks = _run(
-            service, [_failed(GraspFailureReason.NO_VALID_GRASP), _succeeded()], _CountingArm()
-        )
-        self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
-        self.assertEqual(picks, 2)
-        self.assertEqual(report.telemetry["recovery_trail_actions"], ["next_target", "rescan"])
-        self.assertEqual(
-            [(step["action"], step["step_result"]) for step in report.recovery_actions],
-            [("next_target", "refused_no_failed_part"), ("rescan", "completed")],
-        )
+class AConfigBuiltCellRunsTheOwnersRecovery(unittest.TestCase):
+    def test_the_snapshot_carries_the_owners_numbers(self) -> None:
+        recovery = _service("dense_clutter").effective_config.recovery_orchestrator
+        self.assertEqual(CELL_RECOVERY, recovery)
+        self.assertEqual((True, 2, ("rescan", "nudge_target"), (("rescan", 1), ("nudge_target", 2)), 3, True),
+                         (recovery.enabled, recovery.max_actions, recovery.allowed_actions,
+                          recovery.per_action_budget, recovery.blocker_grasp_tries, recovery.blocker_into_the_place))
+        self.assertFalse(_service("easy").effective_config.recovery_orchestrator.enabled, "easy never recovers")
 
-    def test_next_target_alone_is_refused_and_the_pick_is_final(self) -> None:
+    def test_a_failed_pick_rescans_once(self) -> None:
         for mode in ("auto", "dense_clutter"):
             with self.subTest(mode=mode):
-                service = _service(mode, ["next_target"])
                 report, picks = _run(
-                    service,
-                    [_failed(GraspFailureReason.NO_VALID_GRASP), _succeeded()],
-                    _CountingArm(),
-                )
-                self.assertEqual(picks, 1)
-                self.assertIs(report.outcome, AutonomousGraspOutcome.NO_VALID_GRASP)
-                self.assertEqual(report.telemetry["recovery_trail_actions"], ["next_target"])
+                    _service(mode), [_failed(GraspFailureReason.NO_VALID_GRASP), _succeeded()], _CountingArm())
+                self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
+                self.assertEqual(picks, 2)
+                self.assertEqual(report.telemetry["recovery_trail_actions"], ["rescan"])
                 self.assertEqual(
-                    report.telemetry["recovery_trail_terminal_reason"], "escalated_no_recovery"
+                    [(step["action"], step["step_result"]) for step in report.recovery_actions],
+                    [("rescan", "completed")],
                 )
 
-    def test_container_agitate_without_a_container_is_refused_at_load(self) -> None:
-        with self.assertRaises(ValidationError) as caught:
-            _service("dense_clutter", ["container_agitate"], fixture=True)
-        self.assertIn("declares no interior box", str(caught.exception))
-
-    def test_container_agitate_with_a_container_is_never_planned_and_nothing_moves(self) -> None:
-        # ALL_COLLIDED is the jam the dispatcher routes to an agitate; no built-in profile lists it.
-        arm = _CountingArm()
-        service = _service("dense_clutter", ["container_agitate"], fixture=True, container=True)
+    def test_a_second_failure_ends_the_loop_for_want_of_an_action(self) -> None:
         report, picks = _run(
-            service, [_failed(GraspFailureReason.ALL_COLLIDED), _succeeded()], arm
-        )
-        self.assertEqual(picks, 1)
-        self.assertEqual(report.telemetry["recovery_trail_actions"], [])
-        self.assertEqual(report.recovery_actions, ())
-        self.assertEqual(arm.moves, [])
+            _service("auto"),
+            [_failed(GraspFailureReason.NO_VALID_GRASP), _failed(GraspFailureReason.NO_VALID_GRASP), _succeeded()],
+            _CountingArm())
+        self.assertEqual(picks, 2, "the cell rescans once a pick")
+        self.assertIs(report.outcome, AutonomousGraspOutcome.RECOVERY_EXHAUSTED)
+        self.assertEqual(report.telemetry["recovery_trail_actions"], ["rescan"])
 
     def test_the_loop_never_plans_a_nudge_and_goes_on_to_the_rescan(self) -> None:
-        # The push runs inside the pick attempt; this loop has no strategy for it and never plans it.
+        # The push runs inside the pick attempt; this loop never plans it, and the arm never moves from here.
         arm = _CountingArm()
-        service = _service("dense_clutter", ["nudge_target", "rescan"], fixture=True)
         report, picks = _run(
-            service, [_failed(GraspFailureReason.ALL_COLLIDED), _succeeded()], arm
-        )
+            _service("dense_clutter"), [_failed(GraspFailureReason.ALL_COLLIDED), _succeeded()], arm)
         self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
         self.assertEqual(picks, 2)
         self.assertEqual(report.telemetry["recovery_trail_actions"], ["rescan"])
-        self.assertEqual(
-            report.telemetry["recovery_trail_terminal_reason"], "recovered_success"
-        )
-        self.assertEqual(
-            [(step["action"], step["step_result"]) for step in report.recovery_actions],
-            [("rescan", "completed")],
-        )
+        self.assertEqual(report.telemetry["recovery_trail_terminal_reason"], "recovered_success")
         self.assertEqual(arm.moves, [])
 
-    def test_without_a_fixture_it_loads_and_the_loop_still_never_plans_a_nudge(self) -> None:
-        # The push needs no fixture since 2026-10-01 (owner); the loop around the pick still never plans one.
-        arm = _CountingArm()
-        service = _service("dense_clutter", ["nudge_target", "rescan"])
-        report, picks = _run(
-            service, [_failed(GraspFailureReason.ALL_COLLIDED), _succeeded()], arm
-        )
-        self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
-        self.assertEqual(picks, 2)
-        self.assertEqual(report.telemetry["recovery_trail_actions"], ["rescan"])
-        self.assertEqual(arm.moves, [])
-
-    def test_no_nudge_is_offered_without_a_collision(self) -> None:
-        arm = _CountingArm()
-        service = _service("dense_clutter", ["nudge_target", "rescan"], fixture=True)
-        report, picks = _run(
-            service, [_failed(GraspFailureReason.NO_VALID_GRASP), _succeeded()], arm
-        )
-        self.assertEqual(picks, 2)
-        self.assertEqual(report.telemetry["recovery_trail_actions"], ["rescan"])
-        self.assertEqual(arm.moves, [])
+    def test_easy_never_recovers(self) -> None:
+        report, picks = _run(_service("easy"), [_failed(GraspFailureReason.NO_VALID_GRASP), _succeeded()],
+                             _CountingArm())
+        self.assertEqual(picks, 1)
+        self.assertIs(report.outcome, AutonomousGraspOutcome.NO_VALID_GRASP)
 
 
 if __name__ == "__main__":

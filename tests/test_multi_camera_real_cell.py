@@ -1,15 +1,18 @@
 """WS3.2: a PHYSICAL cell can finally run multi-camera fusion, because something builds the rig.
 
 ⛔⛔ **THE FEATURE WAS UNREACHABLE FROM CONFIG, AND ONLY THE LAST HALF WAS MISSING.**
-`apply_orchestrator_overlays` wires `fusion_geometry_config`, the per-camera CAMERA->BASE resolver
-map (fail-closed at construction, so a bad artifact raises while an operator is watching) and, since
-WS3.4, the list of cameras the config asked for. Then its own comment says the RIG is a live device
+`apply_orchestrator_overlays` wires the per-camera CAMERA->BASE resolver map (fail-closed at
+construction, so a bad artifact raises while an operator is watching). Then its own comment says the RIG is a live device
 handle the caller must pass in. **No caller did.** The single assignment to
 `orchestrator.multi_camera_perception` in the whole tree was one Isaac runner reaching into the
 attribute after construction, so a physical cell could name three calibrated cameras, load three
 artifacts, and run single-view. The loop logged that it was doing so, which is the difference between
 a gap and a lie, but the measured lever (top-1 43.50 % single-view against 55.93 % fused on the
 datagen reference) was not available to any real cell.
+
+Since 2026-10-16 the cameras are the camera section's own (the owner's cleanup): every enabled RGB-D rig that declares
+its calibration, where two or more do (``camera_fusion.fused_cameras``). A rig switched off, or one with no
+calibration, is not fused and not opened; there is no map to name a camera that is not a rig.
 
 ⚠ **NEVER RUN ON HARDWARE.** Not one physical camera has been opened by this path. The rig is built
 here against a fake camera owner and fake models; what is proven is the WIRING, and the difference is
@@ -25,7 +28,6 @@ from unittest import mock
 import numpy as np
 
 from src.config.schema.robot import RobotConfig
-from src.robot.execution.autonomous_grasp.cells import CellBuildRefused
 from src.robot.grasping.types.perception import MappedCameraRig
 
 class _Handle:
@@ -46,11 +48,10 @@ class _CameraLog:
     """Records which rigs were opened and which were given back, which is the whole question for a
     multi-camera cell. One log per build, shared by every camera that build opens."""
 
-    def __init__(self, no_intrinsics: tuple[str, ...] = ()) -> None:
+    def __init__(self) -> None:
         self.opened: list[str] = []
         self.released: list[str] = []
         self.handles: dict[str, _Handle] = {}
-        self.no_intrinsics = no_intrinsics
 
 
 def _camera_class(log: _CameraLog):  # noqa: ANN202
@@ -69,17 +70,14 @@ def _camera_class(log: _CameraLog):  # noqa: ANN202
             self.rig_id = rig_id
 
         @classmethod
-        def from_config(cls, camera_cfg, *, rig_id=UNSET, open_disabled=UNSET):  # noqa: ANN001, ANN206
+        def from_config(cls, camera_cfg, *, rig_id=UNSET, open_disabled=UNSET, workspace=UNSET):  # noqa: ANN001, ANN206, ARG003
             return cls(select_rig(camera_cfg, rig_id=rig_id, open_disabled=open_disabled).rig_id)
 
         def open(self) -> None:
             log.opened.append(self.rig_id)
 
         def handle(self) -> _Handle:
-            made = log.handles.setdefault(self.rig_id, _Handle(self.rig_id))
-            if self.rig_id in log.no_intrinsics:
-                made.get_intrinsics = lambda: None  # type: ignore[method-assign]
-            return made
+            return log.handles.setdefault(self.rig_id, _Handle(self.rig_id))
 
         def release(self) -> None:
             log.released.append(self.rig_id)
@@ -102,23 +100,13 @@ def _app_cfg(*rig_ids: str, disabled: tuple[str, ...] = (), uncalibrated: tuple[
     return cfg
 
 
-def _robot_cfg(*, geometry: bool, cameras: dict[str, bool], promote: bool = False) -> RobotConfig:
-    """A real validated config, because a mock would not prove the keys exist."""
-    return RobotConfig.model_validate({
-        "vendor": "dummy",
-        "grasping": {
-            "fusion": {
-                "geometry": {"enabled": geometry, "promote_unmatched": promote},
-                # An entry names whether a camera is fused; its calibration is declared on its rig, which
-                # `_rig` gives by default, so the camera section of `_app_cfg` is where it lives.
-                "cameras": {cam_id: {"enabled": on} for cam_id, on in cameras.items()},
-            },
-        },
-    })
+def _robot_cfg() -> RobotConfig:
+    """A real validated config: which cameras fuse is the camera section's, `_app_cfg`."""
+    return RobotConfig.model_validate({"vendor": "dummy", "grasping": {}})
 
 
 def _build(robot_cfg: RobotConfig, app_cfg, provider_box: list,  # noqa: ANN001
-           no_intrinsics: tuple[str, ...] = ()):
+           refuse_the_calculator: bool = False):
     """Walk `build_real_components` with fake devices and a fake perception stack.
 
     ⚠ **THE SEAM MOVED ON 2026-09-05 AND THIS HELPER MOVED WITH IT.** It used to patch
@@ -131,7 +119,7 @@ def _build(robot_cfg: RobotConfig, app_cfg, provider_box: list,  # noqa: ANN001
     """
     from src.robot.execution.autonomous_grasp import cells
 
-    log = _CameraLog(no_intrinsics)
+    log = _CameraLog()
     provider_box.append(log)
 
     def _stack(_self, **_kw):  # noqa: ANN001, ANN202
@@ -141,11 +129,19 @@ def _build(robot_cfg: RobotConfig, app_cfg, provider_box: list,  # noqa: ANN001
             detector=SimpleNamespace(kind="detector"), segmenter=SimpleNamespace(kind="segmenter"),
         )
 
+    # A refusal after every camera is open: the calculator is built once the rig stands, as a corrupt artifact's
+    # refusal at build time does (`_preload`).
+    refused = mock.patch("src.robot.grasping.calculator_factory.build_calculator",
+                         side_effect=RuntimeError("the calculator's artifact does not load"))
     with mock.patch("src.config.load_config", return_value=app_cfg), \
          mock.patch("src.camera.orchestration.camera.Camera", _camera_class(log)), \
          mock.patch("src.models.perception_spec.PerceptionSpec.build",
                     autospec=True, side_effect=_stack) as build:
-        result = cells.build_real_components(robot_cfg, "a box")
+        if refuse_the_calculator:
+            with refused:
+                result = cells.build_real_components(robot_cfg, "a box")
+        else:
+            result = cells.build_real_components(robot_cfg, "a box")
     return result, build
 
 
@@ -155,8 +151,8 @@ class TheRigIsBuiltTests(unittest.TestCase):
         """⭐ THE ITEM ITSELF. Two calibrated cameras in config, two devices opened, and the cell
         carries a rig the pick loop can observe."""
         box: list = []
-        (_calc, _perc, _res, multi, _lenses), _build_calls = _build(
-            _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
+        (_calc, _perc, _res, multi), _build_calls = _build(
+            _robot_cfg(),
             _app_cfg("overhead", "oblique"), box)
 
         self.assertIsInstance(multi, MappedCameraRig)
@@ -173,8 +169,8 @@ class TheRigIsBuiltTests(unittest.TestCase):
         measurement to justify the move.
         """
         box: list = []
-        (_c, _p, _r, multi, _lenses), _build_calls = _build(
-            _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
+        (_c, _p, _r, multi), _build_calls = _build(
+            _robot_cfg(),
             _app_cfg("overhead", "oblique"), box)
 
         self.assertNotIn("overhead", multi.sources, "the primary camera is observed twice per pick")
@@ -184,8 +180,7 @@ class TheRigIsBuiltTests(unittest.TestCase):
         four GroundingDINO loads on one GPU."""
         box: list = []
         _r, build = _build(
-            _robot_cfg(geometry=True,
-                       cameras={"overhead": True, "left": True, "right": True, "wrist": True}),
+            _robot_cfg(),
             _app_cfg("overhead", "left", "right", "wrist"), box)
 
         self.assertEqual(build.call_count, 1, "one stack for four cameras, not four stacks")
@@ -193,8 +188,8 @@ class TheRigIsBuiltTests(unittest.TestCase):
     def test_every_camera_shares_the_SAME_model_objects(self) -> None:
         """The control on the count above: one build call could still have been copied per camera."""
         box: list = []
-        (_c, primary, _r, multi, _lenses), _build_calls = _build(
-            _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
+        (_c, primary, _r, multi), _build_calls = _build(
+            _robot_cfg(),
             _app_cfg("overhead", "oblique"), box)
 
         # ⭑ THE WHOLE BACKEND IS NOW SHARED, WHICH IS THE STRONGER CLAIM. The cell used to hand
@@ -210,100 +205,54 @@ class TheRigIsBuiltTests(unittest.TestCase):
 
 class ItStaysOffByDefaultTests(unittest.TestCase):
 
-    def test_no_fusion_geometry_opens_ONE_camera_exactly_as_before(self) -> None:
-        """⚠ THE BYTE-IDENTICAL CASE, which is every cell that exists today."""
+    def test_one_calibrated_camera_opens_ONE_camera_exactly_as_before(self) -> None:
+        """⚠ THE BYTE-IDENTICAL CASE, which is every cell that exists today. A rig with no calibration is not fused,
+        and its device is not opened either."""
         box: list = []
-        (_c, _p, _r, multi, _lenses), _build_calls = _build(
-            _robot_cfg(geometry=False, cameras={"overhead": True, "oblique": True}),
-            _app_cfg("overhead", "oblique"), box)
+        (_c, _p, _r, multi), _build_calls = _build(
+            _robot_cfg(),
+            _app_cfg("overhead", "oblique", uncalibrated=("oblique",)), box)
 
         self.assertIsNone(multi)
         self.assertEqual(box[0].opened, ["overhead"], "a device was opened that nothing observes")
 
-    def test_a_config_naming_only_the_primary_builds_no_rig(self) -> None:
+    def test_a_cell_of_one_camera_builds_no_rig(self) -> None:
         """One camera is not a multi-camera rig, and an empty rig would make the pick loop expect
         observations nobody produces."""
         box: list = []
-        (_c, _p, _r, multi, _lenses), _build_calls = _build(
-            _robot_cfg(geometry=True, cameras={"overhead": True}),
+        (_c, _p, _r, multi), _build_calls = _build(
+            _robot_cfg(),
             _app_cfg("overhead"), box)
 
         self.assertIsNone(multi)
 
     def test_a_DISABLED_camera_is_not_opened(self) -> None:
         box: list = []
-        (_c, _p, _r, multi, _lenses), _build_calls = _build(
-            _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": False}),
-            _app_cfg("overhead", "oblique"), box)
+        (_c, _p, _r, multi), _build_calls = _build(
+            _robot_cfg(),
+            _app_cfg("overhead", "oblique", disabled=("oblique",)), box)
 
         self.assertIsNone(multi)
         self.assertEqual(box[0].opened, ["overhead"])
 
 
-class ItFailsClosedTests(unittest.TestCase):
-
-    def test_a_camera_with_no_matching_rig_is_refused_AT_BUILD(self) -> None:
-        """⛔ Left to runtime this is worse than a build error: the id has a calibration artifact, so
-        it joins the resolver map and `configured_camera_ids`, and then delivers no frame on every
-        single pick -- refusing all of them under `refuse`, warning on all of them under `degrade`.
-        Say it once, here, while an operator is watching."""
-        box: list = []
-        with self.assertRaises(CellBuildRefused) as caught:
-            _build(_robot_cfg(geometry=True, cameras={"overhead": True, "ghost": True}),
-                   _app_cfg("overhead", "oblique"), box)
-
-        message = str(caught.exception)
-        self.assertIn("ghost", message)
-        self.assertIn("camera.cameras.rigs", message, "the refusal must name where to fix it")
-
-
-class ADisabledExtraCameraRefusesTests(unittest.TestCase):
-    """The camera noun refuses a disabled rig everywhere, fused extras included, so a camera its own
-    config declares off is never opened and fused merely because its id names an RGB-D rig."""
-
-    def test_a_disabled_extra_camera_refuses_the_fused_build(self) -> None:
-        box: list = []
-        with self.assertRaises(CellBuildRefused) as caught:
-            _build(_robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
-                   _app_cfg("overhead", "oblique", disabled=("oblique",)), box)
-        message = str(caught.exception)
-        self.assertIn("'oblique'", message)
-        self.assertIn("`enabled: false`", message)
-        self.assertEqual(box[0].opened, ["overhead"], "the disabled camera was opened")
-        self.assertEqual(box[0].released, ["overhead"], "the refused build kept the primary")
+class ARefusedFusedBuildGivesEveryCameraBackTests(unittest.TestCase):
 
     def test_a_refused_build_releases_every_camera_it_opened(self) -> None:
-        """The promote refusal comes after both cameras are open: the extra one cannot own an object
-        without its own lens. Every camera the build opened is given back, not only the primary."""
+        """The calculator's refusal comes after both cameras are open. Every camera the build opened is given back,
+        not only the primary."""
         box: list = []
-        with self.assertRaises(CellBuildRefused):
-            _build(_robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}, promote=True),
-                   _app_cfg("overhead", "oblique"), box, no_intrinsics=("oblique",))
+        with self.assertRaises(RuntimeError):
+            _build(_robot_cfg(), _app_cfg("overhead", "oblique"), box, refuse_the_calculator=True)
         self.assertEqual(sorted(box[0].opened), ["oblique", "overhead"])
         self.assertEqual(sorted(box[0].released), ["oblique", "overhead"],
                          "a refused build kept a camera it had opened")
 
 
-class AFusedCameraNeedsItsRigsCalibrationTests(unittest.TestCase):
-    """A fused camera's calibration is declared on its rig. A rig that declares none is refused before
-    its device is opened, rather than opened and then refused by the resolver build."""
-
-    def test_a_fused_camera_whose_rig_declares_no_calibration_is_refused_before_it_opens(self) -> None:
-        box: list = []
-        with self.assertRaises(CellBuildRefused) as caught:
-            _build(_robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
-                   _app_cfg("overhead", "oblique", uncalibrated=("oblique",)), box)
-        message = str(caught.exception)
-        self.assertIn("'oblique'", message)
-        self.assertIn("camera.cameras.rigs[<id>].extrinsics", message)
-        self.assertNotIn("oblique", box[0].opened, "the uncalibrated camera was opened")
-
-
 class ARefusedBuildGivesTheCameraBackTests(unittest.TestCase):
     """⛔ MEASURED 2026-09-10. The primary camera was opened and then never released on any path
-    that refuses afterwards, and several such paths exist by design: the multi-camera rig refuses an
-    unmatched id, and `_preload()` was added precisely so a corrupt artifact refuses AT BUILD TIME
-    rather than as an empty candidate list at 3 a.m.
+    that refuses afterwards, and such paths exist by design: `_preload()` was added precisely so a corrupt
+    artifact refuses AT BUILD TIME rather than as an empty candidate list at 3 a.m.
 
     The consequence is worse than a warning. A RealSense held by a process that has exited stays
     claimed, so the operator who reads the refusal, fixes the config and runs again meets "device
@@ -311,15 +260,14 @@ class ARefusedBuildGivesTheCameraBackTests(unittest.TestCase):
     was added to help became the thing that hid itself.
 
     ⭐ THIS LIVES IN THIS FILE BECAUSE THE HARNESS IS HERE, not because the property is about
-    multiple cameras. The multi-camera refusal is simply the post-open refusal that is cheapest to
+    multiple cameras. A calculator that refuses is simply the post-open refusal that is cheapest to
     provoke without a device.
     """
 
     def test_a_refusal_after_the_open_returns_the_device(self) -> None:
         box: list = []
-        with self.assertRaises(CellBuildRefused):
-            _build(_robot_cfg(geometry=True, cameras={"overhead": True, "ghost": True}),
-                   _app_cfg("overhead", "oblique"), box)
+        with self.assertRaises(RuntimeError):
+            _build(_robot_cfg(), _app_cfg("overhead"), box, refuse_the_calculator=True)
 
         self.assertTrue(box, "the harness never reached the cameras, so this proves nothing")
         log = box[0]
@@ -336,7 +284,7 @@ class ARefusedBuildGivesTheCameraBackTests(unittest.TestCase):
         ones hold.
         """
         box: list = []
-        _build(_robot_cfg(geometry=False, cameras={}), _app_cfg("overhead"), box)
+        _build(_robot_cfg(), _app_cfg("overhead"), box)
 
         log = box[0]
         self.assertEqual(log.released, [], "a cell that came up must still hold its camera")

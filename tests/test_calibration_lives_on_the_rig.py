@@ -1,10 +1,10 @@
 """A camera's calibration lives on its rig, `camera.cameras.rigs[<id>].extrinsics`, and nothing else names it.
 
 The fusion calibration keys, `grasping.fusion.extrinsics_artifact_path` and each `grasping.fusion.cameras.<id>`'s
-`mounting_mode` and `extrinsics_artifact_path`, are not in the schema and are refused at load with a sentence
-naming the rig key; `fusion.cameras.<id>` carries `enabled` only. The owner decisions behind this are recorded in
-`.commits/robot/52-one-owner-per-camera.md`. The primary's resolver follows its rig whether or not
-`fusion.enabled` is on, so a wrist primary gets the eye-in-hand resolver that a single artifact path cannot
+`mounting_mode` and `extrinsics_artifact_path`, are not in the schema, and neither is the fusion block since 2026-10-16:
+a tree that still writes it is refused at the block, and `explain` answers each old key with the sentence that names
+the rig key. The owner decisions behind this are recorded in `.commits/robot/52-one-owner-per-camera.md`. The primary's
+resolver follows its rig, so a wrist primary gets the eye-in-hand resolver that a single artifact path cannot
 describe. Every artifact is opened by one function, `RigCalibration.from_config`.
 """
 
@@ -20,11 +20,9 @@ from unittest.mock import patch
 
 import numpy as np
 import yaml
-from pydantic import ValidationError
 
 from src.config import ConfigError, load_config
 from src.config.loader import load_robot_section
-from src.config.schema.app import AppConfig
 from src.config.schema.robot import RobotConfig
 from src.calibration.extrinsics import Extrinsics
 from src.calibration.serialization import save_cam_to_tool, save_extrinsics
@@ -40,7 +38,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _READY = "src.robot.drivers.doctor.require_arm_vendor_ready"
 _T = np.array([400.0, -25.0, 812.5])
 _Q = np.array([1.0, 0.0, 0.0, 0.0])
-_GRASPING = {"default_mode": "auto", "max_attempts": 5}
+_GRASPING = {"default_mode": "auto"}
 
 
 def _robot(vendor: str) -> RobotConfig:
@@ -81,38 +79,40 @@ class TheOldKeysAreRefusedAtLoadTests(_ScratchTree):
             load_robot_section(self.root, profile=None)
         return str(caught.exception)
 
-    def test_a_tree_still_writing_the_fusion_artifact_is_refused_naming_the_rig_key(self) -> None:
-        message = self._refusal({"extrinsics_artifact_path": "calibration/eth_overhead.json"})
-        self.assertIn("removed on purpose", message)
-        self.assertIn("camera.cameras.rigs[<id>].extrinsics", message)
+    def test_a_tree_still_writing_the_fusion_block_is_refused_at_the_block(self) -> None:
+        for fusion in ({"extrinsics_artifact_path": "calibration/eth_overhead.json"},
+                       {"cameras": {"overhead": {"mounting_mode": "eye_to_hand"}}},
+                       {"depth_min_mm": 40.0, "commit_policy": {"enabled": False}},
+                       {"enabled": True}):
+            with self.subTest(fusion=sorted(fusion)):
+                message = self._refusal(fusion)
+                self.assertIn("robot.grasping.fusion", message)
+                self.assertIn("removed on purpose", message)
+                self.assertIn("fuses its cameras by itself", message)
 
-    def test_a_fused_camera_still_writing_its_artifact_is_refused_naming_the_rig_key(self) -> None:
-        message = self._refusal({"cameras": {"overhead": {
-            "mounting_mode": "eye_to_hand", "extrinsics_artifact_path": "calibration/eth_overhead.json"}}})
-        self.assertIn("robot.grasping.fusion.cameras.overhead.mounting_mode", message)
-        self.assertIn("robot.grasping.fusion.cameras.overhead.extrinsics_artifact_path", message)
-        self.assertEqual(message.count("removed on purpose"), 2)
-        self.assertIn("camera.cameras.rigs[<id>].extrinsics", message)
+    def test_explain_answers_each_old_key_with_its_own_sentence(self) -> None:
+        """The sentences that send a reader to the rig key stay, for the keys that had moved there."""
+        from src.config.schema._removed import removed_key_sentence
 
-    def test_a_tree_still_writing_the_voxel_grid_or_the_commit_gate_is_refused_saying_why(self) -> None:
-        """The same block lost the multi-view voxel grid and the commit gate that read it (2026-09-28); a tree that
-        still sizes the grid or configures the gate is told so, key by key."""
-        message = self._refusal({"depth_min_mm": 40.0, "commit_policy": {"enabled": False}})
-        self.assertIn("robot.grasping.fusion.depth_min_mm", message)
-        self.assertIn("robot.grasping.fusion.commit_policy", message)
-        self.assertEqual(message.count("removed on purpose"), 2)
-        self.assertIn("voxel grid", message)
-        self.assertIn("commit gate", message)
+        said = {key: removed_key_sentence(f"robot.grasping.fusion.{key}") or "" for key in (
+            "extrinsics_artifact_path", "cameras.overhead.mounting_mode", "cameras.overhead.extrinsics_artifact_path",
+            "depth_min_mm", "commit_policy", "geometry.min_score")}
+        self.assertIn("camera.cameras.rigs[<id>].extrinsics", said["extrinsics_artifact_path"])
+        self.assertIn("extrinsics.mounting_mode", said["cameras.overhead.mounting_mode"])
+        self.assertIn("extrinsics.artifact_path", said["cameras.overhead.extrinsics_artifact_path"])
+        self.assertIn("voxel grid", said["depth_min_mm"])
+        self.assertIn("commit gate", said["commit_policy"])
+        self.assertIn("fuses its cameras by itself", said["geometry.min_score"])
 
-    def test_every_key_of_the_grid_and_the_gate_is_named_and_gone_from_the_schema(self) -> None:
+    def test_every_key_of_the_grid_and_the_gate_is_named_and_the_block_gone_from_the_schema(self) -> None:
         from src.config.schema._removed import REMOVED_KEYS
-        from src.config.schema.robot.grasping_schema import RobotGraspingFusionConfig
+        from src.config.schema.robot.grasping_schema import RobotGraspingConfig
 
+        self.assertNotIn("fusion", RobotGraspingConfig.model_fields)
         for key in ("max_views", "max_view_age_s", "voxel_size_mm", "roi_extent_mm", "max_voxels",
                     "depth_min_mm", "depth_max_mm", "intrinsics_atol", "commit_policy"):
             with self.subTest(key):
                 self.assertIn(f"robot.grasping.fusion.{key}", REMOVED_KEYS)
-                self.assertNotIn(key, RobotGraspingFusionConfig.model_fields)
 
 
 class ThePrimaryResolverFollowsItsRigTests(unittest.TestCase):
@@ -125,7 +125,6 @@ class ThePrimaryResolverFollowsItsRigTests(unittest.TestCase):
     def test_the_primary_resolver_reads_the_rig(self) -> None:
         camera = _camera_section("overhead", {"mounting_mode": "eye_to_hand", "artifact_path": _saved_fixed(self.root)})
         grasping = _robot("dummy").grasping
-        self.assertFalse(grasping.fusion.enabled, "the resolver must not wait for fusion to be switched on")
         resolver = build_config_frame_resolver(grasping, camera=camera)
         assert isinstance(resolver, StaticCameraToBaseResolver)
         np.testing.assert_allclose(resolver.transform.translation_mm, _T)
@@ -199,24 +198,6 @@ class OneLoaderOpensEveryArtifactTests(unittest.TestCase):
     def test_the_scan_sees_a_call(self) -> None:
         """The control: the detector fires on the construction it is written to catch."""
         self.assertEqual(self._calls("from x import load_extrinsics\nload_extrinsics('a.json')\n"), [2])
-
-
-class AFusedCameraNamesARigTests(unittest.TestCase):
-
-    def test_a_fused_camera_that_names_no_rig_is_refused_at_load(self) -> None:
-        tree = load_config().model_dump(mode="json")
-        tree["robot"]["grasping"]["fusion"]["cameras"] = {"ghost": {"enabled": True}}
-        with self.assertRaises(ValidationError) as caught:
-            AppConfig.model_validate(tree)
-        self.assertIn("robot.grasping.fusion.cameras names 'ghost', which is not a rig in camera.cameras.rigs",
-                      str(caught.exception))
-
-    def test_a_fused_camera_that_names_a_rig_loads(self) -> None:
-        """The control, and the whole of what `fusion.cameras.<id>` carries: `enabled`."""
-        tree = load_config().model_dump(mode="json")
-        rig_id = tree["camera"]["cameras"]["rigs"][0]["rig_id"]
-        tree["robot"]["grasping"]["fusion"]["cameras"] = {rig_id: {"enabled": True}}
-        AppConfig.model_validate(tree)
 
 
 class ThePreflightReadsTheRigTests(unittest.TestCase):

@@ -72,33 +72,21 @@ measures every configured Cartesian point against the model's working sphere abo
 sits `d1` above the base. Measuring from the base origin instead would over-state the envelope by that
 height and wave through poses the arm cannot touch.
 
-Known gap: the audit checks Cartesian points, `scene_setup.object`, `scene_setup.marker`, `safe_pose`,
-the declared eye-in-hand station farthest from the shoulder and the worst workspace corner.
+Known gap: the audit checks Cartesian points, `scene_setup.object`, `scene_setup.marker`,
+the declared eye-in-hand station farthest from the shoulder and the worst workspace corner (`robot.safe_pose`, which
+it checked too, left on 2026-10-17).
 `home_joint_positions`, `park_joint_positions`, a joint station and a wrist camera's looks
-(`robot.look_joint_positions_deg`) are joint poses and are not covered. Check those by hand. See
+(`robot.motion.look_deg`) are joint poses and are not covered. Check those by hand. See
 Mitigate 1.
 
-**4. Non-deterministic pick rate on a static scene?**
-
-The symptom is the same scene, the same selected score, and a run-to-run mix of successes and
-`MotionStatus.TIMEOUT`. The cause is that a near-isotropic silhouette, a cube seen from above, has a
-numerically degenerate principal axis, so the chosen jaw orientation flips between runs. That only
-becomes a failure on an arm that cannot plan one of the two orientations another arm absorbs.
-
-Declare `robot.grasping.isotropic_radial_closing: true` in your cell's layer, and a symmetric object's
-free yaw goes to the radial direction. Only near-isotropic silhouettes and near-vertical approaches are
-touched; an elongated object's axis carries real information and is left alone. Do not instead lower the
-standoff: the pick still has to lift, so an unreachable orientation simply fails at the retreat instead of
-at the approach.
-
-**5. Losing picks to self-collision rejections just under the margin?**
+**4. Losing picks to self-collision rejections just under the margin?**
 
 `forearm|wrist_2: mesh distance 9.44 mm < 10.000 mm` is not a bad grasp. The planner plans against
 spheres and the guard checks exact meshes, so without
 [`planner_margin_mm`](../../src/config/schema/robot/safety_schema.py) the two disagree by fractions of a
 millimetre and the plan loses. See Mitigate 2.
 
-**6. The planner refuses a pose the exact guard accepts?**
+**5. The planner refuses a pose the exact guard accepts?**
 
 The other side of the same disagreement: the planner's padded spheres overlap where the meshes keep well
 clear, as at the owner's LOOK[0] (forearm|wrist_2 1.2 mm deep for the spheres, 19.0 mm apart for the
@@ -111,18 +99,18 @@ reach it or leave it, re-teach it by hand where both clear and screen it again. 
 nowhere: re-teach it at the nearby pose its line names, or by hand where both clear when it names none,
 then screen it again ([04](../guide/04-robot-and-safety.md), section 6).
 
-**7. A bin beside the base refused, while a ruler says it is clear?**
+**6. A bin beside the base refused, while a ruler says it is clear?**
 
 The exact guard keeps a seen bin 20 mm off a face and about 26 mm across a rim edge. cuRobo's sphere cover
 reaches 25 to 29 mm past the shoulder housing, so where only the camera's boxes refuse the planner's world,
 the driver asks it again with them set aside and the exact guard decides. Turned bins need no squaring.
-**Keep about 30 mm between a seen bin and the housing's ring** where the arm passes it with an empty hand.
-While the hand carries a part or cannot say it stands open, and for a planned move into or out of a pose
-beside the bin, the camera's boxes stay in: a seen bin then needs about 50 mm, 60 for a straight line. A grasp
-nearer judges its lift carrying first and backs out with the jaws open (`carried_retreat_refused`), and the
-lift is judged again once the jaws closed, so give the bin 50 mm where the hand closes beside it. A declared
-bin is never set aside and needs about 25 mm, 40 for a straight line, carrying or not, so **pick from a bin
-beside the base declared, or give a seen one 50 mm**. [real_cell_first_pick.md](real_cell_first_pick.md), Diagnose 10, has the
+**Keep about 30 mm between a seen bin and the housing's ring** where the arm passes it on straight lines and
+moveL, whatever the hand holds: no cell models a part in the jaws since 2026-10-17. For a planned move into or out
+of a pose beside the bin the camera's boxes stay in, and a seen bin then needs about 50 mm. A grasp judges its lift
+before the jaws close and backs out with them open where it would be refused (`carried_retreat_refused`). A declared
+bin is never set aside and needs about 25 mm, 40 for a straight line (at the line clearance of 10 mm these were
+measured at; every cell keeps 3 since), so **pick from a bin beside the base declared, or give a seen one 50 mm
+where a planned move reaches the standoff**. [real_cell_first_pick.md](real_cell_first_pick.md), Diagnose 10, has the
 numbers and the refusal lines.
 
 ---
@@ -137,7 +125,7 @@ Give the robot its own configuration layer: a `*.<your cell>.yaml` file beside e
 ```bash
 WILLY_PROFILE=<your cell> python -m src.config                             # the tree loads, or the line names file and key
 python -m src.config decisions --section robot --profile <your cell>       # what your layer decided, with file and line
-python -m src.config explain robot.workspace_limits --profile <your cell>  # one key, and where it was set
+python -m src.config explain robot.motion.workspace --profile <your cell>  # one key, and where it was set
 ```
 
 A first layer holds only what differs from the layers before it. The smallest real one names the hand
@@ -186,10 +174,10 @@ the arm the tree builds without connecting it; they never change the exit code. 
 guard need the arm's geometry, a planner description and a collision-mesh bundle, built once per arm by
 the vendor's tooling (see the vendor section). `--start-planner` then starts the planner the way the first planned move does, with
 every refusal that move meets, and needs neither a camera nor a controller: it exits 0 when the planner
-started, and screens every look `robot.look_joint_positions_deg` configures, one line each: `clear`, `in
+started, and screens every look `robot.motion.look_deg` configures, one line each: `clear`, `in
 the planner's cushion band`, or `ERROR`, with a pose nearby both clear where one exists (Diagnose 6). The
-planner reserves its box slots when it starts, 1 + declared + `perceived.max_boxes` (64), so **restart it
-after an update**. On the cell PC, run the two GPU probes once before the first run, with the console and
+planner reserves its box slots when it starts, 1 + declared + 128 (`perceived.CAMERA_MAX_BOXES`), so **restart
+it after an update**. On the cell PC, run the two GPU probes once before the first run, with the console and
 every other planner stopped, since each starts its own sidecar: `python scripts/curobo/probe_band_admission.py`
 and `python scripts/curobo/probe_turned_boxes.py`, each exit 0
 ([real_cell_first_pick.md](real_cell_first_pick.md), Diagnose 6).
@@ -270,9 +258,9 @@ simulated cell's records also carry `gripper_mount` and `degraded_engines`, stam
 Confirm a new cell's JSONL carries them before collecting a dataset, because the contamination is
 retroactive and invisible.
 
-The soak gate, `python -m src.robot.grasping.replay --soak-report`, is robot-agnostic and synthetic. It
-proves telemetry and KPI consistency, not grasp quality, and it will stay green through a completely
-broken cell. The Isaac gate and the bring-up check are the signals that describe this cell.
+The gate over a record log, `python -m src.robot.grasping.replay --records-gate <log>`, judges the picks
+the cell logged and can fail. The Isaac gate and the bring-up check are the other signals that describe
+this cell.
 
 ---
 
@@ -282,7 +270,7 @@ The bring-up is additive, and every step is reversible without touching another 
 
 1. **Drop the layer.** Stop setting `WILLY_PROFILE`, or drop your layer from the chain, and the cell is
    the base tree again. The `*.<your cell>.yaml` files can stay on disk; an unreferenced layer is inert.
-2. **Drop a behaviour key.** `isotropic_radial_closing` is default off. The planner margin has no neutral
+2. **Drop a behaviour key.** The planner margin has no neutral
    value: a planner cell starts its planner only with a committed evidence file measured at its margin,
    so the planner's rollback is the cell's `robot.motion.planner: ik`. That stops the cell rather than degrading
    it: the robot's verbs (`Robot.move`, `move_joints`, `home`, `pick`, `place`) refuse a UR on the ik

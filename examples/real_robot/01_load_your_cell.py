@@ -13,8 +13,8 @@ print(tree)
 if not tree.ok:
     raise SystemExit(tree.exit_code)
 
-# A key the desk checklist can block a real cell on: with robot.safety.payload.enforce true, a
-# mass of 0.0 tells the controller the tool weighs nothing. The answer gives the value, its
+# A key the desk checklist can block a real cell on: a mass of 0.0 tells the controller the tool
+# weighs nothing. The answer gives the value, its
 # bounds, and the file and line that set it.
 print(tree.explain("robot.safety.payload.mass_kg"))
 

@@ -1,150 +1,82 @@
-"""Schemas for the ML and CV models: detection, segmentation, speech, hands, pipeline presets."""
+"""Schemas for the ML and CV models: which model detects, cuts and transcribes.
+
+A block names its model and nothing else (the owner, 2026-10-17): a ``model_id``, whose weights are read from the
+one weights folder (``models.weights_root``, :mod:`src.models.weights`), and a choice only where a cell has one to
+make: the closed-set detector's threshold and Whisper's language. How each model loads and runs (its dtype, its
+attention, its memory format, the VLM's answer speed, the microphone's stream, the hand detectors' thresholds) is
+fixed per model in code at the values the owner's cell ran, and a tree that still writes one of those keys is refused
+at load with the sentence that says what became of it (``src/config/schema/_removed.py``).
+"""
 
 from __future__ import annotations
 
-from typing import Literal, get_args
+from typing import Annotated, Any, Final, Literal, get_args
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AfterValidator, Field, StringConstraints, ValidationInfo, field_validator
 
-from .._base import ConfigPath, StrictModel
+from ...paths import CONFIG_FOLDER, resolve_config_path
+from .._base import StrictModel
 
+#: Where every model's weights are read from unless a tree says otherwise: the repository's own folder, which
+#: ``scripts/model_weights/fetch.py`` writes and the repository's ``.gitignore`` keeps out of the index.
+DEFAULT_WEIGHTS_ROOT: Final[str] = "${WILLY_PROJECT_ROOT}/assets/models/hf"
 
-class InferenceOptimization(StrictModel):
-    """Optional inference-time optimizations for torch-based models.
-
-    Nothing here is on by default, so a model runs unchanged until a
-    config opts in. On CUDA hosts ``torch_dtype="auto"`` and
-    ``attn_implementation="sdpa"`` are the usual production settings.
-
-    Fields:
-        torch_dtype:
-            ``"auto"`` (fp16 on CUDA, fp32 elsewhere), ``"float16"``,
-            ``"bfloat16"``, ``"float32"`` or ``None`` (= fp32).
-        attn_implementation:
-            Forwarded to ``from_pretrained``. ``"sdpa"`` is a safe fast
-            default on CUDA. ``None`` keeps the HF default.
-        channels_last:
-            Channels-last memory format for vision models. Faster on
-            Ampere+ GPUs, no-op on CPU.
-        compile:
-            Wrap the model with ``torch.compile``. Off by default: it
-            adds warm-up time, can fail on some HF architectures, and
-            pays off only on stable input shapes.
-        compile_mode:
-            Mode forwarded to ``torch.compile``.
-    """
-
-    torch_dtype: str | None = None
-    attn_implementation: str | None = None
-    channels_last: bool = False
-    compile: bool = False
-    compile_mode: str = "reduce-overhead"
+#: How a model id that names a folder relative to the tree begins. A Hugging Face id never does.
+_RELATIVE: Final = ("./", "../", ".\\", "..\\")
 
 
+def _model_id_in_the_tree(value: Any, info: ValidationInfo) -> Any:
+    """A model id written as a folder relative to the tree (``./chess``) is read against the tree's folder, as every
+    relative path in a tree is (:mod:`src.config.paths`); a Hugging Face id and an absolute folder stay as written."""
+    if not isinstance(value, str) or not value.startswith(_RELATIVE):
+        return value
+    context = info.context if isinstance(info.context, dict) else {}
+    return resolve_config_path(value, context.get(CONFIG_FOLDER))
 
 
+#: A model's name: a Hugging Face id (``org/name``), whose weights are read from
+#: ``<models.weights_root>/<kind>/<org>--<name>``, or a folder's path (a ``DetectorTraining`` out_dir): absolute,
+#: from home (``~/...``), or relative to the tree's folder (``./...``).
+ModelId = Annotated[str, StringConstraints(min_length=1), AfterValidator(_model_id_in_the_tree)]
 
 
 class ObjectDetectorConfig(StrictModel):
-    """Object-detection model configuration.
+    """The closed-set detector, RT-DETR: its weights and the score a box must clear.
 
-    ``local`` picks the weight source: true reads ``model_path`` from disk and downloads
-    nothing, false pulls ``model_id`` from the Hub. Whichever one it picks has to be set, and a
-    detector refuses to build otherwise. ``threshold`` is the confidence a box must clear.
+    ``model_id`` is a Hugging Face id, read from the weights folder (``scripts/model_weights/fetch.py rtdetr`` writes
+    the shipped one), or the folder a ``DetectorTraining`` run wrote, its ``out_dir``: the best epoch at the top, the
+    last in ``last/``. ``threshold`` is the confidence a box must clear.
     """
 
-    model_path: ConfigPath
-    model_id: str | None = None
+    model_id: ModelId
     threshold: float
-    local: bool
-    optim: InferenceOptimization = Field(default_factory=InferenceOptimization)
 
 
 class SegmenterConfig(StrictModel):
-    """Image segmentation (e.g. SAM2) configuration.
+    """SAM2, the segmenter of every stack: one box in, one mask out. ``model_id`` names its weights."""
 
-    ``local`` picks the weight source the same way as :class:`ObjectDetectorConfig`.
-    """
+    model_id: ModelId
 
-    model_path: ConfigPath
-    model_id: str | None = None
-    local: bool
-    optim: InferenceOptimization = Field(default_factory=InferenceOptimization)
-
-
-class OneFormerConfig(StrictModel):
-    """OneFormer universal-segmentation configuration, the research and high-accuracy backend.
-
-    ``local`` picks the weight source the same way as :class:`ObjectDetectorConfig`.
-    """
-
-    model_path: ConfigPath
-    model_id: str | None = None
-    local: bool
-    #: ``instance`` is the only mode the wrapper implements: it always calls
-    #: ``post_process_instance_segmentation``. Widening this would let a config name ``semantic``
-    #: or ``panoptic`` and silently get instance segmentation anyway, so widen it only once the
-    #: post-processing exists.
-    task: Literal["instance"] = "instance"
-    optim: InferenceOptimization = Field(default_factory=InferenceOptimization)
-
-
-#: What Whisper does with speech: one legal value, and the reason is a decision rather than a limit of
-#: the model. Text stays in the language it was spoken in, so a German command reaches the prompt box as
-#: German. Whisper can also translate into English; that is refused rather than offered, because it chose
-#: the perception route of every spoken command without saying so.
-SpeechTask = Literal["transcribe"]
 
 #: Which language the decoder runs with. `auto` picks German or English per recording from Whisper's
 #: language scores for exactly those two, which is how a cell with German and English operators runs; a
 #: recording in any other language still comes out as one of the two. A named language forces that
 #: language token instead. Only the two languages this stack is decided on are offered; widen this the
-#: day another one is measured.
+#: day another one is measured. Whisper transcribes and never translates, so the text stays in the
+#: language it was spoken in and a German command reaches the prompt box as German.
 SpeechLanguage = Literal["auto", "german", "english"]
-
-#: The sample formats the microphone stream opens with. Each has a full scale the stream divides by,
-#: so every block lands in [-1, 1] whatever it arrived as.
-SampleFormat = Literal["int16", "int32", "float32"]
 
 
 class SpeechToTextConfig(StrictModel):
-    """Speech-to-text configuration: Whisper, the Silero voice detector, and the cell PC's microphone."""
+    """Speech to text: which Whisper checkpoint, and which language it decodes.
 
-    model_id: str
-    model_path: ConfigPath
-    #: The Silero VAD TorchScript file (`silero_vad.jit` from the silero-vad 6.2.1 wheel, MIT), read by
-    #: `SileroVoiceActivityDetector.from_config`. The upload path scores every recording with it before
-    #: Whisper is asked, and `Listener.from_config` cuts utterances with it. Always a local file, whatever
-    #: `local` says; `scripts/model_weights/fetch.py silero-vad` writes it, pinned by hash.
-    vad_model_path: ConfigPath
-    #: The rate in Hz Whisper is fed at and the cell PC's microphone stream opens at. An upload at any
-    #: other rate is resampled to it. 16000 for every Whisper checkpoint, and for Silero VAD.
-    samplerate: int = Field(gt=0)
-    #: The three microphone keys, read by `MicrophoneSource.from_config`, which opens the cell PC's
-    #: microphone for the console's push to talk listen (`POST /v1/voice/listen`, through
-    #: `PushToTalkSource.from_config`) and for `Listener.from_config`. An upload opens no
-    #: microphone. Frames per callback; 0 lets PortAudio choose.
-    blocksize: int = Field(ge=0)
-    #: Channels to open; every block is averaged into one.
-    channels: int = Field(ge=1)
-    #: The format the stream opens with; each block is scaled by its own full scale into [-1, 1].
-    #: Not the model's compute dtype, which is `optim.torch_dtype`.
-    dtype: SampleFormat
+    The Silero voice detector is the weights catalogue's file under the weights folder, and the cell PC's microphone
+    opens at the owner's cell's numbers (16 kHz, one channel of int16, 8000 frames a block): both fixed in
+    ``src/models/speech``.
+    """
+
+    model_id: ModelId
     language: SpeechLanguage
-    task: SpeechTask
-    local: bool
-    optim: InferenceOptimization = Field(default_factory=InferenceOptimization)
-
-    @field_validator("task", mode="before")
-    @classmethod
-    def _transcribe_never_translate(cls, value: object) -> object:
-        """Refuse any task but `transcribe` with a sentence rather than pydantic's list of literals."""
-        if value != "transcribe":
-            raise ValueError(
-                f"models.stt.task: {value!r} is refused. Whisper transcribes and never translates, so "
-                f"the text stays in the language it was spoken in. Write task: transcribe."
-            )
-        return value
 
     @field_validator("language", mode="before")
     @classmethod
@@ -159,253 +91,39 @@ class SpeechToTextConfig(StrictModel):
 
 
 # ---------------------------------------------------------------------------
-# Hand + gesture (MediaPipe): optional, standalone, not part of the grasp pipeline
-# ---------------------------------------------------------------------------
-
-
-class HandDetectConfig(StrictModel):
-    """MediaPipe hand-landmark detection: where the palm centre is, in pixels.
-
-    Every field below is read, none is stored and ignored: the detector keys reach MediaPipe
-    through :class:`~src.models.handdetection.palm_detector.PalmDetector`, and the two depth
-    fields reach :class:`~src.models.handdetection.hand_finder.HandFinder`.
-
-    The ``.task`` bundle is not in this repository. It is an operator download, and a missing file
-    raises with the URL rather than failing inside MediaPipe's graph.
-    """
-
-    #: Path to the MediaPipe hand-landmark ``.task`` bundle. Written in a tree, a relative path is read
-    #: against the tree's folder; the default is the repository's weights folder, where
-    #: ``scripts/model_weights/fetch.py`` puts it (see :mod:`src.config.paths`). Download:
-    #: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
-    model_path: ConfigPath = Field(
-        default="${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/hand_landmarker.task", validate_default=True)
-
-    #: Upper bound on simultaneously tracked hands -> ``num_hands``. The 3-D
-    #: :class:`~src.models.handdetection.hand_finder.HandFinder` refuses a frame with more than one
-    #: hand regardless, so 2 is what lets it see the second hand in order to refuse.
-    max_hands: int = Field(default=2, ge=1, le=4)
-
-    #: Minimum hand-detection confidence -> ``min_hand_detection_confidence``.
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-
-    #: Minimum tracking confidence between frames -> ``min_tracking_confidence``. Only meaningful
-    #: because the detector runs in VIDEO mode; in IMAGE mode there is no previous frame and this
-    #: would be inert.
-    tracking_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-
-    #: Minimum hand-presence confidence -> ``min_hand_presence_confidence``. Not the same as
-    #: ``threshold``: detection asks whether a hand is in the frame at all, presence asks whether
-    #: the hand already being tracked still is.
-    presence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-
-    #: Radius, in pixels, of the disc around the palm centre whose median depth becomes the hand's
-    #: distance. Not a MediaPipe parameter. Too small and a depth dropout on skin loses the hand;
-    #: too large and the disc starts averaging in whatever is behind the hand.
-    palm_patch_radius_px: int = Field(default=15, ge=1, le=200)
-
-    #: How many valid depth pixels that disc must contain before its median is believed. Below
-    #: this count the rig is skipped and the hand gets no distance from it: a median over three
-    #: surviving pixels is a number, not a measurement.
-    min_depth_samples: int = Field(default=20, ge=1, le=100_000)
-
-
-class GestureDetectConfig(StrictModel):
-    """MediaPipe canned gesture recognition, narrowed to thumbs-up / thumbs-down.
-
-    The canned bundle embeds a hand landmarker, so this model returns landmarks as well as
-    gestures: a cell that wants both configures this one alone rather than running two models
-    over the same frame.
-
-    The classifier knows seven shapes.
-    :class:`~src.models.handdetection.gestures.ThumbGestureRecognizer` maps two of them and
-    reports the rest as ``OTHER``, keeping the raw label.
-    """
-
-    #: Path to the MediaPipe gesture-recognizer ``.task`` bundle; like the hand-landmark bundle it
-    #: is an operator download rather than a repository file, and its path is read the same way. Download:
-    #: https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
-    model_path: ConfigPath = Field(
-        default="${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/gesture_recognizer.task", validate_default=True)
-
-    #: -> ``num_hands``.
-    max_hands: int = Field(default=2, ge=1, le=4)
-
-    #: -> ``min_hand_detection_confidence``.
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-
-    #: -> ``min_tracking_confidence``.
-    tracking_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-
-    #: -> ``min_hand_presence_confidence``.
-    presence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-
-    #: The score a thumbs-up must reach to be reported as one. Passed to MediaPipe as the canned
-    #: classifier's ``score_threshold`` and re-checked afterwards, so a below-threshold thumbs-up
-    #: becomes ``NONE`` rather than a low-confidence confirmation. Raise it where a false
-    #: confirmation is expensive.
-    min_gesture_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-
-# ---------------------------------------------------------------------------
-# Pipeline presets: choosing a perception stack in one line instead of assembling it
+# The perception stack: the VLM for any prompt, or RT-DETR for fixed classes
 # ---------------------------------------------------------------------------
 
 
 class VlmConfig(StrictModel):
-    """The vision-language model that grounds a complex prompt.
+    """The vision-language model that grounds every free-text prompt and reads the console's commands.
 
-    VRAM is the constraint on this block: the model shares a card with SAM2 and, in simulation,
-    with Isaac's own renderer, so the checkpoint has to fit in what those two leave. Record the
-    VRAM figure for a changed checkpoint in the README next to the choice.
+    VRAM is the constraint on this block: the model shares a card with SAM2 and, in simulation, with Isaac's own
+    renderer, so the checkpoint has to fit in what those two leave. Record the VRAM figure for a changed checkpoint in
+    the README next to the choice. How it answers is fixed at the owner's cell's values (``src/models/vlm/qwen.py``):
+    it loads at the first prompt that reaches it, ends an answer where its JSON closes, proposes ten tokens a pass
+    from its own answer, and decodes with CUDA graphs on a card that takes them.
     """
 
     #: A released Qwen3-VL-Instruct checkpoint. The paper's Qwen3-VL-Seg (arXiv 2605.07141) publishes
     #: neither weights nor code, so this stack grounds with the released instruct model and cuts masks
-    #: with SAM2 from the same bbox_2d JSON the paper's own decoder consumes. A native-mask
-    #: checkpoint, if one is ever released, becomes a different backend behind the same seam.
-    model_id: str = "Qwen/Qwen3-VL-4B-Instruct-FP8"
-    model_path: ConfigPath | None = None
-    local: bool = False
-    #: Load at cell build: predictable latency, VRAM held from the start. The default loads on the
-    #: first complex prompt instead, paying nothing until something needs the model and taking a
-    #: one-off load pause mid-session.
-    preload: bool = False
-    #: What to do when the VLM cannot be loaded on this cell: weights missing, dependency absent, or
-    #: not enough VRAM.
-    #:
-    #: ``refuse``  the pick is rejected with a typed reason. The default: GroundingDINO does not
-    #:             fail on a complex prompt, it confidently grounds the wrong object, so falling
-    #:             back produces a wrong grasp rather than a refused one.
-    #: ``degrade`` fall back to the simple route, with a warning stamped into the event stream and
-    #:             the grasp record so the weaker grounding is visible afterwards.
-    on_unavailable: Literal["refuse", "degrade"] = "refuse"
-    #: End a grounding answer where its JSON array closes, rather than one pass of the model later (the
-    #: end token) or three (after a code fence), and a command's reading where its JSON object closes,
-    #: one pass before the end token. The tokens before are the ones greedy decoding writes anyway, and
-    #: the parser and the reader read the same from them; each pass is about 140 ms on the cell's 8B.
-    stop_at_answer_end: bool = True
-    #: How many tokens the answer lookup proposes per pass of a grounding answer; 0 is off. The model
-    #: checks the proposals (taken from its own answer so far) in one pass and keeps those it would
-    #: have written. Measured on the cell's frames with the 4B: three cubes in 47 passes instead of
-    #: 108, 55 % fewer over 90 calls. Off by default because it is not byte-identical: a pass that
-    #: checks several tokens rounds differently, so a coordinate's last digit may come out one off,
-    #: and in 2 of those 90 calls the list held one box more or one fewer. 10 is the measured value.
-    prompt_lookup_tokens: int = Field(default=0, ge=0, le=64)
-    #: The same lookup for the command reader's text answers, whose keys come from its instruction.
-    #: Measured with the 4B on ten commands: 128 passes instead of 617, every answer byte-identical,
-    #: 3.2 times as fast. Off by default: identical on those ten is not identical by construction, and
-    #: with the compact instruction of 2026-10-08 it read 3 of 67 sentences otherwise (2026-10-09).
-    text_prompt_lookup_tokens: int = Field(default=0, ge=0, le=64)
-    #: Run each pass of the model as CUDA graphs: most of a pass handed to the card in a few dozen
-    #: calls instead of about 2400 kernel launches, which is what a pass waits for on the cell (140 ms
-    #: a token for the 8B, where reading its weights takes about 20). The attention over the answer so
-    #: far runs as before, so the arithmetic is the plain pass's and the answers are byte-identical
-    #: (measured with the 4B: the 90 calls on the cell's frames and 67 command sentences, with and
-    #: without the answer lookup, a pass in 19.7 ms instead of 46.3); the first pass of each shape is
-    #: also checked against the plain pass bit for bit.
-    #:
-    #: ``auto``  the default: graphs on a CUDA card of compute capability 8.0 or newer, where that
-    #:           check matched; anything else decodes plainly. Decided per loaded copy and logged.
-    #: ``on``    graphs on any CUDA card, and a check that differed only logs a warning.
-    #: ``off``   every pass as before.
-    #:
-    #: A capture or a pass that fails falls back to the plain pass, for that loaded copy. A bare ``on`` or
-    #: ``off`` in YAML is the word.
-    decode_graphs: Literal["auto", "on", "off"] = "auto"
-
-    @field_validator("decode_graphs", mode="before")
-    @classmethod
-    def _a_bare_switch(cls, value: object) -> object:
-        """YAML reads a bare ``on`` as true and ``off`` as false: each means what it says here."""
-        if value is True:
-            return "on"
-        if value is False:
-            return "off"
-        return value
-
-
-class PromptRouterConfig(StrictModel):
-    """Deciding which route a prompt takes.
-
-    Rule-based and deterministic: a prompt's complexity is read off its structure (attribute count,
-    relative clauses, negation, quantifiers) and its language. Not a cheap-first cascade: that needs
-    the cheap stage to fail loudly, and the phrase grounder does not.
-    """
-
-    enabled: bool = True
-    #: A non-English prompt routes to the VLM regardless of complexity. GroundingDINO is effectively
-    #: English-only, and no path translates: a typed German prompt and a spoken one (Whisper
-    #: transcribes, see `models.stt.task`) both arrive here as German text.
-    route_non_english_to_vlm: bool = True
+    #: with SAM2 from the same bbox_2d JSON the paper's own decoder consumes.
+    model_id: ModelId = "Qwen/Qwen3-VL-4B-Instruct-FP8"
 
 
 class ZeroShotPipelineConfig(StrictModel):
-    """Open-vocabulary perception: any prompt, no fixed class list."""
+    """Open-vocabulary perception: the VLM grounds any prompt, and SAM2 cuts each box."""
 
-    #: ``grounded_sam`` = GroundingDINO + a segmenter. ``vlm`` = the VLM grounds, SAM2 cuts.
-    backend: Literal["grounded_sam", "vlm"] = "grounded_sam"
-    #: Which mask source cuts the box, on either backend: the VLM hands over boxes exactly as the
-    #: phrase grounder does. A routed stack builds one segmenter and shares it, so masks keep the
-    #: same shape whichever grounding model answered.
-    segmenter: Literal["sam2", "oneformer"] = "sam2"
     vlm: VlmConfig = Field(default_factory=VlmConfig)
 
 
-class ClosedSetPipelineConfig(StrictModel):
-    """Fixed-vocabulary perception: RT-DETR's trained classes, no free text."""
-
-    segmenter: Literal["sam2", "oneformer"] = "sam2"
-
-
 class PipelineConfig(StrictModel):
-    """A perception stack chosen in one line, instead of assembled from parts.
+    """Which perception stack a cell builds: the VLM for free text, or RT-DETR's trained classes.
 
-    Leaving this block out keeps the ``models.detector`` / ``models.segmenter_backend`` keys in
-    force, byte-identically. Those keys are the do-it-yourself path for a combination the presets
-    do not offer, and nothing cross-checks them against each other: the validator below sees only
-    what this block sets.
+    ``zero_shot`` grounds the prompt with the VLM (``zero_shot.vlm``); ``closed_set`` answers with RT-DETR's class list
+    (``models.rtdetr``, refused at build without it) and reads a prompt only as a class-name filter. SAM2 cuts the
+    masks of both. The VLM block is read on a closed-set cell too: the console's command reader asks it.
     """
 
     kind: Literal["zero_shot", "closed_set"] = "zero_shot"
     zero_shot: ZeroShotPipelineConfig = Field(default_factory=ZeroShotPipelineConfig)
-    closed_set: ClosedSetPipelineConfig = Field(default_factory=ClosedSetPipelineConfig)
-    router: PromptRouterConfig = Field(default_factory=PromptRouterConfig)
-
-    @model_validator(mode="after")
-    def _refuse_combinations_that_cannot_mean_anything(self) -> "PipelineConfig":
-        """Reject a stack whose halves disagree, naming what is legal.
-
-        Fail-closed rather than warn-and-continue: a mismatched stack runs confidently and grounds
-        the wrong thing, and a warning in a log does not stop a grasp.
-        """
-        # No check pins the segmenter to a backend: OneFormer implements the same box-prompted
-        # contract (`segment_detection` -> `_pick_segment_in_box`), so either mask source works
-        # with either grounding model. Which one segments better is unmeasured: SAM2 is prompted
-        # per box and cuts one object, OneFormer segments the whole image with its own trained
-        # vocabulary and the box selects among the segments.
-        if self.kind == "closed_set" and self.router.enabled:
-            # A closed-set stack has no free-text route to send anything to, so routing a prompt
-            # there produces a decision nothing can act on. Only an explicit `router.enabled: true`
-            # is an error; left unset, the field is corrected to false below.
-            if "router" in self.model_fields_set and "enabled" in self.router.model_fields_set:
-                raise ValueError(
-                    "models.pipeline: kind='closed_set' cannot use the prompt router. Routing "
-                    "decides between open-vocabulary backends, and a closed-set detector answers only "
-                    "with its trained class list. Set router.enabled: false, or kind: 'zero_shot'."
-                )
-            object.__setattr__(self, "router", self.router.model_copy(update={"enabled": False}))
-        if self.kind == "zero_shot" and self.router.enabled and self.zero_shot.backend != "vlm":
-            # Routing sends hard prompts somewhere better, and with only the phrase grounder
-            # configured there is nowhere better to send them: a VLM decision would be ignored or
-            # would fail at pick time. As above, only an explicit `router.enabled: true` is an
-            # error; the field defaults to true and the default backend is the phrase grounder, so
-            # a bare `pipeline: {}` would otherwise be rejected for a combination nobody wrote.
-            if "router" in self.model_fields_set and "enabled" in self.router.model_fields_set:
-                raise ValueError(
-                    f"models.pipeline: router.enabled=true needs zero_shot.backend='vlm'. The "
-                    f"router chooses between the phrase grounder and the VLM, and backend="
-                    f"{self.zero_shot.backend!r} configures no VLM for it to choose. Set backend: "
-                    f"'vlm' (the phrase grounder stays the simple route), or router.enabled: false."
-                )
-            object.__setattr__(self, "router", self.router.model_copy(update={"enabled": False}))
-        return self

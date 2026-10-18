@@ -1,20 +1,18 @@
-"""The re-implemented tree walk, checked three ways — because a nice reader can be confidently wrong.
+"""The re-implemented tree walk, checked two ways — because a nice reader can be confidently wrong.
 
-The owner's decision was to build the ranker fresh in `deep/` rather than inherit
-`scoring/success_probability`'s reader, and to test anything risky against that existing one so no error
-creeps in. The risk is specific and it is not hypothetical: a re-implemented tree walk agrees with
-itself, and the only thing that can catch it disagreeing with the MODEL THAT WAS FITTED is an
-independent evaluator.
+The owner's decision was to build the ranker fresh in `deep/`. The risk is specific and it is not
+hypothetical: a re-implemented tree walk agrees with itself, and the only thing that can catch it
+disagreeing with the MODEL THAT WAS FITTED is an independent evaluator.
 
-So three referees, each able to catch something the others cannot:
+So two referees, each able to catch something the other cannot:
 
 1. **sklearn's own `decision_function`**, on the very model that was exported. Catches an export bug --
    a swapped child, an off-by-one in the node arrays, a wrong `init_score`, a forgotten learning rate.
-2. **`success_probability`'s reader**, fed the same ensemble. Written months earlier, by a different
-   route, for a different feature schema. Catches a walk that matches sklearn only because the export
-   and the reader share a mistake.
-3. **A tree built by hand**, whose answers are known by inspection. Catches both of the above agreeing
-   about a structure neither of them understands.
+3. **A tree built by hand**, whose answers are known by inspection. Catches the export and the walk
+   agreeing about a structure neither of them understands.
+
+The second referee, `success_probability`'s reader fed the same ensemble, left on 2026-10-16 with the
+success model (the owner's cleanup); the numbering keeps the two that remain under their old names.
 
 `init_score` deserves the mention: it is RECOVERED as `decision_function - lr * sum(leaf)` on a probe
 row rather than read off a private sklearn attribute. That is exact by the model's definition, and
@@ -104,48 +102,8 @@ class TheFreshReaderAgreesWithSklearnTests(unittest.TestCase):
         self.assertGreater(self.report.auroc, 0.9, self.report.summary())
 
 
-class TheFreshReaderAgreesWithTheEXISTINGReaderTests(unittest.TestCase):
-    """Referee 2: `success_probability`'s reader, written earlier and independently.
-
-    Its ensemble has the same mathematical shape -- ``init + lr * sum(leaf)`` over
-    feature/threshold/left/right/value trees -- so the exported payload can be handed to both. If the
-    export and this package's walk shared a mistake, referee 1 would still pass and this would not.
-    """
-
-    def test_both_readers_produce_the_same_scores(self) -> None:
-        from src.robot.grasping.scoring.success_probability._model import (  # noqa: PLC0415
-            GbtEnsemble,
-            GbtTree,
-            _gbt_raw_predict,
-        )
-
-        table = _synthetic_corpus(rows=400, seed=3)
-        model, report = fit_ranker(table, BOOTSTRAP_JAW_V1, folds=3, n_estimators=30, max_depth=3)
-        payload = export_ranker(model, BOOTSTRAP_JAW_V1, report)
-        mine = ranker_from_dict(payload)
-
-        theirs = GbtEnsemble(
-            init_score=float(payload["init_score"]),
-            learning_rate=float(payload["learning_rate"]),
-            trees=tuple(
-                GbtTree(
-                    feature=np.asarray(t["feature"], dtype=np.int64),
-                    threshold=np.asarray(t["threshold"], dtype=np.float64),
-                    left=np.asarray(t["left"], dtype=np.int64),
-                    right=np.asarray(t["right"], dtype=np.int64),
-                    value=np.asarray(t["value"], dtype=np.float64),
-                )
-                for t in payload["trees"]
-            ),
-        )
-        derived = derive_grasp_frame_columns(table)
-        matrix = np.column_stack(
-            [np.asarray(derived[f], dtype=np.float64) for f in GRASP_FRAME_FEATURES])
-        np.testing.assert_allclose(mine.score(matrix), _gbt_raw_predict(theirs, matrix), atol=1e-12)
-
-
 class ATreeWhoseAnswersAreKnownByInspectionTests(unittest.TestCase):
-    """Referee 3: both other referees could agree about a structure neither of them understands."""
+    """Referee 3: the export and the walk could agree about a structure neither of them understands."""
 
     def _ranker(self) -> GbtRanker:
         # node 0: feature 0 <= 5 ? node 1 : node 2   |  leaves: -1.0 and +2.0

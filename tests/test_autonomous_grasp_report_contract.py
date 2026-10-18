@@ -105,12 +105,6 @@ class TheLayersLineTests(unittest.TestCase):
             with self.subTest(label):
                 self.assertNotIn("fusion", _report(pick_report=pick).layers_that_ran())
 
-    def test_uncertainty_counts_only_when_a_fused_value_exists(self) -> None:
-        """The default snapshot is `UncertaintySnapshot.disabled(...)`, which is present on EVERY
-        report. Presence is not participation."""
-        self.assertNotIn("uncertainty", _report().layers_that_ran())
-        self.assertFalse(_report().uncertainty.fused_available)
-
     def test_recovery_counts_only_when_an_action_was_taken(self) -> None:
         self.assertNotIn("recovery", _report().layers_that_ran())
         self.assertIn("recovery", _report(recovery_actions=({"kind": "nudge"},)).layers_that_ran())

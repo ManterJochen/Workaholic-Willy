@@ -46,15 +46,16 @@ Any of:
 | `ur3e`  | yes | yes | yes | yes | 8 | 8 | `robot.ur3e.yaml` (**measured cell**) |
 | `ur5`   | yes | yes | yes | yes | 7 | 7 | `robot.ur5.yaml` (derived) |
 | `ur5e`  | yes | yes | yes | yes | 8 | 8 | the base tree (**measured cell**) |
-| `ur10`  | yes | yes | yes | yes | 11 | 18 | `robot.ur10.yaml` (derived, with the cable window) |
+| `ur10`  | yes | yes | yes | yes | 11 | 11 | `robot.ur10.yaml` (derived) |
 | `ur10e` | yes | yes | yes | yes | 8 | 8 | `robot.ur10e.yaml` (derived) |
 | `ur16e` | no  | yes | yes | yes | 4 | none | none |
 | `ur20`  | no  | no  | no  | no  | none | none | none |
 
 The ur10 holds more than the others because it is the owner's cell: three rows for the Hand-E on its 23 mm plate at
-+Z-Y, at planner margins of 0, 3 and 4 mm, each with its evidence file, and seven files for a hand that carries a part
-(the `_a16` files, sixteen sphere slots reserved for the payload). The ur5 has one row less: at +Y+X the chooser's
-planner could not be asked about the EGU-50 on it, and the table's rule records why (`pairs_with_no_retract`).
++Z-Y, at planner margins of 0, 3 and 4 mm, each with its evidence file. Seven more, measured with sixteen sphere slots
+reserved for a carried part (`_a16`), left on 2026-10-17, when no cell modelled one any more. The ur5 has one row less:
+at +Y+X the chooser's planner could not be asked about the EGU-50 on it, and the table's rule records why
+(`pairs_with_no_retract`).
 
 Every "yes" was measured by loading it, not by finding the file:
 
@@ -190,9 +191,8 @@ The order matters, because each step is gated on the one before it.
        --tool-rotation-xyzw 0 0 0 1 --write                                                   # +Z+X
    python scripts/arms/sweep.py --write                                                       # every table row
    ```
-   A cell with plates adds `--plate` for each, and a cell that carries a part adds `--attach <slots>`; the sweep
-   measures without a payload. The sweep exits 1 while the table holds rows of an arm that is not admitted (ur16e's
-   four today) and writes the files of every row it could measure.
+   A cell with plates adds `--plate` for each. The sweep exits 1 while the table holds rows of an arm that is not
+   admitted (ur16e's four today) and writes the files of every row it could measure.
 
 6. **Write the profile.** Copy the nearest `robot.<model>.yaml`. Every generated one is honest about what it does
    not know (below), and so should yours.
@@ -249,22 +249,22 @@ and gated, or absent and reported.
 ## ⚠ What a derived profile does NOT know
 
 The four profiles generated on 2026-09-09 (`ur3`, `ur5`, `ur10`, `ur10e`) carry the model name three times, the
-datasheet payload and a workspace box; `ur10` also keeps every full-turn joint within half a turn of home
-(`safety.joint_limits.within_half_turn_of_home`), the cable window of the owner's UR10 cell. **The box is a reach
+datasheet payload and a workspace box. Every real arm keeps every full-turn joint within half a turn of home, the
+cable window of the owner's UR10 cell, which only `ur10`'s profile wrote until 2026-10-17. **The box is a reach
 bound, not a cell.** It is the largest box the arm can serve, with its far corner at the same fraction of reach the
 one standing UR3e cell actually uses, and it is symmetric about the base because a preferred direction cannot be
 derived. Your cell is a room: it has a table, a wall and one direction you work in.
 
 These are **deliberately absent** and inherit a tree authored for a UR5e:
 
-- `home_joint_positions`: left unset, the home is the one the arm's description states, which for every UR is the
+- `robot.motion.home_deg`: left unset, the home is the one the arm's description states, which for every UR is the
   pose authored for a UR5e. It puts a UR3e grasp centre at 93.4 % of its reach, past the 85 % this project treats
-  as near-singular (measured, in `robot_schema.py`), and a home whose grasp centre lies outside `workspace_limits`
-  is refused before the arm moves. Write it in radians, or in degrees as the pendant shows it with
-  `home_joint_positions_deg` (one of the two, never both).
-- `park_joint_positions`, the camera poses and a wrist camera's looks (`robot.look_joint_positions_deg`, in
+  as near-singular (measured, in `robot_schema.py`), and a home whose grasp centre lies outside
+  `robot.motion.workspace` is refused before the arm moves. Write it in degrees, as the pendant shows it; there is
+  no radians key since 2026-10-17.
+- `park_joint_positions`, the camera poses and a wrist camera's looks (`robot.motion.look_deg`, in
   degrees), the scene layout.
-- `robot.natural_closing_axis`, how the hand and its camera naturally stand: a name (`"-y"` on the owner's UR10,
+- `robot.motion.natural_closing_axis`, how the hand and its camera naturally stand: a name (`"-y"` on the owner's UR10,
   tool +X along base -y, where its wrist D415 image stands upright) or a taught pose's `quaternion_xyzw`, of which
   only the heading of its tool +X counts. Every camera grasp and every push then closes the way round nearer it,
   none left out or tilted, and `robot.tool_down` builds fixed poses along it. A program's `closing_axis` wins,
@@ -292,7 +292,7 @@ genuinely wrong TCP can also produce it.
 
 ## Known gap
 
-There is **no validator tying `workspace_limits` to the configured model.** A cell that sets `ur.model: ur3` and
+There is **no validator tying `robot.motion.workspace` to the configured model.** A cell that sets `ur.model: ur3` and
 keeps the base box declares a far corner 837 mm from the shoulder on an arm that reaches 500 (`robot.ur3.yaml`
 measures it). The profiles above are what keeps you out of it, and nothing refuses a hand-written tree that walks
 back in. `tests/test_arm_profiles.py` checks the shipped profiles; it cannot check yours.

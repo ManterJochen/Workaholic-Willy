@@ -85,10 +85,10 @@ def world_boxes(neighbours: tuple[Box, ...], frame: Frame_) -> list[Any]:
 
 def least_mm(grasp: Any, boxes: list[Any]) -> float:
     """The open Hand-E's least distance to ``boxes`` at ``grasp`` and back along its approach, millimetres."""
-    from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+    from src.robot.grasping.collision.gripper_model import jaw_envelope
 
     cfg = _hande()
-    hand = build_gripper_geometry(cfg.grasping.gripper_geometry).collision_boxes(float(cfg.gripper.max_width_mm))
+    hand = jaw_envelope(cfg).collision_boxes(float(cfg.gripper.max_width_mm))
     local_c = np.array([(np.asarray(b.min_corner_mm) + np.asarray(b.max_corner_mm)) / 2.0 for b in hand])
     local_h = np.array([(np.asarray(b.max_corner_mm) - np.asarray(b.min_corner_mm)) / 2.0 for b in hand])
     approach = np.asarray(grasp.approach, dtype=np.float64)

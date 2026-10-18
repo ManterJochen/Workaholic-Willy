@@ -273,8 +273,8 @@ export interface PickStageData {
   reasons?: string[]
   action?: string
   outcome?: string
-  /** How the frame's parts were found: the detector's route (`vlm`, `simple`), or, where a task follows its parts
-   *  (`robot.grasping.follow_parts`), `followed` with no detector asked or `grounded`; `route_reason` says why. */
+  /** How the frame's parts were found where a task follows its parts: `followed` with no detector asked, or `grounded`
+   *  by the detector; `route_reason` says why. */
   route?: string
   route_reason?: string
   motion_status?: string
@@ -348,10 +348,10 @@ export interface EventDataMap {
     hang_mm?: number
     air_mm?: number | null
     verdict?: string
-    /** Only on a drop set down below a box's rim (`robot.place.release_in_a_box`): where, and how far under the rim. */
+    /** Only on a drop set down below a box's rim (`robot.motion.place.release_in_a_box`): where, and how far under the rim. */
     release?: string
     below_rim_mm?: number
-    /** Only on a part laid side by side on a flat place (`robot.place.side_by_side`): its spot, and who chose it. */
+    /** Only on a part laid side by side on a flat place (`robot.motion.place.side_by_side`): its spot, and who chose it. */
     spot_mm?: number[]
     spot_by?: string
   }
@@ -405,7 +405,7 @@ export interface EventDataMap {
   'wave.refused': { status?: string; message?: string; moved?: boolean }
   'cell.jaws_question': JawsQuestionData
   'cell.jaws_answered': { question_id?: string; choice?: JawsChoice }
-  'cell.jaws_ended': { question_id?: string; outcome?: 'open' | 'refused' | 'no_answer' | 'cancelled'; refusal?: string; detached?: boolean }
+  'cell.jaws_ended': { question_id?: string; outcome?: 'open' | 'refused' | 'no_answer' | 'cancelled'; refusal?: string }
   'cell.halted': { reason?: string; in_motion?: boolean }
   'cell.recovery': { run_id?: string; kind?: RunKind; stop_code?: StopCode; at?: number }
   'cell.recovery_ended': { run_id?: string; by?: 'restart' | 'home'; ended_by?: string }

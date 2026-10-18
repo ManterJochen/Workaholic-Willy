@@ -288,7 +288,8 @@ evidence file measured ([`evidence/`](evidence/)).
 ## The planning-only maps
 
 `{arm}_arm_lean_spheres.yml` and `{hand}_gripper_lean_spheres.yml` are a second robot, for cuRobo's planner alone
-(`safety.planned_motion.planning_spheres: lean`, [`../planning_model.py`](../planning_model.py)). They claim less than
+([`../planning_model.py`](../planning_model.py)), every cuRobo cell's wherever its arm and hand have one since
+2026-10-17 (the owner's `safety.planned_motion.planning_spheres: lean`, whose key left that day). They claim less than
 the cover maps above, on purpose: holes are allowed. They are NVIDIA's pattern for its own UR configs (`ur10e.yml`:
 19 arm spheres, one on the shoulder, seven along each tube, one per wrist; measured on the ur10e's meshes, holes of 16
 to 71 mm and a reach up to 29 mm), fitted to these bundles by `scripts/curobo/fit_planning_spheres.py`: spheres along

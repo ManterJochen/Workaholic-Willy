@@ -1,0 +1,12 @@
+# Where every model's weights are read from: the one folder, set once. A model is named by its
+# model_id alone, and a Hugging Face id is read from <weights_root>/<kind>/<org>--<name>:
+#
+#     detection/PekingU--rtdetr_r50vd             segmentation/facebook--sam2-hiera-large
+#     vlm/Qwen--Qwen3-VL-4B-Instruct              speech/openai--whisper-large-v3-turbo
+#     speech/silero-vad-6.2.1/silero_vad.jit      mediapipe/hand_landmarker.task, gesture_recognizer.task
+#
+# `python scripts/model_weights/fetch.py` writes that layout into this folder (--list names every
+# entry); an id the folder lacks is read from the Hugging Face cache where an earlier download put it,
+# and nothing is downloaded at run time. ${WILLY_PROJECT_ROOT} is the repository, so deleting the
+# checkout deletes its weights; a relative path is read against this config folder.
+weights_root: "${WILLY_PROJECT_ROOT}/assets/models/hf"

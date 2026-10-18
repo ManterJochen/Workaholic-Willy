@@ -3,7 +3,7 @@
 The bench runs the owner's own stack on an instant controller and a rendered scene (the owner, 2026-10-05). Pinned here:
 
 * the instant controller's kinematics are the stack's own: a TCP pose read back through its IK lands on the same joints,
-  a ``moveL`` lands where it was sent, a move a cell with ``brake_on_halt`` watches arrives as on a cell, and a tool
+  a ``moveL`` lands where it was sent, a watched move arrives as on a cell, and a tool
   output that changes is handed on with the TCP it changed at;
 * a packed pile keeps every part apart by at least the gap it drew (touching allowed, never through each other), inside
   the bin's walls, and dense: the 30-part bin holds all 30;
@@ -66,7 +66,7 @@ class TheInstantControllerTests(unittest.TestCase):
             instant_ur.remove(before)
 
     def test_a_watched_move_arrives_as_on_a_cell(self) -> None:
-        """A cell with ``robot.ur.brake_on_halt`` sends each move asynchronously and waits to see its operation in the
+        """Every UR sends each move asynchronously and waits to see its operation in the
         progress register (2026-10-16: the bank's generated views ended in an AttributeError there, the register
         carrying no operation id)."""
         state = self._state()
@@ -74,7 +74,7 @@ class TheInstantControllerTests(unittest.TestCase):
         try:
             from src.robot.drivers.ur import connection
 
-            link = connection.URConnection("127.0.0.1", brake_on_halt=True)
+            link = connection.URConnection("127.0.0.1")
             link.connect()
             try:
                 target = [q + 0.05 for q in LOOK0]

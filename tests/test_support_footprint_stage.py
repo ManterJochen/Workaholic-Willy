@@ -19,10 +19,7 @@ from src.robot.grasping.generation._support_footprint_stage import (
     support_footprint_breakdowns,
 )
 from src.robot.grasping.generation.body_grasps import body_grasps
-from src.robot.grasping.generation.support_footprint import (
-    SupportFootprintJaw,
-    generate_support_footprint_grasps,
-)
+from src.robot.grasping.generation.hand import SupportFootprintJaw
 from src.robot.grasping.planning import GraspPose
 
 MIN_CLEARANCE_MM = 5.0
@@ -128,7 +125,7 @@ class AHandThatOpensAsNeededTests(unittest.TestCase):
         """Lever G: a body's grasp for a hand that opens only as needed carries its opening, the span and
         ``NARROW_ROOM_MM`` beside each jaw, never past the stroke: 7 mm, where at 2 mm the owner's Robotiq came down onto
         the parts it was to close on and many grasps broke (2026-10-14)."""
-        from src.robot.grasping.generation.support_footprint import NARROW_ROOM_MM
+        from src.robot.grasping.generation.hand import NARROW_ROOM_MM
 
         self.assertEqual(NARROW_ROOM_MM, 7.0)
         jaw = SupportFootprintJaw.from_model(ParallelJawGripperModel(), table_clearance_mm=MIN_CLEARANCE_MM)
@@ -147,34 +144,40 @@ class AHandThatOpensAsNeededTests(unittest.TestCase):
 class PlannerVersusEnvelopeTests(unittest.TestCase):
     """Two models of one gripper, and the seam between them has no other guard.
 
-    SFE PLANS the table clearance from finger points; the calculator's collision filter RE-CHECKS it
-    against the full :class:`ParallelJawGripperModel` envelope -- which also carries the PALM (70 mm
-    wide, 35 mm deep). SFE has no palm, so on a strongly tilted grasp the palm can hang below
-    everything SFE looked at.
+    The part's body PLANS the table clearance from its finger points, and holds the palm off the solids the guard
+    holds under the hand where it is handed them (``HandFloor``); the calculator's collision filter RE-CHECKS it against
+    the full :class:`ParallelJawGripperModel` envelope, which also carries the PALM (70 mm wide, 35 mm deep). Handed no
+    floor, on a leaning grasp the palm can hang below everything the body looked at.
 
-    Measured over a 50-120 mm height sweep of a 30x30 top face: SFE is conservative on almost every
-    candidate (by up to 23.6 mm), and OPTIMISTIC on one palm-limited case by **8.00 mm** -- it plans
-    9.0 mm of clearance where the envelope measures 1.0 and the filter therefore rejects it. That
-    direction is fail-safe (nothing under-clearing ever ships) but it costs candidates: SFE spends
-    its budget on grasps the filter will kill, and a filter cannot move a grasp somewhere legal.
+    Measured over a 50-120 mm height sweep of a 30x30 top face, every lean of the ladder seen: straight down the body
+    plans no candidate more clearance than the envelope grants; leaning, at most 2.90 mm more (2026-10-16; SFE's prism,
+    which planned these until then, 8.00 mm without its palm switch). That direction is fail-safe (nothing
+    under-clearing ever ships) but it costs candidates: the filter refuses what the body offered, and a filter cannot
+    move a grasp somewhere legal.
 
-    The bound below is the tripwire. It passes today, it keeps passing if SFE is taught about the
-    palm (the gap shrinks), and it fails if either model grows apart from the other.
+    The bound below is the tripwire. It fails if either model grows apart from the other.
     """
 
     MAX_OPTIMISM_MM = 10.0
 
-    def _worst_optimism_mm(self, model: ParallelJawGripperModel, *, palm_aware: bool) -> float:
+    @staticmethod
+    def _seen(points: np.ndarray) -> np.ndarray:
+        """Every point seen: the body offers every lean of its ladder."""
+        return np.ones(np.asarray(points).reshape(-1, 3).shape[0], dtype=bool)
+
+    def _worst_optimism_mm(self, model: ParallelJawGripperModel, *, leaning: bool) -> float:
         jaw = SupportFootprintJaw.from_model(model, table_clearance_mm=MIN_CLEARANCE_MM)
         worst = 0.0
+        leaned = False
         for height in (50.0, 60.0, 70.0, 90.0, 120.0):
-            candidates = generate_support_footprint_grasps(
-                top_face_cloud(height), support_height_mm=0.0, jaw=jaw,
-                obstacle_points_base_mm=None, max_candidates=12, palm_aware=palm_aware)
-            self.assertTrue(candidates, f"no candidate at h={height} (palm_aware={palm_aware})")
+            candidates = body_grasps(
+                top_face_cloud(height), support_height_mm=0.0, jaw=jaw, obstacle_points_base_mm=None,
+                max_candidates=60, corridor_seen=self._seen if leaning else None)
+            self.assertTrue(candidates, f"no candidate at h={height} (leaning={leaning})")
             for candidate in candidates:
-                worst = max(worst, float(candidate.clearance_mm)
-                            - self._envelope_clearance_mm(candidate, model))
+                leaned = leaned or -float(candidate.approach[2]) < np.cos(np.radians(15.0)) + 1e-9
+                worst = max(worst, float(candidate.clearance_mm) - self._envelope_clearance_mm(candidate, model))
+        self.assertEqual(leaning, leaned, "the control: the sweep leans where every point is seen, and only there")
         return worst
 
     def _envelope_clearance_mm(self, candidate, model: ParallelJawGripperModel) -> float:
@@ -200,46 +203,15 @@ class PlannerVersusEnvelopeTests(unittest.TestCase):
         )
 
     def test_planner_optimism_over_the_envelope_stays_bounded(self) -> None:
-        worst = self._worst_optimism_mm(ParallelJawGripperModel(), palm_aware=False)
+        worst = self._worst_optimism_mm(ParallelJawGripperModel(), leaning=True)
         self.assertLessEqual(
             worst, self.MAX_OPTIMISM_MM,
-            f"SFE plans {worst:.2f} mm more table clearance than the envelope grants; the two models "
-            "of one gripper have drifted further apart than measured (8.00 mm, palm-limited)")
+            f"the body plans {worst:.2f} mm more table clearance than the envelope grants; the two models of one "
+            "gripper have drifted further apart than measured (2.90 mm, leaning)")
 
-    def test_palm_aware_planning_removes_the_optimism_entirely(self) -> None:
-        """``palm_aware=True`` is the fix, and this is the assertion that it IS one.
-
-        Measured: 8.00 mm of optimism over this sweep without it, 0.00 mm with it -- not merely
-        smaller but gone, because the planner is now reading the same palm box the envelope checks
-        rather than a second description of it. The candidate count is unchanged at every height, so
-        on clean geometry the fix costs nothing; what it changes is which anchor the height solve
-        picks when the approach tilts.
-        """
-        self.assertEqual(
-            round(self._worst_optimism_mm(ParallelJawGripperModel(), palm_aware=True), 6), 0.0)
-
-    def test_palm_aware_is_never_more_permissive(self) -> None:
-        """The safety direction, pinned. Adding the palm can only LOWER the planned clearance.
-
-        A candidate that survives with the palm in the reasoning would have survived without it, so
-        this can refuse and can never admit -- which is what makes it safe to turn on before the
-        rate has been measured.
-        """
-        model = ParallelJawGripperModel()
-        jaw = SupportFootprintJaw.from_model(model, table_clearance_mm=MIN_CLEARANCE_MM)
-        for height in (50.0, 60.0, 70.0, 90.0, 120.0):
-            cloud = top_face_cloud(height)
-            plain = generate_support_footprint_grasps(
-                cloud, support_height_mm=0.0, jaw=jaw, obstacle_points_base_mm=None,
-                max_candidates=12, palm_aware=False)
-            palm = generate_support_footprint_grasps(
-                cloud, support_height_mm=0.0, jaw=jaw, obstacle_points_base_mm=None,
-                max_candidates=12, palm_aware=True)
-            for candidate in palm:
-                self.assertGreaterEqual(
-                    self._envelope_clearance_mm(candidate, model), float(candidate.clearance_mm),
-                    f"h={height}: a palm-aware candidate is still optimistic about the envelope")
-            self.assertTrue(plain, f"no baseline candidate at h={height}")
+    def test_straight_down_the_body_plans_no_more_than_the_envelope_grants(self) -> None:
+        """Straight down the palm stands over the fingers, so the fingers' clearance is the hand's: none to spare."""
+        self.assertEqual(round(self._worst_optimism_mm(ParallelJawGripperModel(), leaning=False), 6), 0.0)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -6,17 +6,17 @@ driver:
 
 1. extracts the typed failure-reason set from the report,
 2. asks the orchestrator for the next plan,
-3. executes the plan via the typed executor (or perception
-   re-acquisition for RESCAN, which NEXT_VIEWPOINT was merged into on
-   2026-09-29),
+3. re-acquires perception for the rescan, the one action it runs
+   (``NEXT_VIEWPOINT`` was merged into it on 2026-09-29, and ``NEXT_TARGET``
+   left on 2026-10-16, the owner's cleanup),
 4. retries ``pick()``.
 
 The driver returns the final :class:`AutonomousGraspReport` paired
 with a typed :class:`RecoveryTrail`.
 
-The service-side wrapper (``AutonomousGraspService.pick_with_recovery``)
-is a thin façade over this driver — it does not add new logic; the
-loop is fully testable here in isolation.
+The service runs this driver around its pick
+(``AutonomousGraspService._run_with_recovery``); the loop is fully testable
+here in isolation.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _profile_dense() -> GraspBehaviorProfile:
     return GraspBehaviorProfile(
         mode=GraspMode.DENSE_CLUTTER,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        recovery_allowed_actions=("rescan", "next_target"),
+        recovery_allowed_actions=("rescan", "nudge_target"),
     )
 
 
@@ -63,7 +63,7 @@ def _policy_enabled() -> SceneRecoveryPolicy:
         enabled=True,
         allowed_actions=(
             SceneRecoveryAction.RESCAN,
-            SceneRecoveryAction.NEXT_TARGET,
+            SceneRecoveryAction.NUDGE_TARGET,
         ),
         max_recovery_actions=3,
         apply_modes=("auto", "dense_clutter"),
@@ -71,19 +71,9 @@ def _policy_enabled() -> SceneRecoveryPolicy:
 
 
 def _orch() -> RecoveryOrchestrator:
-    """Default orchestrator with no strategies (driver only uses dispatcher).
+    """The orchestrator a service runs: the dispatcher's rows, the rescan alone."""
 
-    It held a ``NoRecoveryStrategy`` per action until that class left on 2026-09-29; bypassing the
-    strategies never consulted them.
-    """
-
-    return RecoveryOrchestrator(
-        dispatcher=RecoveryDispatcher(),
-        strategies={},
-        # Force the orchestrator to plan directly from the dispatcher mapping
-        # without running per-action strategies (driver-test focus).
-        bypass_strategies=True,
-    )
+    return RecoveryOrchestrator(dispatcher=RecoveryDispatcher())
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +166,38 @@ class RecoveryLoopHappyPathTests(unittest.TestCase):
 
 class RecoveryLoopBudgetExhaustionTests(unittest.TestCase):
     def test_exhausted_budget_terminates_with_typed_trail(self) -> None:
-        # NO_VALID_GRASP maps to (NEXT_TARGET, RESCAN); the loop takes both and then meets the budget.
-        # NEXT_TARGET runs only with the caller's memory of failed parts (2026-09-29), handed in here.
-        # (RESCAN_RECOMMENDED took RESCAN then NEXT_VIEWPOINT until the second was merged into the first
-        # on 2026-09-29.)
+        # Each failure is of a class not yet rescanned for, so only the budget of two actions ends the loop, before the
+        # pick that would have succeeded.
+        pick, state = _picker_failing_then_success(
+            (
+                (AutonomousGraspOutcome.NO_VALID_GRASP, (GraspFailureReason.RESCAN_RECOMMENDED,)),
+                (AutonomousGraspOutcome.NO_VALID_GRASP, (GraspFailureReason.NO_VALID_GRASP,)),
+                (AutonomousGraspOutcome.NO_VALID_GRASP, (GraspFailureReason.ALL_COLLIDED,)),
+            )
+        )
+        final, trail = run_recovery_loop(
+            pick=pick,
+            profile=_profile_dense(),
+            policy=SceneRecoveryPolicy(
+                enabled=True,
+                allowed_actions=(SceneRecoveryAction.RESCAN,),
+                max_recovery_actions=2,
+                apply_modes=("dense_clutter",),
+            ),
+            orchestrator=_orch(),
+            frame_acquirer=lambda: None,
+        )
+        self.assertNotEqual(final.outcome, AutonomousGraspOutcome.SUCCEEDED)
+        self.assertEqual(state["i"], 3)
+        self.assertEqual(len(trail.entries), 2)
+        self.assertEqual(trail.terminal_reason, "exhausted_budget")
+
+
+class RecoveryLoopAntiLoopTests(unittest.TestCase):
+    def test_anti_loop_blocks_when_dispatch_repeats(self) -> None:
+        """When the same failure class comes back after its rescan, the
+        loop terminates with ``anti_loop_blocked``, budget or not."""
+
         pick = _picker_always_failing(
             AutonomousGraspOutcome.NO_VALID_GRASP,
             (GraspFailureReason.NO_VALID_GRASP,),
@@ -189,51 +207,15 @@ class RecoveryLoopBudgetExhaustionTests(unittest.TestCase):
             profile=_profile_dense(),
             policy=SceneRecoveryPolicy(
                 enabled=True,
-                allowed_actions=(
-                    SceneRecoveryAction.RESCAN,
-                    SceneRecoveryAction.NEXT_TARGET,
-                ),
-                max_recovery_actions=2,
-                apply_modes=("dense_clutter",),
-            ),
-            orchestrator=_orch(),
-            frame_acquirer=lambda: None,
-            skip_failed_part=lambda report: True,
-        )
-        self.assertNotEqual(final.outcome, AutonomousGraspOutcome.SUCCEEDED)
-        self.assertEqual(len(trail.entries), 2)
-        self.assertEqual(trail.terminal_reason, "exhausted_budget")
-
-
-class RecoveryLoopAntiLoopTests(unittest.TestCase):
-    def test_anti_loop_blocks_when_dispatch_repeats(self) -> None:
-        """When dispatch always returns the same action for the same class
-        and that action has been tried, the loop terminates with
-        ``anti_loop_blocked``."""
-
-        pick = _picker_always_failing(
-            AutonomousGraspOutcome.NO_VALID_GRASP,
-            (GraspFailureReason.TRY_NEXT_CANDIDATE,),
-        )
-        final, trail = run_recovery_loop(
-            pick=pick,
-            profile=GraspBehaviorProfile(
-                mode=GraspMode.DENSE_CLUTTER,
-                sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-                recovery_allowed_actions=("next_target",),
-            ),
-            policy=SceneRecoveryPolicy(
-                enabled=True,
-                allowed_actions=(SceneRecoveryAction.NEXT_TARGET,),
+                allowed_actions=(SceneRecoveryAction.RESCAN,),
                 max_recovery_actions=5,
                 apply_modes=("dense_clutter",),
             ),
             orchestrator=_orch(),
             frame_acquirer=lambda: None,
-            skip_failed_part=lambda report: True,
         )
-        # TRY_NEXT_CANDIDATE maps to (NEXT_TARGET,); after one attempt the
-        # anti-loop refuses the same (action, class) pair → terminate.
+        # NO_VALID_GRASP maps to (RESCAN,); after one rescan the anti-loop
+        # refuses the same (action, class) pair → terminate.
         self.assertEqual(len(trail.entries), 1)
         self.assertEqual(trail.terminal_reason, "anti_loop_blocked")
 

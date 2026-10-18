@@ -28,7 +28,7 @@ from src.utility.log_cfg import create_logger
 router = APIRouter(tags=["pick"])
 
 #: The run itself is logged by ``api.runs`` (start, each pick, the end). This file logs what only it
-#: sees: a prompt refused before anything moved, and the event socket's replay.
+#: sees: a push distance refused before anything moved, and the event socket's replay.
 logger = create_logger("PickRouter", ROUTER_PICK_LOG_FILE, log_dir=API_LOG_DIR)
 
 #: How long a quiet socket waits before sending a keep-alive. A socket that is merely quiet looks
@@ -40,74 +40,9 @@ def _registry(cell: Console) -> RunRegistry:
     return cell.registry
 
 
-def _refuse_unroutable_prompt(cell: Console, prompt: str, *, code: str = "prompt_not_routable") -> None:
-    """Refuse a prompt this cell cannot ground correctly, before anything moves.
-
-    ``code`` names what the phrase is for: a pick's or a task's object (``prompt_not_routable``), or a camera place's
-    target (``target_not_routable``), which the same detector grounds the same way.
-
-    The failure this guards is the one the whole perception arc exists to remove, and it is silent: a
-    complex prompt handed to the phrase grounder does not come back empty, it comes back with a
-    confident box on the wrong object. The cell then grasps something the operator did not ask for, and
-    every log line looks like a successful pick.
-
-    So the check happens at the API boundary, where refusing is free, rather than after the arm has
-    moved. It costs nothing, since the router is pure text analysis with no model and no image, and it
-    stays quiet on every prompt the configured stack can actually handle.
-
-    An operator who wants the pick anyway has two honest routes, both named in the refusal: configure
-    the VLM, or set ``on_unavailable: degrade`` and accept a loudly-logged wrong answer. What they do
-    not get is a silent one.
-    """
-    if not prompt.strip():
-        return  # "whatever the source already targets": there is no prompt to route
-    from api.routers.diagnostics import _perception
-
-    from src.models.routing import Route, route
-
-    decision = route(prompt)
-    if decision.route is not Route.VLM:
-        return
-    stack = _perception(cell)
-    if stack.backend == "vlm" and stack.vlm_weights_present is not False:
-        return
-    if stack.vlm_on_unavailable == "degrade":
-        return  # a deliberate, configured choice; the library logs every degraded grounding
-
-    reason = ("this cell configures no VLM route"
-              if stack.backend != "vlm"
-              else f"the VLM route is configured but {stack.vlm_model_id} is not on this box")
-    # The refusal that prevents a wrong pick, so it is the one most worth having a record of.
-    logger.warning(
-        "Pick refused before anything moved: %r needs the VLM route (%s) and %s.",
-        prompt, decision.reason, reason,
-    )
-    raise HTTPException(
-        status_code=422,
-        detail={
-            "code": "target_not_routable" if code == "target_not_routable" else "prompt_not_routable",
-            "message": (
-                f"{prompt!r} needs the VLM route ({decision.describe()}), and {reason}. The phrase "
-                f"grounder does not fail loudly on prompts like this; it returns a confident box for "
-                f"the WRONG object, so this pick is refused rather than run. Fix it by configuring "
-                f"models.pipeline.zero_shot.backend='vlm' (and fetching the weights with "
-                f"scripts/model_weights/fetch.py), or set vlm.on_unavailable='degrade' to accept a "
-                f"loudly-logged fallback."
-            ),
-            "detail": {
-                "route": str(decision.route),
-                "reason": str(decision.reason),
-                "backend": stack.backend,
-                "vlm_weights_present": stack.vlm_weights_present,
-            },
-        },
-    )
-
-
 def _refuse_unfit_push(cell: Console, push_mm: float | None) -> None:
-    """Refuse a push distance the cell would refuse, before the run starts: above the cell's ceiling
-    (``recovery.fixture.max_nudge_mm``, the hard cap itself where no fixture is declared), above the hard cap of
-    50 mm, or under 10 mm, which cannot open room for a finger. Never shortened: the operator's number is taken as
+    """Refuse a push distance the cell would refuse, before the run starts: above the hard cap of 50 mm, or under
+    10 mm, which cannot open room for a finger. Never shortened: the operator's number is taken as
     asked or refused with the sentence that says why."""
     if push_mm is None:
         return
@@ -150,7 +85,6 @@ def post_pick(cell: Annotated[Console, Depends(console)], body: PickIn) -> RunOu
             },
         )
     gates.refuse_unless(cell, gates.PICK_GATES)
-    _refuse_unroutable_prompt(cell, body.prompt)
     _refuse_unfit_push(cell, body.push_mm)
     try:
         run = _registry(cell).start(cell, prompt=body.prompt, picks=body.picks, push_mm=body.push_mm)

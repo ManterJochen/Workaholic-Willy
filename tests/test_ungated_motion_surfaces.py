@@ -75,7 +75,7 @@ def _planned(preflight: Any, route: str = "ik") -> tuple[Any, Any]:
     verb consults its guards.
     """
     fake = fake_transport(joints=[0.0] * 6)
-    arm = planned_arm(kit_tree(route, safety={"payload": {"enforce": False}}), transport=fake, preflight=preflight)
+    arm = planned_arm(kit_tree(route, safety={}), transport=fake, preflight=preflight)
     return arm, fake
 
 

@@ -47,7 +47,6 @@ const CELL = {
   profile: 'console_dummy',
   active_run_id: null,
   needs_person: '',
-  payload_model: 'not_applicable',
   countdown_due: false,
   jaws_question: false,
 }

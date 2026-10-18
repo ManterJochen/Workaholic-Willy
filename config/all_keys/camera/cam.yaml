@@ -14,9 +14,10 @@ cameras:
   # different rules.
   #
   # The rig must exist. It does not have to be enabled at load, because a profile whose cameras are
-  # still waiting for their serial numbers is not a malformed file; a cell built on a disabled or
-  # non RGB-D primary is refused when it is BUILT, with a message that names the RGB-D rigs there
-  # are. Changing it changes which camera the cell opens, and therefore every number it measures.
+  # still waiting for their serial numbers is not a malformed file; a cell built on a disabled
+  # primary, or on a stereo pair whose stereo calibration is not written yet, is refused when it is
+  # BUILT, with a message that names the rigs that give depth. Changing it changes which camera the
+  # cell opens, and therefore every number it measures.
   # [REQUIRED - no default]
   primary_rig_id: webcam_main
 
@@ -68,9 +69,8 @@ cameras:
       # The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
       # selects it, `python -m src.robot.perception --rig <id>` opens it,
       # `Camera.from_config(camera, rig_id=<id>)` makes it the one owner of that device, and if you
-      # omit `calibration_paths.base_dir` the schema invents the repository's `calibration/<rig_id>`. It is
-      # the key a fused camera takes in `robot.grasping.fusion.cameras`; the calibration itself is
-      # declared on the rig, under `extrinsics`.
+      # omit `calibration_paths.base_dir` the schema invents the repository's `calibration/<rig_id>`. The
+      # calibration is declared on the rig, under `extrinsics`.
       # [REQUIRED - no default]
     - rig_id: webcam_main
 
@@ -155,8 +155,10 @@ cameras:
         # [REQUIRED - no default]
         base_dir: ../calibration/webcam_main
 
-        # Path to the OpenCV FileStorage XML holding the rectification maps
-        # produced by stereo calibration; auto-derived as `<base_dir>/stereoMap.xml`.
+        # The pair's stereo calibration: a JSON file of schema willy.calibration.stereo/1, whatever its
+        # name says, holding both lenses, the rectification and Q (the remap tables are recomputed on
+        # load). `StereoCalibration.calibrate()` writes it, and the rig's camera reads it as it opens and
+        # refuses to open without it; auto-derived as `<base_dir>/stereoMap.xml`.
         # [default: ""]
         stereo_map_file: ../calibration/webcam_main/stereoMap.xml
 
@@ -182,9 +184,8 @@ cameras:
       # The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
       # selects it, `python -m src.robot.perception --rig <id>` opens it,
       # `Camera.from_config(camera, rig_id=<id>)` makes it the one owner of that device, and if you
-      # omit `calibration_paths.base_dir` the schema invents the repository's `calibration/<rig_id>`. It is
-      # the key a fused camera takes in `robot.grasping.fusion.cameras`; the calibration itself is
-      # declared on the rig, under `extrinsics`.
+      # omit `calibration_paths.base_dir` the schema invents the repository's `calibration/<rig_id>`. The
+      # calibration is declared on the rig, under `extrinsics`.
       # [REQUIRED - no default]
     - rig_id: stereo_dev0
       enabled: false
@@ -306,10 +307,9 @@ cameras:
       # `camera.cameras.primary_rig_id` selects it, `python -m src.robot.perception --rig <id>` opens
       # it, `Camera.from_config(camera, rig_id=<id>)` makes it the one owner of that device, and if you
       # omit `calibration_paths.base_dir` the schema invents the repository's `calibration/<rig_id>`. It is
-      # the key a fused camera takes in `robot.grasping.fusion.cameras` and the id the calibration
-      # command stamps into this rig's artifact, so renaming a rig orphans its calibration folder and
-      # every fusion entry that names it. The calibration itself is declared on the rig, under
-      # `extrinsics`.
+      # the id the calibration command stamps into this rig's artifact, so renaming a rig orphans its
+      # calibration folder. The calibration itself is declared on the rig, under `extrinsics`: an enabled
+      # rig that declares one, RGB-D or stereo, is fused with every other that does, where two or more do.
       # [REQUIRED - no default]
     - rig_id: realsense_d435
       enabled: false
@@ -541,8 +541,8 @@ cameras:
       # is taken. Null is a rig that is not calibrated, a stated state rather than a default
       # transform. `python -m src.robot.execution.real_cell.calibrate --rig <rig_id> --freedrive`
       # prints the block to write here. Every reader of a camera's transform (fusion, the planner world, the
-      # preflight, `from_robot_config`) takes it from this block. A stereo rig refuses the block at
-      # load.
+      # preflight, `from_robot_config`) takes it from this block. A stereo rig declares it the same way, its
+      # transform the rectified left camera's, once its stereo calibration is written.
       # [default: null]
       #
       #   extrinsics:
@@ -594,8 +594,9 @@ cameras:
       # (RGB-D rig.) The body the arm carries when this camera is mounted on it: a housing from the
       # camera registry, a bracket and a margin. Null is a camera the arm does not carry. A declared
       # body is placed on the flange by the rig's eye in hand calibration and carried by the cuRobo
-      # planner, the exact mesh guard and the self filter. Refused at load on an eye_to_hand rig, on a
-      # stereo rig, and on a rig id that is not letters, digits and underscores; a rig with a body
+      # planner, the exact mesh guard and the self filter; a stereo pair on the wrist declares one as an
+      # RGB-D rig does. Refused at load on an eye_to_hand rig and on a rig id that is not letters, digits
+      # and underscores; a rig with a body
       # needs `extrinsics.record_tolerance_mm` and `record_tolerance_deg`. A cell whose planner or
       # guard reads geometry refuses an enabled eye_in_hand rig without one, because a wrist camera
       # left without a body is a housing no collision model sees.

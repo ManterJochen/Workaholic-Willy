@@ -1,8 +1,8 @@
 """Grasps on a point cloud, with no robot, no cell and no configuration.
 
 ⭐ **THE SMALLEST USEFUL THING THIS PACKAGE CAN DO, AND IT HAD NO DOOR.** Everything needed was
-already pure: `generate_support_footprint_grasps` takes a bare BASE-frame array, takes a fully
-defaulted frozen jaw, and returns frozen candidates. What had no name was the QUESTION, so the only
+already pure: `body_grasps`, the part's own body as the cell grasps it, takes a bare BASE-frame
+array and a frozen jaw, and returns frozen candidates. What had no name was the QUESTION, so the only
 way in was to build a `GraspCalculator` with a camera matrix and a config block for a cell that does
 not exist.
 
@@ -23,9 +23,10 @@ import unittest
 
 import numpy as np
 
+from src.robot.grasping.collision.support_resolver import bench_height_mm
 from src.contracts import Rendered, Structured
 from src.robot.grasping import Scene, SceneGrasps
-from src.robot.grasping.generation.support_footprint import SupportFootprintCandidate
+from src.robot.grasping.generation.hand import SupportFootprintCandidate
 
 
 def _block(points: int = 900, seed: int = 0) -> np.ndarray:
@@ -108,10 +109,9 @@ class TheTwoDoorsTests(unittest.TestCase):
         cfg = RobotConfig()
         cloud = _block()
         scene = Scene.from_robot_config(cfg, cloud)
-        # The declared height, raised to the block's own lowest point: the block reaches 40 mm along the
-        # support normal, so it has seen what it stands on, and the pick loop's rule applies.
-        self.assertEqual(scene.support_height_mm,
-                         max(float(cfg.grasping.support.height_mm), float(cloud[:, 2].min())))
+        # The bench, raised to the block's own lowest point: the block reaches 40 mm up, so it has seen what it
+        # stands on, and the pick loop's rule applies.
+        self.assertEqual(scene.support_height_mm, max(bench_height_mm(cfg), float(cloud[:, 2].min())))
         self.assertIsNotNone(scene.jaw, "the jaw comes from the gripper block")
 
     def test_both_doors_produce_the_same_shape_of_answer(self) -> None:

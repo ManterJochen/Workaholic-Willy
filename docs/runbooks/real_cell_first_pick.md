@@ -67,17 +67,16 @@ python -m src.robot.execution.real_cell --check
 python -m src.robot.execution.real_cell --check --profile ur3e
 ```
 
-Against the shipped configuration tree as a UR cell this reports seven blocking items, and that is
+Against the shipped configuration tree as a UR cell this reports six blocking items, and that is
 the normal state of a fresh cell rather than a fault.
 
 | Blocking | Why it stops you | What it looks like if you skip it |
 |---|---|---|
 | `tool frame`: `gripper.tool_frame.source` is `undeclared` | nobody has said where the grasp centre sits on the flange | a top-down grasp commanding z = 37 mm drives the flange there and the fingertips through the bench |
-| `payload`: `safety.payload` has `enforce: true` and `mass_kg: 0.0` | `connect()` refuses, because pushing `setPayload(0.0)` would overwrite the controller's model of a mounted tool | you drive to the cell and cannot connect |
+| `payload`: `safety.payload` has `mass_kg: 0.0` | `connect()` refuses, because pushing `setPayload(0.0)` would overwrite the controller's model of a mounted tool | you drive to the cell and cannot connect |
 | `camera -> base`: no CAMERA to BASE resolver | grasps stay in the camera frame | every motion returns `INVALID_TARGET`, which reads as a cell that hangs |
 | `camera world`: no live camera world for the planner | the base tree plans with cuRobo, and a cuRobo motion needs a live camera world or a decline; the pick service declines nothing | every pick motion is refused as `UNSUPPORTED` before it moves, naming the missing world |
 | `planner margin`: `safety.self_collision.planner_margin_mm` is undeclared | the base tree plans with cuRobo, and a planner never starts without the clearance it keeps; undeclared is not zero | the first planned move is refused as `CONTROLLER_REJECTED`, before the arm moves |
-| `carried part`: `safety.planning_world.payload.length_mm` is undeclared | the base tree plans with cuRobo, which models the part a grasp carries, and no length is implied for it | the attach is declined and every lift and transit after a grasp is planned as if the hand were empty; declare the length, or `enabled: false` for a cell that carries nothing |
 | `hand`: `gripper.model` is unset | the exact-mesh guard checks the hand `robot.gripper.model` names, and the base tree names none so that no overlay inherits one | the cell refuses to build, naming the key |
 
 A box without the cuRobo environment or without Coal blocks on two more rows, `cuRobo environment`
@@ -276,16 +275,15 @@ and the leg search, 1.33 degrees a step on two joints, takes +20.0.
 `probe_band_admission.py` holds the owner's looks in the planner's cushion band, what stays refused (the
 folded wrist, a box through the forearm, a joint past the planner's bounds, the Hand-E at the robot's own
 base), the kernel's self term against the pair naming over a wrist_1 x wrist_2 torus, and the escape legs,
-each at most 20 degrees per joint. `probe_turned_boxes.py` fills the 65 slots from a synthetic camera over a
+each at most 20 degrees per joint. `probe_turned_boxes.py` fills the camera's slots (64 when it ran on 2026-10-01, 128
+on every cell since 2026-10-17) from a synthetic camera over a
 turned bin and 48 parts, checks that the planner registers every box, that it holds the turn (the enclosures
 meet its spheres where the turned walls clear them), that the bin **30, 40 and 47.7 mm** from the arm is
 admitted with the camera's boxes set aside, at no clearance and at a line's, both in the cushion band and
 with the wrist out of it, where the planner refuses on its world alone, that **every camera box comes back**
 (one configuration inside each, its verdict and depth the same before and after), that straight joint lines
-beside the 30 mm bin run, that the line out is held while the hand's count says closed and runs once it
-reads open, that a grasp's lift judged as if the jaws held a part is refused while the same lift runs
-empty-handed, and, on a cell that models the part, that the sidecar takes the part for that judgement and
-gives it back, the whole grasp backs out there with its jaws open and closes once away from the bin,
+beside the 30 mm bin run, that the line out runs with the hand's count closed as it runs open, the camera's boxes
+set aside whatever the hand holds, that a grasp's lift judged before the jaws close would run and runs as one moveL,
 that the screen calls that pose `beside the boxes the camera saw`, where the planner clears a **declared**
 bin, and a plan out of the cushion band in that world. Where an
 application-control policy refuses cuRobo's kernels, `--cpu-replica ext_deps/curobo/curobo/content` runs
@@ -295,8 +293,8 @@ the replica. It plans nothing, so
 `probe_turned_boxes.py` skips its plan in the full world and says so. The replica proves the driver's
 decisions on the real geometry; only the GPU run shows the kernel itself.
 
-**Restart the planner after an update.** It reserves 1 + declared + `perceived.max_boxes` (64) box slots
-when it starts, so one started before an update holds the old 16.
+**Restart the planner after an update.** It reserves 1 + declared + 128 box slots (`perceived.CAMERA_MAX_BOXES`,
+every cell's since 2026-10-17) when it starts, so one started before an update holds the old count.
 
 ### 7. Is the cell calibrated?
 
@@ -324,9 +322,9 @@ connect exits 1 as well, and exit 3 is a sweep that raised.
 It writes `eth_<rig_id>.json` under `calibration/real` and prints the rig block to paste into the
 camera section, `camera.cameras.rigs[<rig_id>].extrinsics`. Run it once per camera. Until the primary
 rig declares its block the cell has no camera-to-base transform, and a real cell is refused at build,
-naming that key. A second camera also needs an entry naming its rig in
-`robot.grasping.fusion.cameras`. Without one it never reaches the pick path: geometry fusion stands
-down to a single view, and the build says so in one warning.
+naming that key. A second camera is fused once its rig declares its block too: a cell fuses every
+enabled RGB-D rig that declares its calibration, where two or more do. Until then it never reaches the
+pick path, and the build says so in one warning.
 
 Measure the printed ArUco board before the first sweep. A wrong `--marker-length-mm` scales every
 sample uniformly, so the solve converges and is uniformly wrong, which no residual will tell you. It
@@ -369,10 +367,11 @@ run = PickRun.from_cell(cell, runs=5, recording=Recording.off(), look=LOOK, put_
 
 ```yaml
 robot:
-  look_joint_positions_deg:          # every pick whose program names no look, the console's too
-    - [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0]
-    - [-70.0, -100.0, -110.0, -60.0, 90.0, 0.0]
-  natural_closing_axis: "-y"         # how the hand and its camera naturally stand: the owner's UR10 cell
+  motion:
+    look_deg:                          # every pick whose program names no look, the console's too
+      - [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0]
+      - [-70.0, -100.0, -110.0, -60.0, 90.0, 0.0]
+    natural_closing_axis: "-y"         # how the hand and its camera naturally stand: the owner's UR10 cell
 ```
 
 ```mermaid
@@ -397,7 +396,7 @@ flowchart LR
   within 6.3 of zero: that reads as radians. A program's looks override the profile's.
 * **Every taught pose is screened**, by the exact mesh guard and the planner, and nothing moves for it:
   example 11 once each pose is held (the planner starts with the first pose, about a minute), `real_cell
-  --start-planner` for `robot.look_joint_positions_deg`, and every campaign at its start, one log line per
+  --start-planner` for `robot.motion.look_deg`, and every campaign at its start, one log line per
   look. The lines read:
 
   | Line | Means | Do |
@@ -405,7 +404,7 @@ flowchart LR
   | `LOOK_1: clear: ...` | both clear it | nothing |
   | `LOOK_1: in the planner's cushion band: ... Nearby, both clear: (...) deg.` | only the planner's padded spheres refuse it, and the exact meshes keep at least 10 mm: it runs, straight lines run into it and out of it, and a planned move takes a straight leg of at most 20 degrees per joint to the nearest pose both clear, by itself | nothing while the line names that pose; it is there if you would rather teach it |
   | `LOOK_1: in the planner's cushion band: ...; no pose within 20 deg per joint of it clears both ...` | it runs on straight lines only; a planned move out of it or into it is refused | only where a planned move has to reach it or leave it: re-teach it by hand where both clear, and screen it again; the line names no pose to copy |
-  | `LOOK_1: beside the boxes the camera saw: ...` | only the camera's boxes refuse it on the planner's world, and the exact guard decides them: straight lines and moveL run into it and out of it with a hand known empty and open; a planned move into it or out of it is refused, and so is any move while the hand carries a part or cannot say it stands open | nothing for a look; a place pose, or one planned moves have to reach, is re-taught at the `Nearby, both clear` pose or by hand where both clear (Diagnose 10) |
+  | `LOOK_1: beside the boxes the camera saw: ...` | only the camera's boxes refuse it on the planner's world, and the exact guard decides them: straight lines and moveL run into it and out of it; a planned move into it or out of it is refused | nothing for a look; a place pose, or one planned moves have to reach, is re-taught at the `Nearby, both clear` pose or by hand where both clear (Diagnose 10) |
   | `ERROR LOOK_1: refused by the exact guard: ...` or `refused by the planner: ...` | no move goes there | re-teach it: at the `Nearby, both clear` pose where the line names one, else by hand where both clear; then screen it again |
 
   Teaching screens only on an arm that carries every wrist camera housing the tree declares, the arm
@@ -421,7 +420,7 @@ flowchart LR
   back never take one.
 * **The part's open side first.** Order the looks so the first one sees the side a grasp needs. It is
   often the only look a pick takes.
-* **How the hand naturally stands.** `robot.natural_closing_axis` names the way round the jaws close
+* **How the hand naturally stands.** `robot.motion.natural_closing_axis` names the way round the jaws close
   where nothing else says. The owner's cell sets `"-y"` in its own profile on the cell PC: the tool +X
   along base -y, where its D415 image stands upright. A taught pose's `quaternion_xyzw` works as well,
   and only the heading of its tool +X on the base XY plane counts. Every camera grasp then takes the
@@ -466,7 +465,7 @@ flowchart LR
   for safety-critical parts. The pick then looks on until both jaw contact faces of the chosen grasp
   were seen, the generated view included, and grips nothing where no view showed both: the pick ends
   `no_valid_grasp` naming the face, and a look around comes back refused. A fixed camera grips only a
-  grasp its cameras showed both faces of. With it, the way round comes from `robot.natural_closing_axis`
+  grasp its cameras showed both faces of. With it, the way round comes from `robot.motion.natural_closing_axis`
   and one axis to close along from the program's `closing_axis` below: both act before the grasps are
   judged. The simulator's twist, `GraspMotion(align_closing_to_base_x=True)`, turns every grasp after the
   judging, so asking for both raises before anything moves. A suction cup has no faces to see.
@@ -479,8 +478,8 @@ flowchart LR
   the lens and the fused part cloud, one `.npz` per pick under `logs/robot/views`, named after the pick's
   record (`attempt_id`).
 * **Rescans.** A pick handed looks has had its rescans, its looks and the one generated view, so a
-  rescan never repeats them; only `next_target` runs them again, for another part of the label
-  (Diagnose 9). A wrist pick handed no look, and a fixed camera, rescan where they stand.
+  rescan never repeats them (Diagnose 9). A wrist pick handed no look, and a fixed camera, rescan where
+  they stand.
 * **Example 13's `Locator` looks around by the same rules.**
   `locator.look_around(prompt, LOOK, robot=robot, both_faces=...)` finds a part to grip: fused looks,
   the early stop, the one generated view and the move back, `both_faces`, refused looks skipped. A
@@ -539,44 +538,36 @@ against doubles. They have not run in URSim or on a cell yet.
 
 ### 9. What does the cell do when a part is boxed in?
 
-A failed grasp goes to **recovery** where the cell arms it (`robot.grasping.recovery.enabled`). The
-grasp mode is the outer gate, and `recovery.allowed_actions` has to name an action as well:
+A failed grasp goes to **recovery**, every cell's since 2026-10-16: the values the owner's cell ran, with
+no block to write. The grasp mode is the gate:
 
 | Mode | Recovery may |
 |---|---|
 | `easy` | nothing: never a recovery motion |
-| `auto` | `rescan`, `next_target` |
-| `dense_clutter` | `rescan`, `next_target` and the **push** (`nudge_target`) |
+| `auto` | `rescan` |
+| `dense_clutter` | `rescan` and the **push** (`nudge_target`) |
 
 * **`rescan`** perceives again and moves nothing. A wrist pick handed looks has had its rescans, so
   recovery never repeats the looks for the same part (Diagnose 8).
-* **`next_target`** skips the part that failed for another **of the same label**, never another
-  object. It follows no candidate, no valid grasp, grasps that collided, and a motion the planner
-  refused. The failed part's place is excluded in BASE XY, 30 mm about its centre or half its
-  footprint's diagonal, whichever is larger, for this pick and the next two. On a wrist cell the new
-  part gets the looks again, with the early stop and at most one generated view. When only excluded
-  parts are left, the pick stops and says so.
 * **Boxed in is what the camera saw, named or not.** The calculator holds every object the camera saw
-  beside the part as an obstacle, whether a prompt named it or not (`grasping.scene_obstacles`, on), with
+  beside the part as an obstacle, whether a prompt named it or not (every cell), with
   what the part stands on taken out ([04](../guide/04-robot-and-safety.md), 5.5). Where every grasp
   meets one of them the pick says "every grasp meets a neighbour" (`all_collided`), the one failure a
   blocker or a push answers. A part too short for the hand says so instead (about 28 mm for the Hand-E,
   `all_table_conflict`), and is never pushed.
 * **Every grasp is judged before the arm leaves for it**, on the owner's cuRobo UR: the move to its
-  standoff, its line in and its lift as if carrying. A grasp refused there moves nothing, and the next
-  follows; a part whose every grasp was refused that way counts as boxed in.
-* **Push, or clear a blocker: the owner's switch** (`recovery.critical_parts`, 2026-10-03, and
-  *Kritische Teile* in the console's Advanced drawer for one run). Off, the default: a boxed-in part is
+  standoff, its line in and its lift as it will run once the jaws close. A grasp refused there moves nothing, and the
+  next follows; a part whose every grasp was refused that way counts as boxed in.
+* **Push, or clear a blocker: the owner's switch** of 2026-10-03 (`runtime.task.critical_parts` in
+  `app/runtime.yaml`, and *Kritische Teile* in the console's Advanced drawer for one run). Off, the default: a boxed-in part is
   pushed first, and the push may rearrange the scene; a blocker is cleared where no push plans. On:
   nothing is pushed, and a blocker is cleared instead.
 * **Clear the blocker** (the owner, 2026-10-02: "entweder das Objekt verschieben oder ein anderes Objekt
   nehmen, was im Weg liegt und dann das eigentliche Objekt aufheben"). Where the push may run (the same
   gate, below), the pick takes away a neighbour that stands in the way: a separate object on what the
   part stands on (where no look saw its foot, the support seen round it says so), narrower than the hand
-  opens, whose removal the calculator says frees a grasp of the part or spares one of its refusals, and
-  which reaches no further past the fingertips than the
-  planner models a carried part (`payload.length_mm`, where the arm models one). It is gripped like any
-  part, with the part back in the camera world, set down on a free spot the camera saw (150 mm from the
+  opens, whose removal the calculator says frees a grasp of the part or spares one of its refusals. It is gripped
+  like any part, with the part back in the camera world, set down on a free spot the camera saw (150 mm from the
   part, nothing seen within the hand's reach plus 20 mm, inside the workspace) or at a place a program
   names (`orchestrator.blocker_place = blocker.taught_place("Müll")`), and the arm goes back to its look
   and looks again. **No budget**, but a rule: the clearing goes on only while each removal spares some of
@@ -586,35 +577,34 @@ grasp mode is the outer gate, and `recovery.allowed_actions` has to name an acti
   stood over the blocker, the jaws known open and empty, sends the arm back to its look on a judged move,
   the blocker still held out of the world as on the way down, and that blocker is not tried again; any
   other stop once something moved leaves the arm where it stands, the blocker maybe in the hand: a person
-  decides (After a stop). Its grasps are tried best first, at most `recovery.blocker_grasp_tries` (3),
-  each judged before the arm leaves. Where no one removal frees a grasp but all of them together would,
+  decides (After a stop). Its grasps are tried best first, at most three, each judged before the arm
+  leaves. Where no one removal frees a grasp but all of them together would,
   the nearest goes first. The hand needs room: a neighbour within about 20 mm of the part leaves no room
   to grip it, and a part boxed in that tightly stays boxed.
 * **The push** frees a boxed-in part that is not critical: no candidate survived and at least one
-  collided, every grasp was refused ahead, or, where approach validation runs, every approach was
-  blocked, and in each case a neighbour was seen within 25 mm of the part. It runs on a wrist camera's
+  collided, or every grasp was refused ahead, and in either case a neighbour was seen within 25 mm of the
+  part. It runs on a wrist camera's
   pick in `dense_clutter` only, with either grasp calculator, inside the pick attempt, after the looks
   were judged; a fixed-camera cell never pushes. It never follows no candidate or no valid grasp: nothing
-  there says a neighbour is in the way. A cell with `grasping.decision.enabled: true` ends a pick with no
-  grasp before any of this: leave it off where a part may be boxed in.
+  there says a neighbour is in the way.
 
 | The push | |
 |---|---|
 | **Pusher** | The hand closes in the air over the part before the line down, a Robotiq to its closed width and a toggle by one change of DO0, and the **closed fingers** push (about 22 mm across, where the open Hand-E stands 72). At the look after the push it opens again, a toggle by one more change. Any other hand keeps its jaws open, and the outer face of the leading finger pushes along the closing axis. Nobody is asked. |
-| **Jaw count** | A count that says closed means no push. One that cannot say when the push reads it, once its plan and budgets passed (DO0 switched at the pendant while the pick looked, or its output unreadable), **ends the pick as a gripper fault**: nothing pushed or moved, and the campaign stops. A Robotiq over its socket, or any hand that measures its width, found not connected there, or whose width read fails (a socket that stopped answering), ends it the same way. Look at the jaws, then connect again: a toggle's connect asks where they stand, and a width gripper is reconnected. A push refused before that read falls through, and `next_target` reads the count before it drives the looks again: one nobody can vouch for ends the pick as a gripper fault before any look. |
+| **Jaw count** | A count that says closed means no push. One that cannot say when the push reads it, once its plan and budgets passed (DO0 switched at the pendant while the pick looked, or its output unreadable), **ends the pick as a gripper fault**: nothing pushed or moved, and the campaign stops. A Robotiq over its socket, or any hand that measures its width, found not connected there, or whose width read fails (a socket that stopped answering), ends it the same way. Look at the jaws, then connect again: a toggle's connect asks where they stand, and a width gripper is reconnected. A push refused before that read lets the attempt go on. |
 | **During the push** | The count, the controller and the pick's stop check are read again before each contact leg and once the arm is up. DO0 switched while the push drives, or a stop asked for (halt now in the console), **stops the push where the arm stands**, the fingers possibly down beside the part: nothing more moves, not even back to the look, and a person decides (After a stop). |
-| **Critical parts** | `recovery.critical_parts: true`, or *Kritische Teile* for one console run: never pushed, a blocked approach included; a blocker is cleared instead. |
-| **Where to** | An automatic **push box**: the extent of the surface the part stands on where the camera world found one ([04](../guide/04-robot-and-safety.md), 5.5), else the workspace box intersected with the table the camera saw, shrunk by 30 mm. The landing plus 15 mm stays inside it, and so does every neighbour the push shoves. **Nothing is pushed over an edge**: every landing keeps 45 mm of table the camera saw round it, a shadow or a dip among it counted as ground, the edge of what was seen never. The fingers come down over seen table only, read on the surface's own local plane. `recovery.fixture` only narrows it; a declared container is its interior. Expect sideways pushes: pushing a part straight away from a neighbour needs room for the open hand between them. |
+| **Critical parts** | `runtime.task.critical_parts: true` in `app/runtime.yaml`, or *Kritische Teile* for one console run: never pushed; a blocker is cleared instead. |
+| **Where to** | An automatic **push box**: the extent of the surface the part stands on where the camera world found one ([04](../guide/04-robot-and-safety.md), 5.5), else the workspace box intersected with the table the camera saw, shrunk by 30 mm. The landing plus 15 mm stays inside it, and so does every neighbour the push shoves. **Nothing is pushed over an edge**: every landing keeps 45 mm of table the camera saw round it, a shadow or a dip among it counted as ground, the edge of what was seen never. The fingers come down over seen table only, read on the surface's own local plane. A declared container is its interior. Expect sideways pushes: pushing a part straight away from a neighbour needs room for the open hand between them. |
 | **Beside the part** | **The push may rearrange the scene** (the owner, 2026-10-03). The fingers come down **10 mm** from every neighbour. The part may shove a lower neighbour ahead of it, and the fingers may brush one beside their stroke; each neighbour the push may touch is held out of the camera world whole while it runs. The housing keeps the camera world's margin plus the line clearance, **25 mm** shipped, from every neighbour tall enough to reach it, and such a neighbour stays in the guard's world, the fingers keeping the same from it. A push that only drives a neighbour along in front of the part opens no room and is refused; one that touches nothing but the part comes first. |
-| **How far** | 30 mm (`recovery.fixture.push_distance_mm`), never more than `recovery.fixture.max_nudge_mm` (50 mm, the hard cap). Where nobody asked and 30 mm frees no direction, the planner tries 40, then 50 mm by itself. `PickRun.from_cell(..., push_mm=...)` or the console's request asks another distance: up to the ceiling as asked and never lengthened, above it refused, never shortened, under 10 mm refused (the console answers `422 push_distance_refused`). A cell config with `max_nudge_mm` under 10 or under `push_distance_mm` does not load: delete the old line to take 50 mm, or write 10 to 50 mm with a `push_distance_mm` no longer than it. On 160 measured scenes (2026-10-03) the rearranging push planned 39, most often a round part beside one neighbour; the push of 2026-10-02 planned none of them. |
+| **How far** | 30 mm, never more than 50 mm, the hard cap. Where nobody asked and 30 mm frees no direction, the planner tries 40, then 50 mm by itself. `PickRun.from_cell(..., push_mm=...)` or the console's request asks another distance: up to 50 mm as asked and never lengthened, above it refused, never shortened, under 10 mm refused (the console answers `422 push_distance_refused`). On 160 measured scenes (2026-10-03) the rearranging push planned 39, most often a round part beside one neighbour; the push of 2026-10-02 planned none of them. |
 | **How low** | Fingertips at half the part's height over the support, held to 10 to 20 mm, and never under the **finger floor**: over a surface the camera world holds as a solid, its top plus the guard's distance plus 1 mm. A push whose finger would pass over the part is refused (`refused_finger_floor_over_the_part`). No push for a part under 15 mm tall, or one not resting on the support: where no look saw its foot, it rests there where no edge of what was seen lies within 15 mm of it, a quarter of that ring is the table itself, and no table was seen under it. Every TCP point stays 20 mm inside the workspace box, 20 mm above `z_min` included. |
-| **Motion** | First the whole push is judged from where the arm stands: the move to P0 and every line, each from where the one before ends; a refusal there moves nothing (`refused_ahead`). Then to 80 mm above the contact start like a grasp approach: the straight joint line first, cuRobo only when it is blocked. Then four judged straight lines: down at 50 mm/s, the push at 25 mm/s (0.1 m/s²), back 5 mm and up 80 mm at 50 mm/s. The wrist takes the way round nearer `robot.natural_closing_axis` where the cell names one, else nearer where it stands. Then back to the look (to a view the pick generated, on the straight joint line alone), look again, fused with the pick's frames, and judge again. |
+| **Motion** | First the whole push is judged from where the arm stands: the move to P0 and every line, each from where the one before ends; a refusal there moves nothing (`refused_ahead`). Then to 80 mm above the contact start like a grasp approach: the straight joint line first, cuRobo only when it is blocked. Then four judged straight lines: down at 50 mm/s, the push at 25 mm/s (0.1 m/s²), back 5 mm and up 80 mm at 50 mm/s. The wrist takes the way round nearer `robot.motion.natural_closing_axis` where the cell names one, else nearer where it stands. Then back to the look (to a view the pick generated, on the straight joint line alone), look again, fused with the pick's frames, and judge again. |
 | **How often** | 1 push per part, 2 per pick, 5 per campaign. Spent means no more pushes, and the campaign goes on. |
 | **Falls through** | A refusal that sent nothing and touched nothing goes on to the next recovery action: the approach refused before it was sent, or the down leg refused before it was sent, the arm still in the air above the part. There the arm goes back to its look first, and the round trip counts against the budgets (the lead's ruling, pending the owner). |
 | **Ends the pick** | Two refusals before the push end the pick with nothing commanded: a controller found stopped or unreadable (`controller_not_operational`), and a hand nobody can vouch for when the push reads it, a toggle's count or a width-measuring hand not connected or unreadable (a gripper fault, Jaw count row). |
 | **Stops** | A down leg refused with a status not known as "nothing sent" (`unsupported`, `connection_error`, `controller_rejected`) stops there: a safe stop whose rate URSim will measure. Any other refusal or failure once the arm set off, and a count nobody can vouch for before a contact leg or once the arm is up, stops it where it is: `unsafe_recovery_refused`, and **the campaign ends and a person decides**. A protective stop is `controller_not_operational`, and the software never clears it. There is no planned escape. |
 | **After a stop** | The service starts no further pick, with nothing asked or moved, until a person decides: a new `PickRun`, `acknowledge_needs_person()` from a program, or in the console "Zelle ist frei" and then Home, whose first motion is the planned move home. The console's runs never clear it themselves. **Clear the cell first**: the next pick drives the arm from where it stopped to its first look. |
-| **Needs** | A wrist camera, a cuRobo arm whose lines are judged, a live camera world, the hand connected and open (a toggle's count at open, a hand that measures its width within 2 mm of fully open), an attempt left to pick the part from afterwards (`max_attempts` above 1), and the steady gate where `safety.dwell` asks for it. |
+| **Needs** | A wrist camera, a cuRobo arm whose lines are judged, a live camera world, the hand connected and open (a toggle's count at open, a hand that measures its width within 2 mm of fully open), an attempt left to pick the part from afterwards (`max_attempts` above 1), and the arm at rest before every motion, as the steady gate asks on every cell (`safety.dwell` until 2026-10-17). |
 
 Two facts decide whether a push is possible at all:
 
@@ -623,7 +613,7 @@ Two facts decide whether a push is possible at all:
   part. A part whose lower side no look saw is pushed only where the table round it says it rests there
   (`part_not_on_support` otherwise).
 * **`z_min` has to allow it.** Every TCP point of a push stays 20 mm above
-  `robot.workspace_limits.z_min`, while the fingertips come down to 10 to 20 mm over the table. A
+  `robot.motion.workspace.z_min`, while the fingertips come down to 10 to 20 mm over the table. A
   `z_min` meant as table clearance, as the base tree's 100 mm is, refuses the push (`below_z_min`):
   safe, and nothing is pushed. Check it against the table's height in BASE before the trial.
 
@@ -634,23 +624,22 @@ model, so watch them on the first trials.
 
 **The first push is a supervised trial.** In this order:
 
-1. **Arm it** in the cell's layer:
+1. **Arm it** in the cell's layer: `dense_clutter` is the one mode that pushes, in `robot/robot.yaml`,
 
    ```yaml
    robot:
      grasping:
-       default_mode: dense_clutter
-       decision:
-         enabled: false                        # on, a pick with no grasp ends before any recovery
-       recovery:
-         enabled: true
-         allowed_actions: [rescan, next_target, nudge_target]   # nudge_target arms the blocker and the push
-         critical_parts: false                 # true: never push, clear a blocker instead
-         fixture:                              # optional, BASE mm, yours: it only narrows the push box
-           center_mm: [400.0, 0.0, 60.0]
-           half_extents_mm: [150.0, 150.0, 60.0]
-           push_distance_mm: 30.0              # the push nobody asks otherwise
-           max_nudge_mm: 50.0                  # the most a request may ask
+       default_mode: dense_clutter             # the one mode that pushes and clears a blocker
+   ```
+
+   and whether the parts are critical is the cell's default for every task, in `app/runtime.yaml`, or chosen
+   in the console under Settings → Auftrag → Kritische Teile, which writes it into the cell's own layer
+   (`app/runtime.cell.yaml`); the cell reads it when it is built:
+
+   ```yaml
+   runtime:
+     task:
+       critical_parts: false                   # true: never push, clear a blocker instead
    ```
 
 2. **Check `z_min`** against the table, as above.
@@ -713,10 +702,10 @@ and the exact guard hold the same turned boxes.
 | Who judges | Keeps a seen bin | Where it shows |
 |---|---|---|
 | the exact guard | **20 mm off a face**, about **26 mm across a rim edge** (a bin turned 30 degrees 25 mm away is refused, 26 passes); a declared bin 10 mm from its measured geometry | a `[safety:self_collision/...]` refusal naming the box |
-| the planner, cuRobo | its sphere cover reaches **25 to 29 mm past the shoulder housing**, so it meets a seen bin 30, 40 and 47.7 mm away; asked again with **the camera's boxes set aside**, it clears them, and with a hand known empty and open the exact guard decides | the move runs; a refusal that stands names the planner's world and why |
+| the planner, cuRobo | its sphere cover reaches **25 to 29 mm past the shoulder housing**, so it meets a seen bin 30, 40 and 47.7 mm away; asked again with **the camera's boxes set aside**, it clears them, and the exact guard decides, whatever the hand holds | the move runs; a refusal that stands names the planner's world and why |
 
-So **keep about 30 mm between a seen bin and the housing's ring** where the arm passes it with an empty
-hand: the exact guard decides from about 26, and the GPU probe admits a bin turned 30 degrees at **30, 40
+So **keep about 30 mm between a seen bin and the housing's ring** where the arm passes it on straight lines and
+moveL: the exact guard decides from about 26, and the GPU probe admits a bin turned 30 degrees at **30, 40
 and 47.7 mm** of real clearance, at no clearance and at the line clearance, at (0, -60, 80, -110, -90, 0) deg
 and with the wrist out of the cushion band at (0, -60, 80, -95, -90, 0) deg, and runs straight joint lines
 beside the 30 mm bin as one `moveJ` each (`probe_turned_boxes.py`, 2026-10-01, Diagnose 6). Where the planner
@@ -728,45 +717,44 @@ clearance between the arm's meshes and the bin:
 | a straight joint line, empty hand | about **30 mm**: the exact guard decides | about **40 mm**: the planner's line clearance meets it at 35, clears it at 40 |
 | moveL, empty hand | about **30 mm** | about **25 mm**: the planner meets it at 20, clears it at 25 |
 | a planned move into or out of a pose beside it | about **50 mm**: cuRobo meets the camera's boxes at 47.7, clears them at 54.3 | about **25 mm** |
-| any move while the hand carries a part | about **50 mm**, **60** for a straight joint line, which clears them at 60.8 | about **25 mm**, **40** for a straight joint line |
 
-- **A carried part, or a hand not known open.** The camera's boxes are set aside only while the hand is
-  known empty and open: a toggle's count stands and says open, a gripper measures itself fully open (the
-  owner, 2026-10-01). Every attach also says the jaws closed on a part, modelled or not, until a release
-  forgets it: the carried part is the planner's alone. So **a grasp judges its lift before it closes**: at
-  the part, the jaws still open, the lift is judged as if they held the part, and where it would be refused
-  the jaws stay open, the arm goes back up the line it came down, and the grasp ends
-  `carried_retreat_refused` (the attempt reads `execution_failed`, the reason beside it); the pick goes on to
-  its next part. The check and the lift are two judgements: the lift is judged again once the jaws closed,
-  and a new camera frame, a part a measuring hand reads wider, or a lift in steps can still refuse it. That
-  arm, and one that closed its jaws there all the same, reads `... at sample 0 of ...: the planner's world;
-  it stands: a part is carried` or `... the hand is not known to be empty and open (...)`, and nothing moves
-  until a person releases the part (`Robot.release` opens the jaws and forgets it), after which it leaves
-  empty-handed. A place pose there is refused while carrying. Keep the room in the table
-  where the hand closes on a part beside the base, where a lifted part passes it, and at a place pose.
+The line clearance was 10 mm in these runs; every cell keeps 3 since 2026-10-17 (the owner's cell's), which asks less
+of a straight joint line, not yet measured on the GPU. Until then a part in the jaws kept the camera's boxes in, and
+any move with one asked about 50 mm of a seen bin (60 for a straight joint line).
+
+- **Whatever the hand holds.** No cell models a part in the jaws since 2026-10-17 (the owner's since 2026-10-05:
+  "mehr Griffe"): a closed hand is judged as an empty one, by the exact guard at full stroke, and the camera's boxes
+  are set aside for it as for an empty one. **A grasp judges its lift before it closes**: at the part, the jaws
+  still open, the lift is judged as it will run, and where it would be refused the jaws stay open, the arm goes back
+  up the line it came down, and the grasp ends `carried_retreat_refused` (the attempt reads `execution_failed`, the
+  reason beside it); the pick goes on to its next part. The check and the lift are two judgements: the lift is
+  judged again once the jaws closed, and a lift in steps can still refuse it. The arm then stands at the part with
+  the part in its jaws; the next motion is judged from there as every motion is, and `Robot.release` opens the jaws.
+  Keep the planned move's room, about 50 mm, at a place pose and wherever a planned move reaches a pose beside a
+  seen bin.
 - **A declared bin.** A declared fixture is never set aside, so its walls keep the planner's own reach,
-  about 25 mm at no clearance and 40 at the line clearance, carrying or not. Declare it at its measured
+  about 25 mm at no clearance and 40 at the line clearance. Declare it at its measured
   place: its walls and floor as fixtures (`safety.self_collision.fixtures`), boxes square to base X/Y, so a
-  turned wall is declared as the box that holds it and stands out further; the exact guard keeps 10 mm to
-  them, and the cameras' points on them are taken as those fixtures. **Pick from a bin beside the base
-  declared, or give a seen one 50 mm**; a bin the arm only passes with an empty hand stays with the cameras
-  at 30.
+  turned wall is declared as the box that holds it and stands out further; the exact guard keeps
+  `min_distance_mm` to them, and the cameras' points on them are taken as those fixtures. **Pick from a bin beside the base
+  declared, or give a seen one 50 mm where a planned move reaches the standoff**; a bin the arm passes on straight
+  lines and moveL, the line down and the lift among them, stays with the cameras at 30.
 - **A planned move into a pose beside the bin, or out of one.** cuRobo plans in its own world, the camera's
-  boxes included, and refuses a start or a goal its spheres meet them in. Straight lines and moveL run there
-  with a hand known empty and open; the probe records the plan out of its check joints refused at its start.
+  boxes included, and refuses a start or a goal its spheres meet them in. Straight lines and moveL run there; the
+  probe records the plan out of its check joints refused at its start.
 
 And beside the base, whatever the clearance:
 
 - **Keep the ring under the housing clear of anything tall.** What the housing hides of a bin from the
   cameras stands as high as the bin's walls beside it, so a bin reaching under the housing is refused; a
   lone object the housing hides from every camera is not seen at all.
-- **An undeclared bin's floor must stay inside the bench band**: `perceived.plane_clearance_mm` at least
-  the floor plus 3 times the depth noise, 8 mm for a 3 mm floor at 1.5 mm of noise. Otherwise its floor
-  comes back as boxes; declare the bin instead, as above, its floor as well as its walls, and the exact
-  guard keeps 10 mm to its measured geometry.
-- **A camera about 0.5 degrees off at 1 m lifts the bench out of its band**: slab boxes fill the 64 slots,
-  and a slab beside the base can refuse the pose. Recalibrate, or raise `plane_clearance_mm` by the range
-  times the error.
+- **An undeclared bin's floor must stay inside the bench band**, 5 mm on every cell since 2026-10-17
+  (`perceived.CAMERA_BENCH_BAND_MM`, plus the placement error a view's camera declares): the floor plus 3 times the
+  depth noise, 8 mm for a 3 mm floor at 1.5 mm of noise, comes back as boxes. Declare such a bin instead, as above,
+  its floor as well as its walls, and the exact guard keeps `min_distance_mm` to its measured geometry.
+- **A camera about 0.5 degrees off at 1 m lifts the bench out of its band**: the supports hold a reading up to 5
+  degrees off level as a few tilted solids, and past that slab boxes fill the slots and a slab beside the base can
+  refuse the pose. Recalibrate.
 
 A refusal on a seen box names it: `box_centre_mm`, `box_size_mm`, `box_yaw_deg`, `box_corners_mm` and the
 joints in degrees on the `rejected a PLANNED PATH` or `rejected joint move` line. `(N of its cells the
@@ -774,10 +762,7 @@ robot's own body hid from the cameras ...)` is the housing's shadow filled; `(al
 M mm of the robot's own links: it may be the robot itself ...)` is the arm seen off its model: check the
 hand-eye calibration and the DH table ([04](../guide/04-robot-and-safety.md), 5.5). A refusal that stands on
 the planner's world says why: `... set aside too: the bench, a declared fixture or mesh, ...` is what stays the
-planner's; `a part is carried, ...` keeps the camera's boxes in while the hand carries one, and names the
-release that lets the arm out; `the hand is not known to be empty and open (...)` keeps them in for a hand
-that cannot say it stands open, and names what it read; `the exact guard refuses it too: ...` names the box
-the guard keeps 5 mm from
+planner's; `the exact guard refuses it too: ...` names the box the guard keeps `perceived_min_distance_mm` from
 ([04](../guide/04-robot-and-safety.md), section 6).
 
 ---
@@ -791,8 +776,9 @@ one session, because three of them share the same setup.
    gripper plus the coupling plate, every cable and hose that rides on the wrist, and any workpiece
    the arm carries. No starting value ships on purpose: a gripper's datasheet mass is not this
    number, and a plausible default is how a cell ends up telling the controller about a tool it is
-   not carrying. A genuinely bare flange is `enforce: false`, not a mass of zero. Bring a bench
-   scale; it is a procurement item with a lead time.
+   not carrying. A bare flange has no switch since 2026-10-17 (the owner's cleanup took
+   `safety.payload.enforce`): every connect pushes the payload and refuses a mass of zero, so weigh what the flange
+   carries. Bring a bench scale; it is a procurement item with a lead time.
 2. **Measure the centre of gravity** from the flange, in the same session, and set
    `safety.payload.cog_mm`. Leaving it at `[0, 0, 0]` declares a multi-kilogram tool to be a point
    mass at the flange face. For a 3 kg tool whose centre of gravity sits 132 mm out, that is
@@ -815,29 +801,29 @@ one session, because three of them share the same setup.
      does not pass either.
 4. **Calibrate each camera** and declare the primary camera's artifact on its rig,
    `camera.cameras.rigs[<primary rig id>].extrinsics`, by pasting the block the calibration command
-   prints; it is read whether or not `grasping.fusion.enabled` is on. To fuse every other camera,
-   declare each on its own rig, name it under `grasping.fusion.cameras`, and set both
-   `grasping.fusion.enabled: true`, which builds each named camera's CAMERA to BASE resolver, and
-   `grasping.fusion.geometry.enabled: true`, which hands the fused surface to the grasp generator.
-   Either one alone leaves the cell single-view.
+   prints. To fuse every other camera, declare each on its own rig the same way: the cell fuses every
+   enabled rig that declares its calibration, an RGB-D camera or a stereo pair once its stereo
+   calibration is written ([`src/camera/README.md`](../../src/camera/README.md#a-stereo-pair-as-the-cells-camera)),
+   the primary among them, and a camera that is not to take part is switched off on its rig.
 5. **Declare the bench** under `safety.self_collision.fixtures`. With none declared there is no
    surface in the collision world, so nothing refuses a motion that goes through it. Declare
-   `safety.planning_world` too, with a measured `support_plane` and `perceived.enabled`: a cuRobo
-   cell plans every pick motion against the live world the calibrated cameras build, and the one-shot
+   `safety.planning_world.support_plane` too, measured: the camera world is on wherever the bench is declared, and a
+   cuRobo cell plans every pick motion against the live world the calibrated cameras build, and the one-shot
    guard cannot stand in for it, because that guard judges a destination and not a path. Without that
-   world a cell with a calibrated RGB-D rig refuses to build, and the `camera world` row blocks. **The
+   world a cell with a calibrated camera refuses to build, and the `camera world` row blocks. **The
    slab lies under the work area**: a `support_plane` that covers none of the workspace box is refused
    when the world is built (the owner's stood at (500, 500), behind the robot, while every part lay at
    y -900 to -270). What the parts stand on above it is **not declared**: the camera world finds a mat,
    a bin's floor or a board on every build and holds it as solid ([04](../guide/04-robot-and-safety.md),
-   5.5), and a fixture declared under the parts with `include_fixtures` on needs `min_distance_mm` 10.
+   5.5). A fixture declared under the parts stays the guard's alone: the planner is told the bench, the meshes and
+   what the cameras see, on every cell since 2026-10-17 (`planning_world.include_fixtures` left that day).
 6. **Set `grasping.record_log_path`.** A bring-up with no telemetry cannot be diagnosed afterwards,
    and it gives the soak, KPI and offline learning tooling nothing to read.
 7. **Check `ur.model` against the arm you are holding.** It is the one name the self-collision guard, the
    mesh bundle and the planner take the arm from; `safety.self_collision.kinematics_model` was removed in
    P0d D5, and a tree that still writes it is refused at load.
 8. **Teach the looks** of a wrist camera in the same session: jog or guide the arm to each, read the
-   joints with `--where`, and write them into `robot.look_joint_positions_deg` (Diagnose 8). A clear look,
+   joints with `--where`, and write them into `robot.motion.look_deg` (Diagnose 8). A clear look,
    and a band look whose line names a nearby pose, need nothing. Re-teach an `ERROR` look at the
    `Nearby, both clear` pose its line names, else by hand where both clear; a band look whose line names no
    nearby pose only where a planned move has to reach it or leave it, by hand where both clear. Screen every
@@ -916,10 +902,9 @@ rule; 3 a fault of the cell ended a pick, raised or reported.
   describes, sends nothing for an emergency button or a controller powered off, and asks before it
   acknowledges. Nothing in the stack or the console clears a stop.
 * **Back out a configuration change**: every value above is a configuration key, so revert the YAML
-  and re-run `--check`. Nothing here writes to the controller except `setPayload`, and that is gated
-  on `safety.payload.enforce`.
+  and re-run `--check`. Nothing here writes to the controller except `setPayload`, which every connect sends.
 * **Restore the controller's payload**: if a wrong `mass_kg` was pushed, set the correct value and
-  reconnect, or set `enforce: false` and enter the payload on the pendant. The driver rolls the
+  reconnect; a payload entered on the pendant is overwritten at the next connect. The driver rolls the
   connection back on a failed push, so a failed push never leaves a half-set payload behind.
 * **The tool frame**: `source: "undeclared"` returns the cell to refusing to connect, which is the
   safe state rather than a broken one.
@@ -927,14 +912,14 @@ rule; 3 a fault of the cell ended a pick, raised or reported.
   real-cell calibration writes under `calibration/real` keyed by `rig_id`, and the simulator runners
   write under `logs/calibration/<robot_model>/`, so the two cannot overwrite each other and one arm's
   simulated run cannot overwrite another's. Copy an artifact aside before moving a camera.
-* **The looks**: delete `robot.look_joint_positions_deg`, and a wrist pick whose program names no look
+* **The looks**: delete `robot.motion.look_deg`, and a wrist pick whose program names no look
   looks from home again.
-* **The push**: take `nudge_target` out of `recovery.allowed_actions`, or leave `dense_clutter`: no
-  other mode pushes.
+* **The push**: leave `dense_clutter`, or set `runtime.task.critical_parts: true`: no other mode pushes,
+  and critical parts are never pushed.
 * **A push that stopped**: nothing moves the arm away by itself, and the service starts no pick. A
   person clears the cell and a protective stop on the pendant, then a new campaign starts; its first
   pick drives the arm from there to its first look. In the console: "Zelle ist frei", then Home.
-* **A gripper fault at a push or before a re-pick**: a hand nobody can vouch for, a toggle's count or a
+* **A gripper fault at a push**: a hand nobody can vouch for, a toggle's count or a
   width gripper not connected or unreadable. Look at the jaws, then connect again: a toggle's connect asks
   where they stand, and a width gripper is reconnected.
 * **Everything else**: `--rehearse` still runs with no hardware attached, so you can always get back

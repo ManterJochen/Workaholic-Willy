@@ -100,8 +100,8 @@ the service's own outcome is never sufficient on its own. The campaign passes wh
 passing runs reaches `int(pass_fraction * runs)` and is at least one, with `pass_fraction` set to
 0.8.
 
-Then the real-vision pick. It reads the detector and segmenter weights from disk and downloads nothing, so
-fetch the pair first with `python scripts/model_weights/fetch.py dino-tiny sam2`:
+Then the real-vision pick. It reads the VLM's and SAM2's weights from `models.weights_root` and downloads
+nothing, so fetch the pair first with `python scripts/model_weights/fetch.py vlm-4b sam2`:
 
 ```bash
 cmd /c "<isaac-sim>\python.bat -m src.willy_sim.run_m2_pick --runs 10 > m2.log 2>&1"
@@ -174,7 +174,7 @@ bodies, after the mock-mode check, so the package keeps importing on a machine w
 | Symptom | Cause and fix |
 |---|---|
 | Gate 0 of N, black camera frames | Camera near clip too large. The sim tree sets 0.05 m for the vision cameras; check `robot.sim.cameras`. The nadir overhead camera leaves `near_clip_m` unset on purpose, keeping Isaac's 1.0 m default, which hides the arm from the instance mask |
-| The vision pick finds nothing, or drops the small cube | The detector ran fp16. The `sim` model overlays reset `torch_dtype` to unset so the weights load fp32 under fp16 autocast. Confirm with `python -m src.config --profile sim --print` |
+| The vision pick finds nothing | The VLM's or SAM2's weights are not under `models.weights_root`, or the VLM failed to load: its log line names the folder looked in and the fetch. The sim grounds with the cell's VLM since 2026-10-17, and SAM2 loads fp32 weights under fp16 autocast, fixed in `src/models/_inference.py` |
 | A `BLIND IK` warning where the planner is `curobo` | The cuRobo environment was not found. Re-check `WILLY_CUROBO_PYTHON` and run `--doctor` |
 | The self-collision guard reports unavailable | Neither Coal nor python-fcl is importable. Re-check `WILLY_COAL_PREFIX` and the mesh bundle for this robot model |
 | Boot hangs | A compound command. Use a single `cmd /c "..."`, then kill `kit.exe` and retry |

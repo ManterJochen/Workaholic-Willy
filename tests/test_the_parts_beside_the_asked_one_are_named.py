@@ -140,7 +140,7 @@ class _Zones:
     def __init__(self, x_mm: float) -> None:
         self.x_mm = x_mm
 
-    def kept_out_by_a_region(self, *, label: str, centre_mm: Any) -> bool:
+    def excludes(self, *, label: str, centre_mm: Any) -> bool:
         return float(centre_mm[0]) > self.x_mm
 
 

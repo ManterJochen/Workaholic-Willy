@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import GraspingGripperGeometryConfig
 from src.geometry import Frame
 from src.robot.grasping import (
     CollisionBox,
@@ -15,7 +14,7 @@ from src.robot.grasping import (
     ParallelJawGripperModel,
     SuctionCupGripperModel,
 )
-from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+from src.robot.grasping.collision.gripper_model import jaw_envelope
 from src.robot.grasping.collision import validate_grasp_collision
 from src.robot.grasping.generation.calculator import GraspCalculator
 from src.robot.grasping.planning import GraspPose
@@ -145,20 +144,15 @@ class SuctionCupGripperModelTests(unittest.TestCase):
         self.assertTrue(cup.valid)   # outside the slim cup/shaft envelope
 
 
-class BuildGripperGeometryFactoryTests(unittest.TestCase):
-    def test_default_config_reproduces_hardcoded_jaw_byte_identical(self) -> None:
-        model = build_gripper_geometry(GraspingGripperGeometryConfig())
+class TheJawEnvelopeTests(unittest.TestCase):
+    def test_a_tree_naming_no_hand_plans_the_hardcoded_jaw_byte_identical(self) -> None:
+        """The 2F-85's registry file, which a tree naming no hand plans, is ParallelJawGripperModel()'s defaults."""
+        from src.config.schema.robot import RobotConfig
+
+        model = jaw_envelope()
         self.assertIsInstance(model, ParallelJawGripperModel)
         self.assertEqual(model, ParallelJawGripperModel())
-
-    def test_suction_kind_builds_suction_model_with_config_dims(self) -> None:
-        cfg = GraspingGripperGeometryConfig(kind="suction", outer_margin_mm=1.5)
-        cfg = cfg.model_copy(update={"suction": cfg.suction.model_copy(update={"cup_radius_mm": 12.0})})
-        model = build_gripper_geometry(cfg)
-        self.assertIsInstance(model, SuctionCupGripperModel)
-        assert isinstance(model, SuctionCupGripperModel)  # narrow for the checker
-        self.assertEqual(model.cup_radius_mm, 12.0)
-        self.assertEqual(model.outer_margin_mm, 1.5)
+        self.assertEqual(model, jaw_envelope(RobotConfig()))
 
 
 class GraspCalculatorGripperModelSeamTests(unittest.TestCase):

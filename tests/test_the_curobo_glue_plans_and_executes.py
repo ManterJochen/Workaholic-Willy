@@ -100,23 +100,6 @@ def _planner(fake, client):
     return CuroboPlanner(fake, client_factory=lambda: client, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180)
 
 
-def test_the_carried_part_is_sent_where_the_arm_places_it_in_tool0_metres() -> None:
-    """The planner takes a centre in tool0, not a distance along +Z: the hand approaches along +Y (Step 4g.0)."""
-
-    class _AttachingClient(_FakeClient):
-        def attach_payload(self, joints, dims_m, pose):
-            self.calls.append("attach")
-            self.attached = (list(joints), list(dims_m), list(pose))
-            return True
-
-    client = _AttachingClient(_UR_JOINT_NAMES, [[0.0] * 6])
-    planner = CuroboPlanner(_fake([0.0] * 6), client_factory=lambda: client, require_registration=False, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180)
-    assert planner.attach_payload([0.0] * 6, (70.0, 120.0, 70.0), (0.0, 212.0, 0.0)) is True
-    _, dims_m, pose = client.attached
-    assert dims_m == pytest.approx([0.07, 0.12, 0.07])
-    assert pose == pytest.approx([0.0, 0.212, 0.0, 1.0, 0.0, 0.0, 0.0])
-
-
 def test_a_refused_world_refresh_is_logged_once_before_the_refusal() -> None:
     """The planner raised on a refused refresh and wrote nothing; only a successful one logged.
 
@@ -367,7 +350,7 @@ def test_a_joint_path_is_checked_against_the_registered_world() -> None:
     fake = _fake([1, 2, 3, 4, 5, 6])
     bench: list[dict[str, Any]] = [{"name": "bench", "dims": [1.0, 1.0, 0.1], "pose": [0, 0, 0, 1, 0, 0, 0]}]
     planner = CuroboPlanner(
-        fake, client_factory=lambda: client, world_cuboids=bench, require_registration=False, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180
+        fake, client_factory=lambda: client, world_cuboids=bench, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180
     )
     verdict = planner.check_joint_path([[0.0] * 6, [0.1] * 6])
 

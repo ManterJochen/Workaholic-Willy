@@ -46,14 +46,14 @@ _NOT_THE_SEAM = {
     # loop raises the cap for that one ranking and gives it back, and a generator without an integer
     # cap ranks as it always did (2026-09-30). The note in protocol.py says so.
     "max_candidates",
-    # Read the same way, and optional the same way: where the cell lets SFE's fine search wait, the
-    # pick loop turns the switch off for that one ranking and gives it back, and a generator without
-    # it computes every part in full (2026-10-08). The note in protocol.py says so.
-    "sfe_fine_pass",
     # Read the same way, and optional the same way: the rim the support-footprint stage's input loses, which the pick
     # loop cuts off the looks it fuses as well, and a generator without it is handed no footprint (2026-10-09). The
     # note in protocol.py says so.
     "support_footprint_rim_mm",
+    # Read the same way, and optional the same way: the stroke the pick loop orders the parts by, those the hand
+    # closes across first, and a generator without it keeps the order it had (2026-10-09). The note in protocol.py
+    # says so.
+    "max_grip_mm",
 }
 
 
@@ -106,28 +106,12 @@ class TheProtocolCoversWhatTheRuntimeActuallyReadsTests(unittest.TestCase):
                         if node.value.attr.endswith("calculator"):
                             found.setdefault(node.attr, where)
                     # `calculator.attr` on a local name: the pick loop ranks through
-                    # `calculator = self.calculator_for(...)` since its cap is raised around the call
+                    # `calculator = self.calculator` since its cap is raised around the call
                     # (2026-09-30), and a sweep blind to the name would lose `compute_result` again.
                     if (
                         isinstance(node, ast.Attribute)
                         and isinstance(node.value, ast.Name)
                         and node.value.id.endswith("calculator")
-                    ):
-                        found.setdefault(node.attr, where)
-                    # `x.calculator_for(...).attr`, the accessor a multi-camera cell reads through.
-                    #
-                    # ⛔ THE SWEEP WENT BLIND WITHOUT THIS, AND SILENTLY. The pick loop's call used to
-                    # be `self.calculator.compute_result(...)`, which the branch above sees. It is
-                    # `self.calculator_for(obj.camera_id).compute_result(...)` now, because a cell
-                    # with several cameras holds one calculator per camera, and the value of that
-                    # attribute access is a CALL rather than an attribute. So the guard's main
-                    # subject disappeared from its own sweep while every assertion kept passing, and
-                    # the companion test below is the only reason anybody noticed.
-                    if (
-                        isinstance(node, ast.Attribute)
-                        and isinstance(node.value, ast.Call)
-                        and isinstance(node.value.func, ast.Attribute)
-                        and node.value.func.attr.endswith("calculator_for")
                     ):
                         found.setdefault(node.attr, where)
                     # `getattr(<expr ending in .calculator | name 'calculator'>, "attr", ...)`
@@ -187,7 +171,7 @@ class TheCameraMatrixIsTheCalibratedOneOrNothingTests(unittest.TestCase):
 
     THE HISTORY, because it explains the shape of the assertions. `loop/pick_loop.py:836` reads
     `calculator.camera_matrix` to back-project this view's target cloud for the support-plane
-    refinement under `support.refine_from_target` (which defaults to True). The class kept its K in
+    refinement (on wherever a target cloud saw down its side). The class kept its K in
     `self._geom._K` and never surfaced it, so that read always returned `None` and the single-view
     half of the refinement never ran on any path -- only the fused-cloud half did.
 

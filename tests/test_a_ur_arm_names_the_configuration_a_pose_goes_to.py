@@ -50,6 +50,7 @@ from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.drivers.planned.curobo_motion import planner_envelope_rad
 from src.robot.safety._ur_ik import NearestGoal, nearest_goals, ur_branch, ur_flange_ik
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
+from tests._arm_kit import without_guards
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 from tests._route_planner import RoutePlanner
 
@@ -67,17 +68,16 @@ _THERE = [0.5, -1.3, 1.2, -1.4, -1.5, math.radians(-160.0)]
 _ELBOW_DOWN = [0.5, -0.15, -1.2, -0.15, -1.5, math.radians(-160.0)]
 #: A few degrees on from it on every joint, still elbow down: a pose with a configuration on either elbow.
 _ELBOW_DOWN_THERE = [0.55, -0.1, -1.25, -0.1, -1.45, math.radians(-155.0)]
-_SAFETY: dict[str, Any] = {
-    "payload": {"enforce": False},
-    "self_collision": {"enforce": False},
-    "joint_limits": {"within_half_turn_of_home": True},
-}
+#: The safety block of these trees: none of their own. The self-collision guard stands down in :func:`_arm`, as the
+#: trees switched it off until the switch left every tree (2026-10-17); the window about home is every real arm's.
+_SAFETY: dict[str, Any] = {}
 #: The owner's hand: a Hand-E whose TCP this driver owns (``source: willy``), 150 mm out along the flange axis and
-#: turned 45 deg about it, so the flange goal of a pose is neither the pose nor its translate.
+#: turned a quarter turn about it, so the flange goal of a pose is neither the pose nor its translate (45 degrees until
+#: every cell built its self-collision guard, 2026-10-17: a hand is clocked by quarter turns, or no guard models it).
 _HANDE: dict[str, Any] = {
     "model": "robotiq_hande", "coupling_plates": [],
     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 150.0],
-                   "rotation_quat_xyzw": [0.0, 0.0, math.sin(math.radians(22.5)), math.cos(math.radians(22.5))]},
+                   "rotation_quat_xyzw": [0.0, 0.0, math.sin(math.radians(45.0)), math.cos(math.radians(45.0))]},
 }
 
 
@@ -85,16 +85,22 @@ def _arm(planner: RoutePlanner, *, safety: "dict[str, Any] | None" = None,
          workspace: "dict[str, float] | None" = None, gripper: "dict[str, Any] | None" = None,
          **more: Any) -> URRobotArm:
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
+        "vendor": "ur", "ur": {"model": "ur10"},
+        "motion": {"planner": "curobo", "workspace": workspace if workspace is not None else OPEN_WORKSPACE,
+                   "home_deg": [math.degrees(v) for v in _HOME]},
         "safety": safety if safety is not None else _SAFETY,
-        "gripper": gripper if gripper is not None else {"model": "robotiq_2f85"},
-        "workspace_limits": workspace if workspace is not None else OPEN_WORKSPACE,
-        "home_joint_positions": _HOME, **more,
+        "gripper": gripper if gripper is not None else {"model": "robotiq_2f85"}, **more,
     }))
+    # What is read is the configuration a pose goes to, not the exact meshes: the guard stands down as these trees
+    # switched it off until 2026-10-17.
+    without_guards(arm._preflight, "self_collision")
     arm._conn = MagicMock()
     arm._conn.is_connected = True
     arm._conn.get_joint_positions.return_value = list(planner.here)
     arm._curobo = planner  # type: ignore[assignment]
+    # The send gate asks where the arm came to rest in the path gate's metric, which a preflight with no path guard
+    # cannot say (it refuses then): a millimetre a radian here.
+    arm._preflight.joint_radii_mm = lambda _arm: (1.0,) * 6
     return arm
 
 
@@ -233,8 +239,7 @@ class ATcpPoseTests(unittest.TestCase):
         tcp_inside = _arm(RoutePlanner(here=_HERE), gripper=_HANDE, workspace={**OPEN_WORKSPACE, "z_max": between})
         np.testing.assert_allclose(
             tcp_inside.nearest_configuration(pose_where_it_ends(tcp_inside, _THERE)).tolist(), _THERE, atol=1e-6)
-        flange_inside = _arm(RoutePlanner(here=_HERE), gripper=_HANDE, workspace={**OPEN_WORKSPACE, "z_min": between},
-                             safe_pose={"x": 0.0, "y": -300.0, "z": 1000.0})  # the config keeps it in the box
+        flange_inside = _arm(RoutePlanner(here=_HERE), gripper=_HANDE, workspace={**OPEN_WORKSPACE, "z_min": between})
         with self.assertRaises(RobotKinematicsError) as caught:
             flange_inside.nearest_configuration(pose_where_it_ends(flange_inside, _THERE))
         self.assertIn(MotionStatus.WORKSPACE_REJECTED.value, str(caught.exception))
@@ -257,11 +262,14 @@ class WhatIsRefusedTests(unittest.TestCase):
         self.assertEqual([], planner.calls)
 
     def test_every_configuration_outside_the_window_is_refused(self) -> None:
-        """Wrist 3 limited to +-30 deg: the pose has configurations, and every one turns wrist 3 outside."""
-        safety = {**_SAFETY, "joint_limits": {"within_half_turn_of_home": True,
-                                              "min_deg": [-360.0] * 5 + [-30.0], "max_deg": [360.0] * 5 + [30.0]}}
+        """Wrist 3 limited to +-30 deg (an arm whose description says so, stood in for): the pose has configurations,
+        and every one turns wrist 3 outside."""
+        from unittest import mock
+
+        self.enterContext(mock.patch("src.robot.safety.joint_limits.resolve_joint_limits_deg",
+                                     return_value=([-360.0] * 5 + [-30.0], [360.0] * 5 + [30.0])))
         planner = RoutePlanner(here=list(_HOME))
-        arm = _arm(planner, safety=safety)
+        arm = _arm(planner)
         asked = _gate_spy(arm)
         end = [*_THERE[:5], 2.0]
         self.assertTrue(_goals(arm, end, list(_HOME), window=planner_envelope_rad("ur10")),
@@ -360,8 +368,10 @@ class AskingCommandsNothingTests(unittest.TestCase):
 
         The memo holds home; the arm is asked about a pose a quarter turn round the base; a target 10 mm from home is
         still one continuous step from the last target, which it would not be from the one asked about."""
-        # The IK-quality guard probes the Jacobian through the controller, which this double has not got.
-        arm = _arm(RoutePlanner(here=list(_HOME)), safety={**_SAFETY, "ik_quality": {"enforce": False}})
+        # The IK-quality guard probes the Jacobian through the controller, which this double has not got: it stands down
+        # by the kit's seam, as this tree switched it off until 2026-10-17.
+        arm = _arm(RoutePlanner(here=list(_HOME)))
+        without_guards(arm._preflight, "ik_quality")
         preflight = arm._preflight
         assert preflight is not None
         self.assertIn("motion_continuity", preflight.guard_names)

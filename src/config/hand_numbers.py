@@ -1,14 +1,15 @@
 """The numbers a named registry hand supplies to its cell, and the refusal of a cell that says otherwise.
 
 ``robot.gripper.model`` names a hand, and the registry file of that hand holds its jaw. A profile that names a hand
-and leaves ``grasping.gripper_geometry`` and the gripper widths unset would otherwise plan grasps against the schema
-defaults, which are the 2F-85's fingers and stroke, whatever hand it names. So every one of the thirteen keys below
-that the profile chain leaves unset is filled from the named hand before validation, and a stated number that
-contradicts the hand is refused with both numbers and where each was written.
+and leaves the gripper widths unset would otherwise plan grasps against the schema defaults, which are the 2F-85's
+stroke, whatever hand it names. So every one of the three keys below that the profile chain leaves unset is filled from
+the named hand before validation, and a stated number that contradicts the hand is refused with both numbers and where
+each was written. The hand's collision envelope is no key at all: every reader takes it from the registry file
+(``gripper_model.jaw_envelope``; the owner's cleanup of 2026-10-17 took ``grasping.gripper_geometry``).
 
-Two keys are policy rather than a measurement of the hand, and are read as ranges: a stated ``min_width_mm`` is
-admitted between the hand's own floor and its aperture, and a stated ``finger_pad_overlap_mm`` at or above the hand's
-value. Every other difference beyond the registry's written precision is a contradiction.
+One key is policy rather than a measurement of the hand, and is read as a range: a stated ``min_width_mm`` is admitted
+between the hand's own floor and its aperture. Every other difference beyond the registry's written precision is a
+contradiction.
 
 The registry is the repository's (``config/grippers``) whatever tree is loaded: the hand's body, sphere map, retract
 rows and evidence are committed beside the code and written from it, so its numbers are the ones a cell runs. A
@@ -27,22 +28,11 @@ from typing import Any, Final
 
 __all__ = ["HAND_KEYS", "HandNumbers", "apply_named_hand", "hand_source"]
 
-#: The robot keys a registry hand determines, dotted below ``robot``, and the registry field each comes from. ``kind``
-#: is the spec's own field, every other one a field of its jaw.
+#: The robot keys a registry hand determines, dotted below ``robot``, and the field of its jaw each comes from.
 HAND_KEYS: Final = (
     ("gripper.max_width_mm", "aperture_mm"),
     ("gripper.min_width_mm", "min_width_mm"),
     ("gripper.closed_width_mm", "closed_width_mm"),
-    ("grasping.gripper_geometry.kind", "kind"),
-    ("grasping.gripper_geometry.parallel_jaw.finger_length_mm", "finger_length_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.finger_thickness_mm", "finger_thickness_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.finger_width_mm", "finger_width_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.finger_pad_overlap_mm", "finger_pad_overlap_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.fingertip_depth_mm", "finger_ahead_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.pad_length_mm", "pad_length_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.pad_ahead_mm", "pad_ahead_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.palm_depth_mm", "palm_depth_mm"),
-    ("grasping.gripper_geometry.parallel_jaw.palm_width_mm", "palm_width_mm"),
 )
 #: The registry writes its numbers to a hundredth of a millimetre, and a restated decimal parses to the same float.
 _TOLERANCE_MM: Final = 1e-6
@@ -71,7 +61,7 @@ def _set(tree: dict, dotted: str, value: Any) -> None:
 
 @dataclass(frozen=True)
 class HandNumbers:
-    """What one registry hand says its cell's thirteen hand keys are."""
+    """What one registry hand says its cell's three hand keys are."""
 
     model: str
     #: (robot key, registry field, value), in :data:`HAND_KEYS` order.
@@ -93,7 +83,7 @@ class HandNumbers:
 
         spec = load_gripper(model, data_dir=data_dir, aliases=False)
         values = tuple(
-            (key, field, str(spec.kind) if field == "kind" else float(getattr(spec.jaw, field)))
+            (key, field, float(getattr(spec.jaw, field)))
             for key, field in HAND_KEYS
         )
         directory = (Path(data_dir).resolve() if data_dir else _DEFAULT_DATA_DIR) / "grippers" / f"{spec.model}.yaml"
@@ -149,10 +139,6 @@ class HandNumbers:
             if stated is None:
                 _set(out, key, value)
                 continue
-            if field == "kind":
-                if str(stated) != value:
-                    found.append((key, stated, value, field, ""))
-                continue
             try:
                 number = float(stated)
             except (TypeError, ValueError):
@@ -161,9 +147,6 @@ class HandNumbers:
                 aperture = dict((f, v) for _, f, v in self.values)["aperture_mm"]
                 if not float(value) - _TOLERANCE_MM <= number <= float(aperture) + _TOLERANCE_MM:
                     found.append((key, stated, value, field, f"from {value:g} up to the aperture {aperture:g}"))
-            elif field == "finger_pad_overlap_mm":
-                if number < float(value) - _TOLERANCE_MM:
-                    found.append((key, stated, value, field, f"at or above {value:g}"))
             elif abs(number - float(value)) > _TOLERANCE_MM:
                 found.append((key, stated, value, field, ""))
         if found:
@@ -180,7 +163,7 @@ class HandNumbers:
     def _sentence(self, key: str, stated: Any, value: Any, field: str, allowed: str, where: Mapping[str, str]) -> str:
         location = where.get(f"robot.{key}", "")
         said = f" (written in {location})" if location else ""
-        registry = f"{self.registry_file} jaw.{field}" if field != "kind" else f"{self.registry_file} kind"
+        registry = f"{self.registry_file} jaw.{field}"
         span = f", and a stated value is admitted {allowed}" if allowed else ""
         return f"robot.{key} is {stated}{said}, and {registry} is {value}{span}"
 
@@ -211,7 +194,7 @@ def hand_source(cfg: Any, path: str) -> str:
     except Exception:  # noqa: BLE001 (provenance is for a person; a registry that cannot say leaves the key unnamed)
         return ""
     field = fields[path]
-    return f"{registry_file} {'kind' if field == 'kind' else f'jaw.{field}'}"
+    return f"{registry_file} jaw.{field}"
 
 
 def apply_named_hand(

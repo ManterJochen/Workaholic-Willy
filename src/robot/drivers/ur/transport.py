@@ -183,7 +183,8 @@ class URTransport:
 
     @property
     def brake_on_halt(self) -> bool:
-        return self.connection.brake_on_halt is True
+        # Every UR brakes the move in flight on a halt since 2026-10-17, as the owner's cell ran it.
+        return True
 
     @property
     def last_move_end(self) -> MoveEnd | None:

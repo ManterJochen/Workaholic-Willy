@@ -97,7 +97,7 @@ describe('DiagnosticsDrawer', () => {
           curobo_caveat: '', mesh_bundle_present: true,
         },
         perception: {
-          pipeline_configured: true, kind: 'zero_shot', backend: 'vlm', segmenter: 'sam2', router_enabled: false,
+          kind: 'zero_shot', backend: 'vlm', segmenter: 'sam2',
           vlm_model_id: 'Qwen3-VL', vlm_weights_present: true, detail: 'The VLM is configured and its weights are here.',
         },
         reachability: { checked: true, address: '192.168.0.10', port: 30004, reachable: true, latency_ms: 2.5, detail: '' },

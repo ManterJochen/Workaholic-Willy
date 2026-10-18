@@ -60,8 +60,8 @@ class TheConsolesWordsTests(unittest.TestCase):
 
         self.assertEqual(len(calls), sum(1 for call in calls if call.args and isinstance(call.args[0], ast.Constant)),
                          "a refusal whose code is not written out")
-        self.assertEqual({"unknown_pose", "route_refused", "carried_part_not_modelled", "object_required",
-                          "closing_axis_refused", "bad_request", "push_distance_refused", "camera_target_unavailable"},
+        self.assertEqual({"unknown_pose", "route_refused", "object_required", "closing_axis_refused", "bad_request",
+                          "push_distance_refused", "camera_target_unavailable"},
                          codes)
         self.assertLessEqual(codes, {code.value for code in RefusalCode})
 

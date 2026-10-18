@@ -1,6 +1,6 @@
-"""Every route holds the caller's speed to robot.motion_limits, the cuRobo route too (P0e E12).
+"""Every route holds the caller's speed to robot.motion, the cuRobo route too (P0e E12).
 
-The joint drive and the ik route clamp a caller's ``vel`` and ``acc`` to ``robot.motion_limits`` before the
+The joint drive and the ik route clamp a caller's ``vel`` and ``acc`` to ``robot.motion`` before the
 controller sees them (``clamp_to_motion_limits``). The cuRobo route did not: ``move(pose, vel=5.0)`` on a cuRobo cell
 sent every waypoint at 5 rad/s whatever the cell declared, found on the P0e map (``curobo_motion.py`` execute). A limit
 a caller can talk past is not a limit.
@@ -34,7 +34,7 @@ def _CUROBO_ARM(source: str) -> tuple[Any, MagicMock]:  # noqa: N802 (the name i
     from tests._fake_transport import fake_transport
     from tests._plan_end import OPEN_WORKSPACE
 
-    config = kit_tree("curobo", workspace_limits=OPEN_WORKSPACE, safety={"payload": {"enforce": False}},
+    config = kit_tree("curobo", motion={"workspace": OPEN_WORKSPACE}, safety={},
                       gripper={"tool_frame": {"source": source, **_2F85}})
     links = ur_link_transforms_mm("ur5e", np.asarray(_Q, dtype=np.float64))
     assert links is not None
@@ -52,7 +52,7 @@ class TheCuroboRouteIsHeldToTheLimitsTests(unittest.TestCase):
         arm, planner = _CUROBO_ARM("willy")
         with arm.without_camera_world(_DECLINED):
             arm.move(pose_where_it_ends(arm, _Q), vel=5.0, acc=9.0)
-        limits = arm.config.motion_limits
+        limits = arm.config.motion
         self.assertEqual((limits.max_velocity, limits.max_acceleration),
                          (planner.execute.call_args.kwargs["vel"], planner.execute.call_args.kwargs["acc"]))
 
@@ -84,7 +84,7 @@ class TheCuroboRouteIsHeldToTheLimitsTests(unittest.TestCase):
         with arm.without_camera_world(_DECLINED):
             result = arm.move_to_joints(JointPositions(target), velocity=5.0, acceleration=9.0)
         self.assertTrue(result.ok, result.message)
-        limits = arm.config.motion_limits
+        limits = arm.config.motion
         self.assertEqual((limits.max_velocity, limits.max_acceleration),
                          (planner.execute.call_args.kwargs["vel"], planner.execute.call_args.kwargs["acc"]))
 

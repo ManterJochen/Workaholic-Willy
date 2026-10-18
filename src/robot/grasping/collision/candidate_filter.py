@@ -64,10 +64,9 @@ class FilterOutcome:
 def grasp_point_to_pose(grasp: "GraspPoint") -> GraspPose:
     """Bridge a `GraspPoint` to the `GraspPose` the collision validator takes.
 
-    One adapter, not two. This is `loop/_pick_helpers._grasp_point_to_grasp_pose` in a public home, so
-    the deep calculator can reach it without importing a private module from another subpackage, and
-    `_pick_helpers` delegates here. A copy would be the repo's third gripper description, and two is
-    already one more than stays consistent on its own.
+    One adapter, in a public home, so the deep calculator can reach it without importing a private module from another
+    subpackage. A copy would be the repo's third gripper description, and two is already one more than stays
+    consistent on its own.
 
     Rebuilds the rotation with the `[closing, binormal, approach]` column convention, the same one
     `execution_policy` uses, so the swept gripper volume is oriented correctly, and synthesizes the two
@@ -98,17 +97,11 @@ def grasp_point_to_pose(grasp: "GraspPoint") -> GraspPose:
 def rejection_reasons(telemetry: "dict[str, float]") -> "tuple[Any, ...]":
     """Turn a rejection histogram into the failure reasons the recovery orchestrator routes on.
 
-    This is what makes the filter useful beyond accuracy. `recovery/orchestrator.py` routes
-    ALL_COLLIDED to NEXT_TARGET, the push (NUDGE_TARGET), a container agitate and then a rescan, and
-    ALL_TABLE_CONFLICT and ALL_OUT_OF_WORKSPACE to NEXT_TARGET with a rescan. Of these reasons the
-    pick loop pushes a part only on ALL_COLLIDED; its other trigger, a blocked approach where approach
-    validation runs, is not one of them. A generator that reports only NO_VALID_GRASP collapses all
-    of those into one generic route, and the cell then retries the same thing instead of pushing the
-    part free. (A route is followed only where the mode's profile lists the action: auto and
-    dense_clutter list NEXT_TARGET; only dense_clutter lists NUDGE_TARGET, whose push runs inside a
-    wrist camera's pick attempt, and a nudge a recovery loop plans is refused before anything moves
-    (`refused_push_runs_in_the_pick`); no built-in profile lists CONTAINER_AGITATE, and only a caller
-    that widens the profile, such as `run_dense_pick --g6`, agitates.) The deep calculator builds its
+    This is what makes the filter useful beyond accuracy. Of these reasons the pick loop pushes a part
+    only on ALL_COLLIDED, inside a wrist camera's pick attempt where the mode's profile lists the push
+    (dense_clutter alone); a recovery loop after the pick rescans on each of them. A generator that
+    reports only NO_VALID_GRASP collapses all of those into one generic route, and the cell then
+    retries the same thing instead of pushing the part free. The deep calculator builds its
     reasons through this mapping, and the geometric one maps the same three counters alike in its
     `_derive_failure_reasons`, so a collision of either triggers the push (pinned for each).
 

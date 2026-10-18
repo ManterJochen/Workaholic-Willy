@@ -33,9 +33,7 @@ from typing import TYPE_CHECKING, Any
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 
-from ._curobo_attach import ENV_ATTACH_SPHERES
 from ._curobo_body_links import ENV_BODY_LINKS, ENV_DEFAULT_Q, ENV_WRIST_BODY_LINKS
-from ._curobo_cspace import CUROBO_FINETUNE_PASSES, ENV_JOINT_FINETUNE
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
 from ._curobo_pairs import PairOverlap
 from ._curobo_plan_policy import CLEARANCE_KEY, MAX_CLEARANCE_M
@@ -57,7 +55,6 @@ from ._curobo_protocol import (
     WHERE_START,
     WHERES,
 )
-from ._curobo_world import ENV_WORLD_IN_PLACE
 from .environment import (
     ENV_CUROBO_CUBOID_CACHE,
     ENV_CUROBO_MESH_CACHE,
@@ -933,16 +930,12 @@ class CuroboPlanClient:
         scene_config: str | None = None,
         stderr_log: str | None = None,
         self_collision_margin_mm: float = 0.0,
-        attach_spheres: int = 0,
         mesh_cache: int | None = None,
         voxel_grid: str | None = None,
         body_links: Sequence[Mapping[str, Any]] = (),
         wrist_body_links: Sequence[Mapping[str, Any]] = (),
         measure_only: bool = False,
         default_q: "Sequence[float] | None" = None,
-        world_in_place: bool = False,
-        joint_finetune_passes: int = CUROBO_FINETUNE_PASSES,
-        planning_spheres: str = "",
     ) -> None:
         # Every path and knob resolves through safety.planning.environment, the single
         # anchor, so a caller overrides what it needs and the rest tracks the variables
@@ -956,9 +949,6 @@ class CuroboPlanClient:
         # returning paths the guard then refuses: measured, 9.44 to 9.47 mm plans against
         # a 10.000 mm guard margin. 0.0 leaves the config untouched.
         self._self_collision_margin_mm = float(self_collision_margin_mm)
-        # Collision-sphere slots reserved for a carried payload. At 0 the sidecar robot
-        # config is untouched and `attach_payload` refuses, which is the unchanged path.
-        self._attach_spheres = max(0, int(attach_spheres))
         #: The bodies the sidecar adds to the arm's descriptor when it starts: the hand a
         #: cell names, placed by its declared tool frame. Empty adds nothing, and a driver
         #: then refuses the sidecar for having no hand.
@@ -1022,12 +1012,6 @@ class CuroboPlanClient:
         #: The UR model the descriptor names, for placing a refused configuration; ``None`` where it names none the
         #: bundled DH table knows, and a refusal at a configuration is then said without its boxes.
         self._model = _ur_model_of(self._robot)
-        #: How the sidecar registers a world and runs a joint plan, and the robot it plans with: today's ways unless
-        #: the cell's config asks otherwise (``safety.planning_world.register_in_place``, ``safety.planned_motion.
-        #: finetune_passes`` and ``planning_spheres``, through the reservation). Decided before the sidecar starts.
-        self._world_in_place = bool(world_in_place)
-        self._finetune_passes = int(joint_finetune_passes)
-        self._planning_spheres = str(planning_spheres or "")
 
     @property
     def measure_only(self) -> bool:
@@ -1520,9 +1504,9 @@ class CuroboPlanClient:
 
         ``ValueError`` before anything is sent, as :meth:`check_joints` refuses, and for names that are not some of the
         camera's boxes. ``CuroboUnavailableError`` whenever no whole report came back: a sidecar older than the report
-        or than the key, a failed call (the sidecar refuses to set aside what it does not hold, or anything while it
-        may hold a carried part), a reply that does not account for every sample or does not say it set aside exactly
-        those boxes, or one this client cannot read whole (:func:`_judgement_from_reply`).
+        or than the key, a failed call (the sidecar refuses to set aside what it does not hold), a reply that does not
+        account for every sample or does not say it set aside exactly those boxes, or one this client cannot read whole
+        (:func:`_judgement_from_reply`).
         """
         rows = [[float(v) for v in config] for config in configs]
         if not rows:
@@ -1758,7 +1742,7 @@ class CuroboPlanClient:
         return SceneRegistration(world_set=count, voxels_set=voxels_set, reason=reason)
 
     def reserve_world(self, reservation: "PlannerReservation") -> None:
-        """Reserve what the planner allocates at start: box slots, mesh slots, grid, spheres.
+        """Reserve what the planner allocates at start: box slots, mesh slots and the grid.
 
         It takes effect only before :meth:`start`, because cuRobo allocates its collision
         storage once. The reservation is derived from the cell's config and wins over the
@@ -1767,8 +1751,8 @@ class CuroboPlanClient:
         with nothing in the config to explain why.
 
         It carries how the sidecar is started as well, from the same config, because the
-        driver hands every client the reservation and nothing else before it starts: boxes
-        registered in place, the time-optimal passes of a joint plan, and the planning model.
+        driver hands every client the reservation and nothing else before it starts: the
+        time-optimal passes of a joint plan, and the planning model.
         """
         if self._proc is not None:
             logger.warning(
@@ -1791,11 +1775,6 @@ class CuroboPlanClient:
         self._scene = str(reservation.cuboid_slots)
         self._mesh_cache = int(reservation.mesh_slots)
         self._voxel_grid = reservation.voxel_grid
-        if reservation.sphere_slots > 0:
-            self._attach_spheres = int(reservation.sphere_slots)
-        self._world_in_place = bool(getattr(reservation, "world_in_place", False))
-        self._finetune_passes = int(getattr(reservation, "finetune_passes", CUROBO_FINETUNE_PASSES))
-        self._planning_spheres = str(getattr(reservation, "planning_spheres", "") or "")
         self._reserved = True
 
     def _sidecar_env(self) -> dict[str, str]:
@@ -1815,18 +1794,14 @@ class CuroboPlanClient:
         extra = (os.environ.get("WILLY_CUROBO_SIDECAR_PYTHONPATH") or "").strip()
         if extra:
             env["PYTHONPATH"] = extra
-        # The margin and the payload slots are written from this client whatever the shell
-        # holds, and removed where it asked for neither: nothing in this repository sets
-        # either variable, so a value in the shell is a leftover, and inheriting one would
-        # give a cell a clearance or a payload its config never asked for.
+        # The margin is written from this client whatever the shell holds, and removed where it
+        # asked for none: nothing in this repository sets the variable, so a value in the shell
+        # is a leftover, and inheriting one would give a cell a clearance its config never asked
+        # for.
         if self._self_collision_margin_mm > 0.0:
             env[ENV_SELF_COLLISION_MARGIN_MM] = repr(self._self_collision_margin_mm)
         else:
             env.pop(ENV_SELF_COLLISION_MARGIN_MM, None)
-        if self._attach_spheres > 0:
-            env[ENV_ATTACH_SPHERES] = str(self._attach_spheres)
-        else:
-            env.pop(ENV_ATTACH_SPHERES, None)
         if self._measure_only:
             env[ENV_MEASURE_ONLY] = "1"
         else:
@@ -1848,17 +1823,8 @@ class CuroboPlanClient:
             env[ENV_WRIST_BODY_LINKS] = json.dumps(self._wrist_body_links, sort_keys=True)
         else:
             env.pop(ENV_WRIST_BODY_LINKS, None)
-        # How the world is registered, how many time-optimal passes a joint plan runs, and the robot cuRobo plans with:
-        # written from this client whatever the shell holds, and removed where it asked for today's way, so a leftover
-        # in the shell never changes how a cell plans behind its config's back.
-        if self._world_in_place:
-            env[ENV_WORLD_IN_PLACE] = "1"
-        else:
-            env.pop(ENV_WORLD_IN_PLACE, None)
-        if self._finetune_passes != CUROBO_FINETUNE_PASSES:
-            env[ENV_JOINT_FINETUNE] = str(self._finetune_passes)
-        else:
-            env.pop(ENV_JOINT_FINETUNE, None)
+        # The robot cuRobo plans with: written from this client whatever the shell holds, and removed where none
+        # composes, so a leftover in the shell never changes how a cell plans.
         planning = self._planning_model()
         if planning is not None:
             env[ENV_PLANNING_MODEL] = planning.to_json()
@@ -1880,85 +1846,22 @@ class CuroboPlanClient:
     def _planning_model(self) -> "Any | None":
         """The planning model this client sends the sidecar (``planning_model.PlanningPayload``), or ``None``.
 
-        ``None`` where none was asked, which is today's sidecar, and where the one asked for cannot be composed for
-        this arm and these bodies: that is said at WARNING, and the sidecar then plans on the evidence model.
+        Every cell plans on the lean model since 2026-10-17 (the owner's cell since 2026-10-09). ``None`` where it
+        cannot be composed for this arm and these bodies: that is said at WARNING, and the sidecar then plans on the
+        evidence model, as a cell planned before.
         """
-        if not self._planning_spheres:
-            return None
-        from .planning_model import planning_payload  # noqa: PLC0415 (only a client asked for a model reads the maps)
+        from .planning_model import planning_payload  # noqa: PLC0415 (the maps are read when a sidecar starts)
 
         try:
-            built = planning_payload(self._planning_spheres, arm=self._model, body_links=self._body_links,
-                                     wrist_body_links=self._wrist_body_links, attach_spheres=self._attach_spheres)
+            built = planning_payload(arm=self._model, body_links=self._body_links,
+                                     wrist_body_links=self._wrist_body_links)
         except Exception as exc:  # noqa: BLE001 (a planning model is never a reason for a planner not to start)
             built = f"composing it raised {type(exc).__name__}: {exc}"
         if isinstance(built, str):
-            logger.warning("planning model %r not sent, the planner plans on the evidence model: %s",
-                           self._planning_spheres, built)
+            logger.warning("the lean planning model is not sent, the planner plans on the evidence model: %s", built)
             return None
         logger.info("%s", built.render())
         return built
-
-    def reserve_attach_spheres(self, slots: int) -> None:
-        """Reserve payload collision spheres. Only takes effect before :meth:`start`."""
-        if self._proc is not None:
-            logger.warning(
-                "reserve_attach_spheres(%d) after the sidecar started: the robot config is already "
-                "built, so this has no effect until the next start", slots,
-            )
-            return
-        self._attach_spheres = max(0, int(slots))
-
-    def attach_payload(
-        self,
-        joints: list[float],
-        dims_m: "Sequence[float]",
-        pose: "Sequence[float]",
-        *,
-        name: str = "payload",
-    ) -> bool:
-        """Hang a box on the tool so later plans route the carried part around the world too.
-
-        ``dims_m`` are full side lengths, and ``pose`` is ``[x, y, z, qw, qx, qy, qz]``
-        in the tool frame. The hand's placement says which tool0 axis it approaches along,
-        +Y on the Isaac cell and +Z on a UR declaring its own flange axis, and
-        ``self_envelope.carried_part_box`` puts the part's centre past the fingertips on
-        that axis. ``joints`` is the configuration the part was grasped in, which is where
-        the attachment is fitted.
-
-        It returns ``False`` where the sidecar could not attach, including the case of a
-        sidecar started without a sphere budget, which therefore has no link to hang
-        anything from. That is deliberately not an exception: a cell that cannot model
-        its payload carries on planning without it and says so rather than stopping
-        mid-pick.
-        """
-        if self._proc is None:
-            self.start()
-        want = self._send({"cmd": "attach", "joints": list(joints), "dims_m": list(dims_m),
-                           "pose": list(pose), "name": name})
-        msg = self._recv(_PLAN_TIMEOUT_S, want=want)
-        if msg and msg.get("attached"):
-            logger.info("payload attached to the planner model: dims_m=%s", list(dims_m))
-            return True
-        logger.error(
-            "the cuRobo sidecar did not attach the payload (%s); it is planning as if the gripper "
-            "were EMPTY", (msg or {}).get("reason", "no response"),
-        )
-        return False
-
-    def detach_payload(self) -> bool:
-        """Take the carried box off the planner's model. ``False`` if the sidecar did not confirm."""
-        if self._proc is None:
-            return True  # nothing was ever attached
-        want = self._send({"cmd": "detach"})
-        msg = self._recv(_PLAN_TIMEOUT_S, want=want)
-        if msg and msg.get("detached"):
-            return True
-        logger.error(
-            "the cuRobo sidecar did not detach the payload (%s); it will keep planning around a part "
-            "the gripper no longer holds", (msg or {}).get("reason", "no response"),
-        )
-        return False
 
     def fk(self, joints: list[float]) -> tuple[list[float], list[float]] | None:
         """Tool0 FK of ``joints`` in radians, as (pos_m, quat_wxyz), or ``None`` on failure."""

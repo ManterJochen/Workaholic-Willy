@@ -1,6 +1,6 @@
 """The speed limit every commanded motion is held to, whoever sends it (P0e E7).
 
-``robot.motion_limits`` bounds the joint speed and acceleration a caller may ask for. The UR motion controller clamped
+``robot.motion`` bounds the joint speed and acceleration a caller may ask for. The UR motion controller clamped
 its own commands; the joint drive of the planned arm asked that controller to clamp for it, which a PlannedArm without
 a UR motion controller cannot. One function, so the two cannot drift.
 """

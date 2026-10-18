@@ -42,7 +42,6 @@ class PayloadGuardTests(unittest.TestCase):
         # Schema validator enforces mass_kg <= max_mass_kg at construction.
         # To exercise the guard's runtime check we bypass via model_construct.
         cfg = PayloadSafetyConfig.model_construct(
-            enforce=True,
             mass_kg=10.0,
             max_mass_kg=5.0,
             cog_mm=(0.0, 0.0, 0.0),
@@ -55,7 +54,6 @@ class PayloadGuardTests(unittest.TestCase):
 
     def test_negative_inertia_rejects(self) -> None:
         cfg = PayloadSafetyConfig.model_construct(
-            enforce=True,
             mass_kg=1.0,
             max_mass_kg=5.0,
             cog_mm=(0.0, 0.0, 0.0),
@@ -67,7 +65,6 @@ class PayloadGuardTests(unittest.TestCase):
 
     def test_negative_mass_rejects(self) -> None:
         cfg = PayloadSafetyConfig.model_construct(
-            enforce=True,
             mass_kg=-1.0,
             max_mass_kg=5.0,
             cog_mm=(0.0, 0.0, 0.0),
@@ -79,15 +76,17 @@ class PayloadGuardTests(unittest.TestCase):
 
 
 class PayloadWiringTests(unittest.TestCase):
-    def test_enforce_true_registers_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate({"payload": {"enforce": True}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
+    def test_every_cell_wires_the_guard(self) -> None:
+        pf = SafetyPreflight.from_safety_config(RobotSafetyConfig(), WorkspaceLimitsConfig(), arm_model=None)
         self.assertIn("payload", pf.guard_names)
 
-    def test_enforce_false_omits_guard(self) -> None:
-        cfg = RobotSafetyConfig.model_validate({"payload": {"enforce": False}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
-        self.assertNotIn("payload", pf.guard_names)
+    def test_the_switch_that_left_it_out_is_refused(self) -> None:
+        """No cell switches a guard off since 2026-10-17 (the owner's cleanup)."""
+        from pydantic import ValidationError
+
+        for value in (True, False):
+            with self.subTest(enforce=value), self.assertRaises(ValidationError):
+                RobotSafetyConfig.model_validate({"payload": {"enforce": value}})
 
 
 class URConnectionSetPayloadTests(unittest.TestCase):

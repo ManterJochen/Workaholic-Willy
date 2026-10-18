@@ -26,7 +26,6 @@ from src.robot.grasping.multiview.association import (
     WRIST_VIEW_MIN_SCORE,
     WRIST_VIEW_NEIGHBOUR_MM,
     WRIST_VIEW_SCORE_VOXEL_MM,
-    AssociationMetric,
     ViewCandidates,
     assign_view,
 )
@@ -334,8 +333,7 @@ class GeneratedViewOrbitTests(unittest.TestCase):
         drift = np.array([-5.0, -5.0, 4.0])
         clouds = (_seen(neighbour, turned) + drift, _seen(part, turned) + drift)
         view = ViewCandidates("wrist@orbit +90 deg", clouds)
-        match = assign_view([_seen(part, first)], view, metric=AssociationMetric.OVERLAP,
-                            min_score=WRIST_VIEW_MIN_SCORE, neighbour_mm=WRIST_VIEW_NEIGHBOUR_MM,
+        match = assign_view([_seen(part, first)], view, min_score=WRIST_VIEW_MIN_SCORE, neighbour_mm=WRIST_VIEW_NEIGHBOUR_MM,
                             score_voxel_mm=WRIST_VIEW_SCORE_VOXEL_MM)
         self.assertEqual(match.assignment, (1,))
         self.assertGreater(match.scores[0][0], 0.0, "the neighbour's rim is within reach of the part")
@@ -354,10 +352,8 @@ class GeneratedViewOrbitTests(unittest.TestCase):
         drift = np.array([0.0, -5.0, 13.0])
         view = ViewCandidates("wrist@orbit +90 deg", (_seen(neighbour, turned) + drift,
                                                        _seen(part, turned) + drift))
-        fixed = assign_view([first], view, metric=AssociationMetric.OVERLAP, min_score=DEFAULT_MIN_SCORE,
-                            neighbour_mm=DEFAULT_NEIGHBOUR_MM)
-        wrist = assign_view([first], view, metric=AssociationMetric.OVERLAP,
-                            min_score=WRIST_VIEW_MIN_SCORE, neighbour_mm=WRIST_VIEW_NEIGHBOUR_MM,
+        fixed = assign_view([first], view, min_score=DEFAULT_MIN_SCORE, neighbour_mm=DEFAULT_NEIGHBOUR_MM)
+        wrist = assign_view([first], view, min_score=WRIST_VIEW_MIN_SCORE, neighbour_mm=WRIST_VIEW_NEIGHBOUR_MM,
                             score_voxel_mm=WRIST_VIEW_SCORE_VOXEL_MM)
         self.assertEqual(fixed.assignment, (None,))
         self.assertLess(fixed.scores[0][1], DEFAULT_MIN_SCORE - 0.05)

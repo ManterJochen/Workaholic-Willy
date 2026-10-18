@@ -1,17 +1,18 @@
 """Every committed planner evidence file recomputes from committed files alone (P0f F0, the proof before any move).
 
-The 57 files under ``planning/robot/evidence/`` admit a cell to plan with cuRobo, and they admit it by hashes: the
+The 50 files under ``planning/robot/evidence/`` admit a cell to plan with cuRobo, and they admit it by hashes: the
 URDF the planner loaded, the arrays the exact mesh guard held, the hand's sphere map and the configurations judged.
-aurora holds 47 of them; Willy's own ten are the owner's Hand-E on a 23 mm coupling closing along -Y (margins 0, 3
-and 4 mm) and seven measured with the 16 sphere slots a carried part reserves (``_a16``). Until this file two of the
-57 were checked against anything (the desk tests' ur5e with the 2F-85, +Y and +Z); the
+aurora holds 47 of them; Willy's own three are the owner's Hand-E on a 23 mm coupling closing along -Y (margins 0, 3
+and 4 mm). The seven measured with the 16 sphere slots a carried part reserved (``_a16``) left with the carried part
+on 2026-10-17, and the others lost their ``_a0`` suffix and field, their hashes as they were. Until this file two of
+the files were checked against anything (the desk tests' ur5e with the 2F-85, +Y and +Z); the
 rest were checked for being 64 characters long. P0f moves and rewrites the scripts and the code these hashes come
 from, so each is recomputed here, per file, twice where it can be: once through the function the stack calls, which
 says the code still agrees with the files, and once through ``tests/_evidence_rulers.py``, which restates the recipe
 and so survives the rewrite.
 
 Measured 2026-09-23 on Windows (numpy 2.4.4, PyYAML 6.0.3) in aurora: 47 of 47 equal for every hash below; in Willy
-57 of 57 (2026-10-13). What each check
+57 of 57 (2026-10-13), 50 of 50 once the attach files left (2026-10-17). What each check
 cannot see is said beside it. The two hashes a running sidecar reports about the descriptor it loaded
 (``arm_descriptor_sha256`` and ``composed_sha256``) need the built descriptor and cuRobo, so they are proved on the box.
 
@@ -44,10 +45,10 @@ from src.robot.safety.planning.robot.retract_table import read_retract
 from tests import _evidence_rulers as ruler
 
 _SCRIPTS = Path(__file__).resolve().parents[1] / "scripts" / "arms"
-#: How many files the repository ships per arm, 57 together: aurora's 47 and Willy's ten on the ur10 (the owner's
-#: Hand-E on 23 mm closing along -Y, and the ``_a16`` files). A hand a customer measures adds files (the customer-hand
-#: trial adds one per hand on ur10e); a shrunken directory is what must fail.
-_SHIPPED_PER_ARM = {"ur3": 8, "ur3e": 8, "ur5": 7, "ur5e": 8, "ur10": 18, "ur10e": 8}
+#: How many files the repository ships per arm, 50 together: aurora's 47 and Willy's three on the ur10 (the owner's
+#: Hand-E on 23 mm closing along -Y). A hand a customer measures adds files (the customer-hand trial adds one per hand
+#: on ur10e); a shrunken directory is what must fail.
+_SHIPPED_PER_ARM = {"ur3": 8, "ur3e": 8, "ur5": 7, "ur5e": 8, "ur10": 11, "ur10e": 8}
 _EVIDENCED_ARMS = set(_SHIPPED_PER_ARM)
 
 
@@ -94,13 +95,7 @@ def _cell(evidence: CombinationEvidence) -> RobotConfig:
         }
     return RobotConfig.model_validate({
         "vendor": "ur", "ur": {"model": evidence.arm},
-        "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "planner_margin_mm": float(evidence.planner_margin_mm)},
-                   # A file measured with a carried part's sphere slots is a cell that declares one (Willy's _a16):
-                   # the slots come from an enabled payload with a declared length (PlannerReservation).
-                   **({"planning_world": {"payload": {"enabled": True, "sphere_slots": int(evidence.attach_spheres),
-                                                      "length_mm": 40.0}}}
-                      if evidence.attach_spheres else {})},
+        "safety": {"self_collision": {"backend": "fcl", "planner_margin_mm": float(evidence.planner_margin_mm)}},
         "gripper": gripper,
     })
 
@@ -148,7 +143,7 @@ class TheEvidenceThisProvesTests(unittest.TestCase):
         """The control. The exact count this replaced failed aurora's customer-hand trial of 2026-09-23 on the two files
         the trial measured for its hands on ur10e, 47 != 49, while every file it held recomputed."""
         shipped = [arm for arm, count in _SHIPPED_PER_ARM.items() for _ in range(count)]
-        self.assertEqual(57, len(shipped))
+        self.assertEqual(50, len(shipped))
         shrunk = list(shipped)
         shrunk.remove("ur5")
         self.assertEqual({"ur5": 1}, _short_of_what_ships(shrunk))
@@ -216,8 +211,8 @@ class TheGuardHashTests(unittest.TestCase):
 
     def test_the_hash_moves_with_one_vertex_and_with_the_placement(self) -> None:
         """The controls: a hash that a moved vertex or another placement leaves alone guards nothing."""
-        z = CombinationEvidence.from_dict(ruler.held(EVIDENCE_DIR / "ur5e_robotiq_hande_c20mm_+Z+X_m4mm_a0.json"))
-        y = CombinationEvidence.from_dict(ruler.held(EVIDENCE_DIR / "ur5e_robotiq_hande_c20mm_+Y+X_m4mm_a0.json"))
+        z = CombinationEvidence.from_dict(ruler.held(EVIDENCE_DIR / "ur5e_robotiq_hande_c20mm_+Z+X_m4mm.json"))
+        y = CombinationEvidence.from_dict(ruler.held(EVIDENCE_DIR / "ur5e_robotiq_hande_c20mm_+Y+X_m4mm.json"))
         parts = _parts(z)
         vertices, faces, frame = parts["lfinger"]
         vertices = vertices.copy()
@@ -266,12 +261,13 @@ _CONTENT_ROBOTS = Path(__file__).resolve().parents[1] / "ext_deps" / "curobo" / 
 class TheInstalledDescriptorsAreTheEvidencedOnesTests(unittest.TestCase):
     """The two sidecar hashes a descriptor decides, recomputed from the descriptors this box installed.
 
-    Measured 2026-09-23 in aurora and 2026-10-13 in Willy: the files (47 there, 57 here) matched the descriptors built
-    on 2026-09-16 and none matched a descriptor built from the same scripts that day, because a descriptor carried the whole retract table's byte hash in its provenance
-    and the table had gained rows since. Planning worked on this box and on no freshly installed one. The provenance
-    now hangs on the arm's own rows, the files were measured again, and this says so before a planner is started.
-    ``composed_sha256`` is what ``compose_for_cell`` makes of the descriptor with the gate's own inputs, and the
-    descriptor is read with ``yaml.safe_load``, which reads every installed descriptor as cuRobo's loader does.
+    Measured 2026-09-23 in aurora and 2026-10-13 in Willy: the files (47 there, 57 here, 50 since 2026-10-17) matched the
+    descriptors built on 2026-09-16 and none matched a descriptor built from the same scripts that day, because a
+    descriptor carried the whole retract table's byte hash in its provenance and the table had gained rows since.
+    Planning worked on this box and on no freshly installed one. The provenance now hangs on the arm's own rows, the
+    files were measured again, and this says so before a planner is started. ``composed_sha256`` is what
+    ``compose_for_cell`` makes of the descriptor with the gate's own inputs, and the descriptor is read with
+    ``yaml.safe_load``, which reads every installed descriptor as cuRobo's loader does.
     """
 
     def test_every_file_names_the_installed_descriptor(self) -> None:
@@ -298,8 +294,7 @@ class TheInstalledDescriptorsAreTheEvidencedOnesTests(unittest.TestCase):
             _, composed, *_ = compose_for_cell(
                 descriptor, bodies=[HandLink.from_hand(resolved, arm=evidence.arm).to_dict(),
                                     *coupling_bodies(resolved, arm=evidence.arm)],
-                margin_mm=float(evidence.planner_margin_mm), attach_spheres=int(evidence.attach_spheres),
-                default_q=start)
+                margin_mm=float(evidence.planner_margin_mm), default_q=start)
             with self.subTest(file=path.name):
                 self.assertEqual(evidence.arm_descriptor_sha256, canonical_sha256(descriptor.get("robot_cfg")))
                 self.assertEqual(evidence.composed_sha256, canonical_sha256(composed))

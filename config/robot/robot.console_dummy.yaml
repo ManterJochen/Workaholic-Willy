@@ -43,16 +43,15 @@ robot:
       # The shipped `mass_kg: 0.0` marks a tool nobody has weighed: on a real vendor that blocks
       # the preflight and the driver refuses to connect. A coherent mass and centre of gravity keep
       # the console on the checklist's ok path; a dummy arm carries nothing either way.
-      enforce: true
       mass_kg: 1.5
       cog_mm: [0.0, 0.0, 60.0]
-
-  # The desk's place and park, in degrees as a pendant shows them (one per joint of the home).
-  named_poses:
-    drop_left:
-      joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
-      label: "Ablage links"
-    park:
-      joints_deg: [30.0, -80.0, -100.0, -90.0, 90.0, 0.0]
-      label: "Parkposition"
-  default_place_pose: drop_left
+  motion:
+    # The desk's place and park, in degrees as a pendant shows them (one per joint of the home).
+    named_poses:
+      drop_left:
+        joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
+        label: "Ablage links"
+      park:
+        joints_deg: [30.0, -80.0, -100.0, -90.0, 90.0, 0.0]
+        label: "Parkposition"
+    default_place_pose: drop_left

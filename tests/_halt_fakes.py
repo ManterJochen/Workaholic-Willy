@@ -53,6 +53,10 @@ class AcceptingPreflight:
     def set_perceived_obstacles(self, *_a: Any, **_k: Any) -> int:
         return 0
 
+    def joint_radii_mm(self, *_a: Any, **_k: Any) -> tuple[float, ...]:
+        """A reach of 1 mm a joint: the send gate's "where does the arm stand" (``_moved_since_mm``) reads radians."""
+        return (1.0,) * 6
+
 
 def ur_config(planner: str = "ik", **ur: Any) -> Any:
     """A ur5e cell on ``planner`` with a declared 132 mm tool and a box nothing in these tests leaves."""
@@ -60,12 +64,12 @@ def ur_config(planner: str = "ik", **ur: Any) -> Any:
 
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": dict(ur), "motion": {"planner": planner},
+        "ur": dict(ur),
+        "motion": {"planner": planner, "max_velocity": 0.6, "max_acceleration": 0.9,
+                   "workspace": {"x_min": -2000.0, "x_max": 2000.0, "y_min": -2000.0, "y_max": 2000.0,
+                                 "z_min": -2000.0, "z_max": 2000.0}},
         "gripper": {"model": "robotiq_2f85", "tool_frame": {
             "source": "willy", "offset_mm": [0.0, 0.0, 132.0], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "workspace_limits": {"x_min": -2000.0, "x_max": 2000.0, "y_min": -2000.0, "y_max": 2000.0,
-                             "z_min": -2000.0, "z_max": 2000.0},
-        "motion_limits": {"max_velocity": 0.6, "max_acceleration": 0.9},
     })
 
 
@@ -87,8 +91,8 @@ def ur_arm_on(controller: Any, planner: str = "ik", **ur: Any) -> Any:
     arm._preflight = AcceptingPreflight()
     if planner == "curobo":
         arm._curobo = CuroboPlanner(arm._transport, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=no_client,
-                                         vel=arm.config.motion_limits.max_velocity,
-                                         acc=arm.config.motion_limits.max_acceleration)
+                                         vel=arm.config.motion.max_velocity,
+                                         acc=arm.config.motion.max_acceleration)
     return arm
 
 

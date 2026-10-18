@@ -50,55 +50,6 @@ robot:
     # bench. `move_home` and the joint moves are gated but never planned. Check the cell with
     # `python -m src.robot.safety.planning --doctor` before the first motion.
 
-  # The Cartesian box the WorkspaceGuard admits targets in, and the box `move_home` checks
-  # its destination against. It is the bench, not the arm: the far corner (800, 400, 700)
-  # is r = 1044 mm about the shoulder, and every corner at x = 800 sits past the 850 mm
-  # sphere, so the reach limits this cell along that edge and the box limits it elsewhere.
-  #
-  # `z_min: 0.0` rather than the base file's 100.0, because the guard shrinks the box by
-  # `safety.limits.workspace_margin_mm` (20 mm) on every face and the grasp centre of a
-  # top-down pick on a part standing on this bench sits at z = 25 to 90 mm. With the base
-  # placeholder the effective floor is z = 120 mm and every such grasp is refused, which
-  # looks like a perception failure and is a configuration one.
-  workspace_limits:
-    x_min: 250.0
-    x_max: 800.0
-    y_min: -400.0
-    y_max: 400.0
-    z_min: 0.0
-    z_max: 700.0
-
-  # The joint configuration `move_home()` returns the arm to, in radians. Every cell has to
-  # set it. The shipped default is the arm straight up, which puts the flange at
-  # (0.0, -232.9, 1079.4) mm, outside this box on z and on x, and `move_home` fails closed
-  # on that check rather than warning past it, so the most natural first motion on a new
-  # bench is refused until this key exists.
-  #
-  # Base swung to +X, shoulder down, elbow bent, wrist neutral: flange (538.2, 132.5,
-  # 388.3) mm, r = 598.5 mm, 70.4 % of reach, and a clear 100 mm inside the box on every
-  # axis. Round decimals rather than an optimiser's output, because a home pose has to be
-  # recognisable by eye. The base angle is 3.14 and not 0 because the UR controller's base
-  # frame is rotated 180 degrees about Z from the Isaac stage frame; a home vector copied
-  # from `robot.sim.yaml` lands mirrored to -X, where the bench is not.
-  #
-  # `move_home` boxes the grasp centre, not the flange: the controller's FK of the home with
-  # the declared tool frame added while `gripper.tool_frame.source` is `willy`, and the
-  # controller's own TCP once a tool is set on the pendant. At this home the flange's +Z
-  # points almost straight down (-0.985 in z), so a tool of length L along flange +Z puts the
-  # grasp centre about L below the flange: (504.2, 132.7, 191.2) mm for L = 200 mm, still
-  # inside the box.
-  # Derived from the bundled DH table; never commanded on a physical UR5e.
-  home_joint_positions: [3.14, -1.4, 1.6, -1.6, -1.57, 0.0]
-
-  # A declared retreat position, r = 607 mm, 71 % of reach, well inside `workspace_limits`.
-  # Nothing commands a motion to it: the readers are `_check_safe_pose_in_workspace` in
-  # robot_schema.py, which refuses a value outside the unshrunk box at load, and the sim
-  # reach audit.
-  safe_pose:
-    x: 500.0
-    y: -250.0
-    z: 400.0
-
   safety:
     self_collision:
       # The DH chain and the collision mesh bundle the guard evaluates this arm against come from
@@ -108,7 +59,7 @@ robot:
       # size. The bundle for this arm ships at `src/robot/safety/data/ur5e_collision_meshes.npz`.
 
       # `planner_margin_mm` is not declared here. It is the clearance the trajectory planner
-      # keeps, a separate number from the 10 mm `min_distance_mm` the base file sets, and a UR
+      # keeps, a separate number from the 10 mm `min_distance_mm` this profile sets, and a UR
       # cell that plans with cuRobo declares it in its own profile or refuses to start a planner
       # rather than inherit a number nobody measured for this arm and this hand. Measured on a
       # UR5 against the fitted spheres: a retract is found at 4 mm and at 6 mm, and all 371,293
@@ -119,22 +70,25 @@ robot:
       # nothing refuses a motion that passes through the bench surface. Half extents are
       # half the box: this is 550 mm deep, 800 mm wide and 50 mm thick, with its top face
       # at z = 0, which is the support plane the grasp stack is told about below.
-      # A declared fixture keeps 10 mm (the load refuses less): a thin part standing in the camera's 5 mm band over
-      # it keeps only the distance less the band. A cell that finds its supports by camera runs at the base's 3 mm.
+      # This profile keeps 10 mm from its declared bench. A fixture stays the guard's on every cell since 2026-10-17
+      # (the camera world drops nothing as one), so the load refuses no smaller distance beside it. A cell that finds
+      # its supports by camera runs at the base's 3 mm.
       min_distance_mm: 10.0
+      # A box the camera saw is grown by 6 mm on every cell since 2026-10-17 (it was 8 here), and this distance plus
+      # those 6 mm has to reach min_distance_mm: 4 keeps the arm the 10 mm from every point the camera saw it kept.
+      perceived_min_distance_mm: 4.0
       fixtures:
         - name: "bench"
           center_mm: [525.0, 0.0, -25.0]
           half_extents_mm: [275.0, 400.0, 25.0]
 
-    # What the trajectory planner is allowed to know about the cell. With this block off,
-    # cuRobo plans against its own robot model and a generic table, so a plan may route
-    # straight through the bench and the one-shot guard on the final configuration cannot
-    # see it, because that guard judges a destination and not a path. Registering a world
-    # replaces the planner's own rather than adding to it, which is why `support_plane` is
-    # required as soon as this is enabled.
+    # What the trajectory planner is allowed to know about the cell: the bench, which turns the
+    # planning world on. Without it cuRobo plans against its own robot model and a generic table,
+    # so a plan may route straight through the bench, and the exact guard, which judges every sample
+    # of a path, cannot shape one. Registering a world replaces the planner's own rather than adding
+    # to it, which is why the world is on only where the bench is declared. The bench fixture above
+    # is the guard's.
     planning_world:
-      enabled: true
       support_plane:
         height_mm: 0.0
         extent_mm: [800.0, 800.0]
@@ -146,14 +100,54 @@ robot:
     # A bring-up with no record log cannot be diagnosed afterwards and gives the soak, KPI
     # and RL tooling nothing to read.
     record_log_path: "${WILLY_RECORD_LOG:-}"
+  motion:
+    # The Cartesian box the WorkspaceGuard admits targets in, and the box `move_home` checks
+    # its destination against. It is the bench, not the arm: the far corner (800, 400, 700)
+    # is r = 1044 mm about the shoulder, and every corner at x = 800 sits past the 850 mm
+    # sphere, so the reach limits this cell along that edge and the box limits it elsewhere.
+    #
+    # `z_min: 0.0` rather than the base file's 100.0, because the guard shrinks the box by
+    # 20 mm on every face (`workspace.WORKSPACE_MARGIN_MM`) and the grasp centre of a
+    # top-down pick on a part standing on this bench sits at z = 25 to 90 mm. With the base
+    # placeholder the effective floor is z = 120 mm and every such grasp is refused, which
+    # looks like a perception failure and is a configuration one.
+    workspace:
+      x_min: 250.0
+      x_max: 800.0
+      y_min: -400.0
+      y_max: 400.0
+      z_min: 0.0
+      z_max: 700.0
+    # The joint configuration `move_home()` returns the arm to, in degrees. Every cell has to
+    # set it. The shipped default is the arm straight up, which puts the flange at
+    # (0.0, -232.9, 1079.4) mm, outside this box on z and on x, and `move_home` fails closed
+    # on that check rather than warning past it, so the most natural first motion on a new
+    # bench is refused until this key exists.
+    #
+    # Base swung to +X, shoulder down, elbow bent, wrist neutral: flange (538.2, 132.5,
+    # 388.3) mm, r = 598.5 mm, 70.4 % of reach, and a clear 100 mm inside the box on every
+    # axis. Round decimals rather than an optimiser's output, because a home pose has to be
+    # recognisable by eye. The base angle is 179.9 degrees (3.14 rad) and not 0 because the UR controller's base
+    # frame is rotated 180 degrees about Z from the Isaac stage frame; a home vector copied
+    # from `robot.sim.yaml` lands mirrored to -X, where the bench is not.
+    #
+    # `move_home` boxes the grasp centre, not the flange: the controller's FK of the home with
+    # the declared tool frame added while `gripper.tool_frame.source` is `willy`, and the
+    # controller's own TCP once a tool is set on the pendant. At this home the flange's +Z
+    # points almost straight down (-0.985 in z), so a tool of length L along flange +Z puts the
+    # grasp centre about L below the flange: (504.2, 132.7, 191.2) mm for L = 200 mm, still
+    # inside the box.
+    # Derived from the bundled DH table; never commanded on a physical UR5e.
+    home_deg: [179.9087, -80.2141, 91.6732, -91.6732, -89.9544, 0.0]
 
 # ============================================================================
 # The four bench measurements, deliberately not set.
 #
 # The first three below are refused by the shipped code until they are filled in, and so is
-# the camera in item 4: this layer enables `safety.planning_world` on a cuRobo cell, where every
-# pick motion needs a live camera world, so the checklist's `camera world` row blocks until an
-# enabled, calibrated RGB-D primary camera feeds it. That is the design:
+# the camera in item 4: this layer declares the bench, which turns the planning world on, on a
+# cuRobo cell, where every pick motion needs a live camera world, so the checklist's `camera
+# world` row blocks until an enabled, calibrated primary camera, an RGB-D rig or a stereo pair,
+# feeds it. That is the design:
 # `python -m src.robot.execution.real_cell --check` reports six blocking items on this
 # layer: these three, the camera world, `safety.self_collision.planner_margin_mm` and
 # `robot.gripper.model`, which a cell declares in its own profile for its arm and its hand.
@@ -174,10 +168,10 @@ robot:
 #         offset_mm: [0.0, 0.0, 0.0]                  # measure the coupling plus the gripper
 #         rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0]    # measure it in the same session
 #
-# 2. The payload. `connect()` refuses `enforce: true` with `mass_kg: 0.0` before it opens
-#    the socket, because connecting would push a zero payload to the controller and leave
-#    its protective-stop model under-reading a mounted tool. A genuinely bare flange is
-#    `enforce: false`, not zero. A declared mass with an all-zero centre of gravity is
+# 2. The payload. `connect()` refuses `mass_kg: 0.0`, the shipped "not weighed yet", before it
+#    opens the socket, because connecting would push a zero payload to the controller and leave
+#    its protective-stop model under-reading a mounted tool. A declared mass with an all-zero
+#    centre of gravity is
 #    refused for the same reason: it tells the controller a multi-kilogram tool is a point
 #    mass at the flange face, which also corrupts gravity compensation and therefore every
 #    wrench reading. Weigh the tool and any workpiece it carries on a bench scale, and
@@ -192,7 +186,7 @@ robot:
 #    without a resolver the driver refuses every motion as INVALID_TARGET, which looks
 #    like a broken cell. `from_robot_config` refuses to build a real cell at all rather
 #    than let that happen. The calibration is declared on the camera's rig, in the camera
-#    section, and the primary camera's resolver is built from it whatever `fusion.enabled` says.
+#    section, and the primary camera's resolver is built from it, one camera or several.
 #
 #    Run the calibration: you guide the arm by hand to each pose (--freedrive), or it drives
 #    to stations of your own (--fixed-poses stations.json); nothing generates a pose:

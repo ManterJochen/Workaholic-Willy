@@ -3,9 +3,9 @@
 These tests pin the locked T0 contract (operator-confirmed):
 
 * ``AutonomousGraspService.from_robot_config`` resolves the
-  :class:`GraspMode` and ``max_attempts`` from
-  ``robot_cfg.grasping`` when the caller does not pass explicit
-  overrides.
+  :class:`GraspMode` from ``robot_cfg.grasping`` when the caller does
+  not pass one; a pick makes the cell's ``MAX_ATTEMPTS`` (5) unless the
+  call asks fewer (``robot.grasping.max_attempts`` until 2026-10-17).
 * The factory **fail-closes** when ``mode`` is not supplied *and* the
   ``grasping`` block was not explicitly set on the ``RobotConfig`` (i.e.
   the operator relied on schema defaults silently). Production
@@ -13,8 +13,8 @@ These tests pin the locked T0 contract (operator-confirmed):
 * Unknown mode strings raise.
 * The sub-policies config built on the service (``RefinementPolicy``,
   ``GraspVerificationPolicy`` and the ``dense_recovery`` ``SceneRecoveryPolicy``)
-  left on 2026-09-29 with their blocks; the recovery a pick runs is built per
-  pick from ``robot.grasping.recovery`` in the snapshot below.
+  left on 2026-09-29 with their blocks; the recovery a pick runs is the cell's
+  own since 2026-10-16 (``CELL_RECOVERY``), in the snapshot below.
 * Every :class:`AutonomousGraspReport` carries an
   :class:`EffectiveGraspingConfig` snapshot when the service was wired
   from config; the legacy ``from_components`` path leaves it ``None``
@@ -47,9 +47,9 @@ from src.robot.execution.autonomous_grasp import (
     EffectiveRecoveryOrchestratorConfig,
     GraspMode,
 )
+from src.robot.execution.autonomous_grasp.config import CELL_RECOVERY, MAX_ATTEMPTS
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
-from src.robot.grasping.types.modes import GraspSamplingMode
 from src.robot.grasping.telemetry.outcome_logging import iter_jsonl
 from src.robot.grasping.types.perception import PerceptionFrame
 
@@ -171,9 +171,7 @@ def _robot_cfg_with_grasping(**grasping_overrides):
         gripper={"vendor": "none"},
         grasping={
             "default_mode": grasping_overrides.pop("default_mode", "auto"),
-            "max_attempts": grasping_overrides.pop("max_attempts", 5),
             "record_log_path": grasping_overrides.pop("record_log_path", None),
-            "recovery": grasping_overrides.pop("recovery", {}),
         },
     )
 
@@ -221,7 +219,7 @@ class EffectiveGraspingConfigTests(unittest.TestCase):
 
 
 class FromRobotConfigModeResolutionTests(unittest.TestCase):
-    """``default_mode`` and ``max_attempts`` flow from config into the service."""
+    """``default_mode`` flows from config into the service; the attempts are the cell's or the call's."""
 
     def test_default_mode_easy_resolves_easy_profile(self) -> None:
         cfg = _robot_cfg_with_grasping(default_mode="easy")
@@ -232,10 +230,6 @@ class FromRobotConfigModeResolutionTests(unittest.TestCase):
             perception=perception,
         )
         self.assertIs(service.default_mode, GraspMode.EASY)
-        self.assertIs(
-            service.runtime.orchestrator.grasp_sampling_mode,
-            GraspSamplingMode.SINGLE_OBJECT,
-        )
 
     def test_default_mode_dense_clutter(self) -> None:
         cfg = _robot_cfg_with_grasping(default_mode="dense_clutter")
@@ -246,20 +240,17 @@ class FromRobotConfigModeResolutionTests(unittest.TestCase):
             perception=perception,
         )
         self.assertIs(service.default_mode, GraspMode.DENSE_CLUTTER)
-        self.assertIs(
-            service.runtime.orchestrator.grasp_sampling_mode,
-            GraspSamplingMode.DENSE_CLUTTER,
-        )
 
-    def test_max_attempts_pulled_from_config(self) -> None:
-        cfg = _robot_cfg_with_grasping(default_mode="auto", max_attempts=9)
+    def test_a_tree_makes_the_cells_attempts(self) -> None:
+        cfg = _robot_cfg_with_grasping(default_mode="auto")
         calc, perception = _calc_and_perception()
         service = AutonomousGraspService.from_robot_config(
             cfg,
             calculator=calc,  # type: ignore[arg-type]
             perception=perception,
         )
-        self.assertEqual(service.runtime.orchestrator.max_attempts, 9)
+        self.assertEqual(service.runtime.orchestrator.max_attempts, MAX_ATTEMPTS)
+        self.assertEqual(5, MAX_ATTEMPTS)
 
     def test_explicit_mode_overrides_config(self) -> None:
         cfg = _robot_cfg_with_grasping(default_mode="easy")
@@ -272,8 +263,8 @@ class FromRobotConfigModeResolutionTests(unittest.TestCase):
         )
         self.assertIs(service.default_mode, GraspMode.AUTO)
 
-    def test_explicit_max_attempts_overrides_config(self) -> None:
-        cfg = _robot_cfg_with_grasping(default_mode="auto", max_attempts=9)
+    def test_explicit_max_attempts_overrides_the_cells(self) -> None:
+        cfg = _robot_cfg_with_grasping(default_mode="auto")
         calc, perception = _calc_and_perception()
         service = AutonomousGraspService.from_robot_config(
             cfg,
@@ -339,10 +330,9 @@ class FromRobotConfigFailClosedTests(unittest.TestCase):
 
 
 # `FromRobotConfigSubPolicyAutoBuildTests` left on 2026-09-29 with what it pinned: the `verification`
-# and `dense_recovery` blocks built into policies on the service. The recovery a pick runs is
-# `robot.grasping.recovery`, whose refusals (an unknown action, an agitation without a fixture; the
-# push needs none since 2026-10-01) are the schema's (`tests/test_t5_recovery_schema.py`,
-# `tests/test_recovery_fixture_wiring.py`).
+# and `dense_recovery` blocks built into policies on the service. The recovery a pick runs is fixed
+# since 2026-10-16 at the values the owner's cell ran (`CELL_RECOVERY`), pinned in
+# `tests/test_a_config_built_recovery_plans_only_what_its_profile_allows.py`.
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +344,7 @@ class EffectiveConfigSnapshotTests(unittest.TestCase):
     """The effective config must round-trip through the report."""
 
     def test_service_carries_effective_config_when_built_from_config(self) -> None:
-        cfg = _robot_cfg_with_grasping(default_mode="auto", max_attempts=4)
+        cfg = _robot_cfg_with_grasping(default_mode="auto")
         calc, perception = _calc_and_perception()
         service = AutonomousGraspService.from_robot_config(
             cfg,
@@ -365,25 +355,18 @@ class EffectiveConfigSnapshotTests(unittest.TestCase):
         self.assertIsNotNone(snap)
         assert snap is not None
         self.assertIs(snap.default_mode, GraspMode.AUTO)
-        self.assertEqual(snap.max_attempts, 4)
-        # The recovery block ships off, and a disabled block reads its off state: an empty allow-list.
-        self.assertFalse(snap.recovery_orchestrator.enabled)
-        self.assertEqual(snap.recovery_orchestrator.allowed_actions, ())
+        self.assertEqual(snap.max_attempts, MAX_ATTEMPTS)
+        # No key sets the recovery since 2026-10-16: an auto pick runs the cell's.
+        self.assertEqual(CELL_RECOVERY, snap.recovery_orchestrator)
 
     def test_report_contains_effective_config(self) -> None:
-        cfg = _robot_cfg_with_grasping(
-            default_mode="auto",
-            max_attempts=2,
-            recovery={
-                "enabled": True,
-                "allowed_actions": ["rescan"],
-            },
-        )
+        cfg = _robot_cfg_with_grasping(default_mode="auto")
         calc, perception = _calc_and_perception()
         service = AutonomousGraspService.from_robot_config(
             cfg,
             calculator=calc,  # type: ignore[arg-type]
             perception=perception,
+            max_attempts=2,
         )
         report = service.pick()
         # We don't pin the outcome here — the dummy arm built by
@@ -393,11 +376,7 @@ class EffectiveConfigSnapshotTests(unittest.TestCase):
         assert report.effective_config is not None
         self.assertIs(report.effective_config.default_mode, GraspMode.AUTO)
         self.assertEqual(report.effective_config.max_attempts, 2)
-        self.assertTrue(report.effective_config.recovery_orchestrator.enabled)
-        self.assertEqual(
-            report.effective_config.recovery_orchestrator.allowed_actions,
-            ("rescan",),
-        )
+        self.assertEqual(CELL_RECOVERY, report.effective_config.recovery_orchestrator)
 
     def test_from_components_leaves_effective_config_none(self) -> None:
         # Feature-flag compatibility path: legacy callers do not
@@ -561,25 +540,17 @@ class FromRobotConfigGripperFallbackWarnsTests(unittest.TestCase):
 
 
 class FromRobotConfigOverlaysFireTests(unittest.TestCase):
-    """H0.3b — the effective_config-gated overlays (T1 decision / U8 uncertainty / U9 watchdog / U10 SLO /
-    T5 recovery) are ACTIVATED through from_robot_config — the path that from_components SILENCES by leaving
-    ``effective_config=None`` (see ``test_from_components_leaves_effective_config_none`` for the contrast).
-    This closes the deep-map BUILT_DEAD concern: the prod composition root's overlays are proven to wire +
-    fire end-to-end through the config-driven build, not only via from_components + manual injection."""
+    """H0.3b — the effective_config-gated overlay (T5 recovery) is ACTIVATED through from_robot_config — the path
+    that from_components SILENCES by leaving ``effective_config=None`` (see
+    ``test_from_components_leaves_effective_config_none`` for the contrast). The decision, uncertainty, watchdog and
+    SLO overlays it proved beside it left on 2026-10-16 with their blocks (the owner's cleanup)."""
 
     @staticmethod
     def _full_stack_cfg() -> RobotConfig:
         return RobotConfig(
             vendor="dummy",
             gripper={"vendor": "none"},
-            grasping={
-                "default_mode": "auto",
-                "decision": {"enabled": True},
-                "recovery": {"enabled": True},
-                "uncertainty": {"enabled": True},
-                "watchdog": {"mode": "active"},
-                "performance": {"enabled": True},
-            },
+            grasping={"default_mode": "auto"},
         )
 
     def test_effective_config_overlays_activated(self) -> None:
@@ -592,134 +563,7 @@ class FromRobotConfigOverlaysFireTests(unittest.TestCase):
         ec = svc.effective_config
         self.assertIsNotNone(ec)
         assert ec is not None  # type-narrow for the attribute reads below
-        self.assertTrue(ec.decision.enabled, "T1 decision overlay not activated via from_robot_config")
         self.assertTrue(ec.recovery_orchestrator.enabled, "T5 recovery overlay not activated")
-        self.assertTrue(ec.uncertainty.enabled, "U8 uncertainty overlay not activated")
-        self.assertEqual(ec.watchdog.mode, "active", "U9 watchdog overlay not activated via from_robot_config")
-        self.assertTrue(ec.performance.enabled, "U10 SLO overlay not activated")
-
-    def test_decision_overlay_fires_end_to_end(self) -> None:
-        # Through the CONFIG-DRIVEN build (not from_components + manual injection like the T1 unit tests):
-        # an AUTO pick with a confident grasp runs the decision gate and populates report.decision.
-        cfg = RobotConfig(
-            vendor="dummy",
-            gripper={"vendor": "none"},
-            grasping={
-                "default_mode": "auto",
-                "decision": {"enabled": True},
-                "uncertainty": {"enabled": True},
-            },
-        )
-        calc, perception = _calc_and_perception()
-        report = AutonomousGraspService.from_robot_config(
-            cfg,
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        ).pick()
-        # The AUTO decision gate RAN through the config-driven build: report.decision is populated and the
-        # attempt id is the decision path's ``auto-<uuid>``. (The terminal outcome depends on the in-memory
-        # dummy arm's execution and is deliberately not what this test pins.)
-        self.assertIsNotNone(report.decision, "the AUTO decision gate did not run through from_robot_config")
-        self.assertTrue(str(report.telemetry.get("attempt_id", "")).startswith("auto-"))
-
-
-class FromRobotConfigRerankOverlayTests(unittest.TestCase):
-    """H2.1a — the G4 per-candidate uncertainty-rerank CONSUMER (``uncertainty.rerank_enabled``) is WIRED onto
-    the orchestrator through from_robot_config. This is the prod surface of the corridor-risk rerank: the
-    consumer config-plumb has existed since G4/gap-closure but is reachable ONLY via from_robot_config
-    (apply_orchestrator_overlays) — the live sim-runner dense pick uses from_components, which leaves the slot
-    ``None``. The H2.1 deep-read found the rerank had NEVER fired end-to-end on any live path; this test pins
-    that the PROD path at least WIRES the consumer (the off-box reorder math itself is proven by
-    ``tests/test_g4_uncertainty_rerank.py::test_uncertainty_flips_order_so_runner_up_wins``). Mirrors the H0.3b
-    overlay-fires tests above."""
-
-    @staticmethod
-    def _cfg(*, rerank_enabled: bool, rerank_weight: float = 0.2) -> RobotConfig:
-        return RobotConfig(
-            vendor="dummy",
-            gripper={"vendor": "none"},
-            grasping={
-                "default_mode": "dense_clutter",
-                "uncertainty": {
-                    "rerank_enabled": rerank_enabled,
-                    "rerank_weight": rerank_weight,
-                },
-            },
-        )
-
-    def test_rerank_overlay_wired_when_enabled(self) -> None:
-        calc, perception = _calc_and_perception()
-        svc = AutonomousGraspService.from_robot_config(
-            self._cfg(rerank_enabled=True, rerank_weight=0.2),
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        cfg = svc.runtime.orchestrator.uncertainty_rerank_config
-        self.assertIsNotNone(cfg, "G4 rerank consumer not wired via from_robot_config")
-        assert cfg is not None  # type-narrow for the attribute reads below
-        self.assertTrue(cfg.enabled)
-        self.assertEqual(cfg.weight, 0.2)
-        self.assertEqual(cfg.modes, ("dense_clutter",))
-
-    def test_rerank_overlay_none_when_disabled(self) -> None:
-        # Default-off (rerank_enabled absent) -> the slot stays ``None`` -> byte-identical no-op.
-        calc, perception = _calc_and_perception()
-        svc = AutonomousGraspService.from_robot_config(
-            self._cfg(rerank_enabled=False),
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        self.assertIsNone(svc.runtime.orchestrator.uncertainty_rerank_config)
-
-
-class FromRobotConfigApproachValidationOverlayTests(unittest.TestCase):
-    """H2.2a — the G12 swept-volume approach-validation overlay (``approach_validation.enabled``) is WIRED onto
-    the orchestrator through from_robot_config: ``approach_path_policy`` is set + ``_approach_path_modes`` is
-    populated, so the dense-mode per-pick gate (``mode_label in _approach_path_modes``) can fire. Like the H2.1
-    rerank consumer, this config-plumb is reachable ONLY via from_robot_config (apply_orchestrator_overlays) —
-    the live sim-runner dense pick uses from_components + a manual ``--g12`` owner-set, which is why the
-    on-box refuse proof runs through run_dense_pick, not this prod path. The validator's refuse / fall-back /
-    no-false-refusal LOGIC is pinned off-box by ``tests/test_pick_loop.py``; this test pins only that the PROD
-    path WIRES it (the apply_orchestrator_overlays seam neither test_pick_loop nor the seam0 schema golden
-    cover). Mirrors the H0.3b / H2.1a overlay-fires tests above."""
-
-    @staticmethod
-    def _cfg(*, enabled: bool) -> RobotConfig:
-        return RobotConfig(
-            vendor="dummy",
-            gripper={"vendor": "none"},
-            grasping={
-                "default_mode": "dense_clutter",
-                "approach_validation": {"enabled": enabled},
-            },
-        )
-
-    def test_overlay_wired_when_enabled(self) -> None:
-        calc, perception = _calc_and_perception()
-        svc = AutonomousGraspService.from_robot_config(
-            self._cfg(enabled=True),
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        orch = svc.runtime.orchestrator
-        self.assertIsNotNone(
-            orch.approach_path_policy, "G12 approach validator not wired via from_robot_config"
-        )
-        self.assertEqual(
-            orch._approach_path_modes, frozenset({"dense_clutter"})
-        )
-
-    def test_overlay_off_when_disabled(self) -> None:
-        # Default-off -> no policy + empty modes -> the gate is False -> byte-identical legacy execute path.
-        calc, perception = _calc_and_perception()
-        svc = AutonomousGraspService.from_robot_config(
-            self._cfg(enabled=False),
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        orch = svc.runtime.orchestrator
-        self.assertIsNone(orch.approach_path_policy)
-        self.assertEqual(orch._approach_path_modes, frozenset())
 
 
 class FromRobotConfigPrimaryResolverTests(unittest.TestCase):
@@ -729,12 +573,8 @@ class FromRobotConfigPrimaryResolverTests(unittest.TestCase):
     does not cover."""
 
     @staticmethod
-    def _cfg(*, fusion_enabled: bool) -> RobotConfig:
-        return RobotConfig(
-            vendor="dummy",
-            gripper={"vendor": "none"},
-            grasping={"default_mode": "dense_clutter", "fusion": {"enabled": fusion_enabled}},
-        )
+    def _cfg() -> RobotConfig:
+        return RobotConfig(vendor="dummy", gripper={"vendor": "none"}, grasping={"default_mode": "dense_clutter"})
 
     @staticmethod
     def _camera(extrinsics_path: str):
@@ -752,12 +592,11 @@ class FromRobotConfigPrimaryResolverTests(unittest.TestCase):
     def test_fail_closed_bad_extrinsics_raises_end_to_end(self) -> None:
         # Fail-closed end to end: a primary rig that declares an unloadable artifact must raise through the
         # whole from_robot_config composition (not only the build_config_frame_resolver helper), so the
-        # operator does not get a cell that cannot place its camera while believing it calibrated. Fusion
-        # is switched on, and the primary's resolver does not wait for it either way.
+        # operator does not get a cell that cannot place its camera while believing it calibrated.
         calc, perception = _calc_and_perception()
         with self.assertRaises(RuntimeError) as caught:
             AutonomousGraspService.from_robot_config(
-                self._cfg(fusion_enabled=True),
+                self._cfg(),
                 calculator=calc,  # type: ignore[arg-type]
                 perception=perception,
                 camera=self._camera("/definitely/not/a/real/extrinsics_artifact.json"),

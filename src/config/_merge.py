@@ -4,10 +4,6 @@ Contract: a ``None`` overlay leaf keeps the base value, so a partial overlay can
 without wiping fields. A profile overlay that must reset a base field to ``None`` writes the reset
 sentinel defined in ``src/config/loader.py`` instead, so a reset never reaches this merge as
 ``None``.
-
-``src.robot.grasping.replay.presets`` keeps a separate ``_deep_merge`` on purpose and is not folded
-in here: its None/Mapping/deepcopy semantics are a different contract, and it does not keep the base
-value on a ``None`` overlay leaf.
 """
 
 from __future__ import annotations

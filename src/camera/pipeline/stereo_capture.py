@@ -11,7 +11,6 @@ from src.config.schema.camera import (
     CameraSystemConfig,
     RGBDDeviceRigConfig,
     SingleDeviceRigConfig,
-    StereoMatcherConfig,
     WebcamPairRigConfig,
 )
 from src.calibration.stereo.config import StereoRigConfig
@@ -31,18 +30,18 @@ class StereoCapturePipeline:
 
     Resolves which rigs to use, records the stereo calibration images that are missing, and
     builds the ``FrameProvider`` together with the ``StereoCam3D`` that rectifies its stereo
-    frames. RGB-D rigs are carried through to the provider but never calibrated here.
+    frames. RGB-D rigs are carried through to the provider but never calibrated here. Each stereo
+    rig's matcher searches what its own calibration gives (``StereoRigFactory``); there is no
+    matcher block to hand in since 2026-10-17.
     """
 
     def __init__(
         self,
         camera_config: CameraSystemConfig,
         calibration: CalibrationConfig,
-        stereo_matcher: StereoMatcherConfig,
     ) -> None:
         self.camera_config = camera_config
         self.calibration = calibration
-        self.stereo_matcher = stereo_matcher
         self.logger = logging.getLogger(__name__)
 
     def run(
@@ -96,7 +95,6 @@ class StereoCapturePipeline:
             stereo = StereoCam3D(
                 rigs=stereo_rig_cfgs,
                 calibration=self.calibration,
-                stereo_matcher=self.stereo_matcher,
                 marker_length_mm=self.calibration.marker_length_mm,
                 aruco_dict_name=self.calibration.aruco_dict_name,
             )

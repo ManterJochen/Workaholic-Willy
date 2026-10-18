@@ -27,7 +27,8 @@ only if
 x_min <= x <= x_max  and  y_min <= y <= y_max  and  z_min <= z <= z_max
 ```
 
-Before the guard runs, the box is shrunk by a safety margin `m` on every face:
+Before the guard runs, the box is shrunk by a safety margin `m` on every face, 20 mm on every cell since
+2026-10-17 (`workspace.WORKSPACE_MARGIN_MM`, the owner's cell's):
 
 ```
 x_min' = x_min + m,   x_max' = x_max - m      and likewise for y and z
@@ -53,7 +54,8 @@ theta = 2 * arccos(abs(dot(q1, q2)))
 
 The absolute value of the scalar product handles double cover, since `q` and `-q` are the same
 rotation, so `theta` is the true minimal rotation angle in `[0, pi]`. This is what `Pose.angle_to`
-returns; the guards compare `theta`, in degrees, against a configured cap.
+returns; the guards compare `theta`, in degrees, against the arm's cap (30 on every real arm,
+[`guard_numbers.py`](../src/robot/safety/guard_numbers.py)).
 
 ---
 
@@ -65,8 +67,13 @@ Fixtures are axis-aligned boxes. All distances are signed, and negative means pe
 
 This backend is the fallback rather than the default. `self_collision.backend` ships as `fcl`, the
 exact-mesh path of section 6; the capsule path is what runs when no collision engine or mesh bundle
-resolves. It is materially coarser: its default link radius is 60 mm, which over-rejects legitimate
-reach-down grasps, and it skips link pairs the exact backend checks.
+resolves. It is materially coarser: every link is 60 mm round, which over-rejects legitimate
+reach-down grasps, and it skips link pairs the exact backend checks. Its geometry is no key since
+2026-10-17: the base column runs from the mounting face up to the shoulder joint the arm's description
+places (`config/arms/<model>.yaml`, its first `d`), 80 mm round, and the tool is the hand's fingers as one
+capsule along the grasp's closing axis at the TCP, as long as the open jaw is across its fingers' outer
+faces (`aperture + 2 * finger_thickness`) and as thick as a finger is wide (`finger_width`), from the hand's
+registry file: 147.7 mm and 13.5 mm for the 2F-85.
 
 ### 3.1 Point to segment
 
@@ -168,10 +175,10 @@ R_z(psi) * origin,   with R_z(psi) = [ sin(psi)   cos(psi)   0 ]
 
 Because this is a pure base-frame rotation it preserves every inter-link distance, so arm-against-arm
 distances are invariant to it. Only the arm's placement relative to the base, tool and fixture
-capsules moves. The key is `safety.self_collision.kinematics_base_yaw_deg` and its default `0.0`
-leaves every existing cell unchanged; the Isaac cell ships `180.0` in
-[`config/robot/robot.sim.yaml`](../config/robot/robot.sim.yaml), because the official UR DH base is
-rotated half a turn about Z from that USD's `base_link`.
+capsules moves. The yaw is the arm's own fact, no key since 2026-10-17: a real arm's controller reports
+in its DH base, so `psi = 0` ([`guard_numbers.py`](../src/robot/safety/guard_numbers.py), `CELL`); the
+Isaac arm states `180` in code ([`src/willy_sim/guard_numbers.py`](../src/willy_sim/guard_numbers.py)),
+because the official UR DH base is rotated half a turn about Z from that USD's `base_link`.
 
 Code: [`_ur_kinematics.py`](../src/robot/safety/_ur_kinematics.py)
 
@@ -196,8 +203,8 @@ step `delta` defaults to `1e-4` radians. The singular values `sigma_1 >= ... >= 
 | Quantity | Definition | Default | Fails when |
 | --- | --- | --- | --- |
 | rank | count of `sigma_i > rank_tol` | `rank_tol = 1e-6` | below `min(n, 6)`, a degree of freedom has collapsed |
-| minimum singular value | `sigma_k` | `min_singular_value = 0.005` | below the threshold, a weak direction |
-| condition number | `sigma_1 / sigma_k`, infinite if `sigma_k` is at or below `rank_tol` | `max_condition_number = 250.0` | above the threshold, ill conditioned |
+| minimum singular value | `sigma_k` | `min_singular_value = 0.005` (every real arm's; Isaac 0.0001) | below the threshold, a weak direction |
+| condition number | `sigma_1 / sigma_k`, infinite if `sigma_k` is at or below `rank_tol` | `max_condition_number = 250.0` (every real arm's; Isaac 1000) | above the threshold, ill conditioned |
 
 Any failing test flags `is_near_singularity`, and the guard rejects with the offending numbers
 attached. Intuitively, a large condition number means the manipulability ellipsoid is a thin sliver:
@@ -225,11 +232,11 @@ holds, turned about `+Z` by its yaw `phi`, placed by `Rz(phi)` about its centre,
 `perceived_min_distance_mm`. A seen box is already the seen surface grown by the camera world's margin
 `m`, so the arm keeps `d_seen + m` from what the camera saw, and the load requires
 `d_seen + m >= min_distance_mm`, the path step: a surface that clears both samples of a step cannot be
-reached between them. That holds for the thinned cloud the boxes are fitted to, one point per 10 mm voxel;
-over 3,400 synthetic scenes a raw pixel lay up to 10.9 mm past the points kept, at an oblique face or an edge (4.1 mm
-inside a box grown by 15), a measurement and not a bound.
-At a 20 mm voxel a measured pixel lay 5.6 mm outside every box, so while `d_seen < min_distance_mm` the load
-also refuses `perceived.voxel_size_mm` coarser than 10.
+reached between them; `m` is 6 mm on every cell since 2026-10-17 (`perceived.CAMERA_BOX_MARGIN_MM`). That
+holds for the thinned cloud the boxes are fitted to, one point per 10 mm voxel (`perceived.CAMERA_VOXEL_MM`);
+over 3,400 synthetic scenes a raw pixel lay up to 10.9 mm past the points kept, at an oblique face or an edge
+(4.1 mm inside a box grown by 15), a measurement and not a bound. At a 20 mm voxel a measured pixel lay 5.6 mm
+outside every box, which is why no cell runs a coarser one.
 
 **Broadphase cull.** For the continuous monitor a conservative bounding sphere, the mesh centroid
 plus its maximum vertex radius, precedes each exact query. A pair is skipped when
@@ -254,12 +261,12 @@ Code: [`_fcl_self_collision.py`](../src/robot/safety/_fcl_self_collision.py) and
 
 ## 7. Fail-closed authority, the rule the math serves
 
-The formulas above only ever reject motion; they never grant it. The pipeline runs the guards in a
-fixed order and returns the first rejection. A guard that cannot decide, because telemetry or an
-asset is missing, returns `UNAVAILABLE`, and while its family is enforced that also refuses the
-move. It fails closed and never passes silently. Safety outranks everything downstream:
-deterministic geometry, recovery, and the optional learned layer may only reorder or filter
-candidates the guards have already cleared, never override a rejection.
+The formulas above only ever reject motion; they never grant it. The pipeline runs the guards in a fixed order and
+returns the first rejection. A guard that cannot decide, because telemetry or an asset is missing, returns
+`UNAVAILABLE`, and that also refuses the move: every cell runs every guard since 2026-10-17, when the owner's cleanup
+took the `enforce` flags. It fails closed and never passes silently. Safety outranks everything downstream:
+deterministic geometry, recovery, and the optional learned layer may only reorder or filter candidates the guards have
+already cleared, never override a rejection.
 
 The one place where a missing asset does not produce `UNAVAILABLE` is the exact-mesh backend of
 section 6, which falls back to a coarser but still conservative geometry and says so in the log.
@@ -269,12 +276,11 @@ Two places let an exact verdict set a refusal aside, both the planner's padded s
 sample the planner refused on such a pair runs only where the exact guard, judging that very sample again,
 keeps its `min_distance_mm`; the padding lifted is never more than the margin. Against the boxes a camera
 saw, the same cushion reaches 25 to 29 mm past the shoulder housing: a sample the planner's world refused
-runs only where the planner, judging it again with exactly those boxes set aside, clears its world, no part
-is carried, modelled or not, the hand reads empty and open, and the exact guard, judging it again with the
-same boxes, keeps `perceived_min_distance_mm`, which a load refuses below 1 mm. The planner's joint bounds,
-the carried part, the robot's base, the bench and every declared fixture stay its refusals, and so do the
-camera's boxes while the hand is not known empty and open; a grasp judges its lift with them in before the
-jaws close.
+runs only where the planner, judging it again with exactly those boxes set aside, clears its world, and the
+exact guard, judging it again with the same boxes, keeps `perceived_min_distance_mm`, which a load refuses
+below 1 mm. No part in the jaws is modelled since 2026-10-17, so this holds whatever the hand holds: a closed
+hand is judged as an empty one, at full stroke. The planner's joint bounds, the robot's base, the bench and
+every declared fixture stay its refusals; a grasp judges its lift before the jaws close.
 
 Code: [`preflight.py`](../src/robot/safety/preflight.py) and
 [`decision.py`](../src/robot/safety/decision.py)

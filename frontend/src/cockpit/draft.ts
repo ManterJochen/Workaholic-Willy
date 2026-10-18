@@ -7,11 +7,12 @@
  * the server; `useCommand` does, and only on a person's Enter (a parse, which moves nothing, and where the settings
  * say so the task of a clean reading) or a person's click on Start (the task, which moves).
  *
- * The place has three forms, as the card offers them: the cell's default place pose (`robot.default_place_pose`), a
+ * The place has three forms, as the card offers them: the cell's default place pose (`robot.motion.default_place_pose`), a
  * taught pose by its name (shown by its label), or a target the camera finds ("blue bin"). Scope is once or until
  * empty; after the task the arm returns to Home or to a taught pose. What the sentence does not say comes from the
- * settings (the owner, 2026-10-08): the place where none is named, the tick for "anything" where no part is named,
- * and, where Enter starts, the mode.
+ * settings (the owner, 2026-10-08), the cell's own since 2026-10-17 (`model/taskSettings.ts`, `runtime.task`): the place
+ * where none is named, the tick for "anything" where no part is named, and, where Enter starts, the mode. Where the
+ * cell's settings are not read yet, a card fills what the sentence says and nothing else.
  *
  * What to pick may be narrowed twice (2026-10-08): the one part the sentence singles out (`which`, "the gray cube on
  * top of the other one"), which the detector is asked alone, and where the parts lie (`source`, "on the black mat").
@@ -35,7 +36,6 @@ import type {
   CommandRuleOut,
   PlanPlaceOut,
   PosesOut,
-  RoutePreviewOut,
   TaskIn,
   TaskPlanOut,
   TaskRuleIn,
@@ -43,7 +43,7 @@ import type {
 import type { CommandNote } from '../api/codes'
 import { listMsg, noteMsg } from '../i18n/codes'
 import type { Msg, ParamValue } from '../i18n/types'
-import type { LooksChoice, TaskPlace, TaskPrefs } from '../model/prefs'
+import type { LooksChoice, TaskPlace, TaskSettings } from '../model/taskSettings'
 
 /** The closing axes a task may keep its grasps to (`TaskOptionsIn.closing_axis`); `null` is any. */
 export const CLOSING_AXES = ['x', '-x', 'y', '-y', 'radial', '-radial', 'tangential', '-tangential'] as const
@@ -76,7 +76,7 @@ export interface DraftOptions {
   readonly clear: boolean | null
   /** The owner's switch (2026-10-08 night, "Direkt über die Kante tragen"): a part goes to a bin a wrist camera found
    *  straight over its rim (`over_the_rim`), or via the look it was found from (`via_the_look`). `null` is the cell's
-   *  own (`robot.place.carry`). */
+   *  own (`robot.motion.place.carry`). */
   readonly carryOverTheRim: boolean | null
   readonly rimAirMm: number | null
   readonly overlay: boolean
@@ -98,7 +98,7 @@ export const DEFAULT_OPTIONS: DraftOptions = {
 }
 
 /** The options a card starts from: the defaults, its picks looking as the settings say. */
-function optionsOf(task?: Pick<TaskPrefs, 'looks'>): DraftOptions {
+function optionsOf(task?: Pick<TaskSettings, 'looks'> | null): DraftOptions {
   return task ? { ...DEFAULT_OPTIONS, looks: task.looks } : DEFAULT_OPTIONS
 }
 
@@ -142,12 +142,10 @@ export interface DraftRule {
   readonly objectSaid: string | null
   /** The reader found the kind in the sentence; "bitte prüfen" otherwise. */
   readonly objectVerified: boolean
-  readonly objectRoute: RoutePreviewOut | null
   readonly which: string
   readonly source: string
   readonly place: PlaceChoice
   readonly placeVerified: boolean
-  readonly placeRoute: RoutePreviewOut | null
   /** What the reader wants a person to check in this rule. */
   readonly notes: readonly CommandNote[]
 }
@@ -189,8 +187,6 @@ export interface Draft {
   readonly objectSaid: string | null
   /** The reader checked the phrase against the sentence; "bitte prüfen" otherwise. */
   readonly objectVerified: boolean
-  /** How the detector would route what the picks ground (`groundedOf`). */
-  readonly objectRoute: RoutePreviewOut | null
   /** The one part singled out, in English ("the gray cube on top of the other one"): the detector is asked this alone.
    *  `''` is every part of the object's kind. */
   readonly which: string
@@ -198,7 +194,6 @@ export interface Draft {
   readonly source: string
   readonly place: PlaceChoice
   readonly placeVerified: boolean
-  readonly placeRoute: RoutePreviewOut | null
   /** A sort's further rules, the card's own fields being the first (the owner, 2026-10-09); none for one kind. */
   readonly moreRules: readonly DraftRule[]
   readonly scope: 'once' | 'until_empty'
@@ -231,24 +226,22 @@ export function placeChoiceOf(place: TaskPlace): PlaceChoice {
 }
 
 /** The place a reading names (a taught pose, then a target the camera finds), else the settings', else the default. */
-function placeOfReading(pose: string | null | undefined, place: CommandPhraseOut | null | undefined, task?: TaskPrefs): PlaceChoice {
+function placeOfReading(pose: string | null | undefined, place: CommandPhraseOut | null | undefined, task?: TaskSettings | null): PlaceChoice {
   if (pose) return { kind: 'pose', pose }
   if (place?.phrase) return { kind: 'camera', phrase: place.phrase, said: place.said ?? null }
   return task ? placeChoiceOf(task.place) : { kind: 'default' }
 }
 
 /** A sort's further rule as the reader understood it (`CommandOut.rules[1:]`). */
-function ruleOfReading(rule: CommandRuleOut, task?: TaskPrefs): DraftRule {
+function ruleOfReading(rule: CommandRuleOut, task?: TaskSettings | null): DraftRule {
   return {
     object: rule.object?.phrase ?? '',
     objectSaid: rule.object?.said ?? null,
     objectVerified: rule.object?.verified ?? false,
-    objectRoute: rule.object?.route ?? null,
     which: rule.which ?? '',
     source: rule.source ?? '',
     place: placeOfReading(rule.place_pose, rule.place, task),
     placeVerified: rule.place ? rule.place.verified : true,
-    placeRoute: rule.place?.route ?? null,
     notes: rule.notes ?? [],
   }
 }
@@ -269,14 +262,15 @@ function ownNotes(out: CommandOut): CommandNote[] {
 /**
  * The reader's answer as a card (`POST /v1/commands/parse`). `understood: false` opens it by hand, with the reason.
  *
- * `task` is what the person set beforehand. The sentence's own place wins (a taught pose, then a target the camera
+ * `task` is what was set beforehand, the cell's task settings; `null` or absent where they are not read, and the card
+ * then holds what the sentence says alone. The sentence's own place wins (a taught pose, then a target the camera
  * finds), and the settings' place stands where it names none; a sentence that names no part comes ticked for
  * "anything" where the settings say so. Where Enter starts (`task.start === 'enter'`) the mode is the settings', not
  * the sentence's (the owner, 2026-10-08); the card of `card` keeps the reader's, as before. A sentence that singles out
  * one part (`which`) is once either way: "until empty" would go on to parts it did not name. How its picks look comes
  * from the settings, either way. A sort's further rules come from the reading's own (`rules[1:]`).
  */
-export function draftFromReading(out: CommandOut, said: Said, task?: TaskPrefs): Draft {
+export function draftFromReading(out: CommandOut, said: Said, task?: TaskSettings | null): Draft {
   const object = out.object?.phrase ?? ''
   return {
     id: nextId(),
@@ -286,12 +280,10 @@ export function draftFromReading(out: CommandOut, said: Said, task?: TaskPrefs):
     object,
     objectSaid: out.object?.said ?? null,
     objectVerified: out.object?.verified ?? false,
-    objectRoute: out.object?.route ?? null,
     which: out.which ?? '',
     source: out.source ?? '',
     place: placeOfReading(out.place_pose, out.place, task),
     placeVerified: out.place ? out.place.verified : true,
-    placeRoute: out.place?.route ?? null,
     moreRules: (out.rules ?? []).slice(1).map((rule) => ruleOfReading(rule, task)),
     scope: out.which ? 'once' : task?.start === 'enter' ? task.scope : (out.scope ?? 'once'),
     returnTo: out.return_to ?? 'home',
@@ -344,7 +336,7 @@ export function doubts(out: CommandOut): Msg<string>[] {
 
 /** A card filled by hand: no reader answered (`vlm_unavailable`, `vlm_not_loaded`, `vlm_model_missing`). Its picks look
  *  as the settings say (`task`), where they are handed. */
-export function manualDraft(said: Said, code: string, message: string, task?: Pick<TaskPrefs, 'looks'>): Draft {
+export function manualDraft(said: Said, code: string, message: string, task?: Pick<TaskSettings, 'looks'> | null): Draft {
   return {
     id: nextId(),
     mode: 'manual',
@@ -353,12 +345,10 @@ export function manualDraft(said: Said, code: string, message: string, task?: Pi
     object: '',
     objectSaid: null,
     objectVerified: true,
-    objectRoute: null,
     which: '',
     source: '',
     place: { kind: 'default' },
     placeVerified: true,
-    placeRoute: null,
     moreRules: [],
     scope: 'once',
     returnTo: 'home',
@@ -383,12 +373,10 @@ export function newRule(): DraftRule {
     object: '',
     objectSaid: null,
     objectVerified: true,
-    objectRoute: null,
     which: '',
     source: '',
     place: { kind: 'default' },
     placeVerified: true,
-    placeRoute: null,
     notes: [],
   }
 }
@@ -405,12 +393,10 @@ export function draftFromPlan(plan: TaskPlanOut): Draft {
     object: plan.object,
     objectSaid: plan.object_said ?? null,
     objectVerified: true,
-    objectRoute: null,
     which: plan.which ?? '',
     source: plan.source ?? '',
     place: placeOfPlan(plan.place),
     placeVerified: true,
-    placeRoute: null,
     moreRules: (plan.more_rules ?? []).map((rule) => ({
       ...newRule(),
       object: rule.object,
@@ -447,15 +433,6 @@ export function draftFromPlan(plan: TaskPlanOut): Draft {
 export function edit(draft: Draft, field: DraftField, change: Partial<Draft>): Draft {
   const edited = draft.edited.includes(field) ? draft.edited : [...draft.edited, field]
   return { ...draft, ...change, edited }
-}
-
-/**
- * What the picks of the card would ground, as the server's route guard judges it (`api/routers/task.py` `_grounded`,
- * the library's `pick_phrase` without its "each separate"): the one part singled out alone, else the object where the
- * parts lie. The pick's route badge previews this.
- */
-export function groundedOf(draft: Pick<Draft, 'object' | 'which' | 'source'>): string {
-  return draft.which.trim() || [draft.object.trim(), draft.source.trim()].filter((words) => words !== '').join(' ')
 }
 
 /** A place as the task carries it: a target the camera finds, or a pose (`null`: the cell's default place). */

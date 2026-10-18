@@ -6,9 +6,10 @@ check_js checker all hold. The order is load bearing:
   1. body links (:func:`apply_body_links`): the hand, a plate, a wrist camera, each a fixed link under the tool frame
      with its own spheres, buffer and ignore list;
   2. the guard's margin (``_curobo_margin``), which raises only buffers already in the table, so a body added after it
-     would plan without the margin;
-  3. the payload link (``_curobo_attach``), which is ignored against every link whose ignore list names the tool frame,
-     so a hand added after it would collide with the part it holds; a wrist camera stays checked against it.
+     would plan without the margin.
+
+No link for a carried part follows since 2026-10-17: no cell models one (the owner's cleanup), and a config composed
+with none was byte for byte the config composed before, so every committed ``composed_sha256`` names it still.
 
 A wrist camera's body is composed on top of the config the combination evidence names. :func:`compose_for_cell`
 composes both, and refuses unless removing the camera's links from the loaded config gives back the evidence config
@@ -40,10 +41,8 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from ._curobo_attach import apply_attached_object_link
     from ._curobo_margin import apply_self_collision_margin
 except ImportError:  # loaded by the sidecar as a plain sibling, with no package around it
-    from _curobo_attach import apply_attached_object_link  # type: ignore[import-not-found,no-redef]
     from _curobo_margin import apply_self_collision_margin  # type: ignore[import-not-found,no-redef]
 
 __all__ = [
@@ -158,7 +157,7 @@ class ArmLinks:
     @property
     def wrist_body_ignore(self) -> tuple[str, ...]:
         """What a camera is never checked against: the flange and the last link it is bolted to, the hand and the plates
-        bolted to the same flange. The two links before the last stay checked, as does a carried part."""
+        bolted to the same flange. The two links before the last stay checked."""
         return (self.flange, self.links[-1], HAND_LINK, COUPLING_LINK)
 
 
@@ -502,24 +501,21 @@ def compose_with_counts(
     *,
     bodies: Sequence[Mapping[str, Any]] = (),
     margin_mm: float = 0.0,
-    attach_spheres: int = 0,
     default_q: "Sequence[float] | None" = None,
-) -> tuple[dict[str, Any], int, bool]:
-    """The composed config, how many buffers took the margin, and whether a payload link was added.
+) -> tuple[dict[str, Any], int]:
+    """The composed config, and how many buffers took the margin.
 
     The counts are what the sidecar says on stderr: a margin that found no buffer to raise is the planner running
     without the guard's clearance, and has to be loud. ``config`` is never mutated, and the result shares nothing with
     it.
     """
     composed, _ = apply_body_links(config, bodies)
-    # The retract goes in with the hand, before the margin and the payload: it is a property of the arm and the hand
-    # together, and the two arrive together or not at all.
+    # The retract goes in with the hand, before the margin: it is a property of the arm and the hand together, and the
+    # two arrive together or not at all.
     if default_q is not None:
         apply_default_q(composed, default_q)
     composed, margin_links = apply_self_collision_margin(composed, float(margin_mm))
-    composed, attach_added = apply_attached_object_link(composed, spheres=int(attach_spheres),
-                                                        checked_prefixes=(WRIST_BODY_PREFIX,))
-    return composed, margin_links, attach_added
+    return composed, margin_links
 
 
 def without_links(config: Mapping[str, Any], links: Sequence[str]) -> dict[str, Any]:
@@ -569,17 +565,15 @@ def compose_for_cell(
     bodies: Sequence[Mapping[str, Any]] = (),
     wrist_bodies: Sequence[Mapping[str, Any]] = (),
     margin_mm: float = 0.0,
-    attach_spheres: int = 0,
     default_q: "Sequence[float] | None" = None,
-) -> tuple[dict[str, Any], dict[str, Any], int, bool, list[str]]:
-    """``(loaded, evidence, margin_links, attach_added, wrist_links)``: what the planner loads, and what evidence names.
+) -> tuple[dict[str, Any], dict[str, Any], int, list[str]]:
+    """``(loaded, evidence, margin_links, wrist_links)``: what the planner loads, and what evidence names.
 
     The combination evidence is keyed by arm, hand, plate, placement and margin, and formed without a wrist camera.
     ``evidence`` is :func:`compose_with_counts` over ``bodies`` alone, byte for byte what a cell without a camera
     composes; ``loaded`` adds ``wrist_bodies`` on top. This refuses unless ``loaded`` without the camera's links is
-    ``evidence`` exactly, which turns the reading of every step into a check: each writes only its own link's keys,
-    the margin raises buffers link by link, and the payload's ignore entries skip the camera. Without a wrist body the
-    two are the same config.
+    ``evidence`` exactly, which turns the reading of every step into a check: each writes only its own link's keys, and
+    the margin raises buffers link by link. Without a wrist body the two are the same config.
     """
     for body in bodies:
         if str(body.get("link") or "").startswith(WRIST_BODY_PREFIX):
@@ -593,13 +587,10 @@ def compose_for_cell(
                 f"{body.get('link')!r} was sent as a wrist body and is not named {WRIST_BODY_PREFIX}<rig>, so the "
                 "evidence config could not be told apart from it"
             )
-    evidence, margin_links, attach_added = compose_with_counts(
-        config, bodies=bodies, margin_mm=margin_mm, attach_spheres=attach_spheres, default_q=default_q)
+    evidence, margin_links = compose_with_counts(config, bodies=bodies, margin_mm=margin_mm, default_q=default_q)
     if not wrist_bodies:
-        return evidence, evidence, margin_links, attach_added, []
-    loaded, _, _ = compose_with_counts(
-        config, bodies=[*bodies, *wrist_bodies], margin_mm=margin_mm, attach_spheres=attach_spheres,
-        default_q=default_q)
+        return evidence, evidence, margin_links, []
+    loaded, _ = compose_with_counts(config, bodies=[*bodies, *wrist_bodies], margin_mm=margin_mm, default_q=default_q)
     wrist_links = [str(body.get("link")) for body in wrist_bodies]
     stripped = without_links(loaded, wrist_links)
     if stripped != evidence:
@@ -608,7 +599,7 @@ def compose_for_cell(
             f"{_first_difference(stripped, evidence)}, so the combination evidence would no longer name the robot "
             "the planner loads"
         )
-    return loaded, evidence, margin_links, attach_added, wrist_links
+    return loaded, evidence, margin_links, wrist_links
 
 
 def compose_sidecar_config(
@@ -616,9 +607,7 @@ def compose_sidecar_config(
     *,
     bodies: Sequence[Mapping[str, Any]] = (),
     margin_mm: float = 0.0,
-    attach_spheres: int = 0,
     default_q: "Sequence[float] | None" = None,
 ) -> dict[str, Any]:
-    """The config the planner loads: ``config`` with body links, the retract, the margin, the payload link."""
-    return compose_with_counts(config, bodies=bodies, margin_mm=margin_mm, attach_spheres=attach_spheres,
-                               default_q=default_q)[0]
+    """The config the planner loads: ``config`` with body links, the retract and the margin."""
+    return compose_with_counts(config, bodies=bodies, margin_mm=margin_mm, default_q=default_q)[0]

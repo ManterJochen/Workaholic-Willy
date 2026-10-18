@@ -1,9 +1,12 @@
-"""The route, once chosen, reaches the operator and the log — and stays invisible when nothing routed.
+"""How a look found its parts, once a camera source says so, reaches the operator and the log, and stays invisible
+when it says nothing.
 
-Two claims, and the second matters as much as the first. A routed cell must SAY which model grounded
-the frame, because "why was that slow" and "why did it grasp the wrong thing" are usually answered by
-the route. An un-routed cell must produce byte-identical events and records, because that is what keeps
-the U12 soak baseline and every existing consumer valid.
+Two claims, and the second matters as much as the first. A source that names how it found the frame's parts (the
+live camera's ``last_route``: ``followed`` or ``grounded``, and why) must reach the console's sentence, its payload and
+the record, because "why was that slow" is usually answered there. A source that names nothing must produce
+byte-identical events and records, because that is what keeps the U12 soak baseline and every existing consumer
+valid. The prompt router that once filled these fields left with GroundingDINO on 2026-10-17; the values below are
+data, not a router's.
 """
 
 from __future__ import annotations
@@ -14,31 +17,17 @@ from unittest import mock
 from src.robot.grasping.loop.progress import PickProgress, PickStage
 
 
-class _Decision:
-    def __init__(self, route: str, reason: str) -> None:
-        self.route, self.reason = route, reason
+class TheSimSourcesNameNoRouteTests(unittest.TestCase):
+    """The sim's vision sources stamped the router's choice; with the router gone they name none, so nothing is
+    stamped rather than a guess."""
 
+    def test_neither_sim_vision_source_has_a_route_to_name(self) -> None:
+        from src.willy_sim.perception import vision
 
-class _Backend:
-    def __init__(self, decision=None) -> None:
-        self.last_decision = decision
-
-
-class SourceRouteExposureTests(unittest.TestCase):
-    """Both sim sources expose the decision the same way, via one shared duck-typed reader."""
-
-    def test_a_routed_backend_reports_its_decision(self) -> None:
-        from src.willy_sim.perception.vision import _last_route
-
-        self.assertEqual(_last_route(_Backend(_Decision("vlm", "non_english"))), ("vlm", "non_english"))
-
-    def test_an_unrouted_backend_reports_nothing_rather_than_guessing_simple(self) -> None:
-        """Stamping 'simple' would read as 'the router chose this' when no router ran."""
-        from src.willy_sim.perception.vision import _last_route
-
-        self.assertIsNone(_last_route(_Backend()))
-        self.assertIsNone(_last_route(None))
-        self.assertIsNone(_last_route(object()))
+        self.assertFalse(hasattr(vision, "_last_route"))
+        for source in (vision.IsaacVisionPerceptionSource, vision.MultiObjectVisionPerceptionSource):
+            with self.subTest(source.__name__):
+                self.assertFalse(hasattr(source, "last_route"))
 
 
 class ProgressEventTests(unittest.TestCase):

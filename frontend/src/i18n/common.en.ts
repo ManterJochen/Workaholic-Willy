@@ -145,7 +145,6 @@ const en: Record<keyof typeof de, string> = {
   'diag.pipeline': 'Pipeline',
   'diag.backend': 'Detector',
   'diag.segmenter': 'Segmenter',
-  'diag.router': 'Router',
   'diag.vlm': 'VLM',
   'diag.weights': 'Weights',
   'diag.address': 'Address',

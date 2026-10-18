@@ -5,7 +5,7 @@ its plane, the band and the allowance (``support_surfaces.SupportSolid.top_at``)
 that top. SFE planned the hand's height on the reading alone: once its grasps went lower (the owner, 2026-10-05: "wir
 müssen tiefer gehen"), the calculator's post-hoc filter refused all 12 grasps of a 30 mm cylinder lying on the mat, whose
 solid stood 7.3 mm over the reading, and three shapes the bench had picked the evening before got no grasp (the grasp
-bench, 2026-10-06). ``support_footprint.HandFloor`` hands SFE the solids: no point of the hand comes nearer their top
+bench, 2026-10-06). ``hand.HandFloor`` hands SFE the solids: no point of the hand comes nearer their top
 than the guard's distance, and the height solve starts there.
 """
 
@@ -17,11 +17,8 @@ from functools import lru_cache
 
 import numpy as np
 
-from src.robot.grasping.generation.support_footprint import (
-    HandFloor,
-    SupportFootprintJaw,
-    generate_support_footprint_grasps,
-)
+from src.robot.grasping.generation.hand import HandFloor, SupportFootprintJaw
+from src.robot.grasping.generation.body_grasps import body_grasps
 from src.robot.safety.planning.support_surfaces import SupportSolid
 
 #: The reading of the support under the part, BASE z, millimetres.
@@ -77,7 +74,7 @@ def _jaw() -> SupportFootprintJaw:
 
 
 def _grasps(cloud: np.ndarray, floor: HandFloor | None, refusals: dict[str, int] | None = None):  # noqa: ANN202
-    return generate_support_footprint_grasps(cloud, support_height_mm=READING_MM, jaw=_jaw(), max_candidates=40,
+    return body_grasps(cloud, support_height_mm=READING_MM, jaw=_jaw(), max_candidates=40,
                                              hand_floor=floor, refusals=refusals)
 
 
@@ -141,10 +138,12 @@ class AGraspKeepsTheGuardsDistanceFromTheHeldSupport(unittest.TestCase):
         self.assertLess(lowest - held_floor, 1.0)
 
     def test_a_part_the_held_floor_leaves_no_room_on_counts_under_the_table(self) -> None:
-        # 22 mm tall: the reading alone leaves a finger room on it, the held solid does not, and the support says so.
-        self.assertTrue(_grasps(_box_cloud(22.0), None))
+        # 14 mm tall: the reading alone leaves a finger room on it, the held solid does not, and the support says so.
+        # The part's body holds the pads 3 mm into a part and reads its outline 4 mm above them, so over the held floor
+        # it grips a 20 mm part and no 18 mm one, over the reading alone from 8 mm (22 mm was the height for SFE's ladder).
+        self.assertTrue(_grasps(_box_cloud(14.0), None))
         refusals: dict[str, int] = {}
-        grasps = _grasps(_box_cloud(22.0), HandFloor(solids=(_solid(),), distance_mm=GUARD_MM), refusals)
+        grasps = _grasps(_box_cloud(14.0), HandFloor(solids=(_solid(),), distance_mm=GUARD_MM), refusals)
         self.assertEqual(grasps, [])
         self.assertGreater(refusals["table"], 0)
         self.assertEqual(0, sum(count for cause, count in refusals.items() if cause.startswith(("seen", "declared"))))
@@ -152,7 +151,7 @@ class AGraspKeepsTheGuardsDistanceFromTheHeldSupport(unittest.TestCase):
     def test_without_a_floor_the_generator_is_unchanged(self) -> None:
         cloud = _box_cloud(30.0)
         a = _grasps(cloud, None)
-        b = generate_support_footprint_grasps(cloud, support_height_mm=READING_MM, jaw=_jaw(), max_candidates=40)
+        b = body_grasps(cloud, support_height_mm=READING_MM, jaw=_jaw(), max_candidates=40)
         self.assertEqual(len(a), len(b))
         for x, y in zip(a, b):
             np.testing.assert_allclose(x.position_mm, y.position_mm)

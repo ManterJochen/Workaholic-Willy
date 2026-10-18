@@ -5,7 +5,7 @@ deep-merge onto the production YAMLs (``robot.sim.yaml``, ``camera/hand_eye.sim.
 ``models/{object,segmenting}.sim.yaml``). Scene, prim and calibration constants come from that
 tree, not from this package. It reads ``cfg.robot.sim`` (driver and scene authoring),
 ``cfg.camera.hand_eye`` (calibration tuning), ``cfg.robot.calibration``,
-``cfg.robot.workspace_limits`` and ``cfg.models.*``. This module is the bridge: activate the
+``cfg.robot.motion.workspace`` and ``cfg.models.*``. This module is the bridge: activate the
 ``sim`` profile, load the tree, and convert ``cfg.robot.sim`` into the driver-side
 :class:`SimRobotConfig` (reusing :func:`src.robot.execution.robot_parts.build_sim_driver_config`).
 
@@ -111,7 +111,7 @@ def require_robot(cfg: "AppConfig") -> "RobotConfig":
     """Narrow ``cfg.robot`` to a non-``None`` :class:`RobotConfig` for the sim cell.
 
     The sim config tree always carries a ``robot`` block (``robot.vendor == 'sim'``), so the sim
-    runners can read ``robot.sim``, ``.gripper``, ``.calibration`` and ``.workspace_limits``
+    runners can read ``robot.sim``, ``.gripper``, ``.calibration`` and ``.motion.workspace``
     without the ``RobotConfig | None`` union poisoning every access. Raises the same
     ``ValueError`` that :func:`sim_driver_config` and :func:`sim_safety_preflight` raise on the
     same precondition. On a sim run the block is present and the raise is unreachable.
@@ -145,15 +145,18 @@ def sim_safety_preflight(cfg: "AppConfig"):
 
     Mirrors how the UR driver wires safety: the same six guards in order (workspace, joint-limit,
     IK-quality, self-collision, payload, motion-continuity) from ``cfg.robot.safety`` and
-    ``cfg.robot.workspace_limits``. Pass the result to ``IsaacRobotArm(safety_preflight=...)`` so
+    ``cfg.robot.motion.workspace``. Pass the result to ``IsaacRobotArm(safety_preflight=...)`` so
     the sim pick path runs through the guards instead of bypassing them.
     """
+    from src.willy_sim.guard_numbers import ISAAC
     from src.robot.safety.planning.hand import planner_hand
     from src.robot.safety.preflight import SafetyPreflight
 
     robot = require_robot(cfg)
     # The hand the cell names, and the arm it hangs on: the UR sim.robot_model names, which the Isaac arm reports and
-    # the exact mesh guard reads hand geometry on (P0d D5). With a hand unnamed, this refuses.
+    # the exact mesh guard reads hand geometry on (P0d D5). With a hand unnamed, this refuses. The Isaac arm's own
+    # guard numbers, its half-turned base among them, are this harness's own table (willy_sim/guard_numbers.py).
     return SafetyPreflight.from_safety_config(
-        robot.safety, robot.workspace_limits, hand=planner_hand(robot), arm_model=robot.arm.model or None,
+        robot.safety, robot.motion.workspace, hand=planner_hand(robot), arm_model=robot.arm.model or None,
+        numbers=ISAAC,
     )

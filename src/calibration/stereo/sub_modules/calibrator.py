@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import glob
 import time
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import cv2 as cv
@@ -30,13 +31,37 @@ _MIN_CORNERS = 6
 # Minimum number of usable image pairs required for a stable calibration.
 _MIN_PAIRS = 10
 
-__all__ = ["StereoCalibrator"]
+__all__ = ["StereoCalibrator", "StereoSolve"]
 
 logger = create_logger("StereoCalibrator", STEREO_CALIBRATOR_LOG_FILE, log_dir=CALIBRATION_LOG_DIR)
 
 
+@dataclass(frozen=True, slots=True)
+class StereoSolve:
+    """What one calibration rests on: the pairs it read and kept, and its reprojection residuals.
+
+    Attributes:
+        pairs_found (int): The image pairs the globs named.
+        pairs_used (int): The pairs whose board both cameras saw, with enough corners in common.
+        rms_left_px (float): The left camera's reprojection RMS, pixels.
+        rms_right_px (float): The right camera's, pixels.
+        rms_stereo_px (float): The pair's, pixels: the residual a calibration is judged by.
+        baseline_mm (float): The distance between the two cameras' centres, in the board's unit.
+    """
+
+    pairs_found: int
+    pairs_used: int
+    rms_left_px: float
+    rms_right_px: float
+    rms_stereo_px: float
+    baseline_mm: float
+
+
 class StereoCalibrator:
-    """Compute stereo intrinsics, extrinsics and rectification from a ChArUco board."""
+    """Compute stereo intrinsics, extrinsics and rectification from a ChArUco board.
+
+    :attr:`last_solve` says what the calibration last returned rests on, ``None`` before one.
+    """
 
     def __init__(
         self,
@@ -54,6 +79,7 @@ class StereoCalibrator:
         self.rectify_alpha = float(rectify_alpha)
         if not 0.0 <= self.rectify_alpha <= 1.0:
             raise StereoCalibrationError("rectify_alpha must be between 0 and 1")
+        self.last_solve: StereoSolve | None = None
         self._board = cv.aruco.CharucoBoard(
             (int(squares_x), int(squares_y)),
             float(square_length_mm),
@@ -142,7 +168,7 @@ class StereoCalibrator:
         assert frame_size is not None  # for the type checker
 
         result = self._calibrate_from_correspondences(
-            frame_size, objpoints, imgpointsL, imgpointsR
+            frame_size, objpoints, imgpointsL, imgpointsR, pairs_found=len(left_imgs)
         )
         logger.info(
             "Calibration done in %.1f s: %d usable pairs, frame_size=%s.",
@@ -204,6 +230,8 @@ class StereoCalibrator:
         objpoints: List[np.ndarray],
         imgpointsL: List[np.ndarray],
         imgpointsR: List[np.ndarray],
+        *,
+        pairs_found: int = 0,
     ) -> CalibrationResult:
         """Calibrate each camera, then the pair, then rectification, from matched corners."""
         rms_left, camL, distL, _, _ = cv.calibrateCamera(  # type: ignore[call-overload]
@@ -242,13 +270,17 @@ class StereoCalibrator:
 
         # Reprojection RMS is in pixels, the baseline in the board's unit (mm). Both are
         # logged so a drifting rig can be compared against the previous calibration.
+        baseline_mm = float(np.linalg.norm(np.asarray(T, dtype=np.float64)))
         logger.info(
             "Reprojection RMS: left=%.3f px, right=%.3f px, stereo=%.3f px; baseline=%.1f mm.",
             float(rms_left),
             float(rms_right),
             float(stereo_rms),
-            float(np.linalg.norm(np.asarray(T, dtype=np.float64))),
+            baseline_mm,
         )
+        self.last_solve = StereoSolve(
+            pairs_found=int(pairs_found) or len(objpoints), pairs_used=len(objpoints), rms_left_px=float(rms_left),
+            rms_right_px=float(rms_right), rms_stereo_px=float(stereo_rms), baseline_mm=baseline_mm)
 
         return CalibrationResult(
             camL=camL_opt,

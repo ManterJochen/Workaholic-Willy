@@ -1,7 +1,7 @@
 """Judge the next leg while the line before it runs, against a real UR controller (URSim CB3): the owner's C7b check.
 
 The owner, 2026-10-09 (map4 motion C7b): judge the next leg on a second thread while the current leg runs, with the
-watched send of ``robot.ur.brake_on_halt`` (a halt brakes the leg in flight along its judged line), "but only after a
+watched send every UR has (a halt brakes the leg in flight along its judged line), "but only after a
 URSim test". This is that test. The arm, its guard, its planner glue, its connection and URSim's controller are real; the
 camera and the planning sidecar are the unit tests' stand-ins (``tests/test_every_verb_meets_the_camera_world.py``: a
 bench a metre below an overhead camera, a sidecar that confirms what it is sent), because URSim has no camera and this
@@ -21,7 +21,12 @@ it here, and back to the bare flange at the end).
   gated: how far the arm ran past what its 2.0 m/s^2 brake takes from the speed at the halt, with the thread and
   without; the judgement gives up and takes the GIL around its queries, and the halting thread waits for it too.
 
-``--gate-at send`` runs every move with the steady gate at the send (``safety.dwell.gate_at``, the map's C4).
+Every arm judges a path whole since 2026-10-17 (the owner's cell did), and the judgement of the next leg ends in some
+20 ms, before the line is even sent. So that a halt still lands while the thread judges, B and C keep the judging thread
+busy after its judgement, holding the GIL as a judgement of one sample at a time did (up to 451 ms, 2026-10-09), until
+the halt has landed (1.5 s at most).
+
+Every move runs with the steady gate at the send, as every cuRobo arm does (the map's C4).
 
 Run it in WSL, where ``ur_rtde`` loads (Smart App Control blocks ``rtde_receive`` on this box's Windows). A URSim CB3
 container of its own, on the docker bridge, publishes no port and leaves the standard one to whoever uses it::
@@ -102,24 +107,25 @@ def _host(args: argparse.Namespace) -> str:
     return args.host
 
 
-def _arm(host: str, *, gate_at: str = "verb") -> URRobotArm:
+def _arm(host: str) -> URRobotArm:
     config = RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "ip": host, "brake_on_halt": True},
-        "motion_limits": {"max_velocity": 0.25, "max_acceleration": 0.5},
+        "ur": {"model": "ur10", "ip": host},
         # The UR10's reach: the probe's poses stand outside the shipped half-metre box.
-        "workspace_limits": {"x_min": -1300.0, "x_max": 1300.0, "y_min": -1300.0, "y_max": 1300.0, "z_min": -100.0,
-                             "z_max": 1300.0},
-        "motion": {"planner": "curobo", "judge_next_leg": "in_settles_and_motion"},
-        "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False},
-                   "self_collision": {"planner_margin_mm": 4.0},
-                   "dwell": {"gate_at": gate_at},
-                   "planning_world": {"hold": {"carry": True, "drop": True}}},
+        "motion": {"planner": "curobo", "max_velocity": 0.25, "max_acceleration": 0.5,
+                   "workspace": {"x_min": -1300.0, "x_max": 1300.0, "y_min": -1300.0, "y_max": 1300.0,
+                                 "z_min": -100.0, "z_max": 1300.0}},
+        "safety": {"self_collision": {"planner_margin_mm": 4.0}},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [],
                     "tool_frame": {"source": "controller", "offset_mm": (0.0, 0.0, 157.0)}},
     })
     # The test suite's planner double, which answers as a CuroboPlanClient does for what this probe asks.
     arm = URRobotArm(config, curobo_client_factory=_IdentifiedClient)  # type: ignore[arg-type]
+    # The probe reads the next leg's judge, which the IK quality guard is no part of: its legs stand at configurations
+    # the guard's jump bound would refuse from the probe's start, so the guard stands down in this probe alone, as the
+    # probe's tree switched it off until the switch left every tree (2026-10-17). Nothing pushes a payload either: the
+    # probe opens the RTDE connection itself, not the arm's connect.
+    arm._preflight._guards = tuple(g for g in arm._preflight.guards if g.name != "ik_quality")
     arm._conn.connect()
     ctrl = arm._conn._ctrl
     assert ctrl is not None, "connected, so the control interface is up"
@@ -150,6 +156,8 @@ class _Watch:
         self.ran_as_judged: list[bool] = []
         #: Where set, the next moveL is halted that many seconds after it is sent.
         self.halt_after_s: float | None = None
+        #: Whether the judging thread stays busy after its judgement, holding the GIL, until the halt has landed.
+        self.busy_until_halt = False
         #: Whether the judging thread was still running when the last halt landed, where the TCP stood then and when,
         #: and when the thread that watches the line entered its brake.
         self.judging_at_halt: bool | None = None
@@ -174,6 +182,10 @@ class _Watch:
             row: dict[str, Any] = {"thread": threading.get_ident(), "start": time.perf_counter()}
             try:
                 row["said"] = judge(*args, **kwargs)
+                row["judged_s"] = time.perf_counter() - row["start"]
+                deadline = time.perf_counter() + 1.5
+                while self.busy_until_halt and self.halted_at is None and time.perf_counter() < deadline:
+                    sum(range(500))  # busy, as an exact-guard query is: the GIL is given up only at the switch interval
             finally:
                 row["end"] = time.perf_counter()
                 with self.lock:
@@ -293,7 +305,10 @@ def check_a(arm: URRobotArm, watch: _Watch) -> dict[str, Any]:
 
 def check_b(arm: URRobotArm, watch: _Watch) -> dict[str, Any]:
     watch.clear()
+    watch.halted_at = None
+    watch.busy_until_halt = True
     run = _line_with_the_next_leg(arm, watch, halt_after_s=HALT_AFTER_S, next_joints=NEXT_LONG)
+    watch.busy_until_halt = False
     line = run["line"]
     state = arm.halt_state()
     judged = list(watch.judged)
@@ -315,6 +330,7 @@ def check_b(arm: URRobotArm, watch: _Watch) -> dict[str, Any]:
         "the move judged as it runs arrived": joint.status is MotionStatus.EXECUTED,
     }
     return {"checks": checks, "line": line.message, "brake_s": None if state is None else state.brake_s,
+            "judged_s": round(row["judged_s"], 3) if "judged_s" in row else None,
             "while_halted": while_halted, "after_clear": after_clear, "joint_move": joint.message}
 
 
@@ -325,7 +341,9 @@ def check_c(arm: URRobotArm, watch: _Watch) -> dict[str, Any]:
         for label, declare in (("with the judging thread", True), ("without it", False)):
             watch.clear()
             watch.halted_at = watch.braking_at = None
+            watch.busy_until_halt = declare
             _line_with_the_next_leg(arm, watch, halt_after_s=HALT_AFTER_S, declare=declare, next_joints=NEXT_LONG)
+            watch.busy_until_halt = False
             state = arm.halt_state()
             if declare:
                 overlapped.append(watch.judging_at_halt is True)
@@ -365,12 +383,10 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--host", default="127.0.0.1", help="the loopback, for the container ursim.sh publishes")
     parser.add_argument("--only", default="A,B,C", help="which checks, comma separated")
     parser.add_argument("--json", default="", help="write the measurements here as one JSON record as well")
-    parser.add_argument("--gate-at", default="verb", choices=("verb", "send"),
-                        help="safety.dwell.gate_at for every move here: 'send' gates at the send (map4 C4)")
     args = parser.parse_args(argv)
     try:
         host = _host(args)
-        arm = _arm(host, gate_at=args.gate_at)
+        arm = _arm(host)
     except SystemExit as exc:
         print(f"REFUSED: {exc}")
         return _BAD_REQUEST
@@ -378,7 +394,7 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"NO CONTROLLER at {args.container or args.host}: {type(exc).__name__}: {exc}")
         return _BAD_REQUEST
     watch = _Watch(arm)
-    results: dict[str, Any] = {"host": host, "container": args.container or None, "gate_at": args.gate_at}
+    results: dict[str, Any] = {"host": host, "container": args.container or None}
     checks = {"A": check_a, "B": check_b, "C": check_c}
     try:
         for name in [part.strip().upper() for part in args.only.split(",") if part.strip()]:

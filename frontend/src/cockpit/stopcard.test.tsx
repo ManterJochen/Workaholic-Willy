@@ -28,7 +28,6 @@ const LIGHTS = [
   light('cameras', 'ok', 'live'),
   light('planner', 'ok', 'ready'),
   light('gripper', 'ok', 'open_confirmed'),
-  light('carried_part', 'ok', 'modelled'),
   light('commands', 'info', 'ready'),
 ]
 
@@ -38,10 +37,9 @@ const FACTS = {
   looks: ['look_1', 'look_2', 'look_3'],
   natural_closing_axis: '-y',
   push: { can_push: true, why_not: '', default_mm: 30, ceiling_mm: 50 },
-  detector: { backend: 'vlm', router_enabled: false, vlm_model_id: 'Qwen/Qwen3-VL-4B-Instruct', precision: 'auto' },
+  detector: { backend: 'vlm', vlm_model_id: 'Qwen/Qwen3-VL-4B-Instruct', precision: 'auto' },
   hand_eye_warn_mm: 6,
   brake: { latches: true, brakes_in_motion: false },
-  payload: { modelled: true, declined_reason: null, length_mm: 40 },
   route: { route: 'planned', sentence: '' },
   rehearsal: false,
 }
@@ -86,7 +84,7 @@ function stopped(runId: string, kind: 'task' | 'home', stopCode: string, error: 
 function server(record: unknown, run: { id: string }, over: Record<string, Route> = {}): ApiCall[] {
   return stubApi({
     '/v1/cell': { state: 'connected', arm: 'URRobotArm', gripper: 'JawIOGripper', vendor: 'ur', profile: 'ur10_cell', active_run_id: null,
-      needs_person: '', halted: null, payload_model: 'none', recovery: record, jaws_confirmed_at: null, countdown_due: false,
+      needs_person: '', halted: null, recovery: record, jaws_confirmed_at: null, countdown_due: false,
       jaws_question: false, hand: HAND, planner: { state: 'ready' } },
     '/v1/cell/readiness': { ready: false, lights: LIGHTS, blockers: [{ code: 'cell_not_cleared', message: '' }] },
     '/v1/cell/facts': FACTS,
@@ -128,8 +126,8 @@ function theTaskSaid(runId: string, run: Record<string, unknown>, standsAt: stri
 let sockets: FakeSockets
 
 beforeEach(() => {
+  // The stub server answers no task settings: none are read, and Enter only reads, as with "Erst die Karte".
   localStorage.clear()
-  localStorage.setItem('willy.taskStart', 'card')
   clearConversation()
   sockets = fakeSockets()
 })
@@ -243,7 +241,7 @@ describe('the stop card opens a hand told a width (the owner, 2026-10-15)', () =
     const cleared = { ...record, holding: true, cleared_at: record.at + 1 }
     return server(cleared, run, {
       '/v1/cell': { state: 'connected', arm: 'URRobotArm', gripper: 'RobotiqGripper', vendor: 'ur', profile: 'ur10_cell',
-        active_run_id: null, needs_person: '', halted: null, payload_model: 'none', recovery: cleared, jaws_confirmed_at: null,
+        active_run_id: null, needs_person: '', halted: null, recovery: cleared, jaws_confirmed_at: null,
         countdown_due: false, jaws_question: false, hand: ROBOTIQ, planner: { state: 'ready' } },
       '/v1/cell/readiness': { ready: false, lights: LIGHTS, blockers: [{ code: 'part_still_held', message: '' }, { code: 'cell_not_cleared', message: '' }] },
       'POST /v1/cell/jaws/open': { hand: ROBOTIQ, question: null },

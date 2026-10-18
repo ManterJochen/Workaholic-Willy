@@ -98,6 +98,11 @@ class AxisAlignedBox:
     #: the exact mesh guard judges the fingers against the box with its top lowered so, every other link against the
     #: whole box; the capsule proxy judges the whole box, the safe side. 0 for every other box.
     finger_top_mm: float = 0.0
+    #: The body itself where it is no box: the vertices of a convex hull in BASE, a part of another arm of the cell
+    #: (owner, 2026-10-15). ``center_mm`` and ``half_extents_mm`` are then the axis-aligned box that encloses it.
+    #: The exact mesh guard judges the hull where its engine builds one (Coal) and the enclosure where it does not;
+    #: the capsule proxy judges the enclosure, the safe side. ``None`` for every box.
+    hull_mm: np.ndarray | None = None
 
 
 def segment_point_distance_mm(p0: np.ndarray, p1: np.ndarray, q: np.ndarray) -> float:

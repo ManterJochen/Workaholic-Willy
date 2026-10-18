@@ -61,7 +61,7 @@ def _ur(frame: dict[str, Any] | None, **safety: Any) -> RobotConfig:
     if frame is not None:
         gripper["tool_frame"] = frame
     return RobotConfig.model_validate(
-        {"vendor": "ur", "safety": {"payload": {"enforce": False}, **safety}, "gripper": gripper}
+        {"vendor": "ur", "safety": {**safety}, "gripper": gripper}
     )
 
 

@@ -25,6 +25,7 @@ above, and 2 on bad arguments.
 | `python -m src.config decisions --section <prefix>` | only what the cell decided: the values under a prefix that differ from their default, each with its file and line | [cell_bringup](runbooks/cell_bringup.md) |
 | `python -m src.config where <word>` | searches the schema rather than the files, so it finds keys no YAML writes; it refuses `--profile` and `--data` | |
 | `python -m src.config --profile <your cell>,<layer>` | chains one more layer on top; a layer no file carries is refused, never skipped | [cell_bringup](runbooks/cell_bringup.md) |
+| `python -m src.config migrate <tree> [--write]` | says what a tree written for an older Willy must change, each key removed or moved on purpose with its sentence, and changes nothing; `--write` rewrites its files under the base and every layer, every comment kept (a key that moved, such as every key of how a cell moves into `robot.motion`, goes with its comments, and a radians home written on one line is written in degrees as `robot.motion.home_deg`), and puts every file back where the result does not load (exit 1) | |
 
 To try a value without editing your tree, copy the tree and pass `--data <copy>`; a value that contradicts
 another file (a width beside a named hand, say) is refused naming both places. A relative path in the
@@ -82,7 +83,7 @@ and 3 when the sweep raised. Every line below is used by
 | command | what it does | runbook |
 |---|---|---|
 | `python -m src.robot.execution.real_cell --runs 3 --prompt "<phrase>"` | Moves the arm: a campaign of picks under one connect; exit 0 only when every attempt succeeded | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
-| `python -m src.robot.grasping.replay --records <file>` | rolls up the KPIs of the record file a run wrote, once the tree sets `grasping.record_log_path` | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
+| `python -m src.robot.grasping.replay --records <file>` | rolls up the KPIs of the record file a run wrote: `grasping.record_log_path`, or `grasp_records.jsonl` in the log folder where the tree names none | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
 | `python scripts/cell/pick_timeline.py <logs> [<other logs>]` | reads a cell's logs folder back: every task split into its survey, its picks and its places, and each into stages, with their best, median and worst; two folders set A against B, stage by stage; `<logs>#last` keeps the runs of the last connect; moves nothing | [scripts/cell](../scripts/cell/README.md) |
 
 A spoken command, the locator and a pick at a known pose have no command: they are objects a program
@@ -153,14 +154,10 @@ no mesh bundle runs the capsule proxy, and `--check` says so with exit 1.
 
 | command | what it does |
 |---|---|
-| `python -m src.config explain models.pipeline.kind` | an open-vocabulary grounder or a closed-set detector |
-| `python -m src.config explain models.detector` | the legacy detector key, read by a tree without the pipeline block and by the bench exerciser |
-| `python -m src.config explain models.segmenter_backend` | its segmenter twin |
-| `python -m src.config explain models.pipeline.zero_shot.backend` | which model grounds: `grounded_sam` for phrases, `vlm` for the prompts a phrase grounder cannot represent |
-| `python -m src.config explain models.pipeline.router.enabled` | whether the per-prompt router is on; it reads the text and loads no model |
-| `python -m src.config explain models.pipeline.zero_shot.vlm.on_unavailable` | `refuse` stops, `degrade` grounds with the phrase detector instead |
-
-Routing a prompt has no command; the operator console answers `GET /v1/diagnostics/route?prompt=...`.
+| `python -m src.config explain models.pipeline.kind` | the VLM grounding free text (`zero_shot`), or RT-DETR's trained classes (`closed_set`) |
+| `python -m src.config explain models.pipeline.zero_shot.vlm.model_id` | which Qwen3-VL checkpoint grounds; SAM2 cuts every mask either way |
+| `python -m src.config explain models.weights_root` | the one folder every model's weights are read from |
+| `python scripts/model_weights/fetch.py --list` | every model that can be fetched into that folder, with its size |
 
 ### Safety
 
@@ -177,12 +174,10 @@ No command judges a trajectory: the arm's driver judges every one before it send
 | command | what it does |
 |---|---|
 | `python -m src.config explain robot.gripper.vendor` | which driver actuates the hand; `vacuum` is the suction one |
-| `python -m src.config explain robot.grasping.gripper_geometry.kind` | the envelope candidates are filtered against; `suction` changes the shape, not the pick path |
 | `python -m src.config explain robot.gripper.vacuum` | the pins, the port and the time the ejector takes to build vacuum |
 | `python -m src.config explain robot.grasping.calculator` | `geometric` or `deep` |
 | `python -m src.config explain robot.grasping.deep_generator.artifact_path` | where the deep branch reads its weights |
 | `python -m src.robot.grasping.deep inspect --artifact <file>` | what a weights file says about itself: first whether a cell may grasp with it (`NOT DEPLOYABLE` and why), then kind, version, gripper |
-| `python -m src.robot.grasping.calibration --replay <records.jsonl> --out <file>.json` | fits the uncertainty calibration of the grasp score from a replay of pick records |
 
 Nothing on the command line proposes a suction grasp; [src/robot/grasping/suction/](../src/robot/grasping/suction/README.md)
 shows the call from Python.
@@ -232,5 +227,3 @@ when it does not, 2 when there is nothing to check. Run each under the cell's pr
 | `python scripts/checks/cell_bringup.py --live` | see [Connecting](#connecting) | [cell_bringup](runbooks/cell_bringup.md), [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
 | `python scripts/checks/safety_guards.py` | makes every wired guard refuse a violation of its own family | |
 | `python scripts/checks/camera_artifacts.py` | opens every calibration artifact the configuration names | |
-| `python scripts/checks/grasping_switches.py` | which grasping block is reachable in which grasp mode | |
-| `python scripts/checks/batched_builds.py` | whether this PC builds a closing line's grasps at once exactly as one at a time, bit for bit, before `robot.grasping.batched_builds` goes on for the cell; CPU only, moves nothing; 2 where the checkout has no `tests` folder | |

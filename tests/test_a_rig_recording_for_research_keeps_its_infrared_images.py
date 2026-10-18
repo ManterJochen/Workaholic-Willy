@@ -479,8 +479,10 @@ class Sam2KeepsItsPredictedIousTests(unittest.TestCase):
         model = mock.MagicMock(return_value=SimpleNamespace(pred_masks=torch.zeros(1, 1, 3, 8, 8),
                                                             iou_scores=torch.tensor([[[0.81, 0.93, 0.97]]])))
         segmenter = Sam2Segmenter.__new__(Sam2Segmenter)
+        from src.models._inference import SAM2
+
         segmenter.device = torch.device("cpu")
-        segmenter.optim = None
+        segmenter.settings = SAM2
         segmenter._model_dtype = None
         segmenter.save_debug = False
         segmenter.keep_largest_component = True

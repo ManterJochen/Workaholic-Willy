@@ -29,13 +29,14 @@ at 59.0 % of the gap. Replaying the reference verdict on the survivors says why:
 a bin wall rather than an object, and inside the ``bin`` family it is 14 of 14. A wall is not an
 instance any camera segments, so no cross-camera fusion can supply it, and nothing in this stack
 carries wall geometry to supply it from. Where the blocker really is an object the lever works as
-designed and the ``pile`` gap halves, from 8 to 4. That is why ``neighbour_scene_enabled`` is a
-separate default-off switch rather than part of the fusion everyone should run.
+designed and the ``pile`` gap halves, from 8 to 4. That is why the fixed cameras' fusion hands the
+collision filter no neighbour clouds (the switch that could, ``neighbour_scene_enabled``, left on
+2026-10-16), while a wrist pick's earlier looks still hand theirs (``with_neighbours``).
 
 The scope is deliberately narrow: pure functions over already-resolved inputs, meaning masks, depth,
 intrinsics and one ``CAMERA`` to ``BASE`` matrix per camera. Resolving those, with frame resolvers
 and a live TCP for a wrist camera, and deciding what to do when a camera is missing, are policy, and
-policy lives with the config in the orchestrator. Frames are BASE millimetres throughout, per repo
+policy lives in the orchestrator. Frames are BASE millimetres throughout, per repo
 convention.
 """
 
@@ -55,9 +56,7 @@ from src.robot.grasping.geometry.pointcloud import masked_points
 from src.robot.grasping.multiview.association import (
     DEFAULT_MIN_SCORE,
     DEFAULT_NEIGHBOUR_MM,
-    AssociationMetric,
     SceneAssociation,
-    SceneCluster,
     ViewCandidates,
     fuse_scene_clouds,
 )
@@ -105,15 +104,9 @@ class ObservedView:
     depth_map: np.ndarray
     intrinsics: np.ndarray
     camera_to_base: np.ndarray
-    #: The segmentation objects the masks came from, in the same order, when the caller has them.
-    #:
-    #: The mask alone is enough to fuse a surface and not enough to grasp from. Every other camera
-    #: used to be reduced to `.mask` here, so its labels and detection scores were discarded and an
-    #: object only it could see had nothing to become: the calculator is called with a segmentation,
-    #: this camera's depth and this camera's intrinsics, and a bare mask supplies one of the three.
-    #:
-    #: Empty is the old shape and stays valid: fusing a surface onto an object the primary already
-    #: found needs no segmentation at all, so a caller that only fuses passes masks and nothing else.
+    #: The segmentation objects the masks came from, in the same order: the primary's, whose objects a pick
+    #: grasps (``build_scene_objects``). The mask alone is enough to fuse a surface, so another camera's view
+    #: carries its masks and nothing else.
     segmentations: tuple[Any, ...] = ()
     #: Per mask, in the same order, the pixels the support-footprint stage may build its footprint from: the mask less
     #: its rim (``generation.footprint_rim``, ``robot.grasping.geometry.footprint_rim_mm``, 2026-10-09). Read only by a
@@ -348,11 +341,9 @@ class SceneObject:
     ever entitled to be.
 
     ``camera_id``, ``segmentation``, ``depth_map`` and ``intrinsics`` belong together and come from
-    one camera: the primary whenever the primary saw this object, which is every object in a
-    single-camera cell and most of them in any cell. For an object the primary could not see, they
-    are the camera that did see it, and the grasp is synthesised in that camera's frame with that
-    camera's calculator. That is why they travel as a group rather than as four arguments a caller
-    could accidentally mix.
+    the primary camera, whose view the grasp is synthesised in, so they travel as a group rather than
+    as four arguments a caller could accidentally mix. An object only another camera saw is not one
+    of them: letting a camera introduce one left on 2026-10-16 (``promote_unmatched``).
     """
 
     camera_id: str
@@ -360,13 +351,7 @@ class SceneObject:
     depth_map: np.ndarray
     intrinsics: np.ndarray
     camera_to_base: np.ndarray
-    #: Every camera that agreed this is the same object, including ``camera_id``, in view order.
-    views_used: tuple[str, ...]
-    #: True when no primary segmentation corresponds to this object: it is in the list because a
-    #: secondary camera saw it and the primary did not. Logged per candidate rather than acted on,
-    #: so the question "is a promoted object worth ranking normally" is answered from data later.
-    promoted: bool
-    #: The surface fused across ``views_used``, or ``None`` when only one camera saw this object.
+    #: The surface fused across the cameras that saw this object, or ``None`` when only one did.
     #: ``None`` rather than the object's own cloud, for the same reason as in `FusedSceneGeometry`:
     #: the caller then omits the generator kwarg entirely instead of re-feeding it what it already
     #: derives from the mask.
@@ -374,101 +359,28 @@ class SceneObject:
 
 
 def build_scene_objects(
-    views: Sequence[ObservedView],
-    clusters: Sequence["SceneCluster"],
+    primary: ObservedView,
     *,
-    primary_index: int = 0,
     fused_clouds: "Sequence[np.ndarray | None] | None" = None,
-    view_clouds: "Sequence[Sequence[np.ndarray]] | None" = None,
 ) -> tuple[SceneObject, ...]:
-    """Turn clusters into the list a pick iterates, primary objects first and in their own order.
+    """The list a pick iterates: one object per primary segmentation, in the primary's own order.
 
-    Order is a contract here, not a convenience. Every object the primary camera saw comes first, in
-    the primary's own segmentation order, so a cell whose secondary cameras add nothing produces
-    exactly the list it produced before this existed, position for position. Promoted objects follow,
-    ordered by the camera that saw them and then by that camera's detection order, which is
-    deterministic for the same reason the clustering is.
-
-    Which camera owns a cluster: the primary when it is a member, otherwise the first member's view.
-    So the grasp is synthesised from the primary's reading wherever the primary has one, which is the
-    behaviour that every measured number in this repository was taken against.
-
-    ``view_clouds`` is each view's blobs already in BASE millimetres, indexed as the clusters index
-    them. Given, a promoted object seen by more than one camera gets those views fused, exactly as a
-    primary object does. Without it a promoted object would be grasped from one view while two were
-    available, which is the very deficit fusion exists to close, left open for the objects that need
-    it most: an object the primary cannot see is by construction one that something is in front of.
+    Order is a contract here, not a convenience: a cell whose other cameras add nothing produces exactly the list it
+    produced before this existed, position for position. ``fused_clouds``, where given, is each object's surface fused
+    across the cameras, in the same order (:attr:`FusedSceneGeometry.cloud_for`).
     """
-
-    by_primary_blob: dict[int, SceneCluster] = {}
-    promoted: list[SceneCluster] = []
-    for cluster in clusters:
-        owner = next((blob for view, blob in cluster.members if view == primary_index), None)
-        if owner is None:
-            promoted.append(cluster)
-        else:
-            by_primary_blob[owner] = cluster
-
-    objects: list[SceneObject] = []
-    primary = views[primary_index] if primary_index < len(views) else None
-    if primary is not None:
-        for blob in range(len(primary.masks)):
-            grouped = by_primary_blob.get(blob)
-            objects.append(SceneObject(
-                camera_id=primary.name,
-                segmentation=primary.segmentation(blob),
-                depth_map=primary.depth_map,
-                intrinsics=primary.intrinsics,
-                camera_to_base=primary.camera_to_base,
-                views_used=(tuple(views[v].name for v in grouped.views) if grouped is not None
-                            else (primary.name,)),
-                promoted=False,
-                fused_cloud_base_mm=(
-                    fused_clouds[blob] if fused_clouds is not None and blob < len(fused_clouds)
-                    else None),
-            ))
-
-    for cluster in sorted(promoted, key=lambda c: c.members):
-        view_index, blob = cluster.members[0]
-        view = views[view_index]
-        objects.append(SceneObject(
-            camera_id=view.name,
-            segmentation=view.segmentation(blob),
-            depth_map=view.depth_map,
-            intrinsics=view.intrinsics,
-            camera_to_base=view.camera_to_base,
-            views_used=tuple(views[v].name for v in cluster.views),
-            promoted=True,
-            fused_cloud_base_mm=_fused_member_cloud(cluster, view_clouds),
-        ))
-    return tuple(objects)
-
-
-def _fused_member_cloud(
-    cluster: "SceneCluster", view_clouds: "Sequence[Sequence[np.ndarray]] | None"
-) -> "np.ndarray | None":
-    """Every camera's points for one cluster, stacked, or ``None`` when only one camera saw it.
-
-    ``None`` for a single member rather than that member's own points, which is the same rule the
-    primary objects follow: the caller then omits the generator kwarg and the calculator derives the
-    cloud from the mask and the depth it was given, instead of being handed back the very points it
-    would have derived. Handing them over would not be wrong, it would be a second array and a
-    silently different code path for an identical result.
-
-    The owning view's own points come first, so the fused cloud starts where the grasp is being
-    synthesised. `fuse_scene_clouds` orders the primary's points the same way for the same reason.
-    """
-    if view_clouds is None or len(cluster.members) < 2:
-        return None
-    owner = cluster.members[0]
-    ordered = [owner, *(m for m in cluster.members if m != owner)]
-    parts = [
-        np.asarray(view_clouds[view][blob], dtype=np.float64).reshape(-1, 3)
-        for view, blob in ordered
-        if view < len(view_clouds) and blob < len(view_clouds[view])
-    ]
-    parts = [cloud for cloud in parts if cloud.size]
-    return np.vstack(parts) if len(parts) > 1 else None
+    return tuple(
+        SceneObject(
+            camera_id=primary.name,
+            segmentation=primary.segmentation(blob),
+            depth_map=primary.depth_map,
+            intrinsics=primary.intrinsics,
+            camera_to_base=primary.camera_to_base,
+            fused_cloud_base_mm=(fused_clouds[blob] if fused_clouds is not None and blob < len(fused_clouds)
+                                 else None),
+        )
+        for blob in range(len(primary.masks))
+    )
 
 
 def _fused_footprints(
@@ -510,10 +422,8 @@ def fuse_scene_geometry(
     primary_camera_to_base: np.ndarray,
     other_views: Sequence[ObservedView],
     *,
-    metric: AssociationMetric = AssociationMetric.OVERLAP,
     min_score: float = DEFAULT_MIN_SCORE,
     neighbour_mm: float = DEFAULT_NEIGHBOUR_MM,
-    max_centroid_mm: float = 150.0,
     with_neighbours: bool = False,
     neighbour_voxel_mm: float = 8.0,
     score_voxel_mm: float = 0.0,
@@ -588,10 +498,8 @@ def fuse_scene_geometry(
     fused, associations = fuse_scene_clouds(
         primary_clouds,
         candidates,
-        metric=metric,
         min_score=min_score,
         neighbour_mm=neighbour_mm,
-        max_centroid_mm=max_centroid_mm,
         score_voxel_mm=score_voxel_mm,
     )
     # An object nothing confirmed comes back from fuse_scene_clouds as its own cloud unchanged.
@@ -617,11 +525,10 @@ def fuse_scene_geometry(
     )
     result = FusedSceneGeometry(fused_or_none, tuple(used), associations, neighbours, footprints)
     logger.info(
-        "Fused %d/%d object(s) from view(s) %s (metric=%s, neighbours=%s, %d neighbour point(s))",
+        "Fused %d/%d object(s) from view(s) %s (neighbours=%s, %d neighbour point(s))",
         result.objects_fused,
         len(primary_clouds),
         ", ".join(used),
-        metric.value if hasattr(metric, "value") else metric,
         with_neighbours,
         result.neighbour_points,
     )

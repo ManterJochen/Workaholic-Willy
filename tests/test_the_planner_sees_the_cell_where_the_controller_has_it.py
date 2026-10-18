@@ -1,8 +1,9 @@
 """The real UR's planner sees the cell and the goal where the controller has them (Step 8f).
 
 The planner is rooted at UR's URDF ``base_link``, the DH base turned half a turn about Z; the controller reports in the
-DH base. Measured on the box on 2026-09-18 (``scripts/curobo/probe_payload_attach.py``, ``frame``): the planner's tool0
-is the DH flange turned 180 degrees to 0.0001 mm, and 1019 mm from it without the turn. The UR driver handed the
+DH base. Measured on the box on 2026-09-18 (by the carried part's probe, deleted with it on 2026-10-17;
+``scripts/curobo/probe_ur_planner_frame.py`` holds the turn now): the planner's tool0 is the DH flange turned 180
+degrees to 0.0001 mm, and 1019 mm from it without the turn. The UR driver handed the
 planner its goals and the cell's geometry in the controller's frame with no turn, so on a controller it would have
 planned to the goal mirrored through the base axis and routed around a mirrored cell, and nothing checked where a plan
 ended before the arm drove it. The Isaac cell never met it: its world, its goals and its planner all sit in base_link.
@@ -32,7 +33,7 @@ from src.robot.drivers.planned.planner_frame import PlannerFrameClient, planner_
 from src.robot.safety.planning import JointCheckVerdict
 
 from src.config.arms import load_arm
-from tests._arm_kit import kit_tree, planned_arm
+from tests._arm_kit import kit_tree, planned_arm, with_the_whole_envelope
 from tests._fake_transport import fake_transport
 
 #: The controller's joint order as the ur5e description states it; the planner is handed it since P0e.
@@ -263,7 +264,7 @@ class _Planner:
 
 
 def _ur_arm(planner: _Planner) -> Any:
-    config = kit_tree("curobo", safety={"payload": {"enforce": False}, "self_collision": {"planner_margin_mm": 4.0}})
+    config = kit_tree("curobo", safety={"self_collision": {"planner_margin_mm": 4.0}})
     arm: Any = planned_arm(config, transport=fake_transport(joints=_DOWN))
     arm._curobo = planner
     return arm
@@ -307,6 +308,9 @@ def test_a_plan_whose_end_the_controller_reads_elsewhere_is_refused_through_the_
     planner.plan_joint = lambda goal, **_: [list(_DOWN), [float(v) for v in goal]]  # type: ignore[method-assign]
     arm = _ur_arm(planner)
     arm._gate_planned_config = lambda pose, joints: None  # the shipped box is not what this reads
+    # The mirrored configuration turns the base half a turn from home, which the window about home refuses before
+    # anything is planned; what this reads is the end check, on the arm's whole envelope.
+    with_the_whole_envelope(arm._preflight)
     wrong = GoalSet(family="a closed form in the wrong frame", solve=lambda flange, last: (tuple(mirrored),),
                     branch=lambda joints: None)
     with mock.patch("src.robot.drivers.planned.goal_set.goal_set_for", return_value=wrong):

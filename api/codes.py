@@ -310,9 +310,9 @@ RefusalCodeName: TypeAlias = Literal[
     # the cell's state, before anything moves
     "not_connected", "run_active", "halted", "controller_stopped", "cell_not_cleared", "restart_required",
     "needs_person", "jaws_question_pending", "part_still_held", "jaws_not_confirmed", "route_refused",
-    "carried_part_not_modelled", "camera_target_unavailable",
+    "camera_target_unavailable",
     # what a task or a pick was asked to do
-    "object_required", "prompt_not_routable", "target_not_routable", "push_distance_refused", "unknown_pose",
+    "object_required", "push_distance_refused", "unknown_pose",
     "no_place_declared", "closing_axis_refused", "not_a_task", "not_a_pick", "not_restartable",
     # the jaws question
     "jaws_not_open", "no_question", "question_changed", "choice_not_offered",
@@ -373,11 +373,8 @@ class RefusalCode(StrEnum):
     PART_STILL_HELD = "part_still_held"
     JAWS_NOT_CONFIRMED = "jaws_not_confirmed"
     ROUTE_REFUSED = "route_refused"
-    CARRIED_PART_NOT_MODELLED = "carried_part_not_modelled"
     CAMERA_TARGET_UNAVAILABLE = "camera_target_unavailable"
     OBJECT_REQUIRED = "object_required"
-    PROMPT_NOT_ROUTABLE = "prompt_not_routable"
-    TARGET_NOT_ROUTABLE = "target_not_routable"
     PUSH_DISTANCE_REFUSED = "push_distance_refused"
     UNKNOWN_POSE = "unknown_pose"
     NO_PLACE_DECLARED = "no_place_declared"
@@ -455,11 +452,8 @@ REFUSAL_STATUS: Final[Mapping[RefusalCode, int]] = MappingProxyType({
     RefusalCode.PART_STILL_HELD: 409,
     RefusalCode.JAWS_NOT_CONFIRMED: 409,
     RefusalCode.ROUTE_REFUSED: 409,
-    RefusalCode.CARRIED_PART_NOT_MODELLED: 409,
     RefusalCode.CAMERA_TARGET_UNAVAILABLE: 409,
     RefusalCode.OBJECT_REQUIRED: 422,
-    RefusalCode.PROMPT_NOT_ROUTABLE: 422,
-    RefusalCode.TARGET_NOT_ROUTABLE: 422,
     RefusalCode.PUSH_DISTANCE_REFUSED: 422,
     RefusalCode.UNKNOWN_POSE: 422,
     RefusalCode.NO_PLACE_DECLARED: 422,
@@ -530,7 +524,7 @@ def not_built_yet(route: str) -> Exception:
 
 # --- readiness (GET /v1/cell/readiness) ----------------------------------------------------------------------------
 
-LightIdName: TypeAlias = Literal["robot", "cameras", "planner", "gripper", "carried_part", "commands"]
+LightIdName: TypeAlias = Literal["robot", "cameras", "planner", "gripper", "commands"]
 
 
 class LightId(StrEnum):
@@ -540,7 +534,6 @@ class LightId(StrEnum):
     CAMERAS = "cameras"
     PLANNER = "planner"
     GRIPPER = "gripper"
-    CARRIED_PART = "carried_part"
     #: Informational only: it never blocks ``ready`` (owner decision 22).
     COMMANDS = "commands"
 
@@ -566,8 +559,7 @@ LightCodeName: TypeAlias = Literal[
     "live", "rehearsal", "no_frame", "none",
     "ready", "starting", "off", "failed", "unplanned", "route_refused",
     "open_confirmed", "jaws_unknown", "jaws_closed", "question_pending",
-    "modelled", "not_modelled", "not_applicable",
-    "idle", "loading", "missing", "not_configured",
+    "idle", "loading", "missing",
 ]
 
 
@@ -594,13 +586,9 @@ class LightCode(StrEnum):
     JAWS_UNKNOWN = "jaws_unknown"
     JAWS_CLOSED = "jaws_closed"
     QUESTION_PENDING = "question_pending"
-    MODELLED = "modelled"
-    NOT_MODELLED = "not_modelled"
-    NOT_APPLICABLE = "not_applicable"
     IDLE = "idle"
     LOADING = "loading"
     MISSING = "missing"
-    NOT_CONFIGURED = "not_configured"
 
 
 #: The codes each light may carry (build plan 1.5). A code shared by two lights says the same thing of each.
@@ -612,9 +600,7 @@ LIGHT_CODES: Final[Mapping[LightId, tuple[LightCode, ...]]] = MappingProxyType({
                       LightCode.ROUTE_REFUSED),
     LightId.GRIPPER: (LightCode.OPEN_CONFIRMED, LightCode.JAWS_UNKNOWN, LightCode.JAWS_CLOSED,
                       LightCode.QUESTION_PENDING, LightCode.CONNECTED, LightCode.NONE),
-    LightId.CARRIED_PART: (LightCode.MODELLED, LightCode.NOT_MODELLED, LightCode.NOT_APPLICABLE),
-    LightId.COMMANDS: (LightCode.READY, LightCode.IDLE, LightCode.LOADING, LightCode.MISSING, LightCode.FAILED,
-                       LightCode.NOT_CONFIGURED),
+    LightId.COMMANDS: (LightCode.READY, LightCode.IDLE, LightCode.LOADING, LightCode.MISSING, LightCode.FAILED),
 })
 
 

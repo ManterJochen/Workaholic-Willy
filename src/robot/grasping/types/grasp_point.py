@@ -149,7 +149,7 @@ class GraspPoint:
 
 
 #: The key under a grasp's ``score_components["support_footprint"]`` (a breakdown's ``components``) whose ``True`` says
-#: the grasp grips its part from inside a bore (``generation.inner_grasps``, ``robot.grasping.inner_grasps``): its
+#: the grasp grips its part from inside a bore (``generation.inner_grasps``): its
 #: fingers come down narrow into the bore, open onto its wall, and let the part go by closing.
 INNER_GRASP_KEY = "inner"
 
@@ -162,7 +162,7 @@ class GripFromInside:
         line_in_width_mm (float): How far apart the jaws stand on the way into the bore, between their inner faces: the
             hand comes down at it (lever G's ``open_width_mm``).
         part_width_mm (float): The part's extent about the grasp, the diameter of the circle about the hand's axis that
-            holds it in the plane: what the carried part is attached as.
+            holds it in the plane, as the pick records it.
         depth_mm (float): How far under the part's top the fingertips stand at the grasp.
         bore_mm (float): The bore across, wall to wall, along the closing axis in the finger's band.
     """

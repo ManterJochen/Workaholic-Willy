@@ -74,7 +74,7 @@ def _reference_names() -> set[str]:
     """Every name the reference offers, from its files and from its directory layout.
 
     The top-level sections are directories rather than keys: `camera:` is the folder holding
-    `cam.yaml`, `stereomatcher.yaml` and `hand_eye.yaml`. A reader finds the section either way.
+    `cam.yaml` and `hand_eye.yaml`. A reader finds the section either way.
     """
     names: set[str] = set()
     for path in sorted(_ALL_KEYS.rglob("*.yaml")):

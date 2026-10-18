@@ -37,10 +37,10 @@ def _report(outcome: AutonomousGraspOutcome, *, telemetry: dict | None = None):
 class SerializerTests(unittest.TestCase):
     def test_safety_rejected_set_on_fail_closed(self) -> None:
         rec = to_attempt_record(
-            _report(AutonomousGraspOutcome.DECISION_FAIL_CLOSED), attempt_id="a1"
+            _report(AutonomousGraspOutcome.MISSING_CAMERA_FRAME), attempt_id="a1"
         )
         self.assertTrue(rec.extra["safety_rejected"])
-        self.assertEqual(rec.final_outcome, "decision_fail_closed")
+        self.assertEqual(rec.final_outcome, "missing_camera_frame")
         self.assertEqual(rec.mode, "auto")
 
     def test_safety_rejected_false_on_success(self) -> None:
@@ -53,9 +53,6 @@ class SerializerTests(unittest.TestCase):
 
     def test_every_fail_closed_outcome_flags_safety(self) -> None:
         for outcome in (
-            AutonomousGraspOutcome.UNCERTAINTY_FAIL_CLOSED,
-            AutonomousGraspOutcome.DRIFT_BLOCKED_AUTO,
-            AutonomousGraspOutcome.OOD_BLOCKED_AUTO,
             AutonomousGraspOutcome.MISSING_CAMERA_FRAME,
             AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED,
         ):
@@ -172,43 +169,18 @@ def _executed_report(position: tuple[float, float, float]) -> SimpleNamespace:
 
 class TheGraspTheAttemptActuallyMadeTests(unittest.TestCase):
     """⛔ THE RECORD NEVER SAID WHICH GRASP IT WAS. `selected_grasp` is in the contract, in the
-    serialiser, in the reader, in the console's history columns and in the RL extractor. No
-    writer in this repository set it. MEASURED 2026-09-10: `BaselineSARExtractor` projects an action
-    from `selected_grasp` / `refined_grasp` / `initial_grasp`, so every record a real pick produced
-    fell through all three to the literal token `"noop"`. An RL dataset whose action column is one
-    constant cannot express a preference between two grasps, which is the only thing it is for."""
+    serialiser, in the reader and in the console's history columns, and until 2026-09-10 no writer in
+    this repository set it."""
 
     def test_the_executed_grasp_is_recorded_as_the_selected_one(self) -> None:
         rec = to_attempt_record(_executed_report((10.0, 20.0, 30.0)), attempt_id="g1")
         self.assertIsNotNone(rec.selected_grasp)
         self.assertEqual(rec.selected_grasp["position"], [10.0, 20.0, 30.0])
 
-    def test_the_SAR_action_is_the_grasp_not_a_noop(self) -> None:
-        from src.robot.grasping.rl.sar import ACTION_NOOP, BaselineSARExtractor
-
-        sar = BaselineSARExtractor().extract(
-            to_attempt_record(_executed_report((10.0, 20.0, 30.0)), attempt_id="g2").to_dict()
-        )
-        self.assertNotEqual(sar.action, ACTION_NOOP)
-        self.assertTrue(sar.action.startswith("grasp:"), sar.action)
-
-    def test_two_different_grasps_are_two_different_actions(self) -> None:
-        """A constant action column is indistinguishable from no action column at all."""
-        from src.robot.grasping.rl.sar import BaselineSARExtractor
-
-        extract = BaselineSARExtractor().extract
-        first = extract(to_attempt_record(_executed_report((10.0, 20.0, 30.0)), attempt_id="g3").to_dict())
-        second = extract(to_attempt_record(_executed_report((99.0, 20.0, 30.0)), attempt_id="g4").to_dict())
-        self.assertNotEqual(first.action, second.action)
-
     def test_an_attempt_that_executed_NOTHING_stays_byte_identical(self) -> None:
-        """An attempt that never reached a grasp must log exactly what it logged before: no block,
-        and the token the extractor already gave that outcome."""
-        from src.robot.grasping.rl.sar import ACTION_REJECT, BaselineSARExtractor
-
+        """An attempt that never reached a grasp must log exactly what it logged before: no block."""
         rec = to_attempt_record(_report(AutonomousGraspOutcome.NO_VALID_GRASP), attempt_id="g5")
         self.assertIsNone(rec.selected_grasp)
-        self.assertEqual(BaselineSARExtractor().extract(rec.to_dict()).action, ACTION_REJECT)
 
 
 def _stamped_report(*stamps: object) -> SimpleNamespace:
@@ -272,7 +244,7 @@ class KpiSourcingTests(unittest.TestCase):
         # KPI non-zero (1 of 2 attempts was a safety rejection).
         recs = (
             to_attempt_record(
-                _report(AutonomousGraspOutcome.DECISION_FAIL_CLOSED), attempt_id="a1"
+                _report(AutonomousGraspOutcome.MISSING_CAMERA_FRAME), attempt_id="a1"
             ),
             to_attempt_record(
                 _report(AutonomousGraspOutcome.SUCCEEDED), attempt_id="a2"
@@ -286,7 +258,7 @@ class LogRecordTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "sub" / "pick_log.jsonl"  # parent dir is created
             log_record(
-                _report(AutonomousGraspOutcome.DECISION_FAIL_CLOSED),
+                _report(AutonomousGraspOutcome.MISSING_CAMERA_FRAME),
                 attempt_id="a1",
                 log_path=log,
             )

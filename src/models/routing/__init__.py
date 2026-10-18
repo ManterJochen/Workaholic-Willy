@@ -1,37 +1,18 @@
-"""Prompt routing: decide which perception stack a prompt needs, before any weights load.
+"""What the command reader reads off a phrase before the detector is asked: its language and its quantifier.
 
-    from src.models.routing import route, Route
+    from src.models.routing import analyse
 
-    decision = route("greif den kaputten Würfel")
-    decision.route      # Route.VLM
-    decision.reason     # RouteReason.NON_ENGLISH
-    decision.describe() # 'vlm (non_english)'
+    analyse("greif den kaputten Würfel").non_english   # True: a phrase the detector gets is English
+    analyse("all screws").has_quantifier                # True: all/every belongs in the task's scope
 
-See [README.md](README.md) for the rules and their vocabulary limits.
+A vocabulary, not a model: no weights, no I/O, the same answer every time. It is what is left of the prompt router
+that once sent a phrase to GroundingDINO or to the VLM (removed on 2026-10-17 with GroundingDINO): the VLM grounds
+every phrase now, and the command reader (``src/models/vlm/command.py``) still holds the phrases it hands the
+detector to English words with no quantifier. See [README.md](README.md) for the vocabularies and their limits.
 """
 
 from __future__ import annotations
 
-from .decision import PromptRouter, PromptSignals, Route, RouteDecision, RouteReason
-from .normalize import normalize_simple_prompt
-from .rules import (
-    MAX_SIMPLE_WORDS,
-    MULTI_ATTRIBUTE_THRESHOLD,
-    RuleBasedRouter,
-    analyse,
-    route,
-)
+from .rules import PromptSignals, analyse
 
-__all__ = [
-    "Route",
-    "RouteReason",
-    "PromptSignals",
-    "RouteDecision",
-    "PromptRouter",
-    "RuleBasedRouter",
-    "analyse",
-    "route",
-    "normalize_simple_prompt",
-    "MAX_SIMPLE_WORDS",
-    "MULTI_ATTRIBUTE_THRESHOLD",
-]
+__all__ = ["PromptSignals", "analyse"]

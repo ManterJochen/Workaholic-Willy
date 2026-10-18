@@ -14,6 +14,11 @@ So this file is a **ledger, not a gate**. It records which construction sites ar
 are not, and fails when reality drifts from the ledger in either direction -- a new hand-rolled site
 appearing, or a converted one silently reverting. Moving a runner from ``PENDING`` to ``ADOPTED`` is
 part of the commit that converts it, next to the measurement that justifies it.
+
+2026-10-17 (the owner's cleanup): GroundingDINO, OneFormer and the router left, and with them the dense
+path's bigger checkpoint and every reason a runner had to build its own models. Every runner and every
+production site builds through the factory now, so ``PENDING`` is empty; the runners converted that day
+were not measured on-box, which the sim README says beside each gate.
 """
 
 from __future__ import annotations
@@ -37,17 +42,13 @@ RUNNERS = REPO / "src" / "willy_sim"
 #: down as one. The list fails in both directions like everything else here: a path that stops
 #: existing fails `test_every_named_path_exists`.
 PRODUCTION_SITES: dict[str, str] = {
-    # 2026-09-05: converged onto `PerceptionSpec.from_config(app_cfg.models).build()`. Byte-identical
-    # on the shipped values (zero_shot + grounded_sam + sam2 resolves to the same GroundingDINO +
-    # SAM2 pair the legacy keys resolved), which is why this could be proved at a desk. What changed
-    # is that `models.pipeline` now reaches hardware at all.
+    # 2026-09-05: converged onto `PerceptionSpec.from_config(app_cfg.models).build()`. What changed
+    # is that `models.pipeline` reaches hardware at all.
     "src/robot/execution/autonomous_grasp/cells.py": "ADOPTED",
-    # ⚠ STILL ON THE COMPONENT DOORS, ON PURPOSE, AND THE REASON IS WORTH THE LINE. The exerciser
-    # is what an operator runs to prove a camera and two models work in isolation, BEFORE a cell
-    # exists. Routing it through the same resolution would make it prove the cell's stack rather than
-    # the parts, which is a different question and not the one it is for. Recorded so the asymmetry
-    # is a decision instead of an oversight.
-    "src/robot/perception/__main__.py": "COMPONENT_DOORS",
+    # 2026-10-17: the exerciser stood on the component doors (`build_object_detector`,
+    # `build_segmenter`) to prove a camera and two models apart from a cell. Those doors left with the
+    # legacy keys they read, so it proves the very stack the cell builds, before a cell exists.
+    "src/robot/perception/__main__.py": "ADOPTED",
 }
 
 #: Runners that build their perception stack through the factory -- so config, and therefore the VLM
@@ -70,6 +71,11 @@ ADOPTED: frozenset[str] = frozenset({
     # red cube" and "der rote Wuerfel"; the phrase route 0/10 on both, and on the English one it
     # lifted the BLUE cube 10/10 while reporting outcome=succeeded.
     "run_attribute_pick.py",
+    # 2026-10-17, NOT MEASURED ON-BOX: converted when GroundingDINO left. The dense path's bigger
+    # checkpoint (`WILLY_YCB_DETECTOR`) left with it, and the fused runner's clutter pass takes the
+    # backend's own detector and segmenter.
+    "run_dense_pick.py",
+    "run_fused_pick.py",
 })
 
 #: Runners that still construct a detector/segmenter directly. Each needs its own on-box run before it
@@ -77,20 +83,13 @@ ADOPTED: frozenset[str] = frozenset({
 #: NB this measures runners that CONSTRUCT models, which is the debt that blocks config from reaching
 #: them. A runner that merely hand-rolls the detect->segment chain on models handed to it (e.g.
 #: run_pile_baseline) is a smaller, separate debt: it cannot ignore config, only duplicate the loop.
-PENDING: frozenset[str] = frozenset({
-    "run_bin_clearing_demo.py",
-    "run_dense_pick.py",      # deliberately uses a larger detector -- convert with care, see module docs
-    "run_expose_pick.py",
-    # Attempted 2026-08-11 and REVERTED: its own scene cannot currently certify the change. The
-    # overhead coarse pass aborts on the continuous guard (forearm|lfinger 5.828 mm) as soon as
-    # perception succeeds, so the gate reports 0/5 for a reason that has nothing to do with the seam.
-    # An adoption nobody can measure does not ship. Fix the guard abort first, then convert.
-    "run_fused_pick.py",
-})
+#: Empty since 2026-10-17. `run_bin_clearing_demo.py` is in neither list: its language mode asks the process's
+#: one VLM for boxes (`shared_vlm().grounder_for`) and cuts no mask, so it builds no perception stack at all.
+PENDING: frozenset[str] = frozenset()
 
-_DIRECT_CONSTRUCTION = re.compile(
-    r"\b(GroundingDinoObjectDetector|Sam2Segmenter|RtDetrObjectDetector|OneFormerSegmenter)\s*\("
-)
+#: The classes a site would build itself, the VLM's grounder among them: one built by hand is a second copy of
+#: its weights beside the holder's.
+_DIRECT_CONSTRUCTION = re.compile(r"\b(Sam2Segmenter|RtDetrObjectDetector|Qwen3VLGrounder)\s*\(")
 
 
 def _runners_constructing_models_directly() -> set[str]:
@@ -129,34 +128,19 @@ class AdoptionLedgerTests(unittest.TestCase):
 
     def test_the_production_sites_match_what_they_claim(self) -> None:
         """⭑ THE HALF THE GLOB COULD NOT SEE. An ADOPTED production site must not construct a
-        model class by hand, and a PENDING one must -- otherwise it has been converted and the ledger
-        was not told, which is the same staleness in the other direction."""
+        model class by hand, and must go through PerceptionSpec."""
         for rel, state in sorted(PRODUCTION_SITES.items()):
             with self.subTest(site=rel):
                 source = (REPO / rel).read_text(encoding="utf-8", errors="replace")
-                hand_rolled = bool(_DIRECT_CONSTRUCTION.search(source))
-                if state == "ADOPTED":
-                    self.assertFalse(
-                        hand_rolled,
-                        f"{rel} is listed as ADOPTED but still constructs a model class directly",
-                    )
-                    self.assertIn(
-                        "PerceptionSpec", source,
-                        f"{rel} is listed as ADOPTED but does not go through PerceptionSpec",
-                    )
-                else:
-                    # COMPONENT_DOORS is a THIRD state and naming it was the first thing this test
-                    # got wrong. The exerciser does not hand-roll models -- it calls
-                    # `build_object_detector` + `build_segmenter`, so config DOES reach it, but only
-                    # the legacy keys do. "Uses the factory" and "gets the whole config" are two
-                    # different claims, and this ledger now keeps them apart.
-                    self.assertFalse(hand_rolled, f"{rel} constructs a model class directly")
-                    self.assertIn("build_object_detector", source, rel)
-                    self.assertNotIn(
-                        "build_perception", source,
-                        f"{rel} reaches the whole-stack door now -- move it to ADOPTED",
-                    )
-                    self.assertNotIn("PerceptionSpec", source, rel)
+                self.assertEqual("ADOPTED", state, "every production site builds through the factory")
+                self.assertFalse(
+                    _DIRECT_CONSTRUCTION.search(source),
+                    f"{rel} is listed as ADOPTED but still constructs a model class directly",
+                )
+                self.assertIn(
+                    "PerceptionSpec", source,
+                    f"{rel} is listed as ADOPTED but does not go through PerceptionSpec",
+                )
 
     def test_every_named_path_exists(self) -> None:
         """A path that has been renamed would silently measure nothing, and pass forever."""

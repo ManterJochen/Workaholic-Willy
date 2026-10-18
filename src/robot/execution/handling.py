@@ -1,15 +1,14 @@
 """What a robot's hand does as one verb: close on a part, open off it, and say what was measured.
 
 ``Robot.grasp``, ``Robot.release`` and ``Robot.is_holding`` delegate here. A verb commands the gripper, reads back the
-width, whether that width was measured, and what the gripper measured about the hold, and hands a part it holds to the
-arm's carried part model where the arm has one. Every reading is a capability the gripper or the arm opts into
-(``core.gripper.ReportsHoldEvidence``, ``MeasuresWidth``, ``core.arm_capabilities.CarriesPayload``), so a driver that
-cannot say is read as not measured and not modelled rather than guessed.
+width, whether that width was measured, and what the gripper measured about the hold. Every reading is a capability the
+gripper opts into (``core.gripper.ReportsHoldEvidence``, ``MeasuresWidth``), so a driver that cannot say is read as not
+measured rather than guessed. No part in the jaws is modelled (the owner, 2026-10-05, every cell since 2026-10-17): a
+closed hand is judged as an empty one, by the exact guard at full stroke.
 
-* A hold the gripper measured, or that nothing could measure, is handed to the arm as a carried part; a measured empty
-  close hands nothing.
-* A release opens to the hand's width. A part still measured in the jaws keeps its model and the release is not
-  confirmed; an unmeasured release detaches and says it was not checked.
+* A close the gripper measured empty is ``NOTHING_HELD``; any other is ``GRASPED``.
+* A release opens to the hand's width. A part still measured in the jaws leaves the release not confirmed; an
+  unmeasured release says it was not checked.
 * A hand that toggles with no sensor (``core.gripper.TogglesWithoutSensor``, a ``jaw_io`` single_toggle) is told open
   or close and never a width: a report carries no width, says the hold and the release were not checked because there
   is no sensor, and says where the jaws already stood and nothing was sent.
@@ -22,35 +21,34 @@ cannot say is read as not measured and not modelled rather than guessed.
 ``Robot.pick`` and ``Robot.place`` put the hand verbs at the end of a straight descent. Before any command they refuse,
 in this order: a robot that cannot hold, a link that is not open, a pose not in BASE, a camera world the arm's own
 motion would be refused for (``PlansMotions``), an arm whose motions do not go through cuRobo and the exact mesh
-guard (``motion.route_of``: a desk arm runs, a UR on the ik planner, a KUKA and an arm that does not say are refused),
+guard (``motion.route_of``: a desk arm runs, a UR on the ik planner and an arm that does not say are refused),
 and last, as the one question put to the controller, a controller that cannot move. A pick on a hand that toggles with
 no sensor then asks it whether its jaws stand open (``jaws_open_for_a_pick``) instead of opening them: never a change
 before the arm moves, and the pick is refused where the hand believes them closed and nobody at a terminal says
 otherwise. Then the motions: a planned move to
 the standoff, a line down to the pose, the hand verb, which asks the controller again at the part, and a line out of it,
-each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for one
-(``safety.dwell``); an arm that gates its own sends (``gate_at`` ``send``) waits for steady right before it sends instead,
-after it judged the move. The line out of a pick goes back up to the standoff, or, for a grasp more than
+each move carrying the caller's decline, each preceded by the arm's own steady gate; an arm that gates its own sends
+(a cuRobo arm) waits for steady right before it sends instead, after it judged the move. The line out of a pick goes back up to the standoff, or, for a grasp more than
 :data:`LIFT_STRAIGHT_UP_BEYOND_DEG` off vertical, straight up (BASE +Z) by the standoff and at least
 :data:`MIN_STRAIGHT_LIFT_MM`: a side grasp does not drag its part sideways along the support (side grasps are on, the
-owner, 2026-10-01). Before the hand verb of a pick, an arm that judges a line as if its jaws held a part
-(``JudgesCarriedLines``, the UR driver) is asked about that line out with the part in them, the caller's decline with
-it: where it would refuse it, the jaws stay open, the arm goes back up the line it came down, and the pick ends
+owner, 2026-10-01). Before the hand verb of a pick, an arm that judges a grasp's lift before the jaws close
+(``JudgesCarriedLines``, the UR driver) is asked about that line out, the caller's decline with it: where it would
+refuse it, the jaws stay open, the arm goes back up the line it came down, and the pick ends
 ``CARRIED_RETREAT_REFUSED`` (the owner, 2026-10-01). An empty hand always backs out the way it came. A refused motion
 ends the verb with nothing commanded after it, and so does a camera that could not vouch for the cell, as its own
-outcome rather than a raise. A pick holds its keep-out offer in the arm's live world from before the detach to after its
-last motion, and forgets it on any exit. A place holds its own, what the part is set down on, from before its first
+outcome rather than a raise. A pick holds its keep-out offer in the arm's live world from before the pre-open to after
+its last motion, and forgets it on any exit. A place holds its own, what the part is set down on, from before its first
 motion to after its last, the release between them, and forgets it on any exit: the part comes down to within the line
 clearance of what a camera located under it (owner's example 13, 2026-09-24). A place handed a drop over a box's rim
 (``instead``, for a part set down below it) lets the part go there where the guard or the planner refuses the line into
 the box before anything was sent: the line from the same standoff to ``instead``, judged as every line is, and the
 refused line is no motion of the place (the owner, 2026-10-08 night).
 
-The owner's held worlds (``safety.planning_world.hold``, 2026-10-09), each off as shipped: at ``standoff`` the line in
-or down is judged in the world its route was judged in, with no frame at the standoff; at ``drop`` the release and the
-line out of a place hold the world the line in was judged in, with no frame after the release. Where the arm judges the
-next leg (``robot.motion.judge_next_leg``), a place's release leaves the jaws' stroke to the verb where the hand can
-(``wait_settled``): the one change goes out, the part is forgotten, and in the world held at the drop the line out is
+The owner's held worlds (2026-10-09, every cell since 2026-10-17, on an arm that holds them: ``holds_world_at``): at the
+``standoff`` the line in or down is judged in the world its route was judged in, with no frame at the standoff; at the
+``drop`` the release and the line out of a place hold the world the line in was judged in, with no frame after the
+release. Where the arm judges the next leg (every cuRobo arm), a place's release leaves the jaws' stroke to the verb
+where the hand can (``wait_settled``): the one change goes out, and in the world held at the drop the line out is
 judged meanwhile, as it will run, and the joint move a task declared after the place (``expecting_next``) from where the
 line out ends; nothing is sent before the stroke is over.
 
@@ -78,11 +76,9 @@ from src.geometry import Frame, Pose
 from src.robot.core import MotionResult, MotionStatus, StoppableGripper, SupportsRobotStatus, TwoStateGripper
 from src.robot.core.gripper import OpensAndCloses
 from src.robot.core.arm_capabilities import (
-    CarriesPayload,
     JudgesCarriedLines,
     LineMotion,
     LineReading,
-    PayloadModel,
     RobotStatus,
     halt_state_of,
     halted_refusal,
@@ -116,7 +112,6 @@ __all__ = [
     "HandlingOutcome",
     "HandlingReport",
     "HandlingVerb",
-    "PayloadState",
     "grasp",
     "is_holding",
     "pick",
@@ -163,8 +158,7 @@ class HandOutcome(StrEnum):
         NOTHING_HELD: The jaws closed and the hand measured nothing held.
         RELEASED: The jaws opened (closed, off a part held from inside a bore) and nothing measured a part still in
             them.
-        RELEASE_NOT_CONFIRMED: The jaws moved to let go and the hand still measures a part: the carried part stays
-            modelled.
+        RELEASE_NOT_CONFIRMED: The jaws moved to let go and the hand still measures a part in them.
         GRIPPER_FAULT: The hand raised; it was stopped where it can be.
         REFUSED: Nothing was commanded.
     """
@@ -175,7 +169,7 @@ class HandOutcome(StrEnum):
     NOTHING_HELD = "nothing_held"
     #: The jaws let the part go and nothing measured a part still in them.
     RELEASED = "released"
-    #: The jaws moved to let go and the gripper still measures a part: the carried part stays modelled.
+    #: The jaws moved to let go and the gripper still measures a part in them.
     RELEASE_NOT_CONFIRMED = "release_not_confirmed"
     #: The gripper raised; it was stopped where it can be.
     GRIPPER_FAULT = "gripper_fault"
@@ -183,26 +177,9 @@ class HandOutcome(StrEnum):
     REFUSED = "refused"
 
 
-class PayloadState(StrEnum):
-    """What a hand verb did to the arm's model of a carried part."""
-
-    #: The planner carries the part and the self filter takes it out.
-    ATTACHED = "attached"
-    #: The self filter takes the part out; the planner declined it and routes as if the gripper were empty.
-    FILTER_ONLY = "filter_only"
-    #: Nothing models the part; ``payload_reason`` says why.
-    NOT_MODELLED = "not_modelled"
-    #: The carried part was forgotten.
-    DETACHED = "detached"
-    #: The arm was asked to forget the part and its planner did not confirm.
-    DETACH_FAILED = "detach_failed"
-    #: The verb left the model as it was.
-    UNCHANGED = "unchanged"
-
-
 @dataclass(frozen=True, slots=True)
 class HandReport:
-    """What one hand verb commanded, measured and did to the arm's model of a carried part.
+    """What one hand verb commanded and measured.
 
     Attributes:
         verb (HandVerb): ``grasp`` or ``release``.
@@ -213,9 +190,6 @@ class HandReport:
         width_measured (bool): Whether the reported width is a measurement (default: False).
         hold (HoldEvidence): What the hand measured about a hold: ``HELD``, ``EMPTY`` or ``UNMEASURED``
             (default: UNMEASURED).
-        payload (PayloadState): What the verb did to the carried part model: ``ATTACHED``, ``FILTER_ONLY``,
-            ``NOT_MODELLED``, ``DETACHED``, ``DETACH_FAILED`` or ``UNCHANGED`` (default: UNCHANGED).
-        payload_reason (str): Why the part is not modelled, where it is not (default: "").
         error (str): What the hand raised, for ``GRIPPER_FAULT`` (default: "").
         no_sensor (bool): The hand has no sensor at all (it toggles): nothing about the width, the hold or the release
             was checked (default: False).
@@ -229,8 +203,6 @@ class HandReport:
     reported_width_mm: float | None = None
     width_measured: bool = False
     hold: HoldEvidence = HoldEvidence.UNMEASURED
-    payload: PayloadState = PayloadState.UNCHANGED
-    payload_reason: str = ""
     error: str = ""
     #: The hand has no sensor at all (it toggles): nothing about the width, the hold or the release was checked.
     no_sensor: bool = False
@@ -270,16 +242,9 @@ class HandReport:
         else:
             hold = f"hold {self.hold.value.upper()}"
         parts.append(hold)
-        payload = f"payload {self.payload.value.upper()}"
-        if self.payload_reason:
-            payload += f": {self.payload_reason}"
-        parts.append(payload)
         lines = [f"{head}  " + "; ".join(parts)]
         if self.error:
             lines.append(f"  fault: {self.error}")
-        if self.payload in (PayloadState.ATTACHED, PayloadState.FILTER_ONLY):
-            lines.append("  the carried part is a declared envelope (safety.planning_world.payload), and a second held "
-                         "part is not modelled")
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
@@ -296,8 +261,6 @@ class HandReport:
             "reported_width_mm": self.reported_width_mm,
             "width_measured": self.width_measured,
             "hold": self.hold.value,
-            "payload": self.payload.value,
-            "payload_reason": self.payload_reason,
             "error": self.error,
             "no_sensor": self.no_sensor,
             "note": self.note,
@@ -305,13 +268,13 @@ class HandReport:
 
 
 def grasp(robot: Any, width_mm: float) -> HandReport:
-    """Close ``robot``'s gripper to ``width_mm`` and hand what it holds to the arm's carried part model."""
+    """Close ``robot``'s gripper to ``width_mm`` and say what it measured about the hold."""
     return _said(_grasp(robot, width_mm))
 
 
 def release(robot: Any) -> HandReport:
-    """Open ``robot``'s gripper to the hand's width and forget the carried part unless one is still measured; a hand that
-    holds its part from inside a bore closes instead (:func:`_letting_go`)."""
+    """Open ``robot``'s gripper to the hand's width, and say whether a part is still measured in it; a hand that holds
+    its part from inside a bore closes instead (:func:`_letting_go`)."""
     return _said(_release(robot))
 
 
@@ -344,22 +307,18 @@ def _grasp(robot: Any, width_mm: float) -> HandReport:
     if hold is HoldEvidence.EMPTY:
         return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.NOTHING_HELD, commanded_width_mm=commanded,
                           reported_width_mm=reported, width_measured=measured, hold=hold)
-    # A toggle's part is carried at the width the caller named: the width it reports is a band, not the part.
-    state, reason = _attach(robot.arm, reported if measured else commanded)
     if toggle is not None:
-        return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.GRASPED, hold=hold, payload=state,
-                          payload_reason=reason, no_sensor=True, note=note)
+        return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.GRASPED, hold=hold, no_sensor=True, note=note)
     return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.GRASPED, commanded_width_mm=commanded,
-                      reported_width_mm=reported, width_measured=measured, hold=hold, payload=state,
-                      payload_reason=reason)
+                      reported_width_mm=reported, width_measured=measured, hold=hold)
 
 
 def _release(robot: Any, *, meanwhile: "Callable[[], None] | None" = None) -> HandReport:
     """:func:`release`, saying nothing: a place's own release is said with the place.
 
     ``meanwhile`` runs while the jaws' stroke is waited out, where the hand leaves its stroke to the verb
-    (``wait_settled``): the place judges its line out there (``robot.motion.judge_next_leg``). The one change has gone
-    out, the hand has been read and the part forgotten, and nothing is sent until the stroke is over. Where the hand
+    (``wait_settled``): the place judges its line out there. The one change has gone
+    out and the hand has been read, and nothing is sent until the stroke is over. Where the hand
     leaves nothing, ``meanwhile`` does not run, and the release is the one it always was.
     """
     refused = _refusal(robot, HandVerb.RELEASE)
@@ -387,18 +346,15 @@ def _release(robot: Any, *, meanwhile: "Callable[[], None] | None" = None) -> Ha
         if hold is HoldEvidence.HELD:
             return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.RELEASE_NOT_CONFIRMED,
                               commanded_width_mm=commanded, reported_width_mm=reported, width_measured=measured,
-                              hold=hold, payload_reason="the gripper still measures a part, so its model is kept")
-        state, reason = _detach(robot.arm)
+                              hold=hold)
         if settles_at is not None and meanwhile is not None:
             _while_the_jaws_travel(meanwhile)
     finally:
         _settled(gripper, settles_at)
     if toggle is not None:
-        return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.RELEASED, hold=hold, payload=state,
-                          payload_reason=reason, no_sensor=True, note=note)
+        return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.RELEASED, hold=hold, no_sensor=True, note=note)
     return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.RELEASED, commanded_width_mm=commanded,
-                      reported_width_mm=reported, width_measured=measured, hold=hold, payload=state,
-                      payload_reason=reason)
+                      reported_width_mm=reported, width_measured=measured, hold=hold)
 
 
 def _letting_go(gripper: Any) -> tuple[float, bool]:
@@ -529,7 +485,7 @@ def _while_the_jaws_travel(meanwhile: "Callable[[], None]") -> None:
 
 
 def _judges_next_legs(arm: Any) -> bool:
-    """Whether ``arm`` judges the next leg while the jaws' stroke is waited out (``robot.motion.judge_next_leg``), read
+    """Whether ``arm`` judges the next leg while the jaws' stroke is waited out (every cuRobo arm), read
     as ``is True``, so a double that answers every attribute does not."""
     return getattr(arm, "judges_next_legs", False) is True
 
@@ -581,30 +537,6 @@ def _fault(gripper: Any, verb: HandVerb, commanded: float | None, exc: BaseExcep
                       error=f"{type(exc).__name__}: {exc}")
 
 
-def _attach(arm: Any, width_mm: float) -> tuple[PayloadState, str]:
-    if not isinstance(arm, CarriesPayload):
-        return PayloadState.NOT_MODELLED, f"{type(arm).__name__} models no carried part"
-    declined = arm.payload_declined_reason()
-    if declined is not None:
-        return PayloadState.NOT_MODELLED, declined
-    arm.attach_payload(width_mm)
-    model = arm.payload_model()
-    if model is PayloadModel.PLANNER_AND_FILTER:
-        return PayloadState.ATTACHED, ""
-    if model is PayloadModel.FILTER_ONLY:
-        return PayloadState.FILTER_ONLY, ("the planner declined the part and routes as if the gripper were empty; the "
-                                          "self filter takes it out of what the cameras see")
-    return PayloadState.NOT_MODELLED, "the attach modelled nothing"
-
-
-def _detach(arm: Any) -> tuple[PayloadState, str]:
-    if not isinstance(arm, CarriesPayload):
-        return PayloadState.NOT_MODELLED, f"{type(arm).__name__} models no carried part"
-    if arm.detach_payload():
-        return PayloadState.DETACHED, ""
-    return PayloadState.DETACH_FAILED, "the planner did not confirm it forgot the carried part"
-
-
 # ---------------------------------------------------------------------------------------------------
 # pick and place
 # ---------------------------------------------------------------------------------------------------
@@ -646,8 +578,8 @@ class HandlingOutcome(StrEnum):
     #: A camera could not vouch for the cell through its fresh-frame attempts; nothing was commanded after it, and a
     #: caller stops rather than trying again. The verb reports it rather than raising it.
     CAMERA_WORLD_UNAVAILABLE = "camera_world_unavailable"
-    #: At the part, before the jaws closed, the arm judged the line out as if they held the part and would refuse it,
-    #: or could not judge it: the jaws stayed open, and the arm went back up the line it came down, to the standoff.
+    #: At the part, before the jaws closed, the arm judged the line out and would refuse it, or could not judge it: the
+    #: jaws stayed open, and the arm went back up the line it came down, to the standoff.
     CARRIED_RETREAT_REFUSED = "carried_retreat_refused"
     #: Nothing was commanded.
     REFUSED = "refused"
@@ -790,7 +722,7 @@ def place(
     """Place the held part at ``pose``: standoff, a line in, release, a line out unless the release is not confirmed.
 
     ``instead`` is where the part is let go where the guard or the planner refuses the line in to ``pose`` before
-    anything was sent: the drop over a box's rim, for a part set down below it (``robot.place.release_in_a_box``), from
+    anything was sent: the drop over a box's rim, for a part set down below it (``robot.motion.place.release_in_a_box``), from
     the same standoff. The refused line is no motion of the place; the line to ``instead`` is judged as every line is."""
     return _said_handling(_Handling(robot, HandlingVerb.PLACE, pose, standoff_mm, camera_world).place(
         keep_out=keep_out, instead=instead))
@@ -885,9 +817,9 @@ class _Handling:
     def _place_body(self) -> HandlingReport:
         standoff = self._standoff()
         self._move(standoff, linear=False)
-        # The owner's switches (safety.planning_world.hold, 2026-10-09): the line in judged in the world its route was
+        # The owner's O2 (2026-10-09, every cell's since 2026-10-17): the line in judged in the world its route was
         # judged in, with no frame at the standoff, and the line out in the world the line in was judged in, with no
-        # frame after the release. Each is a block that changes nothing where its switch is off.
+        # frame after the release. Each is a block that changes nothing on an arm that holds no world there.
         with self._held_at("standoff", "the line in to a place, judged in the world its route to the standoff was "
                                        "judged in"):
             self._line_in()
@@ -904,7 +836,7 @@ class _Handling:
                 return self._report(HandlingOutcome.REFUSED, hand=hand, message=hand.error)
             if not self.judged_while_the_jaws_opened:
                 # No stroke was left to the verb: the joint move declared after the place is judged during the line out,
-                # where the arm judges legs in motion (robot.motion.judge_next_leg in_settles_and_motion).
+                # where the arm judges legs in motion (a cuRobo arm whose halt brakes the line).
                 _the_next_leg_judged(self.arm, standoff, junction="drop", now=False)
             self._move(standoff, linear=True)
             return self._report(HandlingOutcome.EXECUTED, hand=hand)
@@ -936,18 +868,18 @@ class _Handling:
         return status in _REFUSED_BEFORE_SENDING
 
     def _held_at(self, junction: str, reason: str) -> AbstractContextManager[Any]:
-        """The block in which the arm holds its world across ``junction`` (``safety.planning_world.hold``,
-        ``holds_world_at``), where it does and the verb carries no decline; elsewhere a block that changes nothing."""
+        """The block in which the arm holds its world across ``junction`` (``holds_world_at``), where it does and the
+        verb carries no decline; elsewhere a block that changes nothing."""
         holds = getattr(self.arm, "holds_world_at", None)
         if chosen(self.camera_world) or not callable(holds) or holds(junction) is not True:
             return nullcontext()
         return self.arm.held_world(reason)
 
     def _while_the_jaws_open(self, standoff: Pose) -> "Callable[[], None] | None":
-        """What the place judges while the jaws open, where the arm judges the next leg (``robot.motion.judge_next_leg``)
+        """What the place judges while the jaws open, where the arm judges the next leg (every cuRobo arm)
         and the verb carries no decline; ``None`` elsewhere, and the release waits out its stroke as ever.
 
-        In the world held across the drop (``safety.planning_world.hold.drop``): the line out to ``standoff``, from where
+        In the world held across the drop: the line out to ``standoff``, from where
         the arm stands, as it will run (``judge_line_ahead``), and where it would run, the joint move a task declared
         after the place from where the line out ends (``judge_the_next_leg``). Outside that world nothing is judged ahead:
         the line out takes its frame after the release, as ever. Nothing is sent before the stroke is over.
@@ -991,10 +923,6 @@ class _Handling:
             if why:
                 return self._report(HandlingOutcome.REFUSED, message=why)
             opening = None
-        # The same question this module asks by isinstance before a grasp and before a release: an arm that models a
-        # payload forgets the last one before it opens its jaws on the next.
-        if isinstance(self.arm, CarriesPayload):
-            self.arm.detach_payload()
         if opening is not None:
             self._command_gripper(float(opening), close=False)
             if float(opening) < float(self.gripper.max_width_mm) - 1e-6:
@@ -1005,22 +933,22 @@ class _Handling:
 
                 if guard_holds_the_fingers_at(self.arm, self.gripper, float(opening)):
                     try:
-                        return self._picked_from(standoff_pose=self._standoff(), close_to=close_to, width_mm=width_mm)
+                        return self._picked_from(standoff_pose=self._standoff(), close_to=close_to)
                     finally:
                         guard_holds_the_fingers_at(self.arm, None, None)
-        return self._picked_from(standoff_pose=self._standoff(), close_to=close_to, width_mm=width_mm)
+        return self._picked_from(standoff_pose=self._standoff(), close_to=close_to)
 
-    def _picked_from(self, *, standoff_pose: Pose, close_to: float, width_mm: float) -> HandlingReport:
+    def _picked_from(self, *, standoff_pose: Pose, close_to: float) -> HandlingReport:
         """:meth:`_pick_body` from the move to the standoff on, the jaws open as wide as they will be at the part."""
         standoff = standoff_pose
         lift = self._lift(standoff)
         self._move(standoff, linear=False)
-        # The owner's O2 (safety.planning_world.hold.standoff): the line down judged in the world its route was judged in,
-        # with no frame at the standoff; a block that changes nothing where the switch is off.
+        # The owner's O2 (2026-10-09): the line down judged in the world its route was judged in, with no frame at the
+        # standoff; a block that changes nothing on an arm that holds no world there.
         with self._held_at("standoff", "the line down to a pick, judged in the world its route to the standoff was "
                                        "judged in"):
             self._move(self.pose, linear=True)
-        why = self._line_out_refusal(lift, self._line_out_width(close_to, width_mm))
+        why = self._line_out_refusal(lift)
         if why:
             # The jaws stay open, and the arm goes back up the line it came down (the owner, 2026-10-01).
             said = f"{why.rstrip('.')}. The jaws stayed open"
@@ -1072,7 +1000,7 @@ class _Handling:
                 return self._report(HandlingOutcome.REFUSED, message=sentence)
         # Everything that moves the arm goes through cuRobo and the exact mesh guard with the camera world, so a pick
         # or a place reads the route its motions take, as Robot.move does, and asks the desk's move row (P0i i3). A
-        # desk arm runs; a UR on the ik planner is refused like a KUKA.
+        # desk arm runs; a UR on the ik planner is refused.
         self.line = route_of(self.arm).line
         move = row_of(Ability.MOVE, arm=self.arm)
         if not move.available:
@@ -1127,21 +1055,14 @@ class _Handling:
             if not result.ok:
                 raise _Refused(self._report(HandlingOutcome.MOTION_REFUSED, message=result.message or ""))
 
-    def _line_out_width(self, close_to: float, width_mm: float) -> float:
-        """The width the line out is judged carrying: what the attach after the close carries, where that is known
-        ahead. A hand that does not measure its width is attached at the width it is told (:func:`grasp`), so it is
-        judged at exactly that, the box the attach hands the planner; a hand that measures is attached at what it
-        measures, and the part's own width stands in for it, never narrower than the jaws are told."""
-        return max(close_to, float(width_mm)) if width_is_measured_of(self.gripper) else close_to
-
-    def _line_out_refusal(self, standoff: Pose, width_mm: float) -> str:
-        """Why the line back up to ``standoff``, judged at the part as if the jaws held a part ``width_mm`` across, would
-        be refused, or could not be judged; ``""`` where it would run, and on an arm that does not judge it
-        (``JudgesCarriedLines``). Nothing moves. It carries the verb's decline, as every motion of it does, and a camera
-        that cannot vouch for the cell ends the verb as its own outcome, as on every motion of it."""
+    def _line_out_refusal(self, standoff: Pose) -> str:
+        """Why the line back up to ``standoff``, judged at the part before the jaws close, would be refused, or could not
+        be judged; ``""`` where it would run, and on an arm that does not judge it (``JudgesCarriedLines``). Nothing
+        moves. It carries the verb's decline, as every motion of it does, and a camera that cannot vouch for the cell
+        ends the verb as its own outcome, as on every motion of it."""
         if not isinstance(self.arm, JudgesCarriedLines):
             return ""
-        keywords: dict[str, Any] = {"grip_width_mm": width_mm}
+        keywords: dict[str, Any] = {}
         if chosen(self.camera_world):
             keywords["camera_world"] = self.camera_world
         try:
@@ -1149,11 +1070,10 @@ class _Handling:
         except CameraWorldUnavailable as exc:
             raise _Refused(self._report(HandlingOutcome.CAMERA_WORLD_UNAVAILABLE, message=str(exc))) from None
         except Exception as exc:  # noqa: BLE001 (a line out nobody could judge is no line the jaws close for)
-            return f"the line out could not be judged as if the jaws held the part ({type(exc).__name__}: {exc})"
+            return f"the line out could not be judged before the jaws close ({type(exc).__name__}: {exc})"
         if not isinstance(refused, MotionResult) or refused.ok:
             return ""
-        return (f"the line out, judged at the part as if the jaws held the part {width_mm:g} mm across, would be "
-                f"refused: {refused.message}")
+        return f"the line out, judged at the part before the jaws close, would be refused: {refused.message}"
 
     def _command_gripper(self, width_mm: float, *, close: bool) -> None:
         self.jaws_commanded = True

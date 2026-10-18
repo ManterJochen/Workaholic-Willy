@@ -9,13 +9,13 @@ a few pixels are, not where a surface is.
 
 The drop (``drop_plan``) is ``SetDown.onto`` the bin, then four rules, in order:
 
-* the air over the rim is the task's rim air: the operator's 0 to 50 mm, else the cell's ``robot.place.rim_air_mm``
-  (``rim_clearance_mm``: 20 mm as shipped and where a tree says nothing, held to 0 to 50 mm; 0 is the owner's "genau auf
-  Höhe der Kante", 2026-10-14). It stands under the part's bottom, the part hanging below the tool as far as the grasp
-  stood over its bottom, where the cell declares how far its parts hang (``payload.length_mm``); under the tool, which
+* the air over the rim is the task's rim air: the operator's 0 to 50 mm (0 is the owner's "genau auf Höhe der Kante",
+  2026-10-14), else the owner's cell's 20 mm (``RIM_AIR_DEFAULT_MM``; the key ``robot.place.rim_air_mm`` until
+  2026-10-17). It stands under the part's bottom, the part hanging below the tool as far as the grasp stood over its
+  bottom, where the cell declares how far its parts hang (``robot.motion.place.part_hang_mm``); under the tool, which
   the part hangs from (``hang_mm=0``), where it declares none;
 * a grasp within 5 degrees of vertical is turned about the vertical until it closes along the cell's natural closing
-  axis (``robot.natural_closing_axis``); any other keeps the grasp's own turn. Either way the tool keeps the tilt it
+  axis (``robot.motion.natural_closing_axis``); any other keeps the grasp's own turn. Either way the tool keeps the tilt it
   gripped with: the hang is an upper bound on how far the part reaches below the tool only while the part hangs as it
   was gripped, and a turn about the vertical leaves every height under the tool as it was;
 * the arm is asked where it would stand (``nearest_configuration``) and the exact guard and the planner screen that
@@ -23,7 +23,7 @@ The drop (``drop_plan``) is ``SetDown.onto`` the bin, then four rules, in order:
 * the part, turned as it will hang, must fit the opening (or the top), else it does not fit.
 
 A taught place pose (``pose_drop``) is where the fingertips stood when the person taught it with empty jaws, the taught
-point. Where the cell declares ``payload.length_mm`` the part's BOTTOM is let go there: the tool goes to the taught pose
+point. Where the cell declares ``part_hang_mm`` the part's BOTTOM is let go there: the tool goes to the taught pose
 raised in BASE Z by how far the part reaches past the fingertips, its hang (the grasp's Z less its bottom) less the
 fingertips' reach and never below 0, or, where the pick reports no grasp, the declared length; where the cell declares
 none the tool goes to the taught pose itself. Turned as taught about the vertical, and tilted as the grasp was (the
@@ -177,35 +177,6 @@ class WhatATaskKeepsOfItsBinTests(unittest.TestCase):
         from api.schemas import TargetOut
 
         TargetOut.model_validate({key: value for key, value in said.items() if key in TargetOut.model_fields})
-
-
-class TheRimClearanceTests(unittest.TestCase):
-    def test_it_is_the_cells_rim_air_20_mm_as_shipped(self) -> None:
-        """``robot.place.rim_air_mm``, the owner's 20 mm as shipped and where a tree says nothing (2026-10-14), whatever
-        margin the perceived world keeps: no longer the 5 mm of set-down air and that margin, 13 mm on the cell."""
-        from src.config import load_tree
-        from src.robot.execution.place_target import rim_clearance_mm
-
-        robot = load_tree("console_dummy").robot
-        self.assertEqual(20.0, rim_clearance_mm(robot))
-        chosen = robot.model_copy(update={"place": robot.place.model_copy(update={"rim_air_mm": 35.0})})
-        self.assertEqual(35.0, rim_clearance_mm(chosen))
-        margin = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(
-            perceived=SimpleNamespace(margin_mm=25.0))))
-        self.assertEqual(20.0, rim_clearance_mm(margin), "the perceived world's margin chose the air")
-        self.assertEqual(20.0, rim_clearance_mm(None), "a cell that says nothing gets the owner's 20 mm")
-
-    def test_the_cells_own_air_is_held_to_the_owners_0_to_50_mm(self) -> None:
-        """0 is "genau auf Höhe der Kante" (the owner, 2026-10-14). The schema holds ``rim_air_mm`` to 0 to 50 mm, and
-        a tree that is no schema's is held there too; one that names no number gets the owner's 20 mm."""
-        from src.config.schema.robot import RobotConfig
-        from src.robot.execution.place_target import rim_clearance_mm
-
-        self.assertEqual(0.0, rim_clearance_mm(RobotConfig.model_validate({"place": {"rim_air_mm": 0.0}})))
-        for air_mm, held_mm in ((0.0, 0.0), (12.5, 12.5), (50.0, 50.0), (-5.0, 0.0), (60.0, 50.0),
-                                (float("nan"), 20.0), (True, 20.0), (None, 20.0)):
-            with self.subTest(air_mm=air_mm):
-                self.assertEqual(held_mm, rim_clearance_mm(SimpleNamespace(place=SimpleNamespace(rim_air_mm=air_mm))))
 
 
 class TheDropOverTheRimTests(unittest.TestCase):
@@ -610,13 +581,13 @@ class TheWorstHangBelowTheToolTests(unittest.TestCase):
         self.assertIn("at its lowest or 50 mm higher", blocked.reason)
 
     def test_the_drop_over_the_bin_keeps_the_rim_air_under_the_fingertips(self) -> None:
-        from src.robot.execution.place_target import KeptTarget, nominal_drop, rim_clearance_mm
+        from src.robot.execution.place_target import RIM_AIR_DEFAULT_MM, KeptTarget, nominal_drop
         from src.robot.execution.task import _fingertips_past_the_tcp_mm
 
         tree = self._tree()
         kept = KeptTarget.of(bin_object(), camera="wrist", look=None, seen_at=12.5)
         assert kept is not None
-        air = rim_clearance_mm(tree)
+        air = RIM_AIR_DEFAULT_MM
         reach = _fingertips_past_the_tcp_mm(tree)
         plan = nominal_drop(TaskArm([]), kept, hang_mm=reach + 1.0, air_mm=air)
         assert plan.pose is not None

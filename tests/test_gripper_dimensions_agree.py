@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.config.schema.robot.grasping_schema import GraspingParallelJawGeometryConfig
+from src.robot.grasping.collision.gripper_model import jaw_envelope
 from src.robot.grasping.collision import ParallelJawGripperModel
 from datagen.grasps.verdict import JawModel
 
@@ -42,8 +42,8 @@ TOLERANCE_MM = 0.05
 
 
 class DimensionsAgreeTests(unittest.TestCase):
-    def test_the_config_schema_carries_the_measurement(self) -> None:
-        cfg = GraspingParallelJawGeometryConfig()
+    def test_the_envelope_of_a_tree_naming_no_hand_carries_the_measurement(self) -> None:
+        cfg = jaw_envelope()
         self.assertAlmostEqual(cfg.fingertip_depth_mm, MEASURED_2F85_MM["reach_ahead"],
                                delta=TOLERANCE_MM,
                                msg="fingertip_depth_mm is the reach TOWARD the table; it was 6.0")

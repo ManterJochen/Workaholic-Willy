@@ -60,7 +60,7 @@ projected box: masks 0.73 to 0.80 IoU of the depth blob, 0 % outside the footpri
 
 What remains: a part of the same size, height and colour set down within ``max_shift_mm`` of a kept one, nothing else
 changed, is followed as that part. In everything the camera measures it is then a part of that kind, and the guard still
-judges every motion against depth. ``refresh_every_picks`` bounds how long such a swap goes unseen.
+judges every motion against depth; the next trigger grounds the scene again.
 """
 
 from __future__ import annotations
@@ -89,6 +89,13 @@ CHANGED_MM = 10.0
 CHANGED_CLUSTER_PX = 1000
 #: How far over the support a new point stands to be a part that came, millimetres.
 OVER_SUPPORT_MM = 10.0
+#: How far a part may have moved since the last pick and still be followed, millimetres (BASE xy, its new mask's surface
+#: against the kept one): a neighbour the fingers brushed (the owner: up to 10). Further, it is grounded.
+#: ``robot.grasping.follow_parts.max_shift_mm`` until 2026-10-17, the cell's value.
+FOLLOW_SHIFT_MM = 10.0
+#: How far a part may have crept since the detector grounded it, over every pick that followed it, millimetres: at
+#: least :data:`FOLLOW_SHIFT_MM`, or no move would ever be followed (``follow_parts.max_creep_mm`` until 2026-10-17).
+FOLLOW_CREEP_MM = 20.0
 #: How far past ``max_shift_mm`` each kept part's footprint is left to the part checks, millimetres; the taken part's
 #: footprint is grown by this alone.
 FOOTPRINT_GROWTH_MM = 15.0
@@ -274,7 +281,7 @@ class KeptScene:
     ``intrinsics`` and ``camera_to_base`` its measured depth, lens and CAMERA to BASE at the shutter, never handed to
     the planner world; ``support_mm`` the support the judged part stood on (the mat); ``prompt`` the phrase grounded
     (another one never follows); ``grounded_at_pick`` the task's pick whose detector grounded them; ``workspace`` the
-    cell's ``robot.workspace_limits`` the scene check reads within (``x_min, x_max, y_min, y_max, z_min, z_max``),
+    cell's ``robot.motion.workspace`` the scene check reads within (``x_min, x_max, y_min, y_max, z_min, z_max``),
     ``None`` for all of the frame; ``max_shift_mm`` and ``max_creep_mm`` the cell's ``follow_parts`` bounds; ``taken``
     the surfaces of the parts taken since the look, whose footprints must read the support.
     """
@@ -288,8 +295,8 @@ class KeptScene:
     prompt: str = ""
     grounded_at_pick: int = 0
     workspace: "tuple[float, float, float, float, float, float] | None" = None
-    max_shift_mm: float = 10.0
-    max_creep_mm: float = 20.0
+    max_shift_mm: float = FOLLOW_SHIFT_MM
+    max_creep_mm: float = FOLLOW_CREEP_MM
     taken: tuple[np.ndarray, ...] = ()
 
     # ---- what a look keeps ----------------------------------------------------------------------------------------
@@ -297,8 +304,8 @@ class KeptScene:
     @classmethod
     def of_view(
         cls, view: Any, *, label: "str | None", regions: Sequence[Any] = (), prompt: str = "", pick: int = 0,
-        support_mm: "float | None" = None, workspace: Any = None, max_shift_mm: float = 10.0,
-        max_creep_mm: float = 20.0, before: "KeptScene | None" = None,
+        support_mm: "float | None" = None, workspace: Any = None, max_shift_mm: float = FOLLOW_SHIFT_MM,
+        max_creep_mm: float = FOLLOW_CREEP_MM, before: "KeptScene | None" = None,
     ) -> "KeptScene | None":
         """The parts ``view`` (a pick loop's look: its frame, measured depth, CAMERA to BASE, surfaces in BASE and view
         identity) holds, or ``None`` where it keeps none to follow.

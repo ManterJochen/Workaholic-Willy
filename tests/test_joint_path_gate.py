@@ -21,6 +21,7 @@ import unittest
 
 import pytest
 
+from src.config.arms import described_home
 from src.config.schema.robot import RobotConfig, RobotSafetyConfig, WorkspaceLimitsConfig
 from src.robot.core.capabilities import RobotCapabilities
 from src.robot.core.motion_result import MotionCommand, MotionStatus
@@ -28,6 +29,7 @@ from src.robot.safety import SafetyPreflight
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.path_samples import PathSamples
 from src.robot.safety.planning.hand import planner_hand
+from tests._arm_kit import without_guards
 
 #: A configuration that folds a finger into the forearm. The exact mesh backend refuses it with
 #: "forearm|lfinger: mesh distance 0.367 mm"; the capsule proxy cannot see the gripper at all here.
@@ -40,10 +42,14 @@ _REACH_MM = 850.0
 
 class _Arm:
     capabilities = RobotCapabilities(vendor="ur", model="ur5e", has_native_fk=True, dof=6, controller=None, owns_a_controller=True)
+    #: The home it drives to, its description's, which the joint-limit guard centres every real arm's window on.
+    home_joint_positions = described_home("ur5e")
 
 
 class _Ur3eArm:
     capabilities = RobotCapabilities(vendor="ur", model="ur3e", has_native_fk=True, dof=6, controller=None, owns_a_controller=True)
+    #: The home it drives to, its description's, which the joint-limit guard centres every real arm's window on.
+    home_joint_positions = described_home("ur3e")
 
 
 class _SimArm:
@@ -58,20 +64,23 @@ class _UnnamedArm:
     capabilities = RobotCapabilities(vendor="sim", model="isaac-sim", is_simulated=True, dof=6, controller=None, owns_a_controller=False)
 
 
-def _preflight(arm_model: str | None = "ur5e", **overrides: object) -> SafetyPreflight:
+def _preflight(arm_model: str | None = "ur5e", *, base_yaw_deg: float = 0.0, **overrides: object) -> SafetyPreflight:
     """A preflight whose only live guard is self collision, with the trajectory check OFF.
 
     Built for the arm the doubles here report, ur5e unless a test names another: since P0e a pipeline judges only the
-    arm it was built for, so one pipeline no longer answers for a ur5e and a ur3e alike."""
+    arm it was built for, so one pipeline no longer answers for a ur5e and a ur3e alike. ``base_yaw_deg`` is the arm's
+    base yaw (``GuardNumbers``), 0 as on a real arm, 180 as on the Isaac one."""
+    from src.robot.safety.guard_numbers import GuardNumbers
+
     self_collision: dict[str, object] = {"fixtures": []}
     self_collision.update(overrides)
     safety = RobotSafetyConfig.model_validate({
-        "payload": {"enforce": False},
         "self_collision": self_collision,
     })
     # The hand every committed arm bundle carries, named, so a guard on a described UR builds (Step 4f).
     hand = planner_hand(RobotConfig.model_validate({"gripper": {"model": "robotiq_2f85"}}))
-    return SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig(), hand=hand, arm_model=arm_model)
+    return SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig(), hand=hand, arm_model=arm_model,
+                                              numbers=GuardNumbers(base_yaw_deg=base_yaw_deg))
 
 
 def _samples(*configs: tuple[float, ...]) -> PathSamples:
@@ -139,14 +148,15 @@ class AGateThatCannotSeeRefusesTests(unittest.TestCase):
     """Fail closed: the two ways the check would be a fiction are refusals, not warnings."""
 
     def test_without_a_self_collision_guard_the_path_is_refused(self) -> None:
-        preflight = _preflight(enforce=False)
+        """A pipeline assembled without the guard: every cell's config builds it since 2026-10-17."""
+        preflight = without_guards(_preflight(), "self_collision")
         refused = preflight.gate_joint_path(
             _samples(_CLEAR, _CLEAR), arm=_Arm(), command=MotionCommand.MOVE_JOINTS
         )
         self.assertIsNotNone(refused, "a path was judged by a preflight with nothing to judge it")
         assert refused is not None
         self.assertIn("self_collision", refused.message or "")
-        self.assertIn("enforce", refused.message or "")
+        self.assertIn("assembled without one", refused.message or "")
 
     def test_the_capsule_proxy_is_refused_by_name(self) -> None:
         preflight = _preflight(backend="capsule")
@@ -268,7 +278,8 @@ class ARefusalSaysSoWhereSomebodyWillReadItTests(unittest.TestCase):
             def emit(self, record: logging.LogRecord) -> None:
                 lines.append(record.getMessage())
 
-        preflight = _preflight(**overrides)
+        missing = overrides.pop("missing", ())
+        preflight = without_guards(_preflight(**overrides), *missing)
         handler = _Recorder()
         preflight._logger.addHandler(handler)
         try:
@@ -281,7 +292,7 @@ class ARefusalSaysSoWhereSomebodyWillReadItTests(unittest.TestCase):
         return lines
 
     def test_a_missing_guard_is_logged(self) -> None:
-        said = self._refuse_and_capture(enforce=False)
+        said = self._refuse_and_capture(missing=("self_collision",))
         self.assertTrue(any("self_collision" in line for line in said), said)
 
     def test_the_capsule_proxy_is_logged(self) -> None:

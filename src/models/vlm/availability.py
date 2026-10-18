@@ -1,13 +1,9 @@
-"""What happens when the VLM cannot be loaded: refuse the prompt, or degrade with a warning.
+"""What a VLM that cannot be loaded means, and when a command may be read.
 
-``refuse`` means the prompt is not taken at all; ``degrade`` means the fallback answers it and every
-such answer is warned about. The default is ``refuse``, because a silent degrade is the failure this
-route exists to prevent.
-
-The complex prompts that reach this route are the ones the phrase grounder gets confidently wrong:
-it returns a high-scoring box for the wrong object rather than admitting defeat. A quiet fallback
-therefore does not mean slightly worse perception; it means the cell grasps something the operator
-did not ask for, with nothing in the log to say why.
+A cell whose VLM cannot be loaded (its weights missing, a dependency absent, no VRAM) refuses: a pick's grounding
+comes back empty with the failure counted, which the console's task ends ``detector_failed`` on, and a command is
+refused with :class:`VlmUnavailableError`'s sentence. There is no other model to fall back to (the owner,
+2026-10-17: GroundingDINO left, and with it the fallback the owner's cell never ran).
 
 The command reader has its own availability rule here, :func:`reader_availability` (owner decision
 Q8 A): one shared VLM copy, which a command may load only on a cell whose detector it is. On any
@@ -18,21 +14,14 @@ of other weights: only a rebuild switches the checkpoint.
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
-
-from src.models.constants import MODELS_LOG_DIR, VLM_AVAILABILITY_LOG_FILE
-from src.models.perception_backend import PerceivedObject, SegmentedBoxes, failures_of, last_failure_of
-from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from .holder import VlmHolder
 
 __all__ = [
     "CommandRefused",
-    "GuardedVlmBackend",
     "ReaderAvailability",
     "ReaderRefusal",
     "ReaderState",
@@ -44,27 +33,20 @@ __all__ = [
     "vlm_detects",
 ]
 
-#: The default sink for this module's two lines. Under a bare ``getLogger`` the degrade warning
-#: below has no handler and is discarded, and that is the one line here that must not be lost. The
-#: name stays ``__name__``; an injected ``logger=`` overrides it per instance.
-_LOG = create_logger(__name__, log_file=VLM_AVAILABILITY_LOG_FILE, log_dir=MODELS_LOG_DIR)
-
-
 class VlmUnavailableError(RuntimeError):
-    """The VLM route was required and the model could not be loaded.
+    """The VLM was needed and could not be loaded.
 
     Carries the underlying cause, so an operator sees whether the weights are missing, a dependency
-    is absent or the GPU is out of VRAM. Raised rather than returned as an empty result: "no
-    objects found" and "I could not look" are different answers, and the pick loop must not treat
-    the second as the first.
+    is absent or the GPU is out of VRAM. Raised rather than returned as an empty answer: "nothing was
+    understood" and "I could not read" are different answers, and a caller must not take the second
+    for the first.
     """
 
     def __init__(self, model_id: str, cause: BaseException | None = None) -> None:
         detail = f": {type(cause).__name__}: {cause}" if cause is not None else ""
         super().__init__(
-            f"the prompt needs the VLM route and {model_id!r} could not be loaded{detail}. "
-            f"Install the weights, or set models.pipeline.zero_shot.vlm.on_unavailable=degrade to fall "
-            f"back to the phrase grounder (which will be WRONG on prompts of this kind, loudly logged)."
+            f"the VLM {model_id!r} could not be loaded{detail}. Fetch its weights, or free the card's memory; "
+            f"nothing else grounds a prompt or reads a command on this cell, so it refuses rather than guessing."
         )
         self.model_id = model_id
         self.cause = cause
@@ -88,153 +70,10 @@ class VlmAnswerFailedError(VlmUnavailableError):
         self.cause = cause
 
 
-class GuardedVlmBackend:
-    """Wraps the VLM backend with the ``on_unavailable`` contract.
-
-    Delegates to ``vlm`` while it works. The first time loading fails it either raises
-    :class:`VlmUnavailableError` (``refuse``) or hands over to the fallback (``degrade``), and the
-    degrade path warns on every use rather than once, so a run that has fallen back never looks
-    normal again.
-
-    The fallback arrives as a factory, not an instance, and is built only if degradation happens.
-    Constructing it eagerly would load GroundingDINO and SAM2 on every cell that merely might
-    degrade, spending seconds and gigabytes of VRAM on a path a healthy cell never runs.
-    """
-
-    def __init__(
-        self,
-        *,
-        vlm: Any,
-        model_id: str,
-        degrade: bool = False,
-        fallback_factory: Callable[[], Any] | None = None,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        if degrade and fallback_factory is None:
-            raise ValueError(
-                "on_unavailable='degrade' needs a fallback backend to degrade to; refusing to "
-                "construct a backend whose degraded path is also unavailable."
-            )
-        self._vlm = vlm
-        self._model_id = model_id
-        self._degrade = degrade
-        self._fallback_factory = fallback_factory
-        self._fallback: Any = None
-        self._log = logger or _LOG
-        #: Set once the VLM has failed to load, so a multi-second load is not retried per pick.
-        self._unavailable: BaseException | None = None
-        self._last_failure = ""
-
-    @property
-    def degraded(self) -> bool:
-        """True once this backend has fallen back; surfaced by the console and the run report."""
-        return self._unavailable is not None
-
-    @property
-    def failures(self) -> int:
-        """The wrapped backends' counted failures: the VLM route's, plus the fallback's once built.
-
-        A perceive that returned nothing because a model raised, as
-        :attr:`~src.models.perception_backend.TwoStageBackend.failures` counts it. Only grows.
-        """
-        total = failures_of(self._vlm)
-        if self._fallback is not None:
-            total += failures_of(self._fallback)
-        return total
-
-    @property
-    def last_failure(self) -> str:
-        """The latest counted failure, from the VLM route or the fallback, or ``""``."""
-        return self._last_failure
-
-    @property
-    def detects_on_a_copy(self) -> bool:
-        """Whether the VLM route's detector may read a copy of the image (``robot.grasping.hide_own_places``)."""
-        return getattr(self._vlm, "detects_on_a_copy", False) is True
-
-    def _through(self, backend: Any, image_bgr: Any, prompt: str, detect_on: Any = None) -> tuple[PerceivedObject, ...]:
-        """Perceive with ``backend``, keeping its failure sentence when its count rose; its detector reads ``detect_on``
-        where it takes a copy, the real image otherwise."""
-        before = failures_of(backend)
-        try:
-            if detect_on is not None and getattr(backend, "detects_on_a_copy", False) is True:
-                return tuple(backend.perceive(image_bgr, prompt, detect_on=detect_on))
-            return tuple(backend.perceive(image_bgr, prompt))
-        finally:
-            if failures_of(backend) > before:
-                self._last_failure = last_failure_of(backend)
-
-    def perceive(self, image_bgr: Any, prompt: str, *, detect_on: Any = None) -> tuple[PerceivedObject, ...]:
-        if self._unavailable is None:
-            try:
-                return self._through(self._vlm, image_bgr, prompt, detect_on)
-            except VlmUnavailableError as exc:
-                self._unavailable = exc.cause or exc
-            except (ImportError, OSError, RuntimeError) as exc:
-                # The three shapes a missing or unloadable model takes: no dependency, no weights on
-                # disk, no VRAM. Anything else is a bug and must not be swallowed by a fallback.
-                self._unavailable = exc
-            if self._unavailable is not None:
-                self._log.error(
-                    "VLM %s became unavailable: %s: %s",
-                    self._model_id, type(self._unavailable).__name__, self._unavailable,
-                )
-
-        if self._unavailable is None:  # pragma: no cover (unreachable; kept for narrowing)
-            return ()
-        if not self._degrade:
-            raise VlmUnavailableError(self._model_id, self._unavailable)
-
-        self._log.warning(
-            "DEGRADED: %r needs the VLM route but %s is unavailable; grounding with the phrase "
-            "detector instead. It does not fail loudly on prompts of this kind; it returns a "
-            "confident box for the WRONG object. Treat this result as unverified.",
-            prompt, self._model_id,
-        )
-        if self._fallback is None:
-            assert self._fallback_factory is not None  # guaranteed by __init__
-            self._fallback = self._fallback_factory()
-        return self._through(self._fallback, image_bgr, prompt, detect_on)
-
-    def name_colour(self, image_bgr: Any, box: Any) -> str:
-        """One colour word for the object in ``box``, asked of the VLM while it is not degraded; ``""`` otherwise.
-
-        The fallback grounds phrases and names no colour, so a degraded backend answers nothing, and the camera source
-        refuses the part. A question that raised is counted by the VLM route (``TwoStageBackend.name_colour``), and its
-        sentence kept here as a perceive's is.
-        """
-        if self._unavailable is not None:
-            return ""
-        name = getattr(self._vlm, "name_colour", None)
-        if not callable(name):
-            return ""
-        before = failures_of(self._vlm)
-        try:
-            answer = name(image_bgr, box)
-        finally:
-            if failures_of(self._vlm) > before:
-                self._last_failure = last_failure_of(self._vlm)
-        return answer if isinstance(answer, str) else ""
-
-    def segment_boxes(self, image_bgr: Any, boxes: Any) -> SegmentedBoxes:
-        """Cut ``boxes`` with the VLM route's segmenter, never loading the VLM: its ``segment_boxes`` asks no detector.
-
-        A degraded backend cuts none, so the frame is grounded by the fallback, warned about as every degraded grounding
-        is: following the parts the VLM grounded is the VLM route's, and a fallback grounding is no grounding of record.
-        """
-        if self._unavailable is not None:
-            return SegmentedBoxes.refused(boxes, f"the VLM {self._model_id} is unavailable, so the frame is grounded "
-                                                 "by the fallback")
-        cut = getattr(self._vlm, "segment_boxes", None)
-        if not callable(cut):
-            return SegmentedBoxes.refused(boxes, "the VLM route cuts no boxes it is handed")
-        return cut(image_bgr, boxes)
-
-
 # --- the command reader's availability (owner decision Q8 A) ---------------------------------------------------
 
 #: The command reader's state, as the console's commands light and ``GET /v1/commands/status`` show it.
-ReaderState: TypeAlias = Literal["ready", "idle", "loading", "missing", "failed", "not_configured"]
+ReaderState: TypeAlias = Literal["ready", "idle", "loading", "missing", "failed"]
 #: Why a command is not read. The same strings are the console's refusal codes (``api/codes.py``).
 ReaderRefusal: TypeAlias = Literal["vlm_not_loaded", "vlm_unavailable", "vlm_model_missing"]
 
@@ -299,8 +138,10 @@ class ReaderAvailability:
     may_load: bool
     load_s: float | None = None
     last_answer_ms: float | None = None
-    #: The ``models.pipeline.zero_shot.vlm`` block the reader asks with; ``None`` when none is named.
+    #: The ``models.pipeline.zero_shot.vlm`` block the reader asks with.
     vlm: Any = field(default=None, repr=False, compare=False)
+    #: The folder its weights are read from (``models.weights_root``), for a copy a command or Laden builds.
+    weights_root: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def may_parse(self) -> bool:
@@ -336,12 +177,13 @@ class ReaderAvailability:
 
 
 def vlm_detects(models: Any) -> bool:
-    """Whether a cell built from ``models`` detects with the VLM, routed or not: the cell of Q8 A whose
-    first command may load the copy. One rule for the availability below and for the console, which
-    releases the copy when it builds a cell that does not (:meth:`~src.models.vlm.holder.VlmHolder.release_unless_requested`).
+    """Whether a cell built from ``models`` detects with the VLM (``models.pipeline.kind: zero_shot``): the cell of
+    Q8 A whose first command may load the copy. One rule for the availability below and for the console, which
+    releases the copy when it builds a cell that does not
+    (:meth:`~src.models.vlm.holder.VlmHolder.release_unless_requested`).
     """
     pipeline = getattr(models, "pipeline", None)
-    return bool(pipeline is not None and pipeline.kind == "zero_shot" and pipeline.zero_shot.backend == "vlm")
+    return bool(pipeline is not None and pipeline.kind == "zero_shot")
 
 
 def reader_availability(
@@ -351,31 +193,24 @@ def reader_availability(
 
     ``models`` is the models section the cell was BUILT with (anything with a ``pipeline`` field):
     a models YAML edited since names weights the cell does not hold. ``weights_present`` is whether
-    the checkpoint is on this box (the console checks it without loading: a local path that exists,
+    the checkpoint is on this box (the console checks it without loading: the weights folder's copy,
     or the Hugging Face cache); ``None`` means not checked, and a load that then finds no weights
     fails with the cause. ``holder`` defaults to the process's shared one.
 
     Loads nothing and builds nothing: it reads what the holder already holds. In this order:
 
-    * No ``models.pipeline`` block: no checkpoint is named (``not_configured``).
     * The copy is loaded: commands are read (``ready``), on any cell.
     * A load is running: a VLM cell waits for it; any other cell is refused until it is done.
     * The weights are missing: refused (``missing``), loading too, whatever an earlier load said.
     * A copy of other weights is held, or still loaded in a cell built with it: refused
       (``vlm_not_loaded``), loading too. One copy per process: only a rebuild switches the weights.
     * The last load failed: refused until a person loads again; a command never retries it.
-    * Not loaded on a cell whose detector is the VLM (routed or not): the first command loads it.
+    * Not loaded on a cell whose detector is the VLM: the first command loads it.
     * Not loaded on any other cell: refused (``vlm_not_loaded``) until a person loads it.
     """
-    pipeline = getattr(models, "pipeline", None)
-    if pipeline is None:
-        return ReaderAvailability(
-            state="not_configured", refusal="vlm_unavailable", warmup_refusal="vlm_unavailable",
-            cause=("no VLM is named for this cell: the models config has no models.pipeline block, so "
-                   "there is no models.pipeline.zero_shot.vlm checkpoint to read commands with. Add the "
-                   "pipeline block (its backend may stay grounded_sam) and fetch the weights."),
-            model_id=None, weights_present=weights_present, shared_with_detection=False, may_load=False,
-        )
+    from src.models.weights import fetch_hint  # noqa: PLC0415 (stdlib only)
+
+    pipeline = models.pipeline
     if holder is None:
         from .holder import shared_vlm
 
@@ -387,6 +222,7 @@ def reader_availability(
     common: dict[str, Any] = dict(
         model_id=model_id, weights_present=weights_present, shared_with_detection=detector,
         load_s=status.load_s, last_answer_ms=status.last_answer_ms, vlm=vlm,
+        weights_root=getattr(models, "weights_root", None),
     )
     if status.state == "ready":
         return ReaderAvailability(
@@ -411,8 +247,8 @@ def reader_availability(
         return ReaderAvailability(
             state="missing", refusal="vlm_model_missing", warmup_refusal="vlm_model_missing",
             may_load=False,
-            cause=(f"the VLM checkpoint {model_id!r} is not on this box; fetch it first "
-                   f"(python scripts/model_weights/fetch.py vlm-4b)."),
+            cause=(f"the VLM checkpoint {model_id!r} is not on this box, and nothing is downloaded at run time: "
+                   f"{fetch_hint(model_id).replace('`', '')}."),
             **common,
         )
     conflict = holder.conflict_for(vlm)
@@ -437,9 +273,9 @@ def reader_availability(
         )
     return ReaderAvailability(
         state="idle", refusal="vlm_not_loaded", warmup_refusal="", may_load=False,
-        cause=(f"the VLM {model_id!r} is not this cell's detector (backend {pipeline.zero_shot.backend}, "
-               f"kind {pipeline.kind}), so a command does not load it: a person loads it with Laden in the "
-               f"ready bar (POST /v1/commands/warmup). It holds gigabytes of VRAM beside the cell's own models."),
+        cause=(f"the VLM {model_id!r} is not this cell's detector (kind {pipeline.kind}), so a command does "
+               f"not load it: a person loads it with Laden in the ready bar (POST /v1/commands/warmup). It holds "
+               f"gigabytes of VRAM beside the cell's own models."),
         **common,
     )
 

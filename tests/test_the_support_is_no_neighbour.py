@@ -5,7 +5,7 @@ on is not one of them: where the camera world's support model holds a surface (`
 the band of that surface's local reading is the surface (F5), however the mat tilts and ripples. And the calculator
 keeps the open hand as far from the solid the guard holds as the guard keeps it (``perceived_min_distance_mm``), so a try
 is not spent on a grasp the guard refuses at the mat: an R3-type grasp 13 mm over the solid stays, 4 mm over it goes,
-counted as ``rejected_support``. Since 2026-10-06 SFE plans on that solid itself (``support_footprint.HandFloor``): a
+counted as ``rejected_support``. Since 2026-10-06 SFE plans on that solid itself (``hand.HandFloor``): a
 grasp the reading alone would put within the distance is planned higher, and the filter is left nothing to drop. Where
 nothing is left for want of height, the reason is ``ALL_TABLE_CONFLICT`` and the sentence says the part is too short for
 this hand (the Hand-E: about 28 mm, ``FIT/fit_sfe_flat_part.out``).
@@ -147,23 +147,16 @@ class TooShortForThisHandTests(unittest.TestCase):
         self.assertTrue(compute(calculator(scene=True), frame).candidates)
 
     def test_the_least_height_is_the_one_the_hand_grips_at(self) -> None:
-        """``least_part_height_mm`` restates the lower of SFE's ladder and the body's pads: just under SFE's 13.45 mm
-        SFE offers nothing and just over it a grasp; just under the body's 8 mm neither offers anything, and just over
-        it the body a grasp."""
+        """``least_part_height_mm`` is the body's pads': just under its 8 mm the body offers nothing, just over it a
+        grasp."""
         from src.robot.grasping.generation.body_grasps import body_grasps
         from src.robot.grasping.generation.scene_obstacles import least_part_height_mm
-        from src.robot.grasping.generation.support_footprint import SupportFootprintJaw, generate_support_footprint_grasps
-        from tests.test_sfe_says_why_it_refused import cylinder_cloud
+        from src.robot.grasping.generation.hand import SupportFootprintJaw
+        from tests._part_scenes import cylinder_cloud
 
         jaw = SupportFootprintJaw.from_robot_config(_hande())
         least = least_part_height_mm(jaw)
         self.assertAlmostEqual(8.0, least, delta=0.05)
-        ladder = 13.45
-        for height, expect in ((ladder - 1.0, False), (ladder + 1.5, True)):
-            with self.subTest(sfe=height):
-                cloud = cylinder_cloud(40.0, height, support_mm=MAT_MM)
-                self.assertEqual(expect, bool(generate_support_footprint_grasps(cloud, support_height_mm=MAT_MM,
-                                                                                jaw=jaw)))
         for height, expect in ((least - 1.0, False), (least + 1.5, True)):
             with self.subTest(body=height):
                 cloud = cylinder_cloud(40.0, height, support_mm=MAT_MM)
@@ -180,14 +173,14 @@ class TheOpenHandKeepsTheGuardsDistanceFromTheMatTests(unittest.TestCase):
         return SimpleNamespace(name="seen_s00_support0", centre_mm=centre, rotation=turn, half_extents_mm=half)
 
     def _verdict(self, gap_mm: float) -> Any:
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
         from src.robot.grasping.generation.scene_obstacles import envelope_verdicts
 
         cfg = _hande()
-        hand = build_gripper_geometry(cfg.grasping.gripper_geometry)
+        hand = jaw_envelope(cfg)
         top = 62.0
         # Straight down: the closing axis +x, the approach -z; the fingertips stand fingertip_depth under the grasp.
-        tip = float(cfg.grasping.gripper_geometry.parallel_jaw.fingertip_depth_mm)
+        tip = float(jaw_envelope(cfg).fingertip_depth_mm)
         position = np.array([0.0, -650.0, top + gap_mm + tip])
         turn = np.column_stack([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
         return envelope_verdicts([(position, turn)], gripper_model=hand, open_width_mm=cfg.gripper.max_width_mm,
@@ -214,13 +207,13 @@ class TheOpenHandKeepsTheGuardsDistanceFromTheMatTests(unittest.TestCase):
     def _offered(self) -> "tuple[Any, list[float]]":
         """A 40 mm part on the slab, what SFE offers for it with the scene and nothing held, and each grasp's open hand's
         distance to a solid whose top is the slab's."""
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
         from src.robot.grasping.generation.scene_obstacles import envelope_verdicts
 
         frame = Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM, MAT_MM + 40.0))
         offered = compute(calculator(scene=True), frame)
         cfg = _hande()
-        hand = build_gripper_geometry(cfg.grasping.gripper_geometry)
+        hand = jaw_envelope(cfg)
         poses = [(g.position, np.column_stack([g.axis, np.cross(g.approach, g.axis), g.approach]))
                  for g in offered.candidates]
         reference = envelope_verdicts(poses, gripper_model=hand, open_width_mm=cfg.gripper.max_width_mm,
@@ -229,11 +222,11 @@ class TheOpenHandKeepsTheGuardsDistanceFromTheMatTests(unittest.TestCase):
 
     def _kept_from(self, result: Any, solid: Any) -> "list[float]":
         """Each offered grasp's open hand's distance to ``solid``, as the guard's filter measures it."""
-        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.collision.gripper_model import jaw_envelope
         from src.robot.grasping.generation.scene_obstacles import envelope_verdicts
 
         cfg = _hande()
-        hand = build_gripper_geometry(cfg.grasping.gripper_geometry)
+        hand = jaw_envelope(cfg)
         poses = [(g.position, np.column_stack([g.axis, np.cross(g.approach, g.axis), g.approach]))
                  for g in result.candidates]
         return [v.distance_mm for v in envelope_verdicts(poses, gripper_model=hand,
@@ -241,7 +234,7 @@ class TheOpenHandKeepsTheGuardsDistanceFromTheMatTests(unittest.TestCase):
 
     def test_a_held_solid_over_every_grasp_planned_on_the_reading_lifts_them_all_over_it(self) -> None:
         """A held solid raised until every grasp planned on the reading alone stands 3 mm or less over it: SFE plans on
-        the solid instead (``support_footprint.HandFloor``), so every grasp offered keeps the guard's 5 mm and the
+        the solid instead (``hand.HandFloor``), so every grasp offered keeps the guard's 5 mm and the
         post-hoc filter has nothing left to drop. Until 2026-10-06 the filter dropped all of them, and a part the
         hand could take higher up got no grasp."""
         frame, over_slab = self._offered()
@@ -308,7 +301,7 @@ class TheReasonsReadTheCountsTests(unittest.TestCase):
                   "own_fragments": 0, "table": 0, "aperture": 0}
         counts.update(refused)
         return why_no_grasp({"geometry_stage": "support_footprint", "support_footprint_kept": 0,
-                             "support_footprint_refused": counts, "scene_part_height_mm": 32.0,
+                             "body_refused": counts, "scene_part_height_mm": 32.0,
                              "scene_least_part_height_mm": 27.9, "scene_table_clearance_mm": 5.0})
 
     def test_a_neighbour_wins_over_the_table(self) -> None:
@@ -318,20 +311,19 @@ class TheReasonsReadTheCountsTests(unittest.TestCase):
         self.assertEqual((R.ALL_COLLIDED, R.RESCAN_RECOMMENDED), reasons)
         self.assertIn("neighbour", said)
 
-    def test_the_bodys_refusals_count_beside_the_prisms(self) -> None:
-        """A part the body alone was searched for (its prism switched off, or counting nothing) that met a neighbour is
-        boxed in as SFE's builds would say: the reason a push answers, and a blocker's spared refusals are counted the
-        same (``scene_obstacles.refusal_counts``)."""
+    def test_the_bodys_refusals_are_the_counts(self) -> None:
+        """A part whose body met a neighbour is boxed in: the reason a push answers, and a blocker's spared refusals are
+        counted the same (``scene_obstacles.refusal_counts``: the body's ``body_refused``, since 2026-10-16 alone, when
+        SFE's prism, which counted beside it, left)."""
         from src.robot.grasping.generation.scene_obstacles import refusal_counts, why_no_grasp
         from src.robot.grasping.types.feedback import GraspFailureReason as R
 
         telemetry = {"geometry_stage": "support_footprint", "support_footprint_kept": 0, "support_footprint_points": 900,
-                     "support_footprint_refused": {}, "body_refused": {"cone": 40, "seen_fingers": 3, "table": 9}}
+                     "body_refused": {"cone": 40, "seen_fingers": 3, "table": 9}}
         reasons, said = why_no_grasp(telemetry)
         self.assertEqual((R.ALL_COLLIDED, R.RESCAN_RECOMMENDED), reasons)
         self.assertIn("neighbour", said)
-        self.assertEqual({"seen_corridor": 2, "seen_fingers": 3, "cone": 40, "table": 9},
-                         refusal_counts({**telemetry, "support_footprint_refused": {"seen_corridor": 2}}))
+        self.assertEqual({"seen_fingers": 3, "cone": 40, "table": 9}, refusal_counts(telemetry))
 
     def test_a_declared_body_is_a_table_conflict(self) -> None:
         from src.robot.grasping.types.feedback import GraspFailureReason as R

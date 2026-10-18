@@ -1,5 +1,9 @@
 """What is this part standing on? A declared height, raised by what the cameras can see.
 
+The declared height is the cell's bench, the top of the planner world's slab (:func:`bench_height_mm`), or the floor of
+the bin the cell declares (:class:`DeclaredSupport`); the planner, the guard and the grasp stand the parts on one
+number (the owner's cleanup, 2026-10-17).
+
 The parallel-jaw calculator accepts a ``support_plane``, and when it is given none
 ``collision_checker.validate_grasp_collision`` skips the clearance check entirely. What that costs is
 measured: with no plane, ``rejected_table`` stands at 0 in 2128 of 2128 telemetry lines while the
@@ -47,6 +51,8 @@ Pure and deterministic: numpy only, no vendor SDKs, no perception models. BASE m
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 
@@ -54,7 +60,19 @@ from src.geometry import Frame
 
 from .table_collision import SupportPlane
 
-__all__ = ["SupportResolution", "resolve_support_plane"]
+if TYPE_CHECKING:  # pragma: no cover (import only for typing)
+    from src.config.schema.robot.grasping_schema import GraspingContainerConfig
+
+__all__ = ["SUPPORT_NORMAL", "TABLE_CLEARANCE_MM", "DeclaredSupport", "SupportResolution", "bench_height_mm",
+           "resolve_support_plane"]
+
+#: Every support a cell's parts stand on is level: its normal in BASE. The key that tilted it left on 2026-10-17 (the
+#: owner's cleanup); no cell declared a tilted tray.
+SUPPORT_NORMAL: Final[tuple[float, float, float]] = (0.0, 0.0, 1.0)
+#: How far the gripper keeps over the support its grasp is planned on, millimetres: the floor the exact guard holds a
+#: finger to over what a support reads (``safety.planning.perceived.FINGER_FLOOR_MM``, the owner's 1 mm of 2026-10-06,
+#: "bis auf 1 mm, solange er sie nicht berührt"), so a grasp the calculator offers is one the guard admits.
+TABLE_CLEARANCE_MM: Final[float] = 1.0
 
 #: The foot of a part standing on another part (the module's last paragraph): the lowest band this many millimetres
 #: deep along the normal that holds :data:`FOOT_SHARE` of the cloud's points, 0.3 % a millimetre. The cell's upper
@@ -96,13 +114,58 @@ class SupportResolution:
                 "support_source": self.source}
 
 
+def bench_height_mm(robot_config: Any) -> float:
+    """The table a cell's parts stand on, BASE z millimetres: the top of the planner world's bench
+    (``robot.safety.planning_world.support_plane.height_mm``), or 0, the robot's base plate, where the tree declares no
+    bench."""
+    world = getattr(getattr(robot_config, "safety", None), "planning_world", None)
+    plane = getattr(world, "support_plane", None)
+    return 0.0 if plane is None else float(plane.height_mm)
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredSupport:
+    """What a cell declares its parts stand on: the bench (:func:`bench_height_mm`) and the bin they rest in, where one
+    is declared (``robot.grasping.support.container``).
+
+    The plane each part's grasps are planned on is resolved from it per pick (:meth:`resolve`). Its normal is
+    :data:`SUPPORT_NORMAL` and the gripper keeps :data:`TABLE_CLEARANCE_MM` over it, on every cell.
+    """
+
+    height_mm: float = 0.0
+    container: "GraspingContainerConfig | None" = None
+
+    @classmethod
+    def of(cls, robot_config: Any) -> "DeclaredSupport":
+        """The support a loaded tree declares."""
+        return cls(height_mm=bench_height_mm(robot_config), container=robot_config.grasping.support.container)
+
+    @property
+    def normal(self) -> tuple[float, float, float]:
+        return SUPPORT_NORMAL
+
+    @property
+    def min_clearance_mm(self) -> float:
+        return TABLE_CLEARANCE_MM
+
+    @property
+    def floor_mm(self) -> float | None:
+        """The bin's inside floor in BASE millimetres, or ``None`` where no bin declares one."""
+        return None if self.container is None else self.container.floor_height_mm
+
+    def resolve(self, target_clouds_base_mm: Sequence[np.ndarray] | None = None) -> SupportResolution:
+        """The plane a part's grasps are planned on: this support raised to the part's own lowest point in
+        ``target_clouds_base_mm`` (:func:`resolve_support_plane`)."""
+        return resolve_support_plane(declared_height_mm=self.height_mm, container_floor_mm=self.floor_mm,
+                                     target_clouds_base_mm=target_clouds_base_mm)
+
+
 def resolve_support_plane(
     *,
     declared_height_mm: float = 0.0,
     container_floor_mm: float | None = None,
-    normal: Sequence[float] = (0.0, 0.0, 1.0),
+    normal: Sequence[float] = SUPPORT_NORMAL,
     target_clouds_base_mm: Sequence[np.ndarray] | None = None,
-    refine_from_target: bool = True,
 ) -> SupportResolution:
     """The support plane for one grasp target.
 
@@ -127,7 +190,7 @@ def resolve_support_plane(
 
     declared = float(container_floor_mm if container_floor_mm is not None else declared_height_mm)
     observed: float | None = None
-    if refine_from_target and target_clouds_base_mm:
+    if target_clouds_base_mm:
         lows = [_lowest_mm(np.asarray(c, dtype=np.float64).reshape(-1, 3) @ unit, declared)
                 for c in target_clouds_base_mm
                 if np.asarray(c).size]

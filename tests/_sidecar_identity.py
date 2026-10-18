@@ -27,7 +27,6 @@ def arm_identity(
     approach: str = "+Y",
     closing: str = "+X",
     planner_margin_mm: float = 4.0,
-    attach_spheres: int = 0,
     bodies: tuple[str, ...] = ("hand",),
 ) -> SidecarIdentity:
     """The identity of ``willy_{arm}.yml`` with ``bodies`` added, carrying the hashes the committed file measured.
@@ -36,7 +35,7 @@ def arm_identity(
     evidence check to refuse.
     """
     path = evidence_path(arm=arm, hand=hand, coupling_mm=coupling_mm, approach=approach, closing=closing,
-                         planner_margin_mm=planner_margin_mm, attach_spheres=attach_spheres)
+                         planner_margin_mm=planner_margin_mm)
     held = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     return SidecarIdentity(
         provenance={"arm": arm, "carries_hand": False, "generated_by": "scripts/arms/descriptor.py"},

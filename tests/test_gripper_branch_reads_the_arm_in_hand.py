@@ -45,7 +45,7 @@ _UR_CELL = {
     "vendor": "ur",
     "gripper": {"vendor": "robotiq", "model": "robotiq_2f85"},
     "ur": {"ip": "10.9.9.9"},
-    "grasping": {"default_mode": "auto", "max_attempts": 5},
+    "grasping": {"default_mode": "auto"},
 }
 
 #: A non-UR tree that names no controller at all, so ``ur.ip`` sits at the schema default
@@ -54,7 +54,7 @@ _UR_CELL = {
 _DUMMY_CELL = {
     "vendor": "dummy",
     "gripper": {"vendor": "robotiq"},
-    "grasping": {"default_mode": "auto", "max_attempts": 5},
+    "grasping": {"default_mode": "auto"},
 }
 
 #: The tree the SUPPLIED arm was built from, at an address no other tree in this file names. An

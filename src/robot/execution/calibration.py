@@ -139,7 +139,7 @@ from typing import Any, Optional, TypeAlias
 import numpy as np
 
 from src.config.schema.camera import EyeHandRoutineConfig
-from src.config.schema.robot import MotionLimitsConfig, WorkspaceLimitsConfig
+from src.config.schema.robot import RobotMotionConfig, WorkspaceLimitsConfig
 from src.calibration import (
     Extrinsics,
     EyeInHandCalibrator,
@@ -361,7 +361,7 @@ class CalibrationRoutine:
     The routine is fully vendor-neutral: it commands motion exclusively
     through the :class:`RobotArm` protocol and reads ground-truth TCP
     poses through :meth:`RobotArm.get_tcp_pose`. Any driver that
-    satisfies the protocol (UR, KUKA, sim, dummy, ...) can drive a
+    satisfies the protocol (UR, sim, dummy, ...) can drive a
     calibration without any UR-specific shim.
 
     Parameters
@@ -395,8 +395,8 @@ class CalibrationRoutine:
         :meth:`RobotArm.wait_until_steady`; when the driver does not
         implement it, the routine falls back to a blind ``time.sleep``
         of the same duration.
-    motion_limits : MotionLimitsConfig or None
-        Commanded velocity / acceleration for the calibration moves: when
+    motion_limits : RobotMotionConfig or None
+        Commanded velocity / acceleration for the calibration moves (``robot.motion``): when
         supplied, ``max_velocity`` / ``max_acceleration`` are passed to
         ``RobotArm.move(vel=, acc=)``. ``None`` keeps the driver default speed.
     on_event : RobotCalibrationEventListener or None
@@ -459,7 +459,7 @@ class CalibrationRoutine:
         rig_id: str = "rig_0",
         marker_id: int = 0,
         settle_time_s: float = 0.5,
-        motion_limits: MotionLimitsConfig | None = None,
+        motion_limits: RobotMotionConfig | None = None,
         on_event: RobotCalibrationEventListener | None = None,
         calibration_mode: CalibrationMode | str | None = None,
         marker_source: MarkerPoseProvider | None = None,

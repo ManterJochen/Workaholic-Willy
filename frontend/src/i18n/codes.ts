@@ -33,8 +33,9 @@ import type { Msg, ParamValue } from './types'
 
 /**
  * The outcomes a pick reports (`AutonomousGraspOutcome`, `src/robot/execution/autonomous_grasp/report.py`), plus
- * `refinement_diverged`, which records logged before 2026-09-29 still carry. Not a `/v1/codes` list: an outcome
- * outside it is shown as its own words, never dropped.
+ * the retired ones records logged before they left still carry: `refinement_diverged` (2026-09-29) and the decision,
+ * uncertainty and drift/OOD refusals (2026-10-16). Not a `/v1/codes` list: an outcome outside it is shown as its own
+ * words, never dropped.
  */
 export const OUTCOMES = [
   'succeeded',

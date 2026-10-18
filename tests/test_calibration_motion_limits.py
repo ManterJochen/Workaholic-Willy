@@ -12,7 +12,7 @@ import unittest
 
 import numpy as np
 
-from src.config.schema.robot.robot_schema import MotionLimitsConfig
+from src.config.schema.robot.robot_schema import RobotMotionConfig
 from src.geometry import Frame, Pose
 from src.robot.core.motion_result import MotionCommand, MotionResult
 from src.robot.execution.calibration import CalibrationRoutine
@@ -27,7 +27,7 @@ class _RecordingArm:
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
 
-def _routine(motion_limits: MotionLimitsConfig | None) -> CalibrationRoutine:
+def _routine(motion_limits: RobotMotionConfig | None) -> CalibrationRoutine:
     routine = object.__new__(CalibrationRoutine)
     routine.arm = _RecordingArm()  # type: ignore[attr-defined]
     routine._motion_limits = motion_limits  # type: ignore[attr-defined]
@@ -46,7 +46,7 @@ def _pose() -> Pose:
 
 class CalibrationMotionLimitsTests(unittest.TestCase):
     def test_limits_are_threaded_into_move(self) -> None:
-        routine = _routine(MotionLimitsConfig(max_velocity=2.0, max_acceleration=1.0))
+        routine = _routine(RobotMotionConfig(max_velocity=2.0, max_acceleration=1.0))
         self.assertTrue(routine._move_to_pose(_pose()))
         call = routine.arm.calls[-1]  # type: ignore[attr-defined]
         self.assertEqual(call.get("vel"), 2.0)

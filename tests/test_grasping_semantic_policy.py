@@ -105,7 +105,7 @@ class CalculatorSemanticGateTests(unittest.TestCase):
         # No policy at all: telemetry must not gain semantic_decision.
         calc = _make_calc()
         calc.compute(
-            _segmentation("bottle", 0.9), _depth((24, 24)), pixel_to_mm=5.0
+            _segmentation("bottle", 0.9), _depth((24, 24))
         )
         self.assertNotIn("semantic_decision", calc.last_telemetry)
         self.assertNotIn(
@@ -118,7 +118,6 @@ class CalculatorSemanticGateTests(unittest.TestCase):
         calc.compute(
             _segmentation("bottle", 0.9),
             _depth((24, 24)),
-            pixel_to_mm=5.0,
             semantic_policy=SemanticPolicy(),
         )
         self.assertNotIn("semantic_decision", calc.last_telemetry)
@@ -129,7 +128,6 @@ class CalculatorSemanticGateTests(unittest.TestCase):
         out = calc.compute(
             _segmentation("bottle", 0.9),
             _depth((24, 24)),
-            pixel_to_mm=5.0,
             semantic_policy=policy,
         )
         self.assertEqual(out, [])
@@ -144,7 +142,6 @@ class CalculatorSemanticGateTests(unittest.TestCase):
         calc.compute(
             _segmentation("can", 0.9),
             _depth((24, 24)),
-            pixel_to_mm=5.0,
             semantic_policy=policy,
         )
         self.assertEqual(calc.last_telemetry["semantic_decision"], "accepted")
@@ -158,7 +155,6 @@ class CalculatorSemanticGateTests(unittest.TestCase):
         out = calc.compute(
             _segmentation("can", 0.3),
             _depth((24, 24)),
-            pixel_to_mm=5.0,
             semantic_policy=policy,
         )
         self.assertEqual(out, [])

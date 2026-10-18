@@ -206,7 +206,8 @@ class RigBodyConfig(StrictModel):
 
     Declared on the rig, placed on the flange by the rig's eye in hand calibration, and carried by the
     cuRobo planner, the exact mesh guard and the self filter. A rig that declares one is carried by the
-    arm.
+    arm, an RGB-D rig or a stereo one alike: a stereo rig's calibration solves on its left image
+    rectified, so its housing is described in that camera's frame.
     """
 
     model_config = ConfigDict(allow_inf_nan=False)
@@ -218,7 +219,8 @@ class RigBodyConfig(StrictModel):
     #: and at most 100. Required with no default: it covers the cable, the drawing's tolerance and how
     #: well the bracket was measured, which are facts about the cell.
     margin_mm: float = Field(gt=0.0, le=100.0)
-    #: The bracket that holds the camera on the arm, as a box in the colour camera's optical frame, or
+    #: The bracket that holds the camera on the arm, as a box in the colour camera's optical frame (a
+    #: stereo rig's: its left camera rectified, the frame its hand-eye calibration solves in), or
     #: ``null`` for a camera held by nothing the planner has to model. Required, written out as ``null``
     #: when there is none.
     bracket: OpticalBox | None
@@ -252,10 +254,6 @@ class BaseRigConfig(StrictModel):
             raise ValueError(
                 f"{where} declares a camera the arm carries, and the rig's extrinsics say eye_to_hand, a camera that "
                 "does not move with the arm: a wrist camera is eye_in_hand, a fixed camera declares no body")
-        if self.source != "rgbd":
-            raise ValueError(
-                f"{where} is on a {self.source!r} rig; a body is placed by the eye in hand calibration, which solves on "
-                "an RGB-D rig's colour image, so only an rgbd rig declares one")
         if not re.fullmatch(r"[A-Za-z0-9_]+", self.rig_id):
             raise ValueError(
                 f"{where}: the rig id {self.rig_id!r} names the body's link in the planner and its part in the exact "

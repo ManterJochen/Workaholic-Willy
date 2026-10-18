@@ -273,7 +273,7 @@ class OneHandOnEveryArmTests(unittest.TestCase):
 
         self.assertIn(mesh_backend_status("ur3e", None, "schunk_egu50"), {"ok", "no_engine"})
         common = {"hand": "schunk_egu50", "coupling_mm": 0.0, "approach": "+Y", "closing": "+X",
-                  "planner_margin_mm": 4.0, "attach_spheres": 0}
+                  "planner_margin_mm": 4.0}
         self.assertTrue(evidence_path(arm="ur3e", **common).is_file())  # type: ignore[arg-type]
         self.assertFalse(evidence_path(arm="ur5", **common).is_file())  # type: ignore[arg-type]
         for arm in ("ur5e", "ur3e"):

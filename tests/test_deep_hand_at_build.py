@@ -239,7 +239,7 @@ class EveryBuildSiteHandsDownItsTreeTests(unittest.TestCase):
     _SITES: dict[str, set[str]] = {
         "src/robot/execution/autonomous_grasp/cells.py": {
             "build_calculator", "build_real_components", "build_rehearsal_components",
-            "_build_on_open_cameras", "_build_camera_calculators",
+            "_build_on_open_cameras",
         },
         "src/robot/execution/cell.py": {"build_real_cell", "build_rehearsal_cell"},
         "src/robot/execution/real_cell/__main__.py": {"rehearsal", "from_robot_config"},

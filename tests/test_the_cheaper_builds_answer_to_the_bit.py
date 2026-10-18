@@ -1,7 +1,7 @@
 """SFE's builds got cheaper and answer to the bit: the cross product of two 3-vectors and the floor the guard holds.
 
 Profiled on the owner's boxed-in part (2026-10-08), numpy's general ``np.cross`` was a quarter of the search and the
-floor read every solid again on every call another 29 %. ``support_footprint._cross3`` does the same three products and
+floor read every solid again on every call another 29 %. ``hand._cross3`` does the same three products and
 differences in the same order, and ``HandFloor`` reads its solids once when it is made; both answer what they answered
 before, every bit, a signed zero included. A floor that crosses into a worker process is read again there, as it is
 read here.
@@ -15,7 +15,7 @@ import unittest
 
 import numpy as np
 
-from src.robot.grasping.generation.support_footprint import HandFloor, _cross3
+from src.robot.grasping.generation.hand import HandFloor, _cross3
 from src.robot.safety.planning.support_surfaces import SupportSolid
 
 

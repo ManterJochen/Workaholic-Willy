@@ -281,16 +281,13 @@ _DRIVER_IMPORT_DEBTS: tuple[tuple[str, str, str], ...] = (
 #: (path, member, the step that retires it). Rule III.b: a member read off an arm BY NAME that no
 #: Protocol declares.
 _UNDECLARED_MEMBER_DEBTS: tuple[tuple[str, str, str], ...] = (
-    ("src/robot/core/arm_capabilities.py", "config",
+    # arm_capabilities.py paid its own on 2026-10-17: it read the tree for the carried part alone.
+    ("src/robot/execution/place_target.py", "config",
      "after P0 (Willy's own, W2): the tree is handed to it as aurora's E5 hands it to the Robot's readers"),
-    ("src/robot/execution/motion.py", "config",
-     "after P0 (Willy's own, W2): steady_timeout_of, the rest the push waits for before each of its legs"),
-    ("src/robot/execution/place_target.py", "config", "after P0 (Willy's own, W2), as arm_capabilities.py"),
-    ("src/robot/execution/task.py", "config", "after P0 (Willy's own, W2), as arm_capabilities.py"),
-    ("src/robot/grasping/loop/pick_loop.py", "config", "after P0 (Willy's own, W2), as arm_capabilities.py"),
-    ("api/readiness.py", "config", "after P0 (Willy's own, W2), as arm_capabilities.py"),
-    ("api/teach.py", "config", "after P0 (Willy's own, W2), as arm_capabilities.py"),
-    ("api/routers/task.py", "config", "after P0 (Willy's own, W2), as arm_capabilities.py"),
+    ("src/robot/execution/task.py", "config", "after P0 (Willy's own, W2), as place_target.py"),
+    ("src/robot/grasping/loop/pick_loop.py", "config", "after P0 (Willy's own, W2), as place_target.py"),
+    ("api/readiness.py", "config", "after P0 (Willy's own, W2), as place_target.py"),
+    ("api/teach.py", "config", "after P0 (Willy's own, W2), as place_target.py"),
     ("src/robot/execution/calibration.py", "reset_safety_continuity",
      "PY-b: only the Isaac arm has it, and the ETH and EIH calibrations change if it goes"),
 )
@@ -300,7 +297,7 @@ _NOT_AN_ARM: tuple[tuple[str, int, str], ...] = (
     ("src/robot/execution/lifecycle.py", 126, "value"),
     ("src/robot/grasping/deep/__main__.py", 190, "get"),
     ("src/robot/safety/planning/hand.py", 191, "lower"),
-    ("src/robot/safety/planning/planning_model.py", 67, "lower"),
+    ("src/robot/safety/planning/planning_model.py", 65, "lower"),
 )
 
 _ARM_ROOTS = frozenset({"arm", "_arm", "the_arm"})
@@ -497,7 +494,9 @@ class ArmContractBoundaryTests(unittest.TestCase):
                     continue
                 offenders.append(f"{rel}:{getattr(node, 'lineno', '?')}: {member}")
         self.assertEqual(offenders, [])
-        self.assertEqual(len(_UNDECLARED_MEMBER_DEBTS), 9, "the debt list may only shrink, and its count says so")
+        # 6 since 2026-10-17: the steady gate's timeout is the arm's own, so the push reads no tree off it, the arm's
+        # capabilities read none for a carried part, and the task route reads no rim air off it (the owner's cell's 20).
+        self.assertEqual(len(_UNDECLARED_MEMBER_DEBTS), 6, "the debt list may only shrink, and its count says so")
 
     def test_a_driver_never_imports_the_stack_above_it(self) -> None:
         """The other direction of the same arrow.
@@ -567,9 +566,14 @@ class RobotRegistryBoundaryTests(unittest.TestCase):
         self.assertEqual(len(joints), 7)
         arm.disconnect()
 
-    def test_reserved_unregistered_vendor_fails_clearly(self) -> None:
+    def test_a_vendor_whose_driver_is_not_registered_fails_clearly(self) -> None:
+        from src.robot.drivers import register_arm_driver, registry, unregister_arm_driver
+
+        dummy = registry._REGISTRY[RobotVendor.DUMMY]
+        unregister_arm_driver(RobotVendor.DUMMY)
+        self.addCleanup(register_arm_driver(RobotVendor.DUMMY), dummy)
         with self.assertRaises(RobotConnectionError):
-            create_arm(RobotVendor.FRANKA)
+            create_arm(RobotVendor.DUMMY)
 
     def test_dummy_and_null_grippers_are_pure_python_protocols(self) -> None:
         dummy = create_gripper("dummy", min_width_mm=1.0, max_width_mm=20.0)
@@ -604,38 +608,42 @@ class GraspCalculatorBoundaryTests(unittest.TestCase):
         )
 
     def test_compute_accepts_segmentation_like_object_and_typed_transform(self) -> None:
-        segmentation, depth = self._segmentation_fixture()
-        T_cam_to_base = np.eye(4, dtype=np.float64)
-        T_cam_to_base[:3, 3] = np.array([100.0, 200.0, 300.0], dtype=np.float64)
+        """A box on the bench, the camera placed by a typed transform: base-frame grasps."""
+        from tests._calculator_scenes import box_on_the_bench
+
+        scene = box_on_the_bench()
         transform = Transform.from_matrix(
-            T_cam_to_base,
+            scene.camera_to_base,
             from_frame=Frame.CAMERA,
             to_frame=Frame.BASE,
         )
+        calculator = GraspCalculator(min_grip_width_mm=5.0, max_grip_width_mm=85.0, max_candidates=3,
+                                     camera_matrix=scene.camera_matrix)
 
-        grasps = self._calculator().compute(
-            segmentation,
-            depth,
+        grasps = calculator.compute(
+            SimpleNamespace(mask=scene.mask, label="box"),
+            scene.depth_mm,
             camera_to_base=transform,
-            pixel_to_mm=5.0,
+            support_plane=scene.support_plane,
             unit="mm",
         )
 
         self.assertTrue(grasps)
         self.assertTrue(all(grasp.frame is GraspFrame.BASE for grasp in grasps))
 
-    def test_compute_without_transform_returns_camera_frame_only(self) -> None:
+    def test_compute_without_transform_offers_nothing(self) -> None:
+        """The grasps are planned in BASE over the support: with no transform there is no BASE to plan in."""
         segmentation, depth = self._segmentation_fixture()
+        calculator = self._calculator()
 
-        grasps = self._calculator().compute(
+        grasps = calculator.compute(
             segmentation,
             depth,
-            pixel_to_mm=5.0,
             unit="mm",
         )
 
-        self.assertTrue(grasps)
-        self.assertTrue(all(grasp.frame is GraspFrame.CAMERA for grasp in grasps))
+        self.assertEqual([], grasps)
+        self.assertFalse(calculator.last_telemetry["support_footprint_ready"])
 
     def test_compute_rejects_bad_transform_frame_or_matrix(self) -> None:
         segmentation, depth = self._segmentation_fixture()
@@ -645,8 +653,7 @@ class GraspCalculatorBoundaryTests(unittest.TestCase):
                 segmentation,
                 depth,
                 camera_to_base=bad_frame,
-                pixel_to_mm=5.0,
-            )
+                )
 
         bad_matrix = np.eye(4, dtype=np.float64)
         bad_matrix[3, 3] = 2.0
@@ -655,8 +662,7 @@ class GraspCalculatorBoundaryTests(unittest.TestCase):
                 segmentation,
                 depth,
                 T_cam_to_base=bad_matrix,
-                pixel_to_mm=5.0,
-            )
+                )
 
     def test_compute_rejects_ambiguous_transform_arguments(self) -> None:
         segmentation, depth = self._segmentation_fixture()
@@ -668,8 +674,7 @@ class GraspCalculatorBoundaryTests(unittest.TestCase):
                 depth,
                 T_cam_to_base=transform,
                 camera_to_base=transform,
-                pixel_to_mm=5.0,
-            )
+                )
 
 
 class CalibrationRoutineBoundaryTests(unittest.TestCase):

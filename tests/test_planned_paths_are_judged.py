@@ -108,13 +108,14 @@ class MotionCommandStub:
     MOVE_TO = MotionCommand.MOVE_TO
 
 
-def _curobo_arm(trajectory: list[list[float]], *, max_detour_deg: float = 45.0,
+def _curobo_arm(trajectory: list[list[float]], *,
                 min_distance_mm: "float | None" = None) -> tuple[PlannedArm, _FakePlanner]:
-    self_collision = {} if min_distance_mm is None else {"min_distance_mm": min_distance_mm}
+    # A box the camera saw is grown by 6 mm on every cell, and the guard's distance from it has to make up the step.
+    self_collision = {} if min_distance_mm is None else {
+        "min_distance_mm": min_distance_mm, "perceived_min_distance_mm": max(2.0, float(min_distance_mm) - 6.0)}
     # The configurations here were chosen for what the exact meshes say about them, and they put the flange
     # outside the shipped box; the box is not what this file is about.
-    config = kit_tree("curobo", safety={"payload": {"enforce": False}, "planned_motion": {"max_detour_deg": max_detour_deg},
-                                        "self_collision": self_collision}, workspace_limits=OPEN_WORKSPACE)
+    config = kit_tree("curobo", safety={"self_collision": self_collision}, motion={"workspace": OPEN_WORKSPACE})
     # The endpoint gate reads the arm's CURRENT joints, so the fake controller has to hold some.
     arm: Any = planned_arm(config, transport=fake_transport(joints=_NEAR_CLEAR))
     planner = _FakePlanner(trajectory)
@@ -191,8 +192,12 @@ class ALongPathIsJudgedRatherThanRefusedTests(unittest.TestCase):
         if not _mesh_backend_available():
             pytest.skip("no exact mesh backend on this box")
         # A plan that swings the base out to the fold and back: the detour bound would refuse it before the path gate
-        # saw it (tests/test_the_nearest_goal_is_planned.py), and it is the path gate this file reads.
-        arm, planner = _curobo_arm([_FAR, _FOLDED, _FAR], max_detour_deg=360.0)
+        # saw it (tests/test_the_nearest_goal_is_planned.py), and it is the path gate this file reads, so the bound is
+        # opened to a whole turn here.
+        from unittest import mock
+
+        self.enterContext(mock.patch("src.robot.drivers.planned.arm.MAX_DETOUR_DEG", 360.0))
+        arm, planner = _curobo_arm([_FAR, _FOLDED, _FAR])
         self.enterContext(arm.without_camera_world(_DECLINED))
         result = arm.move(pose_where_it_ends(arm, planner.goal_end))
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)

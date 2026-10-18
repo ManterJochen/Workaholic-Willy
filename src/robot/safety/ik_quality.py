@@ -5,14 +5,17 @@ the commanded TCP pose, and it rejects:
 
 * a NaN or infinite value, or a wrong-DoF vector;
 * a joint solution that differs from ``ctx.current_joints`` by more than
-  ``max_jump_rad`` on any axis, because a large IK jump signals a wrap-around
+  ``GuardNumbers.max_jump_rad`` on any axis, because a large IK jump signals a wrap-around
   ambiguity that would slam the arm 180 deg around an axis to land on the same TCP
   pose;
 * a near-singular configuration, through :func:`analyze_joint_singularity` and its
   Jacobian condition number and smallest singular value;
-* a configuration within ``limit_proximity_deg`` of the configured joint limits, which
+* a configuration within :data:`LIMIT_PROXIMITY_DEG` of the arm's joint limits, which
   come from :func:`src.robot.safety.joint_limits.resolve_joint_limits_deg` so that
   this guard and :class:`JointLimitGuard` agree on the envelope.
+
+Its numbers are the arm's (``guard_numbers``): every real arm's are the owner's cell's,
+since 2026-10-17 no key (the owner's cleanup took ``safety.ik_quality``).
 
 The guard calls :func:`analyze_joint_singularity` rather than duplicating the Jacobian
 maths, so its own work is the finiteness, jump and proximity checks.
@@ -20,9 +23,8 @@ maths, so its own work is the finiteness, jump and proximity checks.
 Operating modes
 ---------------
 * With ``ctx.target_joints`` as ``None`` the guard returns
-  :attr:`SafetyReason.UNAVAILABLE`, and the preflight fails closed where
-  ``enforce=True``. Pre-resolving IK on a Cartesian command is the driver task, in
-  ``URRobotArm.move``.
+  :attr:`SafetyReason.UNAVAILABLE`, and the preflight fails closed. Pre-resolving IK on a Cartesian command is the
+  driver task, in ``URRobotArm.move``.
 * With ``ctx.arm`` as ``None``, or ``arm.capabilities.has_native_fk`` false, the
   singularity estimate is skipped and the other checks still run.
 """
@@ -30,7 +32,6 @@ Operating modes
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -38,50 +39,40 @@ from src.robot.core.errors import RobotError
 
 from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
+from .guard_numbers import CELL, GuardNumbers
 from .joint_limits import resolve_joint_limits_deg
 from .singularity import SingularityThresholds, analyze_joint_singularity
 
-if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from src.config.schema.robot import (
-        IkQualitySafetyConfig,
-        JointLimitSafetyConfig,
-    )
+__all__ = ["IKQualityGuard", "LIMIT_PROXIMITY_DEG"]
 
-__all__ = ["IKQualityGuard"]
+#: How near either end of a joint's range a solution may come, degrees: the owner's cell's, every arm's since
+#: 2026-10-17. Inside the joint-limit guard's 5 degree margin, so it refuses a solution that guard would admit only where
+#: the two disagree on the envelope, which they cannot: both read the arm's own (``resolve_joint_limits_deg``).
+LIMIT_PROXIMITY_DEG = 2.0
 
 
 class IKQualityGuard:
     """IK-solution quality guard.
 
-    Stateless across calls. :meth:`SafetyPreflight.from_safety_config` constructs it
-    when ``safety.ik_quality.enforce`` is ``True``.
+    Stateless across calls. :meth:`SafetyPreflight.from_safety_config` constructs it on
+    every cell.
 
     Parameters
     ----------
-    config
-        :class:`IkQualitySafetyConfig`, carrying the per-axis jump cap, the Jacobian
-        thresholds and the limit-proximity buffer.
-    joint_limits_config
-        :class:`JointLimitSafetyConfig`, used by the limit-proximity check. Set
-        alongside the joint-limit guard the two agree on the envelope, and set alone
-        the proximity check still works.
+    numbers
+        The arm's guard numbers: the per-axis jump cap and the Jacobian thresholds
+        (:data:`~.guard_numbers.CELL` for every real arm).
     """
 
     name = "ik_quality"
 
-    def __init__(
-        self,
-        config: "IkQualitySafetyConfig",
-        joint_limits_config: "JointLimitSafetyConfig | None" = None,
-    ) -> None:
-        self._config = config
-        self._joint_limits_config = joint_limits_config
+    def __init__(self, numbers: GuardNumbers = CELL) -> None:
         self._thresholds = SingularityThresholds(
-            min_singular_value=float(config.min_singular_value),
-            max_condition_number=float(config.max_condition_number),
+            min_singular_value=float(numbers.min_singular_value),
+            max_condition_number=float(numbers.max_condition_number),
         )
-        self._max_jump_rad = float(config.max_jump_rad)
-        self._limit_proximity_deg = float(config.limit_proximity_deg)
+        self._max_jump_rad = float(numbers.max_jump_rad)
+        self._limit_proximity_deg = LIMIT_PROXIMITY_DEG
 
     def evaluate(self, ctx: SafetyContext) -> SafetyDecision:
         joints = ctx.target_joints
@@ -147,38 +138,37 @@ class IKQualityGuard:
 
         # ---- Limit-proximity -----------------------------------------
         # Reusing the joint-limit resolver keeps this guard and the joint-limit guard
-        # on one envelope. The check is soft: with no static lists and no registry envelope resolving
-        # it skips rather than fails closed, which the joint-limit guard handles.
-        if self._joint_limits_config is not None:
-            model = ctx.arm.capabilities.model if ctx.arm is not None else None
-            limits = resolve_joint_limits_deg(self._joint_limits_config, model=model)
-            if limits is not None and len(limits[0]) == joints.dof:
-                lo_deg, hi_deg = limits
-                buffer_deg = self._limit_proximity_deg
-                for axis_idx in range(joints.dof):
-                    q_deg = math.degrees(float(values[axis_idx]))
-                    near_lower = q_deg - lo_deg[axis_idx]
-                    near_upper = hi_deg[axis_idx] - q_deg
-                    closest = min(near_lower, near_upper)
-                    if closest < buffer_deg:
-                        return SafetyDecision.reject(
-                            self.name,
-                            SafetyReason.IK_QUALITY,
-                            message=(
-                                f"axis {axis_idx} at {q_deg:.3f} deg is "
-                                f"only {closest:.3f} deg from a joint "
-                                f"limit (buffer={buffer_deg:.3f})"
-                            ),
-                            detail={
-                                "reason": "limit_proximity",
-                                "axis": str(axis_idx),
-                                "q_deg": f"{q_deg:.6f}",
-                                "min_deg": f"{lo_deg[axis_idx]:.6f}",
-                                "max_deg": f"{hi_deg[axis_idx]:.6f}",
-                                "proximity_deg": f"{closest:.6f}",
-                                "buffer_deg": f"{buffer_deg:.6f}",
-                            },
-                        )
+        # on one envelope. The check is soft: with no registry envelope resolving it skips rather than
+        # fails closed, which the joint-limit guard handles.
+        model = ctx.arm.capabilities.model if ctx.arm is not None else None
+        limits = resolve_joint_limits_deg(model=model)
+        if limits is not None and len(limits[0]) == joints.dof:
+            lo_deg, hi_deg = limits
+            buffer_deg = self._limit_proximity_deg
+            for axis_idx in range(joints.dof):
+                q_deg = math.degrees(float(values[axis_idx]))
+                near_lower = q_deg - lo_deg[axis_idx]
+                near_upper = hi_deg[axis_idx] - q_deg
+                closest = min(near_lower, near_upper)
+                if closest < buffer_deg:
+                    return SafetyDecision.reject(
+                        self.name,
+                        SafetyReason.IK_QUALITY,
+                        message=(
+                            f"axis {axis_idx} at {q_deg:.3f} deg is "
+                            f"only {closest:.3f} deg from a joint "
+                            f"limit (buffer={buffer_deg:.3f})"
+                        ),
+                        detail={
+                            "reason": "limit_proximity",
+                            "axis": str(axis_idx),
+                            "q_deg": f"{q_deg:.6f}",
+                            "min_deg": f"{lo_deg[axis_idx]:.6f}",
+                            "max_deg": f"{hi_deg[axis_idx]:.6f}",
+                            "proximity_deg": f"{closest:.6f}",
+                            "buffer_deg": f"{buffer_deg:.6f}",
+                        },
+                    )
 
         # ---- Singularity (Jacobian) ----------------------------------
         if ctx.arm is not None and ctx.arm.capabilities.has_native_fk:

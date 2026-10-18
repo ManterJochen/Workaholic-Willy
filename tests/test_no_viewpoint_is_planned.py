@@ -12,7 +12,9 @@ comes from the look poses a program hands a pick (`src/robot/execution/looks.py`
 
 What must hold after the removal, and is pinned here:
 
-* a tree that still writes one of the two removed keys is refused at load with the sentence that replaces it;
+* a tree that still writes one of the two removed keys is refused at load with the sentence of the block it sat in,
+  the decision block and the fusion block, which both left whole on 2026-10-16, and ``explain`` still answers the
+  planner's switch with its own;
 * a record logged before the removal still audits, whatever retired string it carries;
 * the two reasons that asked for a camera move are rescanned, without motion;
 * nothing that took a viewpoint planner still accepts one.
@@ -29,13 +31,10 @@ import yaml
 from src.config import ConfigError
 from src.config.loader import load_robot_section
 from src.config.schema._removed import REMOVED_KEYS
-from src.config.schema.robot.grasping_schema import GraspingDecisionConfig, RobotGraspingFusionConfig
+from src.config.schema.robot.grasping_schema import RobotGraspingConfig
 from tests.test_section_loaders import _ScratchTree
 
-_REMOVED = {
-    "robot.grasping.decision.max_reobservations": ("decision", "max_reobservations", 2),
-    "robot.grasping.fusion.active_perception_use_fusion": ("fusion", "active_perception_use_fusion", False),
-}
+_REMOVED = ("robot.grasping.fusion.active_perception_use_fusion",)
 
 
 class TheRemovedKeysAreRefusedAtLoadTests(_ScratchTree):
@@ -52,24 +51,23 @@ class TheRemovedKeysAreRefusedAtLoadTests(_ScratchTree):
             load_robot_section(self.root, profile=None)
         return str(caught.exception)
 
-    def _assert_refused_with_its_sentence(self, dotted: str) -> None:
-        block, key, value = _REMOVED[dotted]
-        message = self._refusal(**{block: {key: value}})
-        self.assertIn(dotted, message)
+    def test_the_reobservation_budget_is_refused_with_the_decision_block_s_sentence(self) -> None:
+        message = self._refusal(decision={"max_reobservations": 2})
+        self.assertIn("robot.grasping.decision", message)
         self.assertEqual(message.count("removed on purpose"), 1)
-        self.assertIn(REMOVED_KEYS[dotted], " ".join(message.split()))
+        self.assertIn(REMOVED_KEYS["robot.grasping.decision"], " ".join(message.split()))
 
-    def test_the_reobservation_budget_is_refused_with_its_sentence(self) -> None:
-        self._assert_refused_with_its_sentence("robot.grasping.decision.max_reobservations")
-
-    def test_the_planner_fusion_switch_is_refused_with_its_sentence(self) -> None:
-        self._assert_refused_with_its_sentence("robot.grasping.fusion.active_perception_use_fusion")
+    def test_the_planner_fusion_switch_is_refused_with_the_fusion_block_s_sentence(self) -> None:
+        message = self._refusal(fusion={"active_perception_use_fusion": False})
+        self.assertIn("robot.grasping.fusion", message)
+        self.assertEqual(message.count("removed on purpose"), 1)
+        self.assertIn(REMOVED_KEYS["robot.grasping.fusion"], " ".join(message.split()))
 
     def test_both_at_once_are_both_named(self) -> None:
         message = self._refusal(decision={"max_reobservations": 1}, fusion={"active_perception_use_fusion": True})
         self.assertEqual(message.count("removed on purpose"), 2)
-        self.assertIn("robot.grasping.decision.max_reobservations", message)
-        self.assertIn("robot.grasping.fusion.active_perception_use_fusion", message)
+        self.assertIn("robot.grasping.decision", message)
+        self.assertIn("robot.grasping.fusion", message)
 
     def test_the_tree_without_them_still_loads(self) -> None:
         self._assert_loads(load_robot_section)
@@ -78,11 +76,12 @@ class TheRemovedKeysAreRefusedAtLoadTests(_ScratchTree):
 class TheSentencesSayWhatToDoTests(unittest.TestCase):
 
     def test_each_key_is_named_and_gone_from_the_schema(self) -> None:
-        models = {"decision": GraspingDecisionConfig, "fusion": RobotGraspingFusionConfig}
-        for dotted, (block, key, _value) in _REMOVED.items():
+        for dotted in _REMOVED:
             with self.subTest(key=dotted):
                 self.assertIn(dotted, REMOVED_KEYS)
-                self.assertNotIn(key, models[block].model_fields)
+        self.assertNotIn("fusion", RobotGraspingConfig.model_fields)
+        self.assertNotIn("decision", RobotGraspingConfig.model_fields)
+        self.assertNotIn("robot.grasping.decision.max_reobservations", REMOVED_KEYS)
 
     def test_each_sentence_is_one_sentence_that_says_delete_the_key(self) -> None:
         for dotted in _REMOVED:
@@ -173,13 +172,6 @@ class NothingTakesAViewpointPlannerTests(unittest.TestCase):
         ):
             with self.subTest(factory=factory.__qualname__):
                 self.assertNotIn("viewpoint_planner", inspect.signature(factory).parameters)
-
-    def test_the_decision_engine_takes_no_planner_and_no_count(self) -> None:
-        from src.robot.grasping.decision import DecisionEngine
-
-        parameters = inspect.signature(DecisionEngine.decide).parameters
-        self.assertNotIn("viewpoint_planner_available", parameters)
-        self.assertNotIn("reobservation_count", parameters)
 
 
 if __name__ == "__main__":

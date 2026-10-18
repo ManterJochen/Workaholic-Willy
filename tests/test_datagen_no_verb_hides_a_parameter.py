@@ -111,15 +111,6 @@ class NoVerbHidesAParameterTests(unittest.TestCase):
 
         self._check("RankerCorpus.build", RankerCorpus, "build", build_ranker_corpus)
 
-    def test_the_rl_verbs(self) -> None:
-        from datagen.rl.collect import collect_trials
-        from datagen.rl.occupancy import measure_occupancy
-        from datagen.rl.service import RecordCollection
-
-        self._check("RecordCollection.collect", RecordCollection, "collect", collect_trials)
-        self._check("RecordCollection.measure_occupancy", RecordCollection, "measure_occupancy",
-                    measure_occupancy)
-
     def test_the_check_covers_more_than_one_verb(self) -> None:
         """The control on the checks above: an `_OWNED` set that swallowed everything would make all
         of them pass while checking nothing."""

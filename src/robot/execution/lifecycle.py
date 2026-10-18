@@ -22,7 +22,7 @@ connected for calibration takes the lock and keeps the order a cell connected fo
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from types import TracebackType
 from typing import Any, Callable
@@ -137,8 +137,8 @@ def release_perception(service: Any) -> StepOutcome:
     the Isaac sources belong to a simulator this process does not own, and only the RealSense adapter
     has a streamer to hand back. A source without ``close()`` is not an error, it is the normal case.
 
-    Every camera, not the primary one. A fused cell also opens a device for every other rig
-    ``grasping.fusion.cameras`` names, each held by its ``Camera`` owner, so both the
+    Every camera, not the primary one. A fused cell also opens a device for every other rig it
+    fuses, each held by its ``Camera`` owner, so both the
     ``perception`` and ``multi_camera_perception`` slots are walked. On real hardware a second
     ``pipeline.start()`` on a streaming device fails, so a camera left open makes the next build of
     a multi-camera cell impossible without a restart.
@@ -265,8 +265,7 @@ def connect_cell(
     acknowledgement token, the CLI with a printed banner.
 
     Once both are up, an arm that reads the hand it carries (``set_hand``, the UR driver) is handed it, ``None`` for an
-    arm alone: the UR driver sets the camera's boxes aside in its planner's world only while that hand reads empty and
-    open (the owner, 2026-10-01).
+    arm alone: the UR driver runs what it judged ahead as judged only while that hand reads as it did then.
     """
     # No success logging here, on purpose: both callers already narrate a successful connect, so a
     # third line from this module would appear in the console's log twice. Failures are logged here,
@@ -422,6 +421,7 @@ class ConnectedCell:
     announce: "Callable[[ConnectStage], None] | None" = None
     #: Filled in on exit. ``None`` while the block is running.
     teardown: TeardownReport | None = None
+    _live: Any = field(default=None, repr=False)
 
     @property
     def arm(self) -> Any:
@@ -435,8 +435,27 @@ class ConnectedCell:
     def _orchestrator(self) -> Any:
         return getattr(getattr(self.service, "runtime", None), "orchestrator", None)
 
+    def halt_every_arm(self, reason: str) -> None:
+        """Halt this cell's arm: what ``together()`` does where a step fails.
+
+        Args:
+            reason (str): Why, as the arm's latch keeps it.
+        """
+        from src.robot.execution.together import halt_arms  # noqa: PLC0415
+
+        halt_arms((self.arm,), reason)
+
     def __enter__(self) -> "ConnectedCell":
-        _bring_up(self)
+        from src.robot.execution.together import live_cell  # noqa: PLC0415
+
+        live = live_cell(self)
+        live.__enter__()
+        try:
+            _bring_up(self)
+        except BaseException:
+            live.__exit__(None, None, None)
+            raise
+        self._live = live
         return self
 
     def __exit__(
@@ -445,7 +464,12 @@ class ConnectedCell:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        _take_down(self, self.service)
+        try:
+            _take_down(self, self.service)
+        finally:
+            live, self._live = self._live, None
+            if live is not None:
+                live.__exit__(None, None, None)
 
 
 @dataclass

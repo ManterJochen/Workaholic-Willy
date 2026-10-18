@@ -165,16 +165,18 @@ class TheLocatorRefusesWhatItCannotPlaceTests(unittest.TestCase):
             Locator.from_parts(camera=_Owner(calibration=refusal), backend=_backend())
         self.assertIn("camera.cameras.rigs['overhead'].extrinsics", str(caught.exception))
 
-    def test_a_stereo_rig_is_refused_with_a_sentence(self) -> None:
-        from src.config import load_config
-        from src.camera.orchestration.camera import Camera
+    def test_an_owner_over_a_raw_stereo_pair_is_refused_with_a_sentence(self) -> None:
+        """A stereo rig's own owner hands out its depth (2026-10-17) and is located as an RGB-D one is; an owner a
+        stereo catalogue built over the raw pair hands out two images and no depth, and is refused before it grabs."""
+        from src.camera.orchestration.camera import Camera, create_device_streamer
+        from tests.test_camera_boundaries import _webcam_rig
 
-        rigs = load_config().camera.cameras.rigs
-        stereo_rig = next(rig for rig in rigs if rig.source != "rgbd")
-        owner = Camera.from_rig(stereo_rig, streamer=SimpleNamespace())
+        pair = _webcam_rig("pair")
+        owner = Camera.from_rig(pair, streamer=create_device_streamer(pair))
         with self.assertRaises(LocatorRefused) as caught:
             Locator.from_parts(camera=owner, backend=_backend())
-        self.assertIn("carries no depth of its own", str(caught.exception))
+        self.assertIn("hands out a raw stereo pair", str(caught.exception))
+        self.assertIn("Camera.from_tree", str(caught.exception))
 
         pair = StereoFrame(left=np.zeros((*_SHAPE, 3), dtype=np.uint8), right=np.zeros((*_SHAPE, 3), dtype=np.uint8))
         locator = Locator.from_parts(camera=_Owner(handle=_Handle([pair])), backend=_backend())
@@ -228,10 +230,8 @@ class ALocatedTargetLeavesTheWorldTests(unittest.TestCase):
         from src.robot.safety.planning.perceived import LinkCapsule, SelfEnvelope
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "safety": {"payload": {"enforce": False}, "planning_world": {
-                "enabled": True,
+            "vendor": "ur", "safety": {"planning_world": {
                 "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                "perceived": {"enabled": True},
             }},
         })
         rigs = [SimpleNamespace(rig_id=name, enabled=True, source="rgbd",
@@ -284,23 +284,20 @@ class TheLocatorImportsLittleTests(unittest.TestCase):
 
 
 def _cell_tree() -> SimpleNamespace:
-    return SimpleNamespace(
-        safety=SimpleNamespace(planning_world=SimpleNamespace(perceived=SimpleNamespace(fresh_frame_attempts=4))),
-        gripper=SimpleNamespace(tool_frame=_TOOL_FRAME),
-    )
+    return SimpleNamespace(gripper=SimpleNamespace(tool_frame=_TOOL_FRAME))
 
 
 class FromConfigTests(unittest.TestCase):
     def test_a_rig_it_cannot_place_is_refused_before_any_model_loads(self) -> None:
-        from src.config import load_config
-        from src.camera.orchestration.camera import Camera
+        from src.camera.orchestration.camera import Camera, create_device_streamer
+        from tests.test_camera_boundaries import _webcam_rig
 
-        stereo_rig = next(rig for rig in load_config().camera.cameras.rigs if rig.source != "rgbd")
+        pair = _webcam_rig("pair")
         spec = mock.MagicMock()
         with mock.patch("src.models.perception_spec.PerceptionSpec", spec):
             with self.assertRaises(LocatorRefused):
                 Locator.from_config(_cell_tree(), object(),
-                                    camera=Camera.from_rig(stereo_rig, streamer=SimpleNamespace()))
+                                    camera=Camera.from_rig(pair, streamer=create_device_streamer(pair)))
         spec.from_config.assert_not_called()
 
     def test_from_config_builds_the_backend_the_cell_builds(self) -> None:
@@ -313,7 +310,8 @@ class FromConfigTests(unittest.TestCase):
             locator = Locator.from_config(tree, models, camera=_Owner())
         spec.from_config.assert_called_once_with(models)
         self.assertIs(built, locator._backend)  # noqa: SLF001
-        self.assertEqual(4, locator._attempts)  # noqa: SLF001
+        # Every cell's fresh-frame attempts (``shutter_motion.FRESH_FRAME_ATTEMPTS``): no tree tunes them since 2026-10-17.
+        self.assertEqual(3, locator._attempts)  # noqa: SLF001
 
 
 if __name__ == "__main__":  # pragma: no cover

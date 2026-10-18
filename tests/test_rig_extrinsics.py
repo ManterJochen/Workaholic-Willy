@@ -90,13 +90,15 @@ class TheKeyTests(unittest.TestCase):
             _rgbd({**_FIXED, "shutter_motion_tolerance_mm": 2.0})
         self.assertIn("an eye_to_hand rig does not move with the arm", str(caught.exception))
 
-    def test_a_stereo_rig_refuses_extrinsics_with_its_sentence(self) -> None:
+    def test_a_stereo_rig_declares_its_extrinsics_as_an_rgbd_rig_does(self) -> None:
+        """Since 2026-10-17 a calibrated stereo pair is a depth camera like an RGB-D one, fixed or on the wrist,
+        placed by its own hand-eye calibration (its left camera rectified), declared on the rig as every other."""
         for rig in (_webcam_rig("pair"), _single_rig("stereo")):
-            with self.subTest(source=rig.source), self.assertRaises(ValidationError) as caught:
-                type(rig).model_validate({**rig.model_dump(), "extrinsics": _FIXED})
-            self.assertIn(
-                f"camera.cameras.rigs[{rig.rig_id!r}] is a {rig.source!r} rig; stereo rigs carry no extrinsics "
-                "until their own step", str(caught.exception))
+            for extrinsics in (_FIXED, _WRIST):
+                with self.subTest(source=rig.source, mounting=extrinsics["mounting_mode"]):
+                    placed = type(rig).model_validate({**rig.model_dump(), "extrinsics": extrinsics})
+                    assert placed.extrinsics is not None
+                    self.assertEqual(extrinsics["mounting_mode"], placed.extrinsics.mounting_mode)
 
 
 class TheLoaderTests(unittest.TestCase):

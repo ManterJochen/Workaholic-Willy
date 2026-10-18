@@ -13,8 +13,8 @@ do not behave that way, and both are excluded from the default reading:
   request/response per tick, forever. It is available, opt-in, and says what it cost.
 
 Everything is read through the vendor-neutral ``RobotArm`` surface and the optional capability
-Protocols. A cell whose driver implements none of them renders empty fields rather than an error: sim,
-dummy and KUKA advertise no force/torque or status capability at all, and a panel that raised on those
+Protocols. A cell whose driver implements none of them renders empty fields rather than an error: the sim
+and the dummy advertise no force/torque or status capability at all, and a panel that raised on those
 would be a panel that only works on one vendor.
 """
 

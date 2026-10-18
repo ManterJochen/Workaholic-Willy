@@ -11,7 +11,7 @@ What is written here is geometry and labels, the two things that are properties 
 than of a model.
 
 The cloud is fused across every rendered view, in BASE millimetres. That is the input the runtime has
-(`grasping.fusion.geometry`, every fixed camera against every object): a single depth view sees one
+(the camera fusion, every fixed camera against every object): a single depth view sees one
 side of an object and an antipodal grasp needs two.
 
 The environment is in the cloud. Unprojecting only masked object pixels would discard the background,

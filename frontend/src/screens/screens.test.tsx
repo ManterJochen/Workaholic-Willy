@@ -16,13 +16,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { RunOut } from '../api/client'
+import type { RunOut, TaskSettingsOut } from '../api/client'
 import { provenanceOf } from '../lib/provenance'
 import { EMPTY_RUN, reduce, type RunView } from '../model/runModel'
 import onceJson from '../test/fixtures/console_dummy_task_once.json'
 import haltedJson from '../test/fixtures/task_halted_then_restart.json'
 import twoPartsJson from '../test/fixtures/task_two_parts_nothing_left.json'
-import { eventsOf, fakeSockets, renderWith, runOf, stubApi as serveApi, type ApiCall, type Fixture } from '../test/render'
+import { eventsOf, fakeSockets, refusal, renderWith, runOf, stubApi as serveApi, type ApiCall, type Fixture, type Route } from '../test/render'
 import Cell from './Cell'
 import Config from './Config'
 import History from './History'
@@ -222,7 +222,6 @@ describe('Config', () => {
     },
     { key: 'camera.cameras.rigs[*].serial_number', label: 'Camera serial', measure: 'rs-enumerate-devices -s.', unit: '' },
     { key: 'robot.ur.ip', label: 'UR controller address', measure: 'Read it off the pendant under Settings > Network.', unit: '' },
-    { key: 'robot.kuka.controller_ip', label: 'KUKA controller address', measure: 'The controller\'s address on your network.', unit: '' },
     { key: 'robot.brand_new.key', label: 'A key this console has no words for', measure: 'Measure it.', unit: '' },
   ]
 
@@ -244,12 +243,12 @@ describe('Config', () => {
   })
 
   it('offers a controller address only for the vendor this cell is', async () => {
-    serveApi({ '/v1/cell': { state: 'disconnected', vendor: 'ur' }, '/v1/config/writable': WRITABLE })
+    serveApi({ '/v1/cell': { state: 'disconnected', vendor: 'dummy' }, '/v1/config/writable': WRITABLE })
     fakeSockets()
     renderWith(<Config />)
-    expect(await screen.findByText('Adresse der UR-Steuerung')).toBeTruthy()
-    await waitFor(() => expect(screen.queryByText(/KUKA/)).toBeNull())
-    expect(screen.queryByText('robot.kuka.controller_ip')).toBeNull()
+    expect(await screen.findByText('Nutzlast: Masse')).toBeTruthy()
+    await waitFor(() => expect(screen.queryByText('Adresse der UR-Steuerung')).toBeNull())
+    expect(screen.queryByText('robot.ur.ip')).toBeNull()
   })
 
   it('shows the server\'s sentence open in the tech view', async () => {
@@ -330,7 +329,7 @@ function listed(runs: readonly RunOut[]) {
 
 function historyRoutes(runs: RunOut[]) {
   return serveApi({
-    '/v1/cell': { state: 'connected', vendor: 'ur', active_run_id: null, needs_person: '', payload_model: 'none', countdown_due: false, jaws_question: false },
+    '/v1/cell': { state: 'connected', vendor: 'ur', active_run_id: null, needs_person: '', countdown_due: false, jaws_question: false },
     '/v1/cell/readiness': { ready: true, lights: [], blockers: [] },
     '/v1/cell/facts': { wrist_camera: true, hand_eye_warn_mm: 6, route: { route: 'planned', sentence: '' }, rehearsal: false },
     '/v1/history/kpis': ROLLUP,
@@ -523,7 +522,7 @@ describe('Settings', () => {
     fakeSockets()
     serveApi({
       '/v1/config/writable': [],
-      '/v1/cell': { state: 'disconnected', vendor: 'ur', needs_person: '', payload_model: 'none', countdown_due: false, jaws_question: false },
+      '/v1/cell': { state: 'disconnected', vendor: 'ur', needs_person: '', countdown_due: false, jaws_question: false },
     })
   })
 
@@ -576,61 +575,180 @@ describe('Settings', () => {
     expect(localStorage.getItem('willy.talkKey')).toBeNull()
   })
 
-  it('says how a task starts, as shipped: Enter at once, once, the default place, the card asking for a part', async () => {
-    // The owner, 2026-10-08: Enter starts at once, and the mode is set here beforehand.
-    renderWith(<Settings />)
-    const panel = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
-    expect(within(within(panel).getByRole('group', { name: 'Start' })).getByRole('button', { name: 'Enter startet sofort' }).getAttribute('aria-pressed')).toBe('true')
-    expect(within(within(panel).getByRole('group', { name: 'Modus' })).getByRole('button', { name: 'Einmal' }).getAttribute('aria-pressed')).toBe('true')
-    expect((within(panel).getByRole('combobox', { name: 'Ablegen ohne Angabe' }) as HTMLSelectElement).value).toBe('default')
-    expect(within(within(panel).getByRole('group', { name: 'Kein Teil genannt' })).getByRole('button', { name: 'Karte fragt' }).getAttribute('aria-pressed')).toBe('true')
+})
+
+// ── Settings, "Auftrag": how a task starts, the cell's for every browser, written into its own layer ────────────────
+
+describe('Settings, the cell\'s task settings', () => {
+  const DISCONNECTED = { state: 'disconnected', vendor: 'ur', needs_person: '', countdown_due: false, jaws_question: false }
+  const TAUGHT = { home: null, poses: [{ name: 'drop_left', label: 'Ablage links' }], default_place: 'drop_left' }
+  /** The cell's task settings as shipped, as `GET /v1/task/settings` answers them. */
+  const SHIPPED: TaskSettingsOut = {
+    start: 'enter',
+    scope: 'once',
+    place: { kind: 'default' },
+    anything: false,
+    looks: 'when_needed',
+    critical_parts: false,
+    target_file: 'D:/cells/line3/app/runtime.cell.yaml',
+    why_not: '',
+    why_not_code: '',
+  }
+
+  /** A server that holds the cell's task settings and answers a change as `PATCH /v1/task/settings` does. */
+  function server(held: TaskSettingsOut = SHIPPED, routes: Record<string, Route> = {}): ApiCall[] {
+    let now = held
+    return serveApi({
+      '/v1/config/writable': [],
+      '/v1/cell': DISCONNECTED,
+      'GET /v1/task/settings': () => now,
+      'PATCH /v1/task/settings': (call: ApiCall) => {
+        now = { ...now, ...(call.body as Partial<TaskSettingsOut>) }
+        return now
+      },
+      ...routes,
+    })
+  }
+
+  const changes = (calls: ApiCall[]) => calls.filter((c) => c.method === 'PATCH' && c.path === '/v1/task/settings').map((c) => c.body)
+  const option = (panel: HTMLElement, group: string, name: string) =>
+    within(within(panel).getByRole('group', { name: group })).getByRole('button', { name }) as HTMLButtonElement
+  const pressed = (panel: HTMLElement, group: string, name: string) => option(panel, group, name).getAttribute('aria-pressed')
+
+  /** The "Auftrag" panel, once the cell's settings are read and its rows drawn. */
+  async function panel(): Promise<HTMLElement> {
+    const found = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
+    await within(found).findByRole('group', { name: 'Start' })
+    return found
+  }
+
+  /** Every key this browser holds that says how a task starts: none since 2026-10-17. */
+  function taskKeys(): string[] {
+    const keys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key?.startsWith('willy.task')) keys.push(key)
+    }
+    return keys
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    fakeSockets()
   })
 
-  it('writes each choice of how a task starts for this browser', async () => {
+  it('says how a task starts, as the cell holds it: Enter at once, once, the default place, the card asking, parts not critical', async () => {
+    // The owner, 2026-10-08: Enter starts at once, and the mode is set here beforehand; 2026-10-16: for the whole cell.
+    const calls = server()
     renderWith(<Settings />)
-    const panel = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
-    fireEvent.click(within(within(panel).getByRole('group', { name: 'Start' })).getByRole('button', { name: 'Erst die Karte' }))
-    expect(localStorage.getItem('willy.taskStart')).toBe('card')
-    fireEvent.click(within(within(panel).getByRole('group', { name: 'Modus' })).getByRole('button', { name: 'Bis leer' }))
-    expect(localStorage.getItem('willy.taskScope')).toBe('until_empty')
-    fireEvent.click(within(within(panel).getByRole('group', { name: 'Kein Teil genannt' })).getByRole('button', { name: 'Alles' }))
-    expect(localStorage.getItem('willy.taskAnything')).toBe('anything')
+    const found = await panel()
+    expect(within(found).getByText(/für die ganze Zelle/)).toBeTruthy()
+    expect(pressed(found, 'Start', 'Enter startet sofort')).toBe('true')
+    expect(pressed(found, 'Modus', 'Einmal')).toBe('true')
+    expect(pressed(found, 'Blicke', 'Bei Bedarf')).toBe('true')
+    expect((within(found).getByRole('combobox', { name: 'Ablegen ohne Angabe' }) as HTMLSelectElement).value).toBe('default')
+    expect(pressed(found, 'Kein Teil genannt', 'Karte fragt')).toBe('true')
+    expect(pressed(found, 'Kritische Teile', 'Nein')).toBe('true')
+    expect(within(found).getByText('Gespeichert für die Zelle in runtime.cell.yaml')).toBeTruthy()
+    expect(changes(calls)).toEqual([])
   })
 
-  it('offers how each pick looks as one choice, when needed as shipped, and writes it for this browser', async () => {
+  it('shows the cell\'s own choices, never what this browser kept before they were the cell\'s', async () => {
+    localStorage.setItem('willy.taskStart', 'card')
+    localStorage.setItem('willy.taskLooks', 'first')
+    server({ ...SHIPPED, scope: 'until_empty', place: { kind: 'pose', pose: 'drop_left' }, looks: 'every', critical_parts: true }, { '/v1/poses': TAUGHT })
+    renderWith(<Settings />)
+    const found = await panel()
+    expect(pressed(found, 'Start', 'Enter startet sofort')).toBe('true')
+    expect(pressed(found, 'Modus', 'Bis leer')).toBe('true')
+    expect(pressed(found, 'Blicke', 'Alle Posen')).toBe('true')
+    expect(pressed(found, 'Kritische Teile', 'Ja')).toBe('true')
+    expect((within(found).getByRole('combobox', { name: 'Ablegen ohne Angabe' }) as HTMLSelectElement).value).toBe('pose:drop_left')
+  })
+
+  it('writes each choice into the cell\'s own layer, one at a time, and shows what the cell holds then', async () => {
+    const calls = server()
+    renderWith(<Settings />)
+    const found = await panel()
+    for (const [group, name] of [['Start', 'Erst die Karte'], ['Modus', 'Bis leer'], ['Kein Teil genannt', 'Alles'], ['Kritische Teile', 'Ja']]) {
+      fireEvent.click(option(found, group, name))
+      await waitFor(() => expect(pressed(found, group, name)).toBe('true'))
+    }
+    expect(changes(calls)).toEqual([{ start: 'card' }, { scope: 'until_empty' }, { anything: true }, { critical_parts: true }])
+    expect(taskKeys()).toEqual([])
+  })
+
+  it('offers how each pick looks as one choice, when needed as shipped, and writes it for the cell', async () => {
     // The owner, 2026-10-08 night: "Multi-View" and "Alle Posen" one choice.
+    const calls = server()
     renderWith(<Settings />)
-    const panel = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
-    const looks = within(panel).getByRole('group', { name: 'Blicke' })
+    const found = await panel()
+    const looks = within(found).getByRole('group', { name: 'Blicke' })
     expect(within(looks).getAllByRole('button').map((button) => button.textContent)).toEqual(['Nur erster Blick', 'Bei Bedarf', 'Alle Posen'])
-    expect(within(looks).getByRole('button', { name: 'Bei Bedarf' }).getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(within(looks).getByRole('button', { name: 'Alle Posen' }))
-    expect(localStorage.getItem('willy.taskLooks')).toBe('every')
-    fireEvent.click(within(looks).getByRole('button', { name: 'Nur erster Blick' }))
-    expect(localStorage.getItem('willy.taskLooks')).toBe('first')
+    fireEvent.click(option(found, 'Blicke', 'Alle Posen'))
+    await waitFor(() => expect(pressed(found, 'Blicke', 'Alle Posen')).toBe('true'))
+    fireEvent.click(option(found, 'Blicke', 'Nur erster Blick'))
+    await waitFor(() => expect(pressed(found, 'Blicke', 'Nur erster Blick')).toBe('true'))
+    expect(changes(calls)).toEqual([{ looks: 'every' }, { looks: 'first' }])
   })
 
-  it('takes a target the camera finds as the place once it has a phrase, at most 200 characters', async () => {
+  it('takes a target the camera finds as the place once its phrase is typed and the field left, at most 200 characters', async () => {
+    const calls = server()
     renderWith(<Settings />)
-    fireEvent.change(await screen.findByRole('combobox', { name: 'Ablegen ohne Angabe' }), { target: { value: 'camera' } })
-    expect(localStorage.getItem('willy.taskPlace')).toBeNull()
-    const phrase = screen.getByRole('textbox', { name: 'Was die Kamera sucht' }) as HTMLInputElement
+    const found = await panel()
+    fireEvent.change(within(found).getByRole('combobox', { name: 'Ablegen ohne Angabe' }), { target: { value: 'camera' } })
+    const phrase = within(found).getByRole('textbox', { name: 'Was die Kamera sucht' }) as HTMLInputElement
     expect(phrase.maxLength).toBe(200)
     fireEvent.change(phrase, { target: { value: 'yellow bin' } })
-    expect(localStorage.getItem('willy.taskPlace')).toBe('camera:yellow bin')
+    expect(changes(calls)).toEqual([])
+    fireEvent.blur(phrase)
+    await waitFor(() => expect(changes(calls)).toEqual([{ place: { kind: 'camera', phrase: 'yellow bin' } }]))
+    await waitFor(() => expect((within(found).getByRole('textbox', { name: 'Was die Kamera sucht' }) as HTMLInputElement).value).toBe('yellow bin'))
   })
 
-  it('offers the taught poses as the place', async () => {
-    serveApi({
-      '/v1/config/writable': [],
-      '/v1/cell': { state: 'disconnected', vendor: 'ur', needs_person: '', payload_model: 'none', countdown_due: false, jaws_question: false },
-      '/v1/poses': { home: null, poses: [{ name: 'drop_left', label: 'Ablage links' }], default_place: 'drop_left' },
-    })
+  it('offers the taught poses as the place, and writes the one chosen', async () => {
+    const calls = server(SHIPPED, { '/v1/poses': TAUGHT })
     renderWith(<Settings />)
-    const place = await screen.findByRole('combobox', { name: 'Ablegen ohne Angabe' })
+    const found = await panel()
+    const place = within(found).getByRole('combobox', { name: 'Ablegen ohne Angabe' }) as HTMLSelectElement
     await within(place).findByRole('option', { name: 'Ablage links' })
     fireEvent.change(place, { target: { value: 'pose:drop_left' } })
-    expect(localStorage.getItem('willy.taskPlace')).toBe('pose:drop_left')
+    await waitFor(() => expect(changes(calls)).toEqual([{ place: { kind: 'pose', pose: 'drop_left' } }]))
+    await waitFor(() => expect(place.value).toBe('pose:drop_left'))
+  })
+
+  it('says a refused change in the reader\'s words and keeps the cell\'s settings', async () => {
+    server(SHIPPED, { 'PATCH /v1/task/settings': refusal(409, 'run_active', 'run run-1 is active', { run_id: 'run-1' }) })
+    renderWith(<Settings />)
+    const found = await panel()
+    fireEvent.click(option(found, 'Start', 'Erst die Karte'))
+    expect(await within(found).findByText('Ein Lauf ist aktiv.')).toBeTruthy()
+    expect(pressed(found, 'Start', 'Enter startet sofort')).toBe('true')
+  })
+
+  it('turns every row off where the chain has no layer of the cell\'s own, and says why', async () => {
+    server({ ...SHIPPED, target_file: null, why_not: 'a task setting is written into the last layer of the profile chain', why_not_code: 'no_layer' })
+    renderWith(<Settings />)
+    const found = await panel()
+    expect(within(found).getByText('Es gibt keine Profilebene, in die geschrieben werden kann.')).toBeTruthy()
+    for (const control of [option(found, 'Start', 'Erst die Karte'), within(found).getByRole('combobox', { name: 'Ablegen ohne Angabe' })]) {
+      expect(control.matches(':disabled')).toBe(true)
+    }
+  })
+
+  it('says where the built cell still runs the other critical-parts choice, which it reads when it is built', async () => {
+    server({ ...SHIPPED, critical_parts: true }, { '/v1/cell': { ...DISCONNECTED, state: 'built' }, '/v1/cell/facts': { push: { can_push: true, critical_parts: false } } })
+    renderWith(<Settings />)
+    const found = await panel()
+    expect(await within(found).findByText('Die aufgebaute Zelle läuft noch mit „Nein“: Die neue Wahl gilt ab dem nächsten Aufbau.')).toBeTruthy()
+  })
+
+  it('says it cannot read the cell\'s settings, and offers no row to choose from', async () => {
+    serveApi({ '/v1/config/writable': [], '/v1/cell': DISCONNECTED, 'GET /v1/task/settings': refusal(500, 'http_500', 'the tree did not load') })
+    renderWith(<Settings />)
+    const found = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
+    expect(await within(found).findByRole('alert')).toBeTruthy()
+    expect(within(found).queryByRole('group', { name: 'Start' })).toBeNull()
   })
 })
 

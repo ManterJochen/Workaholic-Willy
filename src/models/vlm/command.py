@@ -17,7 +17,7 @@ pairs, so a spoken "Ablage links" comes back as its name ``ablage_links``. The a
 only the keys the sentence fills, ``intent`` always (:class:`CommandAnswer`): on the cell every token of the answer
 costs about 140 ms, and the nulls of a full answer cost "Hallo Willy" seven seconds (the owner's speed round,
 2026-10-08). The answer ends where its object closes, one pass before the model's own end token
-(``vlm.stop_at_answer_end``, :func:`src.models.vlm.qwen.answer_object_closed`); this reader takes an answer's first
+(fixed on, as the owner's cell ran it: :func:`src.models.vlm.qwen.answer_object_closed`); this reader takes an answer's first
 whole object anyway. A key left out means "not said", never "all"; a full answer in the earlier format reads as well.
 The word lists below only check that answer.
 
@@ -50,8 +50,8 @@ the answer is checked again as if it were new.
 scope other than the two, or sets a place and a pose that contradict each other is asked again once, saying what was
 wrong. So is a which that does not name the object, an object that holds where the parts lie, and a phrase the
 detector would get that is not English or that carries a quantifier ("all screws", "both cubes"): the
-router's own analysis (:func:`src.models.routing.analyse`) must find it English with no quantifier, none of the
-cell's German words (:data:`GERMAN_WORDS`; "schrauben" and "mutter" pass the router as English) may stand in it,
+phrase analysis (:func:`src.models.routing.analyse`) must find it English with no quantifier, none of the
+cell's German words (:data:`GERMAN_WORDS`; "schrauben" and "mutter" pass that analysis as English) may stand in it,
 and in the first answer to a German command it must not be made of the command's own words alone: that phrase
 was copied, not translated. A word English shares ("Box", :data:`SHARED_WORDS`) or a code ("M6") is no copy, and
 a copied word the model gives again after the retry is taken as a loanword. A second bad answer is "not
@@ -171,7 +171,7 @@ NOTE_ORDER: Final[tuple[ReadingNote, ...]] = (
 #: :class:`~src.models.vlm.holder.TextAsker` is one; a test scripts its own.
 Ask: TypeAlias = Callable[[str, str], str]
 
-#: The return pose every cell has: ``robot.home_joint_positions``. No taught pose may be called this.
+#: The return pose every cell has: ``robot.motion.home_deg``. No taught pose may be called this.
 HOME_POSE: Final[str] = "home"
 HOME_LABEL: Final[str] = "Home"
 #: The reader's own phrase is at most this long: 1 to 4 English words, as the instruction asks. Not the card's field,
@@ -207,10 +207,10 @@ MAX_FURTHER_RULES: Final[int] = 3
 
 _GERMAN_COLOURS: Final = ("rot", "blau", "gelb", "gruen", "schwarz", "weiss", "grau", "braun", "lila")
 
-#: German words, folded to ASCII, that no English phrase for the detector uses and that the router's vocabulary
-#: (:mod:`src.models.routing.rules`) does not hold: the parts, containers, colours, sizes and materials of a
-#: workshop table. Without them "schrauben", "mutter" or "blau kasten" pass the router as English and go to
-#: GroundingDINO, which grounds German badly.
+#: German words, folded to ASCII, that no English phrase for the detector uses and that the phrase analysis's
+#: vocabulary (:mod:`src.models.routing.rules`) does not hold: the parts, containers, colours, sizes and materials of
+#: a workshop table. Without them "schrauben", "mutter" or "blau kasten" pass that analysis as English and reach the
+#: detector in German, which the cell asks in English.
 GERMAN_WORDS: Final[frozenset[str]] = frozenset({
     "schraube", "schrauben", "mutter", "muttern", "scheibe", "scheiben", "unterlegscheibe", "unterlegscheiben",
     "beilagscheibe", "beilagscheiben", "bolzen", "nagel", "naegel", "feder", "federn", "stift", "stifte",
@@ -584,7 +584,7 @@ def _words(text: str) -> list[str]:
 
 
 def _not_english(text: str) -> bool:
-    """The router's analysis finds it not English, or one of the cell's German words stands in it."""
+    """The phrase analysis finds it not English, or one of the cell's German words stands in it."""
     return analyse(text).non_english or any(word in GERMAN_WORDS for word in _words(text))
 
 
@@ -1322,7 +1322,7 @@ def read_command(
         raise CommandRefused(availability.refusal, availability.cause, availability=availability)
     try:
         asker = held.asker_for(availability.vlm, may_load=availability.may_load,
-                               max_new_tokens=COMMAND_MAX_NEW_TOKENS)
+                               max_new_tokens=COMMAND_MAX_NEW_TOKENS, weights_root=availability.weights_root)
         return understand(text, ask=_Remembering(asker, weights=VlmWeights.of(availability.vlm)), poses=poses)
     except VlmNotLoadedError as exc:
         raise CommandRefused("vlm_not_loaded", str(exc), availability=availability) from exc

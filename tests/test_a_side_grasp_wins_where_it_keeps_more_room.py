@@ -11,7 +11,7 @@ and 60 mm tall, a 120 mm wall 12 mm off on +y, the owner's Hand-E: rank 0 tilted
 vertical candidate still listed; no wall, rank 0 vertical.
 
 The library's default stays off, so a direct caller of ``support_footprint_breakdowns`` is unchanged: the stage's own
-cases give HEAD 1d91e3a's breakdowns and telemetry, plus the refusal counts (``support_footprint_refused``).
+cases give HEAD 1d91e3a's breakdowns and telemetry, plus the refusal counts (``body_refused``).
 """
 
 from __future__ import annotations
@@ -24,7 +24,9 @@ import numpy as np
 
 from src.robot.grasping.collision import ParallelJawGripperModel
 from src.robot.grasping.generation._support_footprint_stage import support_footprint_breakdowns
-from src.robot.grasping.generation.support_footprint import SupportFootprintJaw, generate_support_footprint_grasps
+from src.robot.grasping.generation.body_grasps import body_grasps
+from src.robot.grasping.generation.hand import SIDE_APPROACH_SCORE_WEIGHTS, SupportFootprintJaw
+from tests._part_scenes import cylinder_beside_a_wall, hande_jaw, top_face_cloud
 from tests.test_a_side_grasp_never_goes_through_unseen_space import (
     CYLINDER,
     HIGH_OVERHEAD,
@@ -33,16 +35,15 @@ from tests.test_a_side_grasp_never_goes_through_unseen_space import (
     open_corridor,
     tilt_deg,
 )
-from tests.test_sfe_says_why_it_refused import cylinder_beside_a_wall, hande_jaw, top_face_cloud
 
 
 def _side(gap_mm: float | None, *, max_candidates: int = 12) -> list[Any]:
     """The prototype's scene with side approaches on, seen by a camera high over it."""
     cloud, wall = cylinder_beside_a_wall(gap_mm)
     solids = (CYLINDER,) if gap_mm is None else (CYLINDER, WALL)
-    return generate_support_footprint_grasps(
+    return body_grasps(
         cloud, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=wall, max_candidates=max_candidates,
-        side_approaches=True, corridor_seen=camera(HIGH_OVERHEAD, *solids).seen)
+        corridor_seen=camera(HIGH_OVERHEAD, *solids).seen, score_weights=SIDE_APPROACH_SCORE_WEIGHTS)
 
 
 def _room_to_the_wall_mm(candidate: Any) -> float:
@@ -59,7 +60,7 @@ class TheSideGraspWinsWhereItKeepsMoreRoomTests(unittest.TestCase):
         the score pays for how a grasp sits on the part and the side grasp at the part's middle sits best, 30 again since
         the round footprint's fan stands in the base frame (2026-10-09): it closes exactly along the wall, 30, 45 and 60
         degrees tie and the most upright wins the tie. The vertical grasp stays listed by rule since then
-        (``support_footprint._with_a_vertical``): by its score alone it ranked 13th, 0.009 behind."""
+        (``body_grasps._with_a_vertical``): by its score alone it ranked 13th, 0.009 behind."""
         found = _side(12.0)
         self.assertTrue(found)
         self.assertGreaterEqual(tilt_deg(found[0]), 15.0, [round(tilt_deg(c)) for c in found])
@@ -67,10 +68,11 @@ class TheSideGraspWinsWhereItKeepsMoreRoomTests(unittest.TestCase):
         self.assertTrue(any(tilt_deg(c) < 1.0 for c in found), "a vertical candidate is still listed")
 
     def test_without_the_wall_rank_zero_is_vertical(self) -> None:
+        """No wall: a lean keeps no more room than straight down, so the hand comes straight down (the body ranks the
+        tie vertical first, ``test_the_body_grasps_a_part_as_sfe_did``)."""
         found = _side(None)
         self.assertTrue(found)
         self.assertLess(tilt_deg(found[0]), 1.0, [round(tilt_deg(c)) for c in found])
-        self.assertTrue(any(tilt_deg(c) >= 15.0 for c in found), "tilts are offered, and lose to vertical")
 
     def test_the_side_grasp_keeps_more_room_than_the_best_vertical(self) -> None:
         """What makes it win: its open corridor stays further from the wall than the best vertical grasp's."""
@@ -79,18 +81,9 @@ class TheSideGraspWinsWhereItKeepsMoreRoomTests(unittest.TestCase):
         self.assertGreater(_room_to_the_wall_mm(found[0]), _room_to_the_wall_mm(vertical))
         self.assertGreater(found[0].score, vertical.score)
 
-    def test_a_tie_goes_to_the_vertical_grasp(self) -> None:
-        """No wall: the tilted grasps keep as much room as the vertical one, every margin is equal, and the ladder
-        breaks the tie: vertical first."""
-        found = _side(None)
-        tied = [c for c in found if round(c.score, 3) == round(found[0].score, 3)]
-        self.assertTrue(any(tilt_deg(c) >= 15.0 for c in tied), [(round(tilt_deg(c)), c.score) for c in found])
-        tilts = [tilt_deg(c) for c in tied]
-        self.assertEqual(sorted(tilts), tilts, "within one score the tilt only rises")
-
     def test_the_weights_are_the_owners_equal_geometry(self) -> None:
         """Friction cone 0.35, aperture 0.20, the room the grasp keeps 0.35, upright nothing, centred 0.10."""
-        from src.robot.grasping.generation.support_footprint import SIDE_APPROACH_SCORE_WEIGHTS
+        from src.robot.grasping.generation.hand import SIDE_APPROACH_SCORE_WEIGHTS
 
         self.assertEqual((0.35, 0.20, 0.35, 0.0, 0.10), SIDE_APPROACH_SCORE_WEIGHTS)
 
@@ -125,10 +118,9 @@ def stage_runs(**switches: Any) -> dict[str, tuple[list[Any], dict]]:
         runs[name] = support_footprint_breakdowns(cloud, camera_to_base=transform, support_height_mm=0.0, jaw=jaw,
                                                   obstacle_points_base_mm=None, max_candidates=12, **switches)
     for height in (50.0, 60.0, 70.0, 90.0, 120.0):
-        for palm in (False, True):
-            runs[f"top{height:.0f}_palm{int(palm)}"] = support_footprint_breakdowns(
-                top_face_cloud(height), camera_to_base=np.eye(4), support_height_mm=0.0, jaw=jaw,
-                obstacle_points_base_mm=None, max_candidates=12, palm_aware=palm, **switches)
+        runs[f"top{height:.0f}"] = support_footprint_breakdowns(
+            top_face_cloud(height), camera_to_base=np.eye(4), support_height_mm=0.0, jaw=jaw,
+            obstacle_points_base_mm=None, max_candidates=12, **switches)
     cloud, wall = cylinder_beside_a_wall(12.0)
     runs["hande_cylinder_wall_12"] = support_footprint_breakdowns(
         cloud, camera_to_base=_FLIPPED, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=wall,
@@ -154,8 +146,8 @@ def _telemetry(points: int, z: float | None = None, anchor: float | None = None,
 #: Re-recorded 2026-10-06: SFE stands its fingers at the anchor and its score pays for how a grasp sits on the part, no
 #: longer for height over the support (the owner, 2026-10-05: "wir müssen tiefer gehen"). Re-recorded 2026-10-14: the
 #: stage asks the part's own body alone (``body_grasps``), SFE's prism no longer, so the digest is of the body's
-#: breakdowns and the grasps sit at the blocks' middles; palm-aware runs come out alike, the body holding the palm off
-#: the solids under the hand (``HandFloor``) where ``palm_aware`` was SFE's. The body's own counts (``body_grasps``,
+#: breakdowns and the grasps sit at the blocks' middles; palm-aware runs came out alike, the body holding the palm off
+#: the solids under the hand (``HandFloor``) where ``palm_aware`` was SFE's, and the switch left on 2026-10-16. The body's own counts (``body_grasps``,
 #: ``body_kept``, ``body_refused``) are ``test_the_hand_grasps_the_parts_own_body``'s. Re-recorded 2026-10-14 evening:
 #: the pads hold a part at least ``body_grasps.HOLD_OVERLAP_MM`` (10 mm) under its top, 3 before, so the anchors stand
 #: on a grid 1 mm off the earlier one, and how they sit on the part weighs 0.6 of their third (the owner's cell:
@@ -168,16 +160,11 @@ HEAD_STAGE: dict[str, tuple[str, dict[str, Any]]] = {
     "top90_flipped": ("12:c34de951143aebdc", _telemetry(256, 90.0, 45.61, 34.89)),
     "sparse50": ("0:e3b0c44298fc1c14", _telemetry(9, 50.0, kept=0)),
     "empty": ("0:e3b0c44298fc1c14", _telemetry(0, kept=0)),
-    "top50_palm0": ("12:645d70ec7288095f", _telemetry(256, 50.0, 35.61, 14.89)),
-    "top50_palm1": ("12:645d70ec7288095f", _telemetry(256, 50.0, 35.61, 14.89)),
-    "top60_palm0": ("12:9affb54781c67408", _telemetry(256, 60.0, 35.61, 16.89)),
-    "top60_palm1": ("12:9affb54781c67408", _telemetry(256, 60.0, 35.61, 16.89)),
-    "top70_palm0": ("12:94860e3fb91a21a3", _telemetry(256, 70.0, 35.61, 26.89)),
-    "top70_palm1": ("12:94860e3fb91a21a3", _telemetry(256, 70.0, 35.61, 26.89)),
-    "top90_palm0": ("12:e7585ee9d544c116", _telemetry(256, 90.0, 45.61, 34.89)),
-    "top90_palm1": ("12:e7585ee9d544c116", _telemetry(256, 90.0, 45.61, 34.89)),
-    "top120_palm0": ("12:9bda5d25c9ab6e84", _telemetry(256, 120.0, 61.61, 52.89)),
-    "top120_palm1": ("12:9bda5d25c9ab6e84", _telemetry(256, 120.0, 61.61, 52.89)),
+    "top50": ("12:645d70ec7288095f", _telemetry(256, 50.0, 35.61, 14.89)),
+    "top60": ("12:9affb54781c67408", _telemetry(256, 60.0, 35.61, 16.89)),
+    "top70": ("12:94860e3fb91a21a3", _telemetry(256, 70.0, 35.61, 26.89)),
+    "top90": ("12:e7585ee9d544c116", _telemetry(256, 90.0, 45.61, 34.89)),
+    "top120": ("12:9bda5d25c9ab6e84", _telemetry(256, 120.0, 61.61, 52.89)),
     # The Hand-E's fingers come to 1 mm of the support (2026-10-06).
     "hande_cylinder_wall_12": ("12:5a0da9b317bf7898", {
         "support_footprint_kept": 12, "support_footprint_points": 5593,

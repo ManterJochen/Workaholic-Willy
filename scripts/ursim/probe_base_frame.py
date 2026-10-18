@@ -1,9 +1,10 @@
 """Which base frame the controller reports in: the DH chain's, or the URDF ``base_link`` the planner is rooted at.
 
 The cuRobo planner is rooted at UR's URDF ``base_link``, and that frame is the DH base turned half a
-turn about Z (``scripts/curobo/probe_payload_attach.py`` ``frame`` measures 0.0001 mm against the DH
-chain turned 180 degrees, 1019 mm without the turn). The UR driver turns every pose it hands the
-planner by that half turn, which is right only where the controller reports poses in the DH base.
+turn about Z (measured 0.0001 mm against the DH chain turned 180 degrees, 1019 mm without the turn,
+on 2026-09-18 by the carried part's probe, deleted with it on 2026-10-17;
+``scripts/curobo/probe_ur_planner_frame.py`` holds the turn through the driver's glue). The UR driver turns every pose
+it hands the planner by that half turn, which is right only where the controller reports poses in the DH base.
 This asks the controller which frame that is.
 
 It reads, and commands nothing: the joints and the TCP pose over RTDE receive, then, where RTDE

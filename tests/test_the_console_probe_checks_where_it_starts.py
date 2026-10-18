@@ -37,7 +37,7 @@ def _rad(deg: list[float] | tuple[float, ...]) -> list[float]:
 
 class TheProbeChecksWhereTheArmStartsTests(unittest.TestCase):
     def test_the_layer_homes_the_arm_where_this_test_reads_it(self) -> None:
-        said = re.search(r"home_joint_positions_deg: \[([^\]]+)\]", _LAYER)
+        said = re.search(r"home_deg: \[([^\]]+)\]", _LAYER)
         self.assertIsNotNone(said, "the probe's layer declares no home")
         assert said is not None
         self.assertEqual(_HOME_DEG, tuple(float(v) for v in said.group(1).split(",")))

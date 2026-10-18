@@ -251,7 +251,7 @@ class _Torch:
 def _grounder(answer: "str | dict[str, str]") -> tuple[Qwen3VLGrounder, _Model]:
     """The real grounder over the model double: ``answer`` to every question, or one answer per description asked."""
     model = _Model()
-    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", local=True)
+    grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct")
     grounder._load = lambda: (_Processor(answer), model, _Torch())  # type: ignore[method-assign]
     return grounder, model
 

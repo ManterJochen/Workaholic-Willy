@@ -32,72 +32,12 @@ from .grasp_pose import GraspPose
 logger = create_grasping_logger("Reachability", REACHABILITY_LOG_FILE)
 
 __all__ = [
-    "IKQualityMetrics",
     "IKResult",
     "IKService",
     "WorkspaceBoxIKService",
     "filter_reachable_poses",
     "transform_grasp_pose",
 ]
-
-
-def _validate_optional_nonneg(value: float | None, name: str) -> float | None:
-    """Reject negative/NaN/Inf; pass ``None`` through (adapters may omit a signal)."""
-    if value is None:
-        return None
-    f = float(value)
-    if not np.isfinite(f):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    if f < 0.0:
-        raise ValueError(f"{name} must be >= 0, got {f}")
-    return f
-
-
-@dataclass(frozen=True, slots=True)
-class IKQualityMetrics:
-    """Optional execution-feasibility signals attached to an IK result.
-
-    A real IK adapter, a UR analytical solver for
-    instance, can publish per-pose quality metrics that the calculator
-    uses to demote candidates with poor execution prospects. All three
-    fields are :data:`None` by default, so an adapter that does not
-    compute them keeps working unchanged.
-
-    Attributes
-    ----------
-    condition_number
-        Jacobian condition number at the IK solution. Lower is
-        better; the feasibility scorer maps it through a soft cap
-        configured via :class:`FeasibilityScoreConfig`.
-    min_singular_value
-        Smallest singular value of the Jacobian. Higher is better;
-        guards against near-singular configurations.
-    joint_margin_deg
-        Degrees from the closest hard joint limit. Higher is
-        better; the scorer scales it against a configured
-        full-score threshold (e.g. 30 deg).
-    """
-
-    condition_number: float | None = None
-    min_singular_value: float | None = None
-    joint_margin_deg: float | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "condition_number",
-            _validate_optional_nonneg(self.condition_number, "condition_number"),
-        )
-        object.__setattr__(
-            self,
-            "min_singular_value",
-            _validate_optional_nonneg(self.min_singular_value, "min_singular_value"),
-        )
-        object.__setattr__(
-            self,
-            "joint_margin_deg",
-            _validate_optional_nonneg(self.joint_margin_deg, "joint_margin_deg"),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +55,6 @@ class IKResult:
     reason: str | None = None
     joints: tuple[float, ...] | None = None
     metadata: dict[str, Any] | None = None
-    quality: IKQualityMetrics | None = None
 
 
 class IKService(Protocol):

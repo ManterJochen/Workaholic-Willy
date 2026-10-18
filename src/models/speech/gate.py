@@ -40,13 +40,16 @@ class SpeechGate:
 
     @classmethod
     def from_config(
-        cls, *, config: SpeechToTextConfig, endpointing: Maybe[Endpointing] = UNSET
+        cls, *, config: SpeechToTextConfig, endpointing: Maybe[Endpointing] = UNSET,
+        weights_root: str | None = None,
     ) -> SpeechGate:
-        """The YAML door: Silero from `models.stt.vad_model_path`. Loads nothing."""
+        """The speech section's door: Silero from the weights folder (``models.weights_root``; ``None`` is the
+        repository's). Loads nothing."""
         from src.models.speech.silero import SileroVoiceActivityDetector
 
         return cls.from_parts(
-            detector=SileroVoiceActivityDetector.from_config(config=config), endpointing=endpointing
+            detector=SileroVoiceActivityDetector.from_config(config=config, weights_root=weights_root),
+            endpointing=endpointing,
         )
 
     @classmethod

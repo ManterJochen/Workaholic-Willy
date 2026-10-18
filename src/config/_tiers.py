@@ -27,15 +27,6 @@ __all__ = ["TIERS", "tier_for"]
 #: Ordered widest-first: a listing shows everything up to and including the requested tier.
 TIERS: tuple[str, ...] = ("safety", "site", "tuned", "advanced")
 
-#: Fail-closed switches that sit outside ``robot.safety`` and still decide whether a guard refuses
-#: on doubt. Named one by one rather than pattern-matched: a rule like "anything called fail_closed"
-#: stops matching after a rename, without saying so.
-_SAFETY_ELSEWHERE = frozenset({
-    "robot.grasping.decision.fail_closed_on_real_hardware",
-    "robot.grasping.uncertainty.fail_closed_threshold",
-})
-
-
 def tier_for(
     path: str,
     *,
@@ -54,7 +45,7 @@ def tier_for(
     block is still a safety bound and must never be hidden; then anything that must be stated or was
     decided; then the switched-off long tail; then the rest.
     """
-    if path.startswith("robot.safety.") or path in _SAFETY_ELSEWHERE:
+    if path.startswith("robot.safety."):
         return "safety"
     if required or decided:
         return "site"

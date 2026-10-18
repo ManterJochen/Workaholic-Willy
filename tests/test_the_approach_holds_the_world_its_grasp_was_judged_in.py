@@ -1,15 +1,15 @@
 """The approach to a part holds the world its grasp was judged in at the look, and takes no frame at the standoff (O2).
 
-The owner, 2026-10-09 (map2 O2, ``safety.planning_world.hold.standoff``): "altes Bild, weil sich in der Kiste so oder so
-nichts verändert". A standoff frame in a bin had no depth at all on 12 of 88 arrivals, and on the 10-07 cell and the B
-bench it flipped a line down 0.05 mm short of the guard distance that had passed when judged ahead. With the switch on:
+The owner, 2026-10-09 (map2 O2, every cell's since 2026-10-17): "altes Bild, weil sich in der Kiste so oder so nichts
+verändert". A standoff frame in a bin had no depth at all on 12 of 88 arrivals, and on the 10-07 cell and the B bench it
+flipped a line down 0.05 mm short of the guard distance that had passed when judged ahead. So:
 
 * the grasp judged ahead judges its route in the world its line down was judged in, one refresh for the three;
 * the move to the standoff and the line down hold that world (``holding_the_approach``): the route runs as judged, and
   the line down is judged in it, every sample by the exact guard, with no frame at the standoff, stamped with the refresh
   the world was built by;
 * where the route judged ahead does not stand ready (another standoff, more than half a second, the arm moved), nothing
-  is held and every motion refreshes as ever; with the switch off nothing changes at all.
+  is held and every motion refreshes as ever.
 
 Pinned on the real UR driver, its real guard and planner glue (the fixture of
 ``test_a_grasp_judged_ahead_runs_as_it_was_judged``), and through the pick's own policy. Honesty bucket (2).
@@ -24,7 +24,6 @@ from typing import Any
 
 import numpy as np
 
-from src.config.schema.robot.safety_schema import HeldWorldConfig
 from src.robot.core import MotionStatus
 from src.robot.core.camera_world import CameraWorldUse
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
@@ -46,10 +45,6 @@ from tests.test_every_verb_meets_the_camera_world import _mesh_backend_available
 _REASON = "the approach, judged in the world the grasp was judged in ahead"
 
 
-def _holding(arm: Any, standoff: bool = True) -> None:
-    arm._holds = HeldWorldConfig(standoff=standoff)
-
-
 class TheGraspIsJudgedAheadInOneWorldTests(unittest.TestCase):
     def setUp(self) -> None:
         if not _mesh_backend_available():
@@ -57,7 +52,6 @@ class TheGraspIsJudgedAheadInOneWorldTests(unittest.TestCase):
 
     def test_the_route_is_judged_in_the_world_its_line_down_was_judged_in(self) -> None:
         arm, events, _solved = _cell()
-        _holding(arm)
         with _refreshes() as refresh:
             self.assertEqual("", _judged_ahead(arm))
         self.assertEqual(1, refresh.call_count, "the line down's world alone: the route was judged in it")
@@ -66,21 +60,14 @@ class TheGraspIsJudgedAheadInOneWorldTests(unittest.TestCase):
         assert ahead is not None, "the route was not kept for the move to the standoff"
         self.assertIs(arm._planner_refresh(), ahead.refresh)
 
-    def test_off_the_route_refreshes_its_own_world_as_before(self) -> None:
-        arm, _events, _solved = _cell()
-        with _refreshes() as refresh:
-            self.assertEqual("", _judged_ahead(arm))
-        self.assertEqual(2, refresh.call_count)
-
 
 class TheApproachHoldsThatWorldTests(unittest.TestCase):
     def setUp(self) -> None:
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
 
-    def _ready(self, *, standoff: bool = True) -> "tuple[Any, list[str]]":
+    def _ready(self) -> "tuple[Any, list[str]]":
         arm, events, _solved = _cell()
-        _holding(arm, standoff)
         self.assertEqual("", _judged_ahead(arm))
         events.clear()
         return arm, events
@@ -104,16 +91,6 @@ class TheApproachHoldsThatWorldTests(unittest.TestCase):
             self.assertEqual(ahead.refresh.captured_at_s, result.camera_world.captured_at_s)
         self.assertIsNone(arm._held_world_reason, "the world is let go after the block")
 
-    def test_off_nothing_is_held_and_the_line_down_takes_its_frame(self) -> None:
-        arm, _events = self._ready(standoff=False)
-        ahead = arm._judged_ahead
-        with arm.holding_the_approach(_STANDOFF, _REASON) as held, _refreshes() as refresh:
-            self.assertFalse(held)
-            self.assertTrue(arm.move(_STANDOFF).ok)
-            _stand(arm, [float(v) for v in ahead.route.waypoints[-1]])
-            self.assertTrue(arm.move(_GRASP, linear=True).ok)
-        self.assertEqual(1, refresh.call_count, "the line down's own frame at the standoff")
-
     def test_a_route_that_does_not_stand_ready_holds_nothing(self) -> None:
         cases = {
             "another standoff": lambda arm: _shifted(_STANDOFF, 5.0),
@@ -131,7 +108,6 @@ class TheApproachHoldsThatWorldTests(unittest.TestCase):
 
     def test_no_route_judged_ahead_holds_nothing(self) -> None:
         arm, _events, _solved = _cell()
-        _holding(arm)
         with arm.holding_the_approach(_STANDOFF, _REASON) as held:
             self.assertFalse(held)
 
@@ -146,9 +122,8 @@ class ThePicksOwnApproachTests(unittest.TestCase):
                           axis=np.array([1.0, 0.0, 0.0]), grip_width_mm=_WIDTH_MM, score=0.9, frame=GraspFrame.BASE,
                           label="part")
 
-    def _execute(self, *, standoff: bool) -> "tuple[Any, list[str], Any, int]":
+    def _execute(self) -> "tuple[Any, list[str], Any, int]":
         arm, events, _solved = _cell()
-        _holding(arm, standoff)
         policy = GraspExecutionPolicy(arm=arm, gripper=None, standoff_mm=80.0, retreat_mm=100.0)
         grasp = self._grasp()
         self.assertEqual("", policy.refusal_ahead(grasp))
@@ -167,15 +142,10 @@ class ThePicksOwnApproachTests(unittest.TestCase):
         return arm, events, report, refresh.call_count
 
     def test_the_pick_takes_no_frame_at_the_standoff(self) -> None:
-        arm, events, report, refreshes = self._execute(standoff=True)
+        arm, events, report, refreshes = self._execute()
         self.assertIs(PolicyOutcome.EXECUTED, report.outcome, report.motion_message)
         self.assertEqual(0, refreshes, "the pick took a frame between the look and the lift")
         self.assertEqual(0, events.count("gate_planned_path"))
-
-    def test_off_the_pick_takes_its_frame_at_the_standoff_as_before(self) -> None:
-        _arm, _events, report, refreshes = self._execute(standoff=False)
-        self.assertIs(PolicyOutcome.EXECUTED, report.outcome, report.motion_message)
-        self.assertEqual(1, refreshes, "the line down's world alone")
 
 
 if __name__ == "__main__":

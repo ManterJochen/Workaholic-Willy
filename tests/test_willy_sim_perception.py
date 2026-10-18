@@ -254,7 +254,7 @@ class _VisCam:
 
 class MultiObjectVisionPerceptionSourceTests(unittest.TestCase):
     """P2.D.2: detect_all -> SAM2 per box -> N labelled segs, with canonical labels + top-referenced depth.
-    Detector + segmenter are injected fakes (no isaacsim / torch / GDINO / SAM2)."""
+    Detector + segmenter are injected fakes (no isaacsim / torch / VLM / SAM2)."""
 
     @staticmethod
     def _mask(region) -> np.ndarray:  # noqa: ANN001
@@ -274,13 +274,15 @@ class MultiObjectVisionPerceptionSourceTests(unittest.TestCase):
             mask_completion=mask_completion or DEFAULT_MASK_COMPLETION,
         ), cam
 
-    def test_detect_prompt_is_multi_phrase_over_labels(self) -> None:
+    def test_detect_prompt_is_a_class_list_over_labels(self) -> None:
+        """Each label grounded on its own, as the cell's VLM grounds a class list (2026-10-17: GroundingDINO's
+        period-separated caption left with it)."""
         det = _FakeDetector([])
         src, _ = self._src(det, _FakeSegmenter({}), ["sugar box", "tomato soup can"])
-        self.assertEqual(src._detect_prompt(), "sugar box. tomato soup can.")
+        self.assertEqual(src._detect_prompt(), "sugar box | tomato soup can")
 
-    def test_canonicalizes_gdino_labels_to_spawn_names(self) -> None:
-        # GDINO returns free-form phrases; the source maps them to the canonical spawn names (exact match).
+    def test_canonicalizes_free_form_labels_to_spawn_names(self) -> None:
+        # A detector may return free-form phrases; the source maps them to the canonical spawn names (exact match).
         labels = ["sugar box", "tomato soup can", "cracker box"]
         det = _FakeDetector(["a sugar box", "soup can"])
         seg = _FakeSegmenter({"a sugar box": self._mask((0, slice(None))),
@@ -331,7 +333,7 @@ class MultiObjectVisionPerceptionSourceTests(unittest.TestCase):
         self.assertIsNot(frame.depth_map, frame.surface_depth_map)
 
     def test_duplicate_label_detections_are_all_kept(self) -> None:
-        # GDINO merges/duplicates: two phrases both canonicalize to "sugar box". We deliberately do NOT
+        # A detector merges/duplicates: two phrases both canonicalize to "sugar box". We deliberately do NOT
         # dedup -- the orchestrator evaluates EVERY target-labelled seg and executes the best GRASP, which is
         # more reliable than a detection-score heuristic (score-dedup once discarded the real box -> 0/5).
         big = self._mask((slice(0, 3), slice(0, 3)))   # the real box
@@ -344,7 +346,7 @@ class MultiObjectVisionPerceptionSourceTests(unittest.TestCase):
         self.assertEqual([s.label for s in frame.segmentations], ["sugar box", "sugar box"])  # canonicalized
 
     def test_fills_incomplete_mask_to_detection_box(self) -> None:
-        # P5.1: a SAM2 mask covering far less than the GDINO box (incomplete long-box mask) is filled to the
+        # P5.1: a SAM2 mask covering far less than the detector's box (incomplete long-box mask) is filled to the
         # box -> centred, complete silhouette (robust grasp). det.box = [x0,y0,x1,y1] pixels.
         #
         # ⚠ NO LONGER THE DEFAULT. Measured 2026-08-20 over 270 reference scenes, this rule cost 7.5

@@ -79,9 +79,9 @@ class OncePartTests(unittest.TestCase):
         self.assertEqual("", ran.jaws.why_jaws_unknown())
 
     def test_the_part_is_let_go_where_its_bottom_meets_the_taught_pose(self) -> None:
-        """On a cell that declares how far its parts hang (``payload.length_mm``) and names no hand: the part gripped
-        20 mm over the bench, the tool 20 mm over the taught pose. A cell that declares none lets it go with the tool
-        there (``tests/test_a_task_sets_a_part_down_at_a_taught_pose.py``)."""
+        """On a cell that declares how far its parts hang (``robot.motion.place.part_hang_mm``) and names no hand: the part
+        gripped 20 mm over the bench, the tool 20 mm over the taught pose. A cell that declares none lets it go with the
+        tool there (``tests/test_a_task_sets_a_part_down_at_a_taught_pose.py``)."""
         ran = run(["part"], arm=declaring(TaskArm([]), 60.0))
 
         line_in = [entry for entry in motions(ran.after("task.place_started")) if entry[0] == "move"][1]
@@ -210,19 +210,6 @@ class FailedPicksTests(unittest.TestCase):
                 if stop is TaskStop.NOTHING_LEFT:
                     self.assertEqual(("home",), motions(ran.log)[-1])
 
-    def test_a_look_that_saw_only_parts_skipped_after_a_failed_pick_is_a_failed_pick_not_an_empty_look(self) -> None:
-        """Only a part the task keeps out (its bin, its drop) makes a look empty. A part ``next_target`` skips because
-        a pick failed on it still stands there to be picked. Red before: any exclusion counted as an empty look, and
-        two of them ended the task ``nothing_left`` at home, "done", with the failed part on the bench."""
-        from src.robot.execution.task import TaskStop
-
-        ran = run(["zoned", "zoned", "zoned"], scope="until_empty")
-
-        self.assertIs(TaskStop.FAILED_IN_A_ROW, ran.report.stop, ran.report.sentence)
-        self.assertEqual(3, ran.report.picks)
-        self.assertEqual([], ran.hooks.of("task.nothing_found"))
-        self.assertNotIn("task.return_started", ran.names())
-
     def test_a_pick_that_failed_with_the_part_closed_in_the_jaws_ends_the_task_holding_it(self) -> None:
         from src.robot.execution.task import TaskStop
 
@@ -304,44 +291,24 @@ class TheHandBeforeEachPickTests(unittest.TestCase):
         self.assertNotIn("task.survey_started", survey.names())
 
     def test_a_hand_that_still_holds_a_part_moves_nothing_and_starts_no_pick(self) -> None:
-        """The console's ``part_still_held`` gate, the library's own copy: a hand that measures a part, or a planner
-        that still models one, before the task's first motion of any kind. Red before: only a toggle's count was read,
-        so a Restart drove home with the part and a pick opened the jaws over the bench, dropping it."""
+        """The console's ``part_still_held`` gate, the library's own copy: a hand that measures a part, before the
+        task's first motion of any kind. Red before: only a toggle's count was read, so a Restart drove home with the
+        part and a pick opened the jaws over the bench, dropping it. (A planner that still modelled a part counted too,
+        until no planner modelled one: 2026-10-17.)"""
         from src.robot.execution.task import TaskStop
 
-        def measured(log: list[Any]) -> tuple[TaskArm, Any]:
-            return TaskArm(log), MeasuringHand(holding=True)
+        for first_motion in ("look", "return"):
+            with self.subTest(first_motion=first_motion):
+                log: list[Any] = []
+                arm, hand = TaskArm(log), MeasuringHand(holding=True)
+                ran = run(["part"], arm=arm, jaws=hand, first_motion=first_motion)
 
-        def modelled(log: list[Any]) -> tuple[TaskArm, Any]:
-            arm = TaskArm(log)
-            arm.attach_payload(40.0)
-            return arm, toggle(log, arm=arm)
-
-        for name, held in (("measured", measured), ("modelled", modelled)):
-            for first_motion in ("look", "return"):
-                with self.subTest(held=name, first_motion=first_motion):
-                    log: list[Any] = []
-                    arm, hand = held(log)
-                    ran = run(["part"], arm=arm, jaws=hand, first_motion=first_motion)
-
-                    self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
-                    self.assertTrue(ran.report.holding)
-                    self.assertEqual([], motions(log))
-                    self.assertEqual([], ran.service.calls)
-                    self.assertEqual(0, do0_changes(log))
-                    self.assertEqual([], getattr(hand, "commands", []), "the hand was commanded")
-
-    def test_a_part_the_planner_still_models_after_a_place_starts_no_next_pick(self) -> None:
-        from src.robot.execution.task import TaskStop
-
-        log: list[Any] = []
-        arm = TaskArm(log)
-        ran = run(["part", "part"], arm=arm, scope="until_empty", hooks=RecordingHooks(
-            on_event=lambda name, _data: arm.attach_payload(40.0) if name == "task.part_finished" else None))
-
-        self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
-        self.assertEqual((1, 1), (ran.report.parts_placed, ran.report.picks))
-        self.assertEqual([], motions(ran.after("task.part_finished")))
+                self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
+                self.assertTrue(ran.report.holding)
+                self.assertEqual([], motions(log))
+                self.assertEqual([], ran.service.calls)
+                self.assertEqual(0, do0_changes(log))
+                self.assertEqual([], getattr(hand, "commands", []), "the hand was commanded")
 
     def test_an_output_switched_at_the_pendant_between_two_parts_starts_no_next_pick(self) -> None:
         from src.robot.execution.task import TaskStop

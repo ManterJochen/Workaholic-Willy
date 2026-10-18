@@ -25,28 +25,26 @@ Three checks, each applied where its data is available:
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
-
-if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from src.config.schema.robot import MotionContinuitySafetyConfig
+from .guard_numbers import CELL, GuardNumbers
 
 __all__ = ["MotionContinuityGuard"]
 
 
 class MotionContinuityGuard:
-    """Continuity-of-motion guard."""
+    """Continuity-of-motion guard, at the arm's guard numbers (:data:`~.guard_numbers.CELL` for every real arm; the
+    owner's cleanup of 2026-10-17 took ``safety.motion_continuity``)."""
 
     name = "motion_continuity"
 
-    def __init__(self, config: "MotionContinuitySafetyConfig") -> None:
-        self._max_joint_step_deg = float(config.max_joint_step_deg)
-        self._max_orientation_step_deg = float(config.max_orientation_step_deg)
-        self._max_tcp_step_mm = float(config.max_tcp_step_mm)
+    def __init__(self, numbers: GuardNumbers = CELL) -> None:
+        self._max_joint_step_deg = float(numbers.max_joint_step_deg)
+        self._max_orientation_step_deg = float(numbers.max_orientation_step_deg)
+        self._max_tcp_step_mm = float(numbers.max_tcp_step_mm)
 
     def evaluate(self, ctx: SafetyContext) -> SafetyDecision:
         # ---- Joint step ----------------------------------------------

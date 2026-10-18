@@ -120,6 +120,9 @@ def main(argv: "list[str] | None" = None) -> int:
                         help="where no grasp is admitted, the push of the part and of the scene the pick would plan")
     parser.add_argument("--views", action="store_true",
                         help="where no grasp is admitted, the view the pick would generate (the instant controller)")
+    parser.add_argument("--blockers", action="store_true",
+                        help="where no grasp is admitted, the neighbour the pick would set aside, its grasp and the "
+                             "part's once it is gone, judged by the guard")
     parser.add_argument("--set", nargs="*", default=(), metavar="KEY=VALUE",
                         help="config values in memory for this run (LoadedTree.with_values), a value read as YAML")
     args = parser.parse_args(argv)
@@ -135,7 +138,7 @@ def main(argv: "list[str] | None" = None) -> int:
         paths = paths[:args.limit]
     cell = bank.ReplayCell(args.config or args.bank / "robominds_config" / "config", off=tuple(args.off),
                            plan=args.plan, plan_from_home=args.plan_from_home, values=values, push=args.push,
-                           views=args.views)
+                           views=args.views, blockers=args.blockers)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     records = []
     started = time.perf_counter()

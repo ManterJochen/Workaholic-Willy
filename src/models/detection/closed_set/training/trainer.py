@@ -186,19 +186,18 @@ def _workers(plan: DetectorPlan, images: int, device: torch.device) -> int:
 # Model, optimizer, schedule, average
 # --------------------------------------------------------------------------------------------------
 def resolve_base_model(base_model: str) -> tuple[str, bool]:
-    """Where the base weights come from: a local folder when one exists, the Hub cache or a download otherwise.
+    """Where the base weights come from, and whether from this machine alone: the one resolver every model reads its
+    weights through (:mod:`src.models.weights`).
 
-    The default Hub id resolves to the repository's fetched copy (``scripts/model_weights/fetch.py rtdetr``) when it
-    is there, so a cell trains offline on the same weights its detector config names.
+    A folder is read as it is. The default Hub id resolves to the weights folder's fetched copy
+    (``scripts/model_weights/fetch.py rtdetr``) when it is there, so a cell trains offline on the same weights its
+    detector config names, then to the Hugging Face cache, and else to a download: training may fetch its base model,
+    which a cell's run never does.
     """
-    if Path(base_model).is_dir():
-        return base_model, True
-    from src.config.paths import repository_root  # noqa: PLC0415
+    from src.models.weights import locate_weights  # noqa: PLC0415
 
-    fetched = repository_root() / "assets" / "models" / "hf" / "detection" / base_model.replace("/", "--")
-    if (fetched / "config.json").is_file():
-        return str(fetched), True
-    return base_model, False
+    found = locate_weights(base_model, kind="detection", local=False)
+    return found.source, found.local
 
 
 def pretrained_factory(plan: DetectorPlan, id2label: Mapping[int, str]) -> tuple[Any, Any]:

@@ -415,14 +415,11 @@ class AColourCheckTests(unittest.TestCase):
         self.assertEqual(["screwdriver"], [seg.label for seg in frame.segmentations])
         self.assertEqual([], detector.asked)
 
-    def test_log_judges_and_changes_nothing_and_off_judges_nothing(self) -> None:
+    def test_off_judges_nothing_and_log_is_no_more(self) -> None:
         color, dets = _two_parts(_RED, _PALE)
-        logged = _NamingDetector(dets, answer="white")
-        with self.assertLogs("src.robot.perception.realsense_source", level="INFO") as said:
-            frame = _colour_source(color, logged, colour_check="log").acquire()
-        self.assertEqual(["grey cube", "grey cube"], [seg.label for seg in frame.segmentations])
-        self.assertIn("logged only", said.output[0])
-        self.assertEqual(1, len(logged.asked), "log asks the VLM as on does")
+        # "log" judged, logged and changed nothing; it left on 2026-10-17 with the cell's key (the owner's cleanup).
+        with self.assertRaises(ValueError):
+            _colour_source(color, _NamingDetector(dets, answer="white"), colour_check="log")
 
         off = _NamingDetector(dets, answer="white")
         frame = _colour_source(color, off, colour_check="off").acquire()

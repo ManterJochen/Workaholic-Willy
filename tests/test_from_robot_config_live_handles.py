@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from src.config.schema.robot.robot_schema import RobotConfig
-from src.robot.execution.autonomous_grasp import AutonomousGraspService
+from src.robot.execution.autonomous_grasp import AutonomousGraspService, GraspMode
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.types.perception import PerceptionFrame
 
@@ -107,11 +107,12 @@ class LiveHandleTests(unittest.TestCase):
 
         ``effective_config`` is the tell. ``from_components`` leaves it ``None`` -- which is exactly
         why the sim silently lost the U-stack overlays -- so its presence proves the config-driven
-        path really ran. The decision engine is the config-built actor it looks for: the verifier it
-        looked for left on 2026-09-29 with the ``verification`` block.
+        path really ran, and it carries the mode the config names. The verifier it looked for left on
+        2026-09-29 with the ``verification`` block, and the decision engine after it on 2026-10-16 with
+        the decision layer.
         """
         service = _service(
-            RobotConfig(**{**_SIM_LIKE, "grasping": {"default_mode": "auto", "decision": {"enabled": True}}}),
+            RobotConfig(**{**_SIM_LIKE, "grasping": {"default_mode": "auto"}}),
             gripper=_live_gripper(),
         )
 
@@ -119,8 +120,9 @@ class LiveHandleTests(unittest.TestCase):
             service.effective_config,
             "a supplied handle dropped the build back onto the from_components path",
         )
-        self.assertIsNotNone(
-            service.decision_engine, "a config-built actor did not survive the handle path"
+        assert service.effective_config is not None
+        self.assertIs(
+            GraspMode.AUTO, service.effective_config.default_mode, "a config value did not survive the handle path"
         )
 
 

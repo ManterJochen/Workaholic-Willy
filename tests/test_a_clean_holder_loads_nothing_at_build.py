@@ -1,18 +1,16 @@
 """Building a cell's perception through a clean VLM holder loads no weights.
 
-The VLM is now held once per process, so a build no longer owns its copy: it asks the holder. That must not turn
-a build into a load. With ``preload: false`` (the schema default) nothing reaches the GPU until a prompt or a
-command needs the model, exactly as before the holder existed; the holder itself is created empty, and asking it
-how things stand builds nothing.
+The VLM is held once per process, so a build does not own its copy: it asks the holder. That must not turn a build
+into a load. Nothing reaches the GPU until a prompt or a command needs the model, as on the owner's cell (whose
+``preload: false`` is the only behaviour since the key left on 2026-10-17); the holder itself is created empty, and
+asking it how things stand builds nothing.
 
 The load seam is a spy that fails the test if it is ever called, so "nothing loaded" is observed rather than
-inferred from a flag. ``preload: true`` is the one documented exception (the owner's profile), and it loads once.
+inferred from a flag.
 """
 
 from __future__ import annotations
 
-import sys
-import types
 import unittest
 from typing import Any
 from unittest import mock
@@ -40,41 +38,29 @@ class ACleanHolderLoadsNothingAtBuildTests(unittest.TestCase):
 
     def _build(self, models: Any) -> Any:
         from src.models import factory
+        from src.models.detection.closed_set import detector
+        from src.models.segmentation.realtime import segmenter
 
-        with mock.patch.object(factory, "_build_named_segmenter", return_value="SEG"):
+        with mock.patch.object(segmenter, "Sam2Segmenter", return_value="SEG"), \
+             mock.patch.object(detector, "RtDetrObjectDetector", return_value="RTDETR"):
             return factory.build_perception(models)
 
     def test_the_vlm_stack_builds_on_a_clean_holder_without_loading(self) -> None:
-        models = self._models(zero_shot={"backend": "vlm"}, router={"enabled": False})
+        models = self._models()
         backend = self._build(models)
-        grounder = backend._vlm.detector  # noqa: SLF001 - asserting the wiring, not the behaviour
-        self.assertFalse(grounder.loaded)
+        self.assertFalse(backend.detector.loaded)
         self.load.assert_not_called()
         self.assertEqual(shared_vlm().status_for(models.pipeline.zero_shot.vlm).state, "idle")
 
-    def test_the_routed_stack_builds_on_a_clean_holder_without_building_a_route(self) -> None:
-        models = self._models(zero_shot={"backend": "vlm"}, router={"enabled": True})
+    def test_a_closed_set_cell_never_touches_the_holder(self) -> None:
+        models = self._models(kind="closed_set")
         backend = self._build(models)
-        self.assertEqual(backend.built_routes(), ())
-        self.load.assert_not_called()
-        self.assertIsNone(shared_vlm().held_for(models.pipeline.zero_shot.vlm),
-                          "the lazy route did not even take a grounder from the holder")
-
-    def test_a_phrase_grounder_cell_never_touches_the_holder(self) -> None:
-        from src.models import factory
-
-        models = self._models(zero_shot={"backend": "grounded_sam"})
-        # A stand-in module: the real one imports torch at module scope, and this test is about the holder.
-        dino = types.SimpleNamespace(GroundingDinoObjectDetector=lambda *args, **kwargs: "DINO")
-        with mock.patch.dict(sys.modules, {"src.models.detection.zero_shot.detector": dino}), \
-             mock.patch.object(factory, "_build_named_segmenter", return_value="SEG"):
-            backend = factory.build_perception(models)
-        self.assertEqual(backend.detector, "DINO")
+        self.assertEqual(backend.detector, "RTDETR")
         self.assertIsNone(shared_vlm().held_for(models.pipeline.zero_shot.vlm))
         self.load.assert_not_called()
 
     def test_the_shared_holder_is_created_empty(self) -> None:
-        models = self._models(zero_shot={"backend": "vlm"})
+        models = self._models()
         vlm = models.pipeline.zero_shot.vlm
         self.assertIsNone(shared_vlm().held_for(vlm))
         self.assertFalse(shared_vlm().loaded_for(vlm))
@@ -83,21 +69,22 @@ class ACleanHolderLoadsNothingAtBuildTests(unittest.TestCase):
         self.load.assert_not_called()
 
     def test_asking_whether_commands_can_be_read_loads_nothing(self) -> None:
-        for backend in ("vlm", "grounded_sam"):
-            with self.subTest(backend=backend):
-                rule = reader_availability(self._models(zero_shot={"backend": backend}), weights_present=True)
+        for kind in ("zero_shot", "closed_set"):
+            with self.subTest(kind=kind):
+                rule = reader_availability(self._models(kind=kind), weights_present=True)
                 self.assertNotEqual(rule.state, "ready")
         self.load.assert_not_called()
 
-    def test_preload_is_the_one_build_that_loads_and_it_loads_once(self) -> None:
-        """The owner's profile (backend vlm, router off, preload on): VRAM held from the build, one copy."""
+    def test_the_first_look_loads_once_and_a_rebuild_takes_the_loaded_copy(self) -> None:
+        """The owner's cell: one copy, loaded by the first prompt that needs it, never by a build."""
         self.load.side_effect = None
         self.load.return_value = ("PROCESSOR", mock.Mock(), mock.Mock())
-        models = self._models(zero_shot={"backend": "vlm", "vlm": {"preload": True}}, router={"enabled": False})
+        models = self._models()
         first = self._build(models)
+        first.detector.ensure_loaded()  # the first look
         second = self._build(models)
         self.assertEqual(self.load.call_count, 1)
-        self.assertIs(first._vlm.detector, second._vlm.detector)  # noqa: SLF001
+        self.assertIs(first.detector, second.detector)
         self.assertTrue(shared_vlm().loaded_for(models.pipeline.zero_shot.vlm))
 
 

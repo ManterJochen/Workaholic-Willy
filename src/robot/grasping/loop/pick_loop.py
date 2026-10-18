@@ -41,7 +41,7 @@ once did, and the relocate path that drove them, were removed on
 2026-09-29: no config has built a planner since the multi-view commit
 gate left (2026-09-28), and a cell that needs another view hands the
 pick look poses (``src/robot/execution/looks.py``) or fuses a second
-camera (``grasping.fusion``).
+camera (``camera_fusion.fused_cameras``).
 
 A camera on the wrist looks from the looks it is handed (``looks``), in
 their order, before its first attempt (:meth:`BinPickingOrchestrator.look_around`).
@@ -72,7 +72,7 @@ Every object's result passes the closing axis a program names
 2026-09-30) right after the calculator ranked it, before anything reads its
 candidates: only the grasps that close within 30 degrees of the axis are kept,
 each turned the named way round. Where the program names none and the cell
-names how its hand and camera naturally stand (``robot.natural_closing_axis``),
+names how its hand and camera naturally stand (``robot.motion.natural_closing_axis``),
 every grasp is turned the way round nearer that direction instead, none left
 out (:meth:`BinPickingOrchestrator._closing_along`). A grasp so turned that has
 no configuration on the arm's branch inside the cable window, where its twin
@@ -82,16 +82,13 @@ and a named axis keep their own rules (the owner's window gap, 2026-10-08). So
 the target choice, the looks' judgement, the reranks, the approach check and
 the push all read the grasps the pick would grip.
 
-Where the cell says so (``robot.grasping.first_good_part``, the owner's "speed
-first" of 2026-10-08), a look's parts are computed one at a time, in the order
+In every cell (the owner's "speed first" of 2026-10-08, ``lazy_objects``), a look's parts are computed one at a time, in the order
 they stand apart, and the first whose grasp is good is taken without computing
-the rest; SFE's fine search waits while another part may have a full result
-(``fine_pass_waits``), and a later look of a wrist pick computes only the part
-it keeps. A frame with no grasp is computed whole and fails as it always did
+the rest, and a later look of a wrist pick computes only the part it keeps. A frame with no grasp is computed whole and fails as it always did
 (:meth:`BinPickingOrchestrator._lazy_choice`).
 
-A task that follows its parts (``robot.grasping.follow_parts``, the owner's
-decision of 2026-10-09) hands a wrist pick the parts its last pick's first look
+A task that follows its parts (every cell's, the owner's decision of
+2026-10-09) hands a wrist pick the parts its last pick's first look
 kept (``follow``, a ``src/robot/perception/kept_scene.KeptScene``): the pick's
 first look, and only that one, hands the camera source a follow, which finds
 the parts again with SAM2 on their boxes and no detector where nothing changed
@@ -107,14 +104,12 @@ The looks of a wrist pick are one choice of the console's (the owner,
 2026-10-08 night): its first look only (multi-view off), the looks when needed
 (the early stop above), or every look (``every_look``): the looking then does
 not stop at a safe grasp, and the pick goes on with the judgement of the last
-look, fused over every look. Where the cell says so
-(``robot.grasping.weak_look_trigger``, ``weak_look``), a look whose view of its
+look, fused over every look. In every cell (``weak_look``), a look whose view of its
 part is weak is not safe to stop at either: depth on less than 85 % of its own
 mask, a part tall for its footprint with no side seen, or two height plateaus
 at least 15 mm apart, judged again on the fused views at every look
 (:meth:`BinPickingOrchestrator._weak_look`). It only adds looks: the grasp the
-looks end on is gripped as before. And where the cell says so
-(``robot.grasping.hide_own_places``, ``hide_own_places``), the regions a task
+looks end on is gripped as before. And in every cell (``hide_own_places``), the regions a task
 keeps out (its bin, the circles about its drops) are painted out of the copy
 of the image the detector reads, so the parts already placed cost no box; the
 segmenter, the depth and everything after them read the real image
@@ -124,8 +119,7 @@ Two recoveries run inside the attempt, where the part is known (the owner,
 2026-09-29 and 2026-09-30). Where the service hands a pick a push gate
 (``push_gate``, dense_clutter only), a wrist pick whose part every grasp
 collided with something (``ALL_COLLIDED``), or whose every grasp was judged
-from the look and refused there, or whose every approach was blocked where
-approach validation runs, and which a neighbour stands within 25 mm of in what
+from the look and refused there, and which a neighbour stands within 25 mm of in what
 the looks saw, pushes the part with the open jaws, goes back to the look it
 stood at (to the view it generated on the straight joint line alone), looks
 again and picks from that look (:meth:`BinPickingOrchestrator._push_the_failed_part`).
@@ -135,8 +129,8 @@ and for critical parts in its place, the pick clears a blocker where it can (the
 2026-10-02, :meth:`BinPickingOrchestrator._clear_the_blockers`): the neighbour whose removal frees the most grasps of the
 part, gripped like any part and set down on a free spot the camera saw or at the place the owner names
 (:attr:`BinPickingOrchestrator.blocker_place`); it looks again, and the next attempt grasps the part. And the parts
-``next_target`` skips (``exclusion_zones``) are no targets, next to the label
-gate; a pick that sees only such parts stops with their sentence.
+standing where the task keeps out of its picks (``exclusion_zones``: the bin it places into, the circle about its
+drop) are no targets, next to the label gate; a pick that sees only such parts stops with their sentence.
 
 A sort names several kinds at once (``target_labels``, the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote
 in die blaue"): a segmentation passes the label gate where its label is any of them, compared exactly as one kind's
@@ -186,10 +180,6 @@ from src.robot.core import (
 )
 from src.robot.core.arm_capabilities import halt_state_of, halted_refusal
 from src.robot.core.gripper import why_not_known_open
-from src.robot.grasping.loop._shadow_aggregator import (
-    _ShadowTelemetryAggregator,
-    _build_candidate_log as _build_candidate_log,  # re-exported under this module's name
-)
 from src.robot.grasping.motion.execution_policy import (
     GraspExecutionPolicy,
     PolicyOutcome,
@@ -205,60 +195,26 @@ from src.robot.grasping.geometry.closing_axis import (
     result_closing_toward,
 )
 from src.robot.grasping.geometry.wrist_turn import WristHousing, turned_for_the_wrist
-from src.robot.grasping.telemetry.latency_tracker import LatencyStage
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
-from src.robot.grasping.generation._support_footprint_stage import FINE_SEARCH_DEFERRED, FINE_SEARCH_KEY
 from src.robot.grasping.generation.calculator import GraspCalculator
 from src.robot.grasping.generation.parts_beside import LABEL as PART_BESIDE_LABEL
 from src.robot.grasping.generation.parts_beside import LEAST_ACROSS_MM as PART_BESIDE_LEAST_ACROSS_MM
 from src.robot.grasping.generation.parts_beside import parts_beside
-from src.robot.grasping.generation.support_footprint import JAW_SIDE_ROOM_MM
+from src.robot.grasping.generation.hand import JAW_SIDE_ROOM_MM
 from src.robot.grasping.types.perception import (
     PerceptionFrame,
     PerceptionSource,
 )
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint, grips_from_inside
-from src.robot.grasping.types.modes import (
-    GraspSamplingMode,
-    resolve_grasp_sampling_mode,
-)
-from src.robot.grasping.scoring.success_probability import (
-    RankingBlendConfig,
-    RankingBlendTelemetry,
-    SHADOW_METADATA_KEY_PROBABILITY,
-    ShadowSuccessContext,
-    ShadowSuccessTelemetry,
-    UncertaintyRerankConfig,
-    UncertaintyRerankTelemetry,
-    annotate_grasp_points_with_shadow_probability,
-    maybe_blend_rerank_candidates,
-    maybe_uncertainty_rerank_candidates,
-)
 from src.robot.grasping.loop.progress import (
     PickProgressListener,
     PickStage,
     ShouldCancel,
     emit,
 )
-from src.robot.grasping.loop.target_selector import (
-    OrderingDecision,
-    TargetOrderingConfig,
-    select_target,
-)
-from src.robot.grasping.motion.trajectory_safety import (
-    ApproachPathPolicy,
-    validate_approach_and_retreat,
-)
-from src.robot.grasping.loop._pick_helpers import (
-    _build_target_candidates,
-    _grasp_point_to_grasp_pose,
-)
 
 if TYPE_CHECKING:  # pragma: no cover (import only for typing)
-    from src.config.schema.robot.grasping_schema import (
-        FusionGeometryConfig,
-        GraspingSupportConfig,
-    )
+    from src.robot.grasping.collision.support_resolver import DeclaredSupport
     from src.geometry import Pose
     from src.robot.core import JointPositions
     from src.robot.grasping.recovery.blocker import BlockerRecord, Cluster
@@ -269,24 +225,13 @@ if TYPE_CHECKING:  # pragma: no cover (import only for typing)
     from src.robot.grasping.multiview.unseen_side import JawFacesSeen
     from src.robot.grasping.recovery.exclusion_zones import ExclusionZones
     from src.robot.grasping.recovery.push_budgets import PushBudgets
-    from src.robot.grasping.recovery.push_gate import FailedPart, PickPush, PushGate
+    from src.robot.grasping.recovery.push_gate import PickPush, PushGate
     from src.robot.grasping.recovery.push_motion import PushOutcome
     from src.robot.grasping.recovery.push_planner import PushPlan
     from src.robot.grasping.types.perception import MultiCameraPerceptionSource
     from src.robot.perception.kept_scene import Following, KeptScene
     from src.robot.grasping.collision import GripperGeometryStrategy
-    from src.robot.grasping.scoring.corridor import CorridorAnalysisConfig
-    from src.robot.grasping.telemetry.latency_tracker import LatencyTracker
-    from src.robot.grasping.scoring.feasibility_score import FeasibilityScoreConfig
     from src.robot.grasping.motion.frame_resolver import FrameResolver
-    from src.robot.grasping.rl.router import (
-        PerceptionShadowTelemetry,
-        RankingShadowTelemetry,
-        RecoveryShadowTelemetry,
-        SequencingAttemptState,
-        SequencingShadowTelemetry,
-        ShadowRouter,
-    )
 
 __all__ = [
     "BinPickingOrchestrator",
@@ -332,7 +277,7 @@ _UNDER_MM: float = 10.0
 #: How far a cuRobo plan to a grasp's standoff may swing a joint past its span while the first pass of the tries keeps the
 #: arm's branch, degrees (the owner's R2, 2026-10-08): a plan past it is a detour there, and its grasp waits for the
 #: grasps that keep the branch, as one whose standoff only another branch reaches does. Outside the first pass the
-#: configured ``safety.planned_motion.max_detour_deg`` (45) bounds it, as every plan.
+#: arm's ``path_samples.MAX_DETOUR_DEG`` (45) bounds it, as every plan.
 KEPT_BRANCH_OVERSHOOT_DEG: float = 15.0
 #: What a try was, on ``PickAttempt.tries`` (the fix plan's contract 3).
 _TRY_KEYS = ("rank", "outcome", "motion_status", "motion_message", "sent", "reached_part")
@@ -385,8 +330,7 @@ _UNNAMED_MASK_GROWTH_PX = 4
 #: verify, is the better answer.
 _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM: float = 25.0
 
-#: The owner's automatic weak-look trigger (2026-10-08 night, ``robot.grasping.weak_look_trigger``,
-#: ``BinPickingOrchestrator._weak_look``): a look is weak where depth was measured on less than this share of its own
+#: The owner's automatic weak-look trigger (2026-10-08 night, ``BinPickingOrchestrator._weak_look``): a look is weak where depth was measured on less than this share of its own
 #: mask of the part. On the cell's recorded frame of the picked cube, 99 % of its outline had depth (the map's
 #: measurement); the shiny profiles beside it had depth on 64 %.
 WEAK_LOOK_DEPTH_SHARE: float = 0.85
@@ -446,11 +390,6 @@ class PickOutcome(str, Enum):
     # distinct from EXECUTION_FAILED so a caller can detect missing
     # FrameResolver wiring.
     CAMERA_FRAME_REJECTED = "camera_frame_rejected"
-    # Dense-mode approach validation. Every ranked candidate's straight-line
-    # approach/retreat sweep collided with a neighbour in the scene cloud (the
-    # calculator only checks the final pose), so the fall-back found no
-    # sweep-clear candidate and refused rather than driving into an obstacle.
-    APPROACH_PATH_BLOCKED = "approach_path_blocked"
     # The controller could not move: protective stop, emergency stop, a safety-mode stop, or simply
     # powered off. Deliberately not EXECUTION_FAILED, for the same reason CANCELLED is not ABORTED:
     # the grasp did not fail, the cell stopped, and folding the two together buries a machine state
@@ -638,12 +577,6 @@ def _label_key(segmentation: Any) -> str:
     return str(getattr(segmentation, "label", "") or getattr(segmentation, "prim_path", "") or "")
 
 
-def _fine_search_deferred(result: object) -> bool:
-    """Whether ``result`` holds SFE's coarse grid alone, its fine search left for later (``support_footprint_fine``)."""
-    telemetry = getattr(result, "telemetry", None)
-    return isinstance(telemetry, Mapping) and telemetry.get(FINE_SEARCH_KEY) == FINE_SEARCH_DEFERRED
-
-
 def _two_plateaus(heights: np.ndarray) -> "tuple[float, float] | None":
     """The heights of two plateaus of a part's cloud at least ``WEAK_LOOK_PLATEAU_GAP_MM`` apart, the lower first, or
     ``None`` where it holds no such pair (``BinPickingOrchestrator._weak_look``).
@@ -726,7 +659,7 @@ class PickAttempt:
     reasons: tuple[GraspFailureReason, ...]
     score: float
     # "executed", "object_not_detected", "camera_frame_rejected",
-    # "approach_path_blocked", "gripper_fault" or "execution_failed" from _map_policy_outcome;
+    # "gripper_fault" or "execution_failed" from _map_policy_outcome;
     # "rescan" or "exhausted" when no candidate was found (``_RESCAN_REASONS``; a wrist pick handed
     # looks never rescans where it stands, so its attempt is "exhausted");
     # "controller_not_operational" when the controller cannot move; "look_refused" when a wrist
@@ -738,11 +671,6 @@ class PickAttempt:
     # the cameras of a fixed one), so its grasp was not gripped. "relocate" is retired with the relocate path (2026-09-29) and appears only on
     # attempts recorded before then.
     action: str
-    # When ``target_ordering`` is enabled this carries the typed
-    # :class:`OrderingDecision` produced by the selector for this
-    # attempt. Defaults to ``None`` so legacy consumers see no surface
-    # change.
-    ordering_decision: OrderingDecision | None = None
     # Why the motion failed, in the one place that survives the pick.
     #
     # ``_map_policy_outcome`` collapses a ``PolicyReport`` into the single word "execution_failed",
@@ -762,7 +690,7 @@ class PickAttempt:
     camera_world: str | None = None
     camera_world_reason: str | None = None
     # Which cameras' surfaces of this attempt's target were fused into the one cloud its grasps were
-    # generated from, the camera the grasp is synthesised in first (`grasping.fusion.geometry`).
+    # generated from, the camera the grasp is synthesised in first (the camera fusion).
     # Empty whenever that cloud came from one camera: fusion off or standing down, no second camera
     # delivered, none identified the target, or an external target cloud replaced the fused one.
     # Never one camera alone, and never the same camera twice.
@@ -790,15 +718,11 @@ class PickAttempt:
     # anything moved: the pick ends there, ``gripper_fault``). ``None`` on every other attempt. The push's own sentence
     # is on the pick loop's ``pushes``.
     push: str | None = None
-    # Why no part was a target, on an attempt that saw only parts ``next_target`` skips: the exclusion zones' sentence
-    # (``ExclusionZones.only_excluded_sentence``). The pick stops there rather than try one of them again or another
+    # Why no part was a target, on an attempt that saw only parts its task keeps out (``ExclusionRegion``: the bin it
+    # places into, the circle about its drop): the regions' sentence (``ExclusionZones.only_excluded_sentence``). The
+    # look saw nothing left for the task to pick, and the pick stops there rather than pick one of them or another
     # object. ``None`` on every other attempt.
     excluded: str | None = None
-    # On such an attempt (``excluded``): whether every part it skipped stands in a region its task keeps out
-    # (``ExclusionRegion``: the bin it places into, the circle about its drop), so the look saw nothing left for the task
-    # to pick. ``False`` where a zone ``next_target`` made after a failed pick skipped one of them alone: that part still
-    # stands there to be picked. ``False`` on every other attempt.
-    excluded_by_regions: bool = False
     # Every grasp this attempt handed the policy, in order (the fix plan's contract 3, the owner's "try the next
     # grasps"): per try its ``rank`` among the look's candidates, the policy's ``outcome``, the ``motion_status`` and
     # ``motion_message`` it ended on, whether it ``sent`` any motion, and whether it ``reached_part``: a motion it sent
@@ -837,25 +761,6 @@ class PickReport:
     #:
     #: Empty when nothing was selected, so a run that generated no candidate is byte-identical.
     selected_telemetry: Mapping[str, Any] = field(default_factory=dict)
-    # Optional shadow-mode telemetry for the winning candidate of the
-    # final attempt. ``None`` whenever the orchestrator is built without
-    # a :class:`ShadowSuccessContext`, which is the case when the
-    # success model is disabled or failed to load. Populated for both
-    # ``EXECUTED`` outcomes and the ``EXECUTION_FAILED`` /
-    # ``CAMERA_FRAME_REJECTED`` branches when the model scored the
-    # chosen grasp.
-    shadow_success_telemetry: ShadowSuccessTelemetry | None = None
-    # Audit telemetry from the bounded probability-blend reranker.
-    # ``None`` when ``ranking_blend_config`` was not provided or
-    # ``ranking_blend_config.enabled is False`` (the silent
-    # byte-identical no-op). When non-``None``, the ``applied`` field
-    # tells whether the rerank actually fired and ``skip_reason`` names
-    # the gate when it did not.
-    ranking_blend_telemetry: RankingBlendTelemetry | None = None
-    # Per-candidate uncertainty re-rank audit. ``None`` when the rerank config is unset/disabled
-    # (the silent byte-identical path); otherwise an UncertaintyRerankTelemetry whose ``applied`` tells
-    # whether the rerank fired and ``skip_reason`` names the gate when it did not.
-    uncertainty_rerank_telemetry: UncertaintyRerankTelemetry | None = None
     #: Where the object this pick went for was seen, in BASE millimetres: the median of its mask's surface, the pixels
     #: behind a depth step left out, as ``Locator`` places an object. ``None`` when no candidate reached the arm, when
     #: the cell resolves no CAMERA to BASE, or when the mask saw no depth.
@@ -963,14 +868,12 @@ class _Call:
 class _RankedObject:
     """What the ranking of one look computed for one of its objects: the calculator's result, the height of the support
     it was computed against, BASE mm (``None`` when none was resolved), the cloud the generator was handed for it
-    (``None`` when it derived its own from the mask), and the call that computed it. ``complete`` is whether the result
-    is the calculator's full answer: ``False`` where SFE left its fine search for later (``support_footprint_fine``)."""
+    (``None`` when it derived its own from the mask), and the call that computed it."""
 
     result: GraspResult
     support_height_mm: float | None
     cloud_base_mm: "np.ndarray | None"
     call: "_Call | None" = None
-    complete: bool = True
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1070,7 +973,7 @@ class _BlockerChoice:
     freed: int
     fewer: int
     #: The blocker's next grasps the clearing may take where :attr:`grasp` is refused, each with the TCP pose that sets
-    #: the blocker down from it, in the calculator's order (``recovery.blocker_grasp_tries`` in all).
+    #: the blocker down from it, in the calculator's order (the cell's three tries in all).
     alternatives: "tuple[tuple[GraspPoint, Pose | None], ...]" = ()
     #: Where the others stand (BASE x, y) that free a grasp of the part together with this one, outside in: each taken
     #: away in turn, from a look taken again (the owner, 2026-10-15). Empty where this one frees a grasp alone.
@@ -1096,7 +999,6 @@ class _Judgement:
     look: _LookView
     result: "GraspResult | None"
     target_index: int | None
-    ordering: "OrderingDecision | None"
     target_cloud_base_mm: "np.ndarray | None"
     members: Mapping[str, int]
     member_looks: tuple[str, ...]
@@ -1126,8 +1028,7 @@ class _Judgement:
     #: the arm's live world reads no support surfaces.
     ranked: "_RankedObject | None" = None
     support_model: Any = None
-    #: Why this look's view of the part its grasp is on is weak (``BinPickingOrchestrator._weak_look``, the cell's
-    #: ``robot.grasping.weak_look_trigger``), ``""`` where it is not or nobody judged it: a weak look carries
+    #: Why this look's view of the part its grasp is on is weak (``BinPickingOrchestrator._weak_look``), ``""`` where it is not or nobody judged it: a weak look carries
     #: ``ACTIVE_PERCEPTION_RECOMMENDED`` among ``reasons``, so it is not ``good``.
     weak: str = ""
 
@@ -1166,14 +1067,14 @@ class LookedAround:
     takes is the last one there (the owner's check look, 2026-10-08).
 
     ``followed`` is whether the first look found the parts its task kept again with no detector
-    (``BinPickingOrchestrator.follow``, ``robot.grasping.follow_parts``), and ``follow_why`` what it came to, or why the
+    (``BinPickingOrchestrator.follow``), and ``follow_why`` what it came to, or why the
     detector grounded it; ``""`` where the pick was handed nothing to follow. ``looks_followed`` are the looks whose
     parts were found with no detector: that first look, and the later looks that segmented its parts by their projected
     boxes (``follow_looks``). A task builds what its next pick follows from the first look of ``views``.
 
     ``every_look`` is whether the pick drove every look, the early stop off (the console's "alle Posen",
-    ``BinPickingOrchestrator.every_look``); ``weak`` names each look whose view of the part was judged weak, and why
-    (``robot.grasping.weak_look_trigger``), in the order they were judged.
+    ``BinPickingOrchestrator.every_look``); ``weak`` names each look whose view of the part was judged weak, and why,
+    in the order they were judged.
     """
 
     visited: tuple[str, ...] = ()
@@ -1218,7 +1119,6 @@ class LookedAround:
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
-
 
 
 def _mean_winning_association_score(fused: "FusedSceneGeometry") -> float:
@@ -1354,6 +1254,13 @@ def _named_points_base(
     return tuple(named)
 
 
+#: The score a part's best grasp needs for a ranking to take it at once without computing the rest (the owner's "speed
+#: first", 2026-10-08; ``robot.grasping.good_part_score`` until 2026-10-17, the cell's value). The body's best grasp of
+#: a part scores 0.67 at the median on the replay bank (0.51 at the 10th percentile), and 0.6 takes as many parts at once
+#: (63 to 79 %) as 0.75 took when SFE's grasps were ranked beside them (68 %). At 0.75, 12 % of the parts of the owner's
+#: cell of 2026-10-14 were good, and a pick of 18 parts computed every one (45 s).
+GOOD_PART_SCORE = 0.6
+
 @dataclass
 class BinPickingOrchestrator:
     """Drive the perceive, grasp, execute loop with failure-aware retries.
@@ -1370,29 +1277,17 @@ class BinPickingOrchestrator:
         Source of :class:`PerceptionFrame` snapshots.
     max_attempts:
         Hard cap on the loop iterations.
-    dense_sampling:
-        Legacy bool surface forwarded to :meth:`GraspCalculator.compute`.
-        Recommended ``True`` for cluttered bins. Kept for backward
-        compatibility; new callers should use ``grasp_sampling_mode``.
-    grasp_sampling_mode:
-        Typed grasp sampling mode (:class:`GraspSamplingMode`, legacy
-        bool, string alias, or ``None``). When provided it overrides
-        ``dense_sampling``; otherwise the legacy bool drives behavior.
-        Default ``None`` resolves to ``AUTO`` so the calculator picks
-        between silhouette and dense sampling heuristically.
     """
 
     arm: RobotArm
     calculator: GraspCalculator
     perception: PerceptionSource
     max_attempts: int = 5
-    dense_sampling: bool = True
-    grasp_sampling_mode: GraspSamplingMode | bool | str | None = None
     standoff_mm: float = 80.0
     retreat_mm: float = 100.0
     gripper: Gripper | None = None
     policy: GraspExecutionPolicy | None = None
-    #: How the cell's hand and camera naturally stand (``robot.natural_closing_axis``, the owner's decision of
+    #: How the cell's hand and camera naturally stand (``robot.motion.natural_closing_axis``, the owner's decision of
     #: 2026-09-30), set from the robot config by ``RuntimePickService.from_robot_config``: every grasp this loop ranks is
     #: turned, of its two equivalent wrist turns, to the one whose tool +X lies nearer it (:meth:`_closing_along`), none
     #: left out or tilted. A policy's ``closing_axis`` takes precedence, and beside its ``align_closing_to_base_x`` none
@@ -1408,50 +1303,11 @@ class BinPickingOrchestrator:
     # calculator chooses, which is camera unless the constructor was
     # configured with a transform.
     frame_resolver: "FrameResolver | None" = None
-    # Optional clutter-aware target selector. When ``None`` or when
-    # ``target_ordering.enabled`` is False the orchestrator takes the
-    # plain ``argmax(local_score)`` path. When enabled the
-    # per-segmentation winners are passed through :func:`select_target`
-    # and the chosen candidate plus decision telemetry are returned.
-    target_ordering: TargetOrderingConfig | None = None
-    # Shadow-mode success-probability model carrier. When ``None`` (the
-    # default) the orchestrator behaves byte-identically: no
-    # ``GraspPoint`` metadata is mutated and
-    # ``PickReport.shadow_success_telemetry`` stays ``None``. When set,
-    # the chosen result's candidates are annotated with calibrated
-    # probabilities, read-only with respect to ranking, and the winner's
-    # telemetry is surfaced on the report for downstream replay tooling.
-    shadow_success_context: ShadowSuccessContext | None = None
-    # Bounded probability-blend reranker config. ``None`` or
-    # ``enabled=False`` is the silent byte-identical no-op:
-    # :func:`maybe_blend_rerank_candidates` returns the original tuple
-    # and ``None`` telemetry, and the
-    # ``PickReport.ranking_blend_telemetry`` field stays ``None``. When
-    # enabled, the reranker fires only in the dense mode
-    # (``dense_clutter``) under a non-shadow lifecycle phase and never
-    # mutates ``GraspPoint.score``.
-    ranking_blend_config: RankingBlendConfig | None = None
-    # Per-candidate uncertainty re-rank carrier. ``None`` (default) is a silent byte-identical
-    # no-op. When set, the orchestrator re-sorts candidates by ``score - weight*corridor_risk`` after the
-    # blend (dense-only, non-shadow, weight>0, every candidate carrying a corridor-risk signal). A
-    # producer must run: either ``GraspCalculator.corridor_risk_per_candidate`` set at construction,
-    # or a ``corridor_config`` forwarded to ``compute()``, which this orchestrator does whenever its
-    # own ``corridor_config`` is set. With neither, no candidate carries
-    # ``corridor_blockage_confidence`` and the rerank no-ops with ``skip_reason=missing_uncertainty``.
-    uncertainty_rerank_config: UncertaintyRerankConfig | None = None
-    # Resolved grasp-mode label (``"easy"``, ``"auto"`` or ``"dense_clutter"``),
-    # set by ``from_robot_config``. The mode-gated
-    # approach validation reads it (``_approach_path_modes``). Empty string
-    # means the orchestrator was constructed without mode awareness, and then
-    # that validation never runs; this preserves byte-identical behavior for
-    # every caller that constructs the orchestrator directly instead of via
-    # ``from_robot_config``.
-    mode_label: str = ""
     # Optional hard label-target for a prompt-driven dense pick. ``None`` (default) is
-    # byte-identical: every segmentation is a candidate target (legacy argmax / ordering). When set to an
+    # byte-identical: every segmentation is a candidate target (the best score wins). When set to an
     # object label, only the matching segmentation is considered as the executable target; the other
-    # segmentations still feed ``other_object_masks`` (the neighbour clutter the DENSE_CLUTTER sampler +
-    # corridor-risk + approach-validation consume), so the prompt picks that object and never a
+    # segmentations still feed ``other_object_masks`` (the neighbour clutter the DENSE_CLUTTER sampler
+    # consumes), so the prompt picks that object and never a
     # distractor. If the target's grasp fails the pick refuses (an honest no-pick, not a wrong-object pick).
     target_label: str | None = None
     #: The labels a segmentation may carry to be a pick target, any of them: a sort (the owner, 2026-10-09: "Grüne Teile
@@ -1480,51 +1336,29 @@ class BinPickingOrchestrator:
     # ``target_label`` is set (so the target's fused cloud is never applied to a non-target segmentation).
     external_target_geometry_base_mm: "np.ndarray | None" = None
 
-    # Multi-camera geometry fusion (``grasping.fusion.geometry``). The generalisation of the field
-    # above: instead of one externally-supplied cloud for one labelled target, the rig is observed
-    # every pick and every candidate object gets the surface every camera that can identify it sees.
-    # That is what a fixed multi-camera cell can do and a single view cannot: a candidate is
-    # accepted on its closing axis, the closing axis comes from the silhouette, and one view sees
-    # one side while an antipodal grasp needs two.
+    # Multi-camera fusion (the owner, 2026-10-16: no switch). The generalisation of the field above:
+    # instead of one externally-supplied cloud for one labelled target, the rig is observed every pick
+    # and every candidate object gets the surface every camera that can identify it sees. That is what
+    # a fixed multi-camera cell can do and a single view cannot: a candidate is accepted on its closing
+    # axis, the closing axis comes from the silhouette, and one view sees one side while an antipodal
+    # grasp needs two.
     #
-    # All three ``None`` (default) means the keys are never added and the single-view path is
-    # byte-identical. ``multi_camera_perception`` supplies the other cameras' frames,
-    # ``camera_frame_resolvers`` maps each camera id to its own CAMERA->BASE (built for each camera
-    # ``grasping.fusion.cameras`` fuses, from the calibration declared on its rig,
-    # ``camera.cameras.rigs[<id>].extrinsics``, one persisted calibration per camera), and
-    # ``fusion_geometry_config`` carries the metric, the match threshold and the missing-camera
-    # posture.
+    # Both ``None`` (default) is a cell that fuses no camera, and the single-view path is
+    # byte-identical. ``camera_frame_resolvers`` maps each fused camera id to its own CAMERA->BASE
+    # (built for every camera the camera section fuses, ``camera_fusion.fused_cameras``, from the
+    # calibration declared on its rig, ``camera.cameras.rigs[<id>].extrinsics``), and
+    # ``multi_camera_perception`` supplies the other cameras' frames.
     multi_camera_perception: "MultiCameraPerceptionSource | None" = None
     #: The cameras a real cell opened for its live planner world alone, given back on teardown
     #: beside `perception` and `multi_camera_perception`. `None` on every other cell.
     planner_world_cameras: "object | None" = None
     camera_frame_resolvers: "dict[str, FrameResolver] | None" = None
-    #: Which cameras the config asked for, which is not the same as which ones built.
-    #:
-    #: `on_camera_unavailable: refuse` needs an expectation that a camera failing to build cannot
-    #: erase. `set(camera_frame_resolvers)` is not one: that map is `{}` whenever `fusion.enabled`
-    #: is false, or the `cameras` map is empty, or `grasping_cfg` is None, and in each of those
-    #: cases `expected` is empty, `missing` is empty, and the refusal cannot fire. An expectation
-    #: derived from what succeeded cannot notice what did not. The schema says what that costs, in
-    #: the option's own description: "a cell must never fall back to single-view silently, which is
-    #: the whole failure this option exists to make visible."
-    #:
-    #: Empty means "nothing was configured", not "nothing arrived", and the two are different
-    #: answers. A cell with no fusion block configured is single-view by design and must not be
-    #: refused; a cell that named three cameras and got two must be.
-    #: One calculator per camera, for a cell whose cameras may each introduce an object. Empty is
-    #: the normal case and means every object is computed by `calculator`, which is what happened
-    #: before this existed. A calculator is bound to one camera's intrinsics at construction, so
-    #: this map is what keeps a promoted object out of the wrong lens.
-    camera_calculators: "dict[str, Any] | None" = None
-    configured_camera_ids: "tuple[str, ...]" = ()
     #: The camera `perception` streams from, as the rest of the rig names it. Only a label: nothing
     #: is looked up by it, and an empty string is the honest value for a cell whose camera has no id
     #: in `camera.cameras.rigs` (a simulator runner building its own source, mostly). It exists so
     #: that a scene object can say which camera it was seen by without that being inferred from a
     #: position in a list, which is the coupling this change removes.
     primary_camera_id: str = ""
-    fusion_geometry_config: "FusionGeometryConfig | None" = None
 
     # What the gripper is, and what the parts stand on. Both are inputs ``compute()`` accepts and
     # this loop must supply. Unsupplied, the calculator filters candidates against a default gripper
@@ -1533,14 +1367,13 @@ class BinPickingOrchestrator:
     # 2128 telemetry lines while an independent reference rejected 37 % of the same candidates for
     # driving a finger under the support.
     #
-    # ``gripper_model`` comes from ``grasping.gripper_geometry`` via ``build_gripper_geometry``.
-    # ``support_config`` comes from ``grasping.support``; the plane is resolved per pick, because the
-    # declared height cannot know that a part is standing on another part and the target's own lowest
-    # point can (measured: the declared height is too low on 100 % of stacked parts, the footprint on
-    # 0 % of all 1073). Both ``None`` (default) means the keys are never added and the path is
-    # byte-identical.
+    # ``gripper_model`` is the named hand's envelope from its registry file (``gripper_model.jaw_envelope``).
+    # ``declared_support`` is the cell's bench and bin (``DeclaredSupport.of``); the plane is resolved per pick, because
+    # the declared height cannot know that a part is standing on another part and the target's own lowest point can
+    # (measured: the declared height is too low on 100 % of stacked parts, the footprint on 0 % of all 1073). Both
+    # ``None`` (default) means the keys are never added and the path is byte-identical.
     gripper_model: "GripperGeometryStrategy | None" = None
-    support_config: "GraspingSupportConfig | None" = None
+    declared_support: "DeclaredSupport | None" = None
     # ``deep_ranker_context`` comes from ``grasping.deep_ranker`` via ``apply_orchestrator_overlays``.
     # None (default) means nothing is scored and the path is byte-identical. Set means every
     # attempt's candidates are scored by the learned ranker and the result is stamped into
@@ -1551,52 +1384,6 @@ class BinPickingOrchestrator:
     # A ranker scored against an analytic verdict rather than against physics earns the right to be
     # watched on real picks and nothing more.
     deep_ranker_context: "DeepRankerContext | None" = None
-    # ``corridor_config`` comes from ``grasping.occlusion`` via ``apply_orchestrator_overlays``.
-    # None (default) is not forwarded, so the calculator's per-candidate corridor producer keeps its
-    # own geometry. Set forwards the operator's corridor geometry into every compute() call this
-    # orchestrator makes, which is the point: unforwarded, the block's values reach the telemetry
-    # snapshot and stop there.
-    corridor_config: "CorridorAnalysisConfig | None" = None
-    # Optional latency tracker, set per pick by the service. The single ranking recording site, and
-    # the single fusion one (`_fused_scene`).
-    #
-    # The span belongs on the one call every path shares: the default open-loop pick and the decision
-    # path both reach it (the two-scan closed-loop path did until it left on 2026-09-29), while a wrap
-    # further out covers only some of them
-    # and leaves the open-loop pick with no ranking span at all. Timing the open-loop path from
-    # outside is not an option either: that path calls `runtime.run_attempt()`, whose elapsed time
-    # includes perception and arm motion, and reporting that against an 80 ms ranking SLO would
-    # breach instantly and mean nothing. A second wrap around a caller nests a span inside a span
-    # and double-counts. The fusion span sits inside the ranking one by the same rule: the geometry
-    # fusion runs inside the ranking of a frame, so the ranking span has always included it.
-    latency_tracker: "LatencyTracker | None" = field(default=None, repr=False)
-    # ``feasibility_*`` come from ``grasping.feasibility`` via ``apply_orchestrator_overlays``.
-    # None (default) is not forwarded, so the calculator keeps its constructor values, i.e. off.
-    # Enabling this is expected to cost picks. calculator.py carries an on-box measurement: the
-    # ik_quality sub-signal took the UR5e overhead pick 10/10 -> 0/10 at every weight, because the
-    # good top-down grasp is itself near-singular, so "demote high condition number" demotes
-    # precisely the grasp the pick needs. Wired so the claim can be re-measured through config; it
-    # stays default-off regardless of how the number comes out.
-    feasibility_config: "FeasibilityScoreConfig | None" = None
-    feasibility_weight: float | None = None
-
-    # Optional swept-volume approach/retreat validator. ``None`` (default) is a strict no-op
-    # (byte-identical for single-object and for every direct construction). When set and the
-    # resolved mode is in ``_approach_path_modes`` (dense-only, set by builders), the orchestrator
-    # validates each ranked candidate's approach/retreat sweep against the scene neighbour cloud and
-    # executes the first sweep-clear candidate (fall-back), refusing with APPROACH_PATH_BLOCKED if all
-    # are blocked. The calculator only checks the final grasp pose; this adds the intermediate sweep.
-    approach_path_policy: "ApproachPathPolicy | None" = None
-    _approach_path_modes: frozenset[str] = field(default_factory=frozenset, repr=False)
-
-    # Optional :class:`ShadowRouter` carrying a ranking-shadow policy.
-    # ``None`` is the silent byte-identical default. When set and the
-    # router has a ``ranking_policy`` attached, the orchestrator runs the
-    # ranker after the blend block and stashes the typed telemetry on
-    # :attr:`_ranking_telemetry`. The ranker never mutates
-    # ``best_result``, ``GraspPoint.score``, or any other field that
-    # influences execution.
-    shadow_router: "ShadowRouter | None" = None
 
     #: Where a camera on the wrist looks from before the first attempt, in order: each a
     #: :class:`~src.robot.core.JointPositions` or ``"home"`` (:mod:`src.robot.execution.looks`). Set per pick by
@@ -1616,15 +1403,13 @@ class BinPickingOrchestrator:
     both_faces: bool = False
     #: What lets this pick push its failed part (``nudge_target``, the owner's rules of 2026-09-29), handed per pick by
     #: the service from its recovery policy and taken back after it: ``None``, the default, and nothing is pushed. Read
-    #: only on a wrist camera's pick, after its looks judged the part: every candidate collided (``ALL_COLLIDED``), or,
-    #: where approach validation runs, every approach sweep was blocked, and a neighbour stands within 25 mm of the
-    #: part in what the looks saw. See :meth:`_push_the_failed_part`.
+    #: only on a wrist camera's pick, after its looks judged the part: every candidate collided (``ALL_COLLIDED``), and a
+    #: neighbour stands within 25 mm of the part in what the looks saw. See :meth:`_push_the_failed_part`.
     push_gate: "PushGate | None" = None
-    #: The parts ``next_target`` skips (``ExclusionZones``), the campaign's, handed per pick by the service: a
-    #: segmentation of the same label whose centre stands in a zone is not a target, next to the label gate, and a pick
-    #: that sees only such parts stops with the zones' sentence rather than try one of them again. A region a task keeps
-    #: out (``ExclusionRegion``: the bin it places into, the circle about its drop) applies the same way, to every label
-    #: where it names none, the empty one included. ``None``: none.
+    #: The regions the campaign's task keeps out (``ExclusionZones``: the bin it places into, the circle about its drop),
+    #: handed per pick by the service: a segmentation whose centre stands in one that applies to its label (every label
+    #: where it names none, the empty one included) is not a target, next to the label gate, and a pick that sees only
+    #: such parts stops with the regions' sentence. ``None``: none.
     exclusion_zones: "ExclusionZones | None" = None
     #: Whether a wrist pick handed looks may generate its one view once they are used up (:meth:`_generated_view`, the
     #: last resort). ``False`` for a pick its task switched multi-view off for (the owner's Q11, 2026-09-30: the first
@@ -1645,27 +1430,12 @@ class BinPickingOrchestrator:
     #: one without computing the rest (the owner's "speed first", 2026-10-08; :meth:`_lazy_choice`): a part whose result
     #: is full, carries none of the rescan reasons and scores :attr:`accept_score` or more, and with :attr:`both_faces`
     #: shows both contact faces. None good, the best part is taken. A later look of a wrist pick whose part is kept
-    #: computes that part alone. ``False``, the default, computes every part and takes the best, as before; set from
-    #: ``robot.grasping.first_good_part`` by ``RuntimePickService.from_robot_config``. Never beside the clutter
-    #: selector (``target_ordering``), which ranks every part's result.
+    #: computes that part alone. On in every cell (``RuntimePickService.from_robot_config``, since 2026-10-17); ``False``,
+    #: the default of a loop built by hand, computes every part and takes the best, as before.
     lazy_objects: bool = False
-    #: The score a part's best grasp needs for :attr:`lazy_objects` to take it at once
-    #: (``robot.grasping.good_part_score``): the body's best grasp of a part scores about 0.67 on the replay bank.
-    accept_score: float = 0.6
-    #: Whether SFE's fine search waits while another part may have a full result (``robot.grasping.fine_pass_waits``):
-    #: a part is computed without it, except the last where no part has a full result yet, and a part whose coarse grid
-    #: found few grasps waits; it gets the fine search only where no part has a full result. ``False``, the default,
-    #: computes every part in full, as before. Only a calculator that has the switch (``GraspCalculator.sfe_fine_pass``)
-    #: waits; any other computes in full.
-    fine_search_waits: bool = False
-    #: The cell's warm pool of SFE workers (``src/robot/grasping/workers.py``, ``robot.grasping.workers``), handed to the
-    #: calculator with every ranking (``compute(sfe_workers=...)``): SFE's units run on it with the same answer, and a
-    #: part it cannot answer for is searched in this process. Set where the cell is built
-    #: (``autonomous_grasp.cells.build_real_cell``); ``None``, the default, hands nothing, and the calculator searches in
-    #: this process as before.
-    sfe_workers: Any = None
-    #: The parts a task's last pick kept (``src/robot/perception/kept_scene.KeptScene``,
-    #: ``robot.grasping.follow_parts``), handed per pick by the service and taken back after it: the first look of this
+    #: The score a part's best grasp needs for :attr:`lazy_objects` to take it at once (:data:`GOOD_PART_SCORE`).
+    accept_score: float = GOOD_PART_SCORE
+    #: The parts a task's last pick kept (``src/robot/perception/kept_scene.KeptScene``), handed per pick by the service and taken back after it: the first look of this
     #: pick's first look sequence hands the camera source a follow, which finds them again with no detector where every
     #: check passes and grounds the frame as before where any does not (the owner, 2026-10-09: all or nothing per
     #: frame). Taken by that look, so no later look and no pick of the recovery loop follows it. A source that does
@@ -1677,14 +1447,13 @@ class BinPickingOrchestrator:
     #: and rank the part they keep first. Handed per pick by the service, as :attr:`follow` is. ``False``, the default:
     #: every look is grounded, and ranked, as before.
     follow_looks: bool = False
-    #: The cell's ``robot.grasping.follow_parts`` block where it follows its parts (``enabled``), ``None`` where it does
-    #: not, set at the build (``builders.apply_orchestrator_overlays``): what a task reads to decide whether it follows
-    #: its parts from pick to pick, so the switch reaches the run the built cell runs. ``UNSET``, the default, where no
-    #: build set it (an orchestrator built by hand): the task then reads its tree, as before.
-    follow_parts: Any = UNSET
+    #: Whether a task run on this loop follows its parts from pick to pick (``src/robot/perception/kept_scene.py``): on
+    #: in every cell built from a tree (``builders.apply_orchestrator_overlays``, since 2026-10-17); ``False``, the
+    #: default of a loop built by hand, grounds every pick, as before.
+    follow_parts: bool = False
     #: Whether a frame carries the parts beside the ones its detector named, read off its depth
-    #: (``robot.grasping.name_neighbours``, :meth:`_with_the_parts_beside`), set at the build
-    #: (``builders.apply_orchestrator_overlays``). ``False``, the default: no part beside is read, as before.
+    #: (:meth:`_with_the_parts_beside`): on in every cell built from a tree (``builders.apply_orchestrator_overlays``);
+    #: ``False``, the default of a loop built by hand: no part beside is read, as before.
     name_neighbours: bool = False
     #: Whether a wrist pick handed looks drives every one of them (the console's "alle Posen", the owner, 2026-10-08
     #: night): the looking does not stop at the first look whose grasp is safe enough, and the pick goes on with the
@@ -1693,17 +1462,19 @@ class BinPickingOrchestrator:
     #: it, as ``looks`` are; a fixed camera never looks around and ignores it.
     every_look: bool = False
     #: Whether a look whose view of its part is weak is not safe to stop looking at (the owner's automatic trigger,
-    #: ``robot.grasping.weak_look_trigger``; :meth:`_weak_look`): its judgement carries ``ACTIVE_PERCEPTION_RECOMMENDED``,
+    #: :meth:`_weak_look`): its judgement carries ``ACTIVE_PERCEPTION_RECOMMENDED``,
     #: so the pick goes on to its next look and, once they are used up, to the one generated view. It only adds looks:
     #: the grasp the looks end on is gripped as before. Judged on a wrist pick handed looks only. Set where the cell is
-    #: built (``AutonomousGraspService.from_robot_config``); ``False``, the default: no look is judged weak.
+    #: built (``AutonomousGraspService.from_robot_config``, every cell since 2026-10-17); ``False``, the default of a loop
+    #: built by hand: no look is judged weak.
     weak_look: bool = False
     #: Whether the regions a task keeps out of its picks (its bin's footprint, the circles about its drops: every
     #: ``ExclusionRegion`` of :attr:`exclusion_zones` that keeps out every label) are painted out of the copy of each
-    #: frame the detector reads (``robot.grasping.hide_own_places``; :meth:`_hidden`), so it boxes none of the parts
+    #: frame the detector reads (:meth:`_hidden`), so it boxes none of the parts
     #: already placed there; the segmenter, the depth, the colour check and the planner world read the real frame. A
     #: camera source that does not say it can (``hides_places``) is handed nothing, said once. Set where the cell is
-    #: built (``AutonomousGraspService.from_robot_config``); ``False``, the default: the detector reads the real frame.
+    #: built (``AutonomousGraspService.from_robot_config``, every cell since 2026-10-17); ``False``, the default of a loop
+    #: built by hand: the detector reads the real frame.
     hide_own_places: bool = False
 
     # ---- per pick, while a wrist pick looks around (``look_around``) ----
@@ -1752,9 +1523,9 @@ class BinPickingOrchestrator:
     _holding: bool = field(default=False, init=False, repr=False)
     #: What every push this run considered came to, in order (:attr:`pushes`); emptied as each run begins.
     _pushes: "list[PickPush]" = field(default_factory=list, init=False, repr=False)
-    #: The part the last run failed on (its label, BASE centre and footprint), what ``next_target`` skips; ``None`` where
-    #: the run succeeded or failed on no part. Reset as each run begins, so a run never reports the one before it.
-    failed_part: "FailedPart | None" = field(default=None, init=False, repr=False)
+    #: Where the part the last run failed on stood (BASE mm), what an exhausted run reports; ``None`` where the run
+    #: succeeded or failed on no part. Reset as each run begins, so a run never reports the one before it.
+    _failed_centre_mm: "tuple[float, float, float] | None" = field(default=None, init=False, repr=False)
     #: Every part a push of this run moved: the points it swept, from where it stood to where it was pushed, and the BASE
     #: XY it was predicted to land at. A later offer of the run whose target stands within ``SAME_PART_RADIUS_MM`` of
     #: that landing is the pushed part, and keeps those points out of the planner world too, since the frames the world
@@ -1784,9 +1555,6 @@ class BinPickingOrchestrator:
     #: The wrist cameras' housing the arm carries (:meth:`_wrist_housing`), read once.
     _wrist_housing_read: bool = field(default=False, init=False, repr=False)
     _wrist_housing_cached: "WristHousing | None" = field(default=None, init=False, repr=False)
-    _resolved_sampling_mode: GraspSamplingMode = field(
-        default=GraspSamplingMode.AUTO, init=False, repr=False
-    )
     # ---- live progress + cancellation (both default-off, both byte-identical when unset) ----
     # A caller that wants to watch a pick attaches ``on_progress``; with it unset every emit is one
     # ``is None`` test and no payload is built. Without it a server subscribing to a live pick
@@ -1796,9 +1564,8 @@ class BinPickingOrchestrator:
     # interrupts a motion already in flight, because there is no safe way to do that from here and the
     # physical stop is the one that can. Unset leaves the loop a bare ``for``.
     should_cancel: "ShouldCancel | None" = None
-    # Per-pick CAMERA->BASE transform for the winning frame, stashed by
-    # _best_result_over_segmentations so _execute can map the camera-frame neighbour cloud into the
-    # candidate (BASE) frame before the swept-volume check. Reset per pick.
+    # Per-pick CAMERA->BASE transform for the winning frame, stashed by _best_result_over_segmentations: the planner
+    # world places the target by it. Reset per pick.
     _pending_camera_to_base: "Transform | None" = field(default=None, init=False, repr=False)
     #: The keep-out scope of the attempt that is running: the target held out of the arm's live
     #: world from the offer until the pick ends or the next frame's offer replaces it. Opened fresh
@@ -1808,17 +1575,17 @@ class BinPickingOrchestrator:
     #: per run.
     _keep_out_unplaced_said: bool = field(default=False, init=False, repr=False)
     # What the multi-camera geometry fusion actually did this frame (cameras that contributed,
-    # objects fused). Empty while fusion is off, so the telemetry stays byte-identical.
+    # objects fused). Empty on a cell that fuses no camera, so its telemetry stays byte-identical.
     _fusion_geometry_telemetry: dict = field(default_factory=dict, init=False, repr=False)
     # Where the table ended up for the object being evaluated, and whether that height was
     # declared or observed. `SupportResolution.as_telemetry` produced exactly this and had no
     # caller in the tree. Kept on the orchestrator rather than pushed into the record, because
-    # `GraspAttemptRecord` is a frozen contract with catalog, KPI and RL consumers and a plane
+    # `GraspAttemptRecord` is a frozen contract with catalog and KPI consumers and a plane
     # height is not worth opening it; the log line at the resolution site is what an operator
     # needs, and a later change can join this.
     _support_telemetry: dict = field(default_factory=dict, init=False, repr=False)
-    #: The other cameras' views from this pick's `_fused_scene`, so the scene object list is built
-    #: from the same observation rather than from a second one taken moments later.
+    #: The other cameras' views from this pick's `_fused_scene`, so they vouch for the way in (`_scene_views`) from
+    #: the observation they were fused from rather than from a second one taken moments later.
     _last_other_views: tuple = field(default=(), init=False, repr=False)
     #: Per ranked frame: the cameras behind each object's fused cloud, by scene index, for the objects
     #: whose fused cloud reached the generator (`PickAttempt.fused_views`), and how many objects of the
@@ -1845,68 +1612,8 @@ class BinPickingOrchestrator:
     _container_wall_cache: "tuple[tuple, np.ndarray] | None" = field(
         default=None, init=False, repr=False
     )
-    # Per-pick ranking-shadow telemetry. Reset to ``None`` at the top of
-    # :meth:`run`; populated at most once (on the attempt that reaches
-    # the blend seam). Read by ``AutonomousGraspService`` post-pick and
-    # never fed back into the deterministic decision path.
-    _ranking_telemetry: "RankingShadowTelemetry | None" = field(
-        default=None, init=False, repr=False
-    )
-    # Per-pick per-candidate log. ``_candidate_log`` = the top-N candidates' 15-key feature
-    # rows + a tail aggregate; ``_behavior_candidate_id`` = the executed (rank-0) candidate id. Persisted into
-    # ``record.extra`` (rl_candidate_features / rl_behavior_candidate_id) by ``attach_shadow_router`` so the
-    # offline RL + OPE/promotion can train + recover the behavior action from real logged picks. Reset
-    # per pick; populated at most once in :meth:`_maybe_run_ranking_shadow`, which is shadow-gated, so
-    # the default is off and byte-identical. Never fed back into the deterministic decision path.
-    _candidate_log: "list[dict[str, object]] | None" = field(
-        default=None, init=False, repr=False
-    )
-    _behavior_candidate_id: "str | None" = field(default=None, init=False, repr=False)
-    # Per-pick sequencing-shadow accumulators. ``_sequencing_current_attempts``
-    # is a stable reference to the live attempts list; ``_sequencing_states``
-    # collects the per-failure :class:`SequencingAttemptState` rows; and
-    # ``_sequencing_telemetry`` carries the finalised typed telemetry for the
-    # post-pick reader. All three are reset/populated inside the pick loop.
-    _sequencing_current_attempts: list[PickAttempt] = field(
-        default_factory=list, init=False, repr=False
-    )
-    _sequencing_states: "list[SequencingAttemptState]" = field(
-        default_factory=list, init=False, repr=False
-    )
-    _sequencing_telemetry: "SequencingShadowTelemetry | None" = field(
-        default=None, init=False, repr=False
-    )
-    # Per-pick perception-budget + recovery shadow telemetry. Reset at the top of the
-    # pick and populated at most once by _finalize_perception/recovery (logging-only carriers; never fed back into the
-    # deterministic perceive, score, decide, commit, execute path). Read post-pick by attach_shadow_router.
-    _perception_telemetry: "PerceptionShadowTelemetry | None" = field(
-        default=None, init=False, repr=False
-    )
-    _recovery_telemetry: "RecoveryShadowTelemetry | None" = field(
-        default=None, init=False, repr=False
-    )
-    # The stateless shadow-telemetry producer + finalizer logic. Owns no
-    # per-pick state: the slots above stay here; the aggregator reads loop state via getter-closures
-    # and returns telemetry, and the orchestrator's thin delegators assign their own slots
-    # (return-and-assign). Built in __post_init__.
-    _shadow: "_ShadowTelemetryAggregator" = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        # ---- resolve grasp sampling mode once per orchestrator ----
-        # Precedence: explicit ``grasp_sampling_mode`` wins. When only
-        # ``dense_sampling`` is provided the legacy bool meaning holds
-        # (``True`` selects DENSE_CLUTTER, ``False`` SINGLE_OBJECT) so old
-        # code does not change behavior. The resolved enum is what reaches
-        # the calculator at every attempt.
-        if self.grasp_sampling_mode is not None:
-            self._resolved_sampling_mode = resolve_grasp_sampling_mode(
-                self.grasp_sampling_mode
-            )
-        else:
-            self._resolved_sampling_mode = resolve_grasp_sampling_mode(
-                self.dense_sampling
-            )
-
         # Build a default policy when none is provided. ``standoff_mm`` and
         # ``retreat_mm`` are forwarded so a caller that sets them on the
         # orchestrator gets them on the policy.
@@ -1918,19 +1625,11 @@ class BinPickingOrchestrator:
                 retreat_mm=self.retreat_mm,
             )
 
-        # The shadow-telemetry aggregator (logic-only; reads loop state via getter-closures-over-self
-        # so it always sees end-of-pick values: _sequencing_current_attempts is rebound per pick).
-        self._shadow = _ShadowTelemetryAggregator(
-            max_attempts_getter=lambda: self.max_attempts,
-            shadow_router_getter=lambda: self.shadow_router,
-            resolved_mode_getter=lambda: self._resolved_sampling_mode,
-        )
-
     def _resolve_support(self, seg, frame, camera_to_base, looks_cloud=None, support_model=None):  # noqa: ANN001, ANN202
         """The support plane for this pick: the declared height, raised by what the cameras saw.
 
         Where the arm's live world finds what the parts stand on (``support_model``, contract 7 of the cell fixes), the
-        declared height handed on is the higher of the config's and the model's reading under the part's foot
+        declared height handed on is the higher of the bench's and the model's reading under the part's foot
         (``SupportModel.height_under``): a part on the owner's 55 mm mat is planned on the mat, not on the bench under it,
         and a mat that is gone tomorrow is gone from the plan tomorrow. The target's own cloud may raise it further, as
         before.
@@ -1941,9 +1640,9 @@ class BinPickingOrchestrator:
         target cloud is used, which is still correct and only noisier.
 
         "Fused" here means `external_target_geometry_base_mm`, the cloud a simulator runner hands in
-        for one labelled target, and not the multi-camera fusion under `grasping.fusion.geometry`
+        for one labelled target, and not the multi-camera fusion
         that a real cell runs. The two are different seams and this one has never seen the other's
-        output, so a cell with two calibrated cameras refines its support plane from a single view. ``support_config`` unset returns ``None``, the
+        output, so a cell with two calibrated cameras refines its support plane from a single view. ``declared_support`` unset returns ``None``, the
         key is never added, and the path is byte-identical.
 
         The one exception is a wrist pick's looks: ``looks_cloud`` is the target's cloud fused over two or more views
@@ -1952,23 +1651,22 @@ class BinPickingOrchestrator:
         the part besides, so the lowest point it reaches is the lowest any of them saw: one look that lost the foot of
         the part behind a neighbour no longer puts the table under what it could see.
         """
-        if self.support_config is None:
+        if self.declared_support is None:
             return None
         from src.robot.grasping.collision import resolve_support_plane  # noqa: PLC0415
 
-        cfg = self.support_config
+        cfg = self.declared_support
         clouds: list = []
-        if cfg.refine_from_target:
-            if self.external_target_geometry_base_mm is not None and self.target_label is not None:
-                clouds.append(self.external_target_geometry_base_mm)
-            elif looks_cloud is not None and self._spans_the_support(looks_cloud, "the looks' fused"):
-                clouds.append(looks_cloud)
-            elif camera_to_base is not None:
-                cloud = self._target_cloud_base_mm(seg, frame, camera_to_base)
-                if cloud is not None:
-                    clouds.append(cloud)
+        if self.external_target_geometry_base_mm is not None and self.target_label is not None:
+            clouds.append(self.external_target_geometry_base_mm)
+        elif looks_cloud is not None and self._spans_the_support(looks_cloud, "the looks' fused"):
+            clouds.append(looks_cloud)
+        elif camera_to_base is not None:
+            cloud = self._target_cloud_base_mm(seg, frame, camera_to_base)
+            if cloud is not None:
+                clouds.append(cloud)
         declared = float(cfg.height_mm)
-        floor = cfg.container.floor_height_mm
+        floor = cfg.floor_mm
         under = self._support_under_the_foot(seg, frame, camera_to_base, looks_cloud, support_model)
         if under is not None:
             stands = float(floor) if floor is not None else declared
@@ -1983,9 +1681,7 @@ class BinPickingOrchestrator:
         return resolve_support_plane(
             declared_height_mm=declared,
             container_floor_mm=floor,
-            normal=cfg.normal,
             target_clouds_base_mm=clouds or None,
-            refine_from_target=cfg.refine_from_target,
         )
 
     def _support_under_the_foot(  # noqa: ANN001
@@ -2098,7 +1794,7 @@ class BinPickingOrchestrator:
           one is how a camera-frame value reaches a BASE-tagged consumer.
 
         Both matter here more than anywhere else: the caller feeds this cloud's lowest point to
-        ``resolve_support_plane`` under ``refine_from_target``, so a camera-frame slip does not
+        ``resolve_support_plane``, so a camera-frame slip does not
         produce a wrong number, it produces a depth where a height belongs: measured on the
         multiview gate as a support plane at -311.11 mm (the wrist-camera standoff) against a table
         at 0, which rejected 12 of 12 candidates. So: accept either shape explicitly, and say so
@@ -2134,7 +1830,7 @@ class BinPickingOrchestrator:
         # Vertical extent is the cheap, honest test for whether the support was observed. It is
         # measured along the support normal rather than along z, so a tilted tray works the same
         # way.
-        # And therefore it is measured in BASE, after the transform. `support_config.normal` is a
+        # And therefore it is measured in BASE, after the transform. The support's normal is a
         # BASE vector and this cloud arrives in CAMERA, so the check used to project base-frame
         # coordinates onto a camera-frame axis: it was reading the camera's own depth span and
         # calling it height. Harmless while the producer flattened the depth, because the span was
@@ -2157,12 +1853,12 @@ class BinPickingOrchestrator:
     def _spans_the_support(self, base_points: np.ndarray, which: str) -> bool:
         """Whether a BASE target cloud reaches far enough along the support normal to have seen what it stands on.
 
-        :data:`_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM` along ``support_config.normal``, the gate
+        :data:`_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM` along the support's normal, the gate
         :meth:`_target_cloud_base_mm` sets out; ``which`` names the cloud in the line that says it did not.
         """
-        if self.support_config is None:
+        if self.declared_support is None:
             return True
-        normal = np.asarray(self.support_config.normal, dtype=float).reshape(3)
+        normal = np.asarray(self.declared_support.normal, dtype=float).reshape(3)
         length = float(np.linalg.norm(normal))
         points = np.asarray(base_points, dtype=float).reshape(-1, 3)
         if length <= 1e-12 or not points.size:
@@ -2213,7 +1909,7 @@ class BinPickingOrchestrator:
             return None
         chosen_object = scene[target_index]
         surface_depth = getattr(frame, "surface_depth_map", None)
-        depth = chosen_object.depth_map if chosen_object.promoted or surface_depth is None else surface_depth
+        depth = chosen_object.depth_map if surface_depth is None else surface_depth
         try:
             mask = np.asarray(chosen_object.segmentation.mask).astype(bool)
             surface = mask & ~pixels_behind_depth_steps(mask, depth)
@@ -2576,8 +2272,8 @@ class BinPickingOrchestrator:
         # alone.
         self._pinned_members = judged.members if pinned and judged is not None else None
         try:
-            result, index, ordering = self._best_result_over_segmentations(frame)
-            judgement = self._judge(view, result, index, ordering, judged)
+            result, index = self._best_result_over_segmentations(frame)
+            judgement = self._judge(view, result, index, judged)
         finally:
             self._current_look = None
             self._pinned_members = None
@@ -2615,7 +2311,7 @@ class BinPickingOrchestrator:
 
     def _with_the_parts_beside(self, frame: PerceptionFrame) -> PerceptionFrame:
         """``frame`` with the parts beside the ones its detector named, read off its depth on the supports the arm's
-        live world finds under them (``robot.grasping.name_neighbours``, ``generation.parts_beside``), every one outside
+        live world finds under them (``generation.parts_beside``), every one outside
         the regions the task keeps out, its bins and its drops (``PerceptionFrame.parts_beside``). The calculator's
         neighbours and the planner world's named parts read them, so the fingers may brush them as every named part's
         (the owner, 2026-10-12). ``frame`` as it came where the switch is off, nothing is named or no CAMERA to BASE
@@ -2649,7 +2345,7 @@ class BinPickingOrchestrator:
 
         The regions are those :attr:`exclusion_zones` keeps out of every label (the bin the task places into, the
         circles about its drops), read now, each placed by the frame resolver as every frame of the pick is; what stands
-        in them is told from what it stands on by the declared support (``support_config``). Nothing is painted with
+        in them is told from what it stands on by the declared support (``declared_support``). Nothing is painted with
         the switch off or no such region, and, said once each, for a source that does not say it can paint them
         (``hides_places``), a loop that resolves no CAMERA to BASE, or no support declared.
         """
@@ -2660,7 +2356,7 @@ class BinPickingOrchestrator:
         regions = tuple(region for region in kept_out if getattr(region, "label", None) is None)
         if not regions:
             return {}
-        support = self.support_config
+        support = self.declared_support
         resolver = self.frame_resolver
         why = ""
         if getattr(self.perception, "hides_places", False) is not True:
@@ -2668,7 +2364,7 @@ class BinPickingOrchestrator:
         elif resolver is None:
             why = "the pick loop resolves no CAMERA to BASE to place the regions in a frame"
         elif support is None:
-            why = "no support is declared (robot.grasping.support) to tell what stands in a region from what it stands on"
+            why = "no support is declared (the cell's bench and bin) to tell what stands in a region from what it stands on"
         if why or support is None or resolver is None:
             if why not in self._hide_said:
                 _LOG.warning("the regions the task keeps out are not hidden from the detector: %s", why)
@@ -2829,7 +2525,6 @@ class BinPickingOrchestrator:
         look: _LookView,
         result: "GraspResult | None",
         index: int | None,
-        ordering: "OrderingDecision | None",
         judged: "_Judgement | None",
     ) -> "_Judgement | None":
         """Whether this look's grasp is safe enough to stop looking at, and on which part, from the views fused so far.
@@ -2854,8 +2549,6 @@ class BinPickingOrchestrator:
                     "look %s did not see the part the grasp of look %s is on: it is left out, and that grasp stands",
                     look.label, judged.look.label)
                 return None
-            if target != index:
-                ordering = None
             index, result = target, found.result
         ranked = self._results_by_object.get(index) if index is not None else None
         earlier = [seen for seen in self._look_views if seen.view is not None]
@@ -2898,7 +2591,7 @@ class BinPickingOrchestrator:
 
         faces = self._jaw_faces(result, cloud, ranked.support_height_mm if ranked is not None else None)
         valid = result is not None and result.is_success
-        # The owner's automatic trigger (robot.grasping.weak_look_trigger): a valid grasp on a weak view of its part is not
+        # The owner's automatic trigger (``weak_look``): a valid grasp on a weak view of its part is not
         # safe to stop looking at. Judged on the views fused so far, so it clears once a later look saw more; and only
         # where another view may follow (a pick with multi-view off has its first look alone, and grips what it saw).
         more = len(self.looks) > 1 or self.generated_view
@@ -2913,7 +2606,7 @@ class BinPickingOrchestrator:
         _say_the_look(look.label, valid=valid, uncertain=uncertain, good=good, reasons=reasons,
                       faces=faces if self.both_faces else None, faces_asked=self.both_faces)
         return _Judgement(
-            look=look, result=result, target_index=index, ordering=ordering, target_cloud_base_mm=cloud,
+            look=look, result=result, target_index=index, target_cloud_base_mm=cloud,
             members=members, member_looks=member_looks, reasons=reasons, faces=faces, good=good,
             labels_agreed=agreed, labels_disagree=tuple(disagree), labels_said=labels_said, hand_eye_gap_mm=None,
             camera_to_base=self._pending_camera_to_base, scene_objects=self._last_scene_objects,
@@ -2957,7 +2650,7 @@ class BinPickingOrchestrator:
         points = np.asarray(cloud, dtype=np.float64).reshape(-1, 3) if cloud is not None else np.zeros((0, 3))
         points = points[np.all(np.isfinite(points), axis=1)]
         if points.shape[0] >= _WEAK_LOOK_LEAST_POINTS:
-            normal = np.asarray(self.support_config.normal if self.support_config is not None else (0.0, 0.0, 1.0),
+            normal = np.asarray(self.declared_support.normal if self.declared_support is not None else (0.0, 0.0, 1.0),
                                 dtype=np.float64).reshape(3)
             unit = normal / max(float(np.linalg.norm(normal)), 1e-12)
             heights = points @ unit
@@ -3194,7 +2887,7 @@ class BinPickingOrchestrator:
 
     def _adopt(
         self, judged: _Judgement,
-    ) -> "tuple[PerceptionFrame, GraspResult | None, int | None, OrderingDecision | None]":
+    ) -> "tuple[PerceptionFrame, GraspResult | None, int | None]":
         """Go on with the judged look's grasp: its frame, and the per-frame state its ranking left, restored.
 
         Every look ranked after it overwrote that state, and the rest of the attempt reads it: the CAMERA to BASE the
@@ -3209,7 +2902,7 @@ class BinPickingOrchestrator:
         self._support_telemetry = dict(judged.support_telemetry)
         if judged.debug_image_png is not None and hasattr(self.calculator, "last_debug_image_png"):
             self.calculator.last_debug_image_png = judged.debug_image_png  # type: ignore[attr-defined]
-        return judged.frame, judged.result, judged.target_index, judged.ordering
+        return judged.frame, judged.result, judged.target_index
 
     def _look_refused(
         self, attempt_index: int, looked: LookedAround, attempts: list[PickAttempt],
@@ -3255,7 +2948,6 @@ class BinPickingOrchestrator:
             reasons=(GraspFailureReason.CONTROLLER_NOT_OPERATIONAL,) if looked.controller is not None else (),
             score=0.0,
             action=action,
-            ordering_decision=None,
             fused_views=(),
             fused_objects=0,
             **fields,
@@ -3264,7 +2956,7 @@ class BinPickingOrchestrator:
 
     def _faces_unseen(
         self, attempt_index: int, attempts: list[PickAttempt], *, withheld: str, result: GraspResult,
-        target_index: int | None, ordering: "OrderingDecision | None", looked: "LookedAround | None" = None,
+        target_index: int | None, looked: "LookedAround | None" = None,
     ) -> PickReport:
         """The attempt of a pick that asked for both jaw contact faces (:attr:`both_faces`), when no view showed both.
 
@@ -3285,7 +2977,7 @@ class BinPickingOrchestrator:
         )
         attempts.append(PickAttempt(
             attempt_index=attempt_index, target_index=target_index, reasons=reasons,
-            score=float(result.top_score), action=action, ordering_decision=ordering,
+            score=float(result.top_score), action=action,
             **self._fusion_of(target_index), withheld=withheld,
         ))
         return PickReport(
@@ -3351,7 +3043,7 @@ class BinPickingOrchestrator:
         self._keep_out_unplaced_said = False
         # What this run pushed, which part it failed on and what it swept out of the world are this run's alone.
         self._pushes = []
-        self.failed_part = None
+        self._failed_centre_mm = None
         self._pushed_parts = []
         # So are the blockers it cleared, and why their clearing stopped.
         self._blockers = []
@@ -3373,9 +3065,6 @@ class BinPickingOrchestrator:
             # is read.
             self._keep_out.close()
             self.close_looks()
-            self._finalize_sequencing_shadow()
-            self._finalize_perception_shadow()
-            self._finalize_recovery_shadow()
             # In the `finally` so a raising pick still closes its event stream: a console that only
             # ever saw PICK_STARTED would show a spinner forever, which reads as "the arm is still
             # moving", the single most misleading thing a robot UI can display.
@@ -3398,20 +3087,10 @@ class BinPickingOrchestrator:
     def _execute_pick(self) -> PickReport:
         """Run the deterministic pick loop."""
         attempts: list[PickAttempt] = []
-        # The shadow finaliser reads the same list via this stable reference.
-        self._sequencing_current_attempts = attempts
-        # Reset the per-pick shadow accumulators (see the field
-        # declarations for what each slot carries).
+        # Reset what the pick keeps of its fused views.
         self._pending_camera_to_base = None
         self._fused_views_by_object = {}
         self._fused_objects_in_frame = 0
-        self._ranking_telemetry = None
-        self._candidate_log = None
-        self._behavior_candidate_id = None
-        self._sequencing_states = []
-        self._sequencing_telemetry = None
-        self._perception_telemetry = None
-        self._recovery_telemetry = None
         looking = self._perceives_from_the_wrist()
         for attempt_index in range(self.max_attempts):
             # "Stop" means do not begin another attempt. Asked here, before perception, so a cancel
@@ -3450,14 +3129,14 @@ class BinPickingOrchestrator:
                         reasons=(GraspFailureReason.EMPTY_MASK,), score=0.0, action="exhausted",
                     ))
                     return PickReport(outcome=PickOutcome.NO_PERCEPTION, attempts=tuple(attempts))
-                frame, best_result, target_index, ordering_decision = self._adopt(looked.judged)
+                frame, best_result, target_index = self._adopt(looked.judged)
                 if looked.withheld:
                     # Both jaw contact faces were asked for and no view showed both: nothing is gripped.
                     assert best_result is not None  # a judgement that withholds a grasp ranked one
                     self._chosen_label = self._label_key_of(target_index)
                     return self._faces_unseen(
                         attempt_index, attempts, withheld=looked.withheld, result=best_result,
-                        target_index=target_index, ordering=ordering_decision, looked=looked)
+                        target_index=target_index, looked=looked)
                 # The target's cloud fused over the views of the pick: what the planner world leaves out, and
                 # where the part is said to be. The approach starts where the looks left the arm (the look the
                 # grasp was ranked on, or where the move back to it was refused), judged against every frame.
@@ -3490,9 +3169,7 @@ class BinPickingOrchestrator:
                         attempts=tuple(attempts),
                     )
 
-                best_result, target_index, ordering_decision = (
-                    self._best_result_over_segmentations(frame)
-                )
+                best_result, target_index = self._best_result_over_segmentations(frame)
                 if self._unclaimed_at_first_look is None:
                     # The pick's first frame: what its label gate turned away, a sort's parts no rule claims.
                     self._unclaimed_at_first_look = self._unclaimed_in_frame
@@ -3553,7 +3230,7 @@ class BinPickingOrchestrator:
                     and GraspFailureReason.TARGET_LABEL_NOT_FOUND in reasons
                     else {}
                 )
-                # Only parts next_target skips were seen: the pick stops, and says why.
+                # Only parts the task keeps out were seen: the pick stops, and says why.
                 excluded = self._only_excluded_of(best_result)
                 if excluded:
                     seen_extra["excluded"] = excluded
@@ -3573,13 +3250,11 @@ class BinPickingOrchestrator:
                         score=0.0,
                         action=action,
                         withheld=self._closing_axis_withheld(best_result),
-                        ordering_decision=ordering_decision,
                         **self._fusion_of(target_index),
                         excluded=excluded or None,
-                        excluded_by_regions=bool(excluded) and self._excluded_by_regions_of(best_result),
                     )
                 )
-                # Where the part it went for stood, for next_target and for the report, on a failure as on a grasp.
+                # Where the part it went for stood, for the report, on a failure as on a grasp.
                 target_centre = self._remember_failed_part(frame, target_index, fused_target)
                 if action == "rescan":
                     continue
@@ -3598,8 +3273,7 @@ class BinPickingOrchestrator:
                 withheld = self._faces_the_fixed_cameras_did_not_show(frame, best_result, target_index)
                 if withheld:
                     return self._faces_unseen(
-                        attempt_index, attempts, withheld=withheld, result=best_result, target_index=target_index,
-                        ordering=ordering_decision)
+                        attempt_index, attempts, withheld=withheld, result=best_result, target_index=target_index)
 
             emit(
                 self.on_progress, PickStage.RANKED,
@@ -3609,92 +3283,6 @@ class BinPickingOrchestrator:
                 **({"extra": looks_extra} if looks_extra else {}),
             )
             # Success path: execute approach, grasp, retreat via the policy.
-            # Annotate the chosen result's candidates with shadow
-            # success probabilities before execution so the telemetry
-            # is available regardless of whether the motion succeeds.
-            # ``annotate_grasp_points_with_shadow_probability`` is a
-            # no-op when ``shadow_success_context is None``, preserving
-            # the legacy path byte-for-byte for callers that did not
-            # opt in.
-            shadow_telemetry = annotate_grasp_points_with_shadow_probability(
-                best_result.candidates,
-                ctx=self.shadow_success_context,
-            )
-            # ---- capture pre-blend snapshot ----
-            # The ranker needs per-candidate features in their pre-blend
-            # state (the annotator has run but the reranker has not).
-            # The snapshot taken here reconstructs candidate identity
-            # post-blend. Each candidate is keyed by its pre-blend index:
-            # the same ``GraspPoint`` object survives the blend, so
-            # post-blend ids map back via ``id(...)``.
-            pre_blend_candidates = tuple(best_result.candidates)
-            # With both jaw contact faces asked for (``both_faces``), the grasp gripped is the one whose faces were
-            # judged: the calculator's best at ranking time. Neither rerank below may swap another candidate in
-            # ahead of it, so both are handed no config and stand down (their telemetry stays ``None``), and
-            # ``_execute`` falls back to no other candidate either.
-            judged_only = self._grips_only_the_judged_grasp()
-            if judged_only and (self.ranking_blend_config is not None or self.uncertainty_rerank_config is not None):
-                _LOG.info("both_faces: the reranks stand down, so the grasp gripped is the one whose contact faces "
-                          "were judged")
-            # Bounded probability-blend reranker. No-op when:
-            #   * ``ranking_blend_config`` is None / disabled (silent;
-            #     returns ``blend_telemetry=None``, legacy parity).
-            #   * The orchestrator has no shadow context.
-            #   * The current grasp-mode is not in the dense-only
-            #     allow-list (schema-locked).
-            #   * The lifecycle phase is ``"shadow"``.
-            #   * Any candidate is missing a shadow probability (the
-            #     annotator must have populated each candidate first).
-            # This never mutates ``GraspPoint.score``: only metadata and
-            # the order of the returned tuple change. When the rerank
-            # fires the top-1 candidate may change, and
-            # ``shadow_telemetry`` is then recomputed from the new winner
-            # so :attr:`PickReport.shadow_success_telemetry` always
-            # describes the candidate that will be executed.
-            blend_candidates, blend_telemetry = maybe_blend_rerank_candidates(
-                best_result.candidates,
-                ctx=self.shadow_success_context,
-                config=None if judged_only else self.ranking_blend_config,
-            )
-            # Apply the blend result (swap candidates + re-derive shadow telemetry on a top-1
-            # change) via the shared helper.
-            best_result, shadow_telemetry = self._apply_rerank_result(
-                best_result, shadow_telemetry, blend_candidates, blend_telemetry
-            )
-            # ---- per-candidate uncertainty re-rank ----
-            # Runs after the blend (re-sorts the blended order), before the ranking shadow (so the
-            # shadow observes the final executed order) and before execution (so the approach
-            # validation walks the order that executes). Subtractive:
-            # ``adjusted = score - weight*corridor_risk``.
-            # Silent no-op unless wired + dense + non-shadow + weight>0 + every candidate carries a
-            # corridor-risk signal. On a top-1 change ``shadow_telemetry`` is re-derived from the new
-            # winner, as the blend block above.
-            rerank_candidates, uncertainty_rerank_telemetry = (
-                maybe_uncertainty_rerank_candidates(
-                    best_result.candidates,
-                    ctx=self.shadow_success_context,
-                    config=None if judged_only else self.uncertainty_rerank_config,
-                )
-            )
-            # Apply the uncertainty rerank result via the same shared helper.
-            best_result, shadow_telemetry = self._apply_rerank_result(
-                best_result,
-                shadow_telemetry,
-                rerank_candidates,
-                uncertainty_rerank_telemetry,
-            )
-            # ---- ranking-shadow producer ----
-            # Silent no-op unless ``shadow_router`` and its
-            # ``ranking_policy`` are both wired. Telemetry stashed on
-            # ``self._ranking_telemetry`` for the caller
-            # (``AutonomousGraspService``) to fold into the
-            # post-pick shadow-router telemetry block. Never mutates
-            # ``best_result``, ``shadow_telemetry``, or scores.
-            self._maybe_run_ranking_shadow(
-                pre_blend_candidates=pre_blend_candidates,
-                post_blend_candidates=best_result.candidates,
-                attempt_index=attempt_index,
-            )
             # The last event before the arm moves. Everything after this is motion, so a console that
             # stops updating here is telling an operator the truth: the stack is done deciding.
             emit(
@@ -3728,7 +3316,7 @@ class BinPickingOrchestrator:
                 emit(self.on_progress, PickStage.CANCELLED, attempt=attempt_index, **stands_extra)
                 attempts.append(PickAttempt(
                     attempt_index=attempt_index, target_index=target_index, reasons=(), score=best_result.top_score,
-                    action="cancelled", ordering_decision=ordering_decision, **_motion_fields(policy_report),
+                    action="cancelled", **_motion_fields(policy_report),
                     **fused_for_target, tries=tried.tries,
                 ))
                 return PickReport(outcome=PickOutcome.CANCELLED, attempts=tuple(attempts), target_centre_mm=target_centre,
@@ -3759,19 +3347,6 @@ class BinPickingOrchestrator:
                 _LOG.error("pick aborted: %s", controller_reason)
                 attempt_action = "controller_not_operational"
                 pick_outcome = PickOutcome.CONTROLLER_NOT_OPERATIONAL
-            if (pick_outcome is PickOutcome.APPROACH_PATH_BLOCKED and looked is not None
-                    and self.push_gate is not None and self.push_gate.on_approach_blocked
-                    and not self.push_gate.critical_parts):
-                # Every approach sweep was blocked and nothing moved: where approach validation runs, that is a trigger
-                # of the push as well (owner, 2026-09-29), under the same neighbour evidence and every other guard.
-                # Critical parts are never pushed (2026-10-03).
-                pushed = self._push_the_failed_part(
-                    attempt_index, attempts, looked, frame, target_index, trigger="approach_path_blocked",
-                    reasons=tuple(best_result.reasons), fused_target=fused_target)
-                if isinstance(pushed, PickReport):
-                    return pushed
-                if pushed:
-                    continue
             refused_ahead = (tried.refused and pick_outcome is not PickOutcome.EXECUTED and bool(tried.tries)
                              and all(str(row.get("motion_message") or "").startswith("judged ahead:")
                                      for row in tried.tries))
@@ -3814,7 +3389,7 @@ class BinPickingOrchestrator:
                 attempts.append(PickAttempt(
                     attempt_index=attempt_index, target_index=target_index,
                     reasons=(GraspFailureReason.MOTION_PLAN_REFUSED,), score=best_result.top_score, action="rescan",
-                    ordering_decision=ordering_decision, **_motion_fields(policy_report), **fused_for_target,
+                    **_motion_fields(policy_report), **fused_for_target,
                     tries=tried.tries,
                 ))
                 continue
@@ -3856,7 +3431,6 @@ class BinPickingOrchestrator:
                     ),
                     score=best_result.top_score,
                     action=attempt_action,
-                    ordering_decision=ordering_decision,
                     **motion,
                     **fused_for_target,
                     tries=tried.tries,
@@ -3870,9 +3444,6 @@ class BinPickingOrchestrator:
                 ),
                 # The selected grasp's telemetry, not the executed one's. See the field's comment.
                 selected_telemetry=dict(getattr(best_result, "telemetry", None) or {}),
-                shadow_success_telemetry=shadow_telemetry,
-                ranking_blend_telemetry=blend_telemetry,
-                uncertainty_rerank_telemetry=uncertainty_rerank_telemetry,
                 target_centre_mm=target_centre,
                 stands_at=tried.stands_at,
             )
@@ -3880,11 +3451,11 @@ class BinPickingOrchestrator:
         return PickReport(
             outcome=PickOutcome.RESCANNED_EXHAUSTED,
             attempts=tuple(attempts),
-            target_centre_mm=self.failed_part.centre_mm if self.failed_part is not None else None,
+            target_centre_mm=self._failed_centre_mm,
         )
 
     # ------------------------------------------------------------------
-    # The push of a failed part (nudge_target), and the part next_target skips
+    # The push of a failed part (nudge_target)
     # ------------------------------------------------------------------
 
     @property
@@ -4087,7 +3658,7 @@ class BinPickingOrchestrator:
         if outcome.code is PushOutcomeCode.REFUSED_CONTROLLER_STOPPED:
             # The controller cannot move, or cannot be read, and nothing moved: the pick ends here, as a look the
             # controller stopped ends it, with nothing else commanded. Falling through would send the arm to its looks
-            # again (next_target), on a controller that just said it cannot move.
+            # again (a rescan), on a controller that just said it cannot move.
             return self._push_found_the_controller_stopped(attempt_index, attempts, record, target_index,
                                                            frame=frame, fused_target=fused_target)
         if outcome.code is PushOutcomeCode.REFUSED_JAWS_UNKNOWN and (
@@ -4182,7 +3753,7 @@ class BinPickingOrchestrator:
         )
         attempts.append(PickAttempt(
             attempt_index=attempt_index, target_index=target_index, reasons=reasons, score=0.0, action="push",
-            ordering_decision=None, **fields, **self._fusion_of(target_index), push=outcome.code.value,
+            **fields, **self._fusion_of(target_index), push=outcome.code.value,
         ))
         self._pending_looked = relooked
         return True
@@ -4196,7 +3767,7 @@ class BinPickingOrchestrator:
         over the looks, else what the judged look saw of it) and the support its grasp was computed against; a
         neighbour within 25 mm of it in what the looks saw (the trigger's evidence); the plan
         (:func:`~src.robot.grasping.recovery.push_planner.plan_push` with the table every look saw, the cell's hand,
-        workspace and clearance, the campaign's distance, the fixture box); the budgets, on the plan's own centre; and
+        workspace and clearance, the campaign's distance); the budgets, on the plan's own centre; and
         where the arm stands, to come back to.
         """
         from src.robot.grasping.recovery.push_gate import support_points_of_views  # noqa: PLC0415
@@ -4216,11 +3787,11 @@ class BinPickingOrchestrator:
         if points is None:
             return self._push_record(trigger, "refused_no_target_points",
                                      "The looks placed no point of the part in BASE, so it is not pushed.")
-        if self.support_config is None or judged.support_height_mm is None:
+        if self.declared_support is None or judged.support_height_mm is None:
             return self._push_record(trigger, "refused_no_support", (
-                "No support plane was resolved for the part (grasping.support), so how high a finger rides beside "
+                "No support plane was resolved for the part, so how high a finger rides beside "
                 "it is not known and it is not pushed."))
-        normal = np.asarray(self.support_config.normal, dtype=np.float64).reshape(3)
+        normal = np.asarray(self.declared_support.normal, dtype=np.float64).reshape(3)
         normal = normal / max(float(np.linalg.norm(normal)), 1e-12)
         offset = float(judged.support_height_mm)
         # Where the camera world found the surface the part stands on (contract 7), the push plans on that surface's
@@ -4263,7 +3834,7 @@ class BinPickingOrchestrator:
                 target_points_mm=points, neighbour_points_mm=neighbours, support_normal=normal,
                 support_offset_mm=offset, workspace=gate.cell.workspace, hand=gate.cell.hand, table_points_mm=table,
                 push_distance_mm=gate.distance_mm, container_interior=gate.cell.container_interior,
-                operator_box=gate.operator_box, hand_clearance_mm=gate.cell.hand_clearance_mm,
+                hand_clearance_mm=gate.cell.hand_clearance_mm,
                 beside_part_clearance_mm=gate.cell.beside_part_clearance_mm, beside_part_mm=gate.cell.beside_part_mm,
                 may_shove=not gate.critical_parts, longest_push_mm=gate.longest_mm, neighbour_named=named,
                 named_part_clearance_mm=getattr(gate.cell, "named_part_clearance_mm", None), **floor_kwargs,
@@ -4295,8 +3866,8 @@ class BinPickingOrchestrator:
         a region the task keeps out) are the ones it opens room for, and what the looks saw that no mask names stays
         what it is: a bin's wall, clutter (:meth:`_unnamed_points`). The plan is
         :func:`~src.robot.grasping.recovery.push_planner.plan_scene_push` at the campaign's longest push, on the support
-        under the parts and the table every look saw, with the cell's hand, workspace and clearances and the fixture
-        box; then the scene budgets and where the arm stands, to come back to.
+        under the parts and the table every look saw, with the cell's hand, workspace and clearances; then the scene
+        budgets and where the arm stands, to come back to.
         """
         from src.robot.grasping.recovery.push_gate import TRIGGER_NO_PART_GRASPABLE, support_points_of_views  # noqa: PLC0415
         from src.robot.grasping.recovery.push_motion import push_budget_key  # noqa: PLC0415
@@ -4311,9 +3882,9 @@ class BinPickingOrchestrator:
             return self._push_record(trigger, "refused_no_attempt_left", (
                 f"This pick has no attempt left after attempt {attempt_index + 1} of {self.max_attempts} to pick from "
                 "after a push, so the scene is not pushed."))
-        if self.support_config is None or judged.support_height_mm is None:
+        if self.declared_support is None or judged.support_height_mm is None:
             return self._push_record(trigger, "refused_no_support", (
-                "No support plane was resolved for the parts (grasping.support), so how high a finger rides beside one "
+                "No support plane was resolved for the parts, so how high a finger rides beside one "
                 "is not known and the scene is not pushed."))
         zones = self.exclusion_zones
         objects = judged.scene_objects
@@ -4334,7 +3905,7 @@ class BinPickingOrchestrator:
             return self._push_record(trigger, "refused_no_wanted_part", (
                 "The looks named no part the task wants outside the regions it keeps out, so the scene is not pushed."))
         every = np.vstack(parts)
-        normal = np.asarray(self.support_config.normal, dtype=np.float64).reshape(3)
+        normal = np.asarray(self.declared_support.normal, dtype=np.float64).reshape(3)
         normal = normal / max(float(np.linalg.norm(normal)), 1e-12)
         offset = float(judged.support_height_mm)
         model = judged.support_model
@@ -4356,7 +3927,7 @@ class BinPickingOrchestrator:
                 parts_mm=parts, wanted=wanted, unnamed_points_mm=self._unnamed_points(normal, offset),
                 push_distance_mm=distance, support_normal=normal, support_offset_mm=offset,
                 workspace=gate.cell.workspace, hand=gate.cell.hand, table_points_mm=table,
-                container_interior=gate.cell.container_interior, operator_box=gate.operator_box,
+                container_interior=gate.cell.container_interior,
                 hand_clearance_mm=gate.cell.hand_clearance_mm, beside_part_clearance_mm=gate.cell.beside_part_clearance_mm,
                 beside_part_mm=gate.cell.beside_part_mm, named_part_clearance_mm=gate.cell.named_part_clearance_mm,
                 **({} if floor is None else {"finger_floor_mm": floor}),
@@ -4559,7 +4130,7 @@ class BinPickingOrchestrator:
         attempts.append(PickAttempt(
             attempt_index=attempt_index, target_index=target_index,
             reasons=(GraspFailureReason.CONTROLLER_NOT_OPERATIONAL,) if stopped.controller_stopped else (),
-            score=0.0, action="push", ordering_decision=None, **fields, **self._fusion_of(target_index),
+            score=0.0, action="push", **fields, **self._fusion_of(target_index),
             push=stopped.code,
         ))
         target_centre = self._remember_failed_part(frame, target_index, fused_target)
@@ -4591,7 +4162,7 @@ class BinPickingOrchestrator:
         )
         attempts.append(PickAttempt(
             attempt_index=attempt_index, target_index=target_index,
-            reasons=(GraspFailureReason.CONTROLLER_NOT_OPERATIONAL,), score=0.0, action="push", ordering_decision=None,
+            reasons=(GraspFailureReason.CONTROLLER_NOT_OPERATIONAL,), score=0.0, action="push",
             **self._fusion_of(target_index), push=refused.code,
         ))
         target_centre = self._remember_failed_part(frame, target_index, fused_target)
@@ -4615,7 +4186,7 @@ class BinPickingOrchestrator:
 
         Nothing was commanded and nothing more is: ``GRIPPER_FAULT``, as the toggle's own refusal ends a pick
         (``PolicyOutcome.GRIPPER_FAULT``; the owner, 2026-09-30). The attempt carries no reason a recovery could act on,
-        so no next_target drives the looks again with a hand nobody vouches for, and its ``motion_message`` says why,
+        so no rescan drives the looks again with a hand nobody vouches for, and its ``motion_message`` says why,
         which the service's report reads as its ``gripper_fault``: ``PickRun`` and the console run stop on it. Nobody is
         asked here; a person looks at the jaws, and the next pick's start, or the next connect, asks where they stand.
         A count or a width that says closed is no fault: that push is refused and the pick falls through. A hand closed
@@ -4631,7 +4202,7 @@ class BinPickingOrchestrator:
         )
         attempts.append(PickAttempt(
             attempt_index=attempt_index, target_index=target_index, reasons=(), score=0.0, action="push",
-            ordering_decision=None, motion_message=said, **self._fusion_of(target_index), push=refused.code,
+            motion_message=said, **self._fusion_of(target_index), push=refused.code,
         ))
         target_centre = self._remember_failed_part(frame, target_index, fused_target)
         return PickReport(outcome=outcome, attempts=tuple(attempts), target_centre_mm=target_centre)
@@ -5111,26 +4682,13 @@ class BinPickingOrchestrator:
         assert ranked is not None and ranked.call is not None  # the caller's
         call = ranked.call
         nowhere = 0
-        too_long: list[float] = []
-        carried = self._carried_length_mm()
         tries = max(1, int(getattr(gate, "blocker_grasp_tries", 1) or 1))
         for cluster, support, mask, freed, fewer in frees:
             usable: list[tuple[GraspPoint, "Pose | None", str, tuple[float, float]]] = []
             no_place = False
-            long_reach: list[float] = []
+            # A blocker is carried as every part is, as an empty hand (the owner, 2026-10-05): no planner models a part
+            # in the jaws, so none is refused for how far it reaches past the fingertips (2026-10-17).
             for grasped in self._blocker_grasps(call, judged, cluster, mask, limit=tries, stands_on_mm=support):
-                # Between the close and the release only the planner holds what the hand carries, and it models a part
-                # this far past the fingertips (the console's rule for every part it carries): a blocker reaching
-                # further is not taken (the lead's review, 2026-10-02). An arm that models none carries it as it carries
-                # every part.
-                reach = self._reach_past_the_fingertips(grasped, cluster, support)
-                if carried is not None and reach > carried:
-                    centre = cluster.centre_mm
-                    _LOG.info("the blocker at (%.0f, %.0f) mm reaches %.0f mm past the fingertips, more than the %g mm "
-                              "the planner models a carried part with: it is not taken", centre[0], centre[1], reach,
-                              carried)
-                    long_reach.append(reach)
-                    continue
                 if self.blocker_is_the_pick:
                     # The blocker is the part this pick takes, set down where the caller's parts go: no spot is asked.
                     usable.append((grasped, None, "where the parts go",
@@ -5149,18 +4707,11 @@ class BinPickingOrchestrator:
                                       alternatives=tuple((g, r) for g, r, _w, _s in usable[1:]), rest=rest)
             if no_place:
                 nowhere += 1
-            elif long_reach:
-                too_long.append(min(long_reach))
         if nowhere:
             return B.BlockerRecord(code=B.NO_FREE_SPOT, sentence=(
                 f"{nowhere} blocker(s) could be gripped and no free spot the camera saw on what they stand on lies "
                 f"{B.SPOT_FROM_THE_PART_MM:g} mm from the part with nothing within the hand's reach and "
                 f"{B.SPOT_CLEARANCE_MM:g} mm of it, so none is taken away."))
-        if too_long:
-            return B.BlockerRecord(code=B.TOO_LONG_TO_CARRY, sentence=(
-                f"{len(too_long)} blocker(s) could be gripped and reach {min(too_long):.0f} mm or more past the "
-                f"fingertips, further than the {carried:g} mm the planner models a carried part with "
-                "(safety.planning_world.payload.length_mm), so none is taken away."))
         return B.BlockerRecord(code=B.NO_GRASPABLE_BLOCKER, sentence=(
             f"The calculator finds no grasp on any of the {len(frees)} neighbour(s) whose removal would free the part, "
             "so none is taken away."))
@@ -5177,11 +4728,10 @@ class BinPickingOrchestrator:
         if drop_near is not None and "scene_points_mm" in arguments and "camera_to_base" in arguments:
             arguments["scene_points_mm"] = _without_points_near(arguments["scene_points_mm"], drop_near,
                                                                 arguments["camera_to_base"])
-        calculator = self.calculator_for(call.camera_id)
+        calculator = self.calculator
         with self._asking_more_along_the_axis(calculator) as cap:
             result = calculator.compute_result(
-                call.seg if seg is None else seg, call.depth if depth is None else depth, pixel_to_mm=None,
-                dense_sampling=self.dense_sampling, grasp_sampling_mode=self._resolved_sampling_mode,
+                call.seg if seg is None else seg, call.depth if depth is None else depth,
                 other_object_masks=list(call.neighbours if neighbours is None else neighbours), **arguments)
         return self._closing_along(result, call.camera_id, cap)
 
@@ -5251,35 +4801,6 @@ class BinPickingOrchestrator:
         return pose, (f"a free spot at ({spot.centre_xy[0]:.0f}, {spot.centre_xy[1]:.0f}) mm, "
                       f"{spot.distance_to_part_mm:.0f} mm from the part"), spot.centre_xy
 
-    def _carried_length_mm(self) -> float | None:
-        """How far past the fingertips the planner models a carried part, millimetres
-        (``safety.planning_world.payload.length_mm``), where the arm says it models one; ``None`` where it models none,
-        or cannot say."""
-        declined = getattr(self.arm, "payload_declined_reason", None)
-        if not callable(declined) or declined() is not None:
-            return None
-        payload = getattr(getattr(getattr(getattr(self.arm, "config", None), "safety", None), "planning_world", None),
-                          "payload", None)
-        length = getattr(payload, "length_mm", None)
-        if isinstance(length, bool) or not isinstance(length, (int, float)) or not np.isfinite(float(length)):
-            return None
-        return float(length)
-
-    def _reach_past_the_fingertips(self, grasp: GraspPoint, cluster: Any, support: float | None) -> float:
-        """How far a blocker reaches past the fingertips along its grasp's approach, millimetres: its seen points, and
-        their foot on the support under it, against the pads' reach ahead of the grasp centre. The planner's carried part
-        starts at its hand spheres' tip, a little past the pads, so this reads the blocker no shorter than it models."""
-        points = np.asarray(cluster.points_base_mm, dtype=np.float64).reshape(-1, 3)
-        if support is not None and points.shape[0]:
-            feet = points.copy()
-            feet[:, 2] = float(support)
-            points = np.vstack([points, feet])
-        approach = np.asarray(grasp.approach, dtype=np.float64).reshape(3)
-        approach = approach / float(np.linalg.norm(approach))
-        reach = float(np.max((points - np.asarray(grasp.position, dtype=np.float64).reshape(3)) @ approach))
-        ahead = getattr(self.gripper_model, "pad_ahead_mm", 0.0)
-        return reach - (float(ahead) if isinstance(ahead, (int, float)) else 0.0)
-
     def _support_under_a_blocker(self, cluster: Any, model: Any, judged: _Judgement) -> float | None:
         """What a blocker stands on: the support read under its foot (:meth:`_support_under_points`), and where that
         leaves its foot more than ``blocker.STANDS_ON_THE_SUPPORT_MM`` over it while the foot stands within that over the
@@ -5301,7 +4822,7 @@ class BinPickingOrchestrator:
 
     def _support_under_points(self, points: np.ndarray, model: Any, judged: _Judgement) -> float | None:
         """What the support reads under ``points``: the model's highest local reading under their foot, else the bench
-        (the live world's declared plane, else ``grasping.support``'s height); ``None`` where nothing says."""
+        (the live world's declared plane, else the declared support's height); ``None`` where nothing says."""
         if model is not None:
             under = model.height_under(np.asarray(points, dtype=np.float64).reshape(-1, 3))
             if under is not None:
@@ -5313,7 +4834,7 @@ class BinPickingOrchestrator:
         plane = getattr(limits, "support_plane_top_mm", None)
         if plane is not None:
             return float(plane)
-        return float(self.support_config.height_mm) if self.support_config is not None else None
+        return float(self.declared_support.height_mm) if self.declared_support is not None else None
 
     def _support_pixels(self, judged: _Judgement, cluster: Any) -> "tuple[np.ndarray, np.ndarray, Any]":
         """What a free spot is read from, in the frame the part was judged on: the table there (the support surface's
@@ -5430,7 +4951,7 @@ class BinPickingOrchestrator:
                         f"The arm's camera world did not take the blocker to keep out ({type(exc).__name__}: {exc}), so "
                         "nothing moved."), **said_of)
             assert self.policy is not None
-            # The blocker's grasps in the calculator's order, ``recovery.blocker_grasp_tries`` at most (the owner,
+            # The blocker's grasps in the calculator's order, the cell's three tries at most (the owner,
             # 2026-10-03), each judged ahead from the look before the arm leaves for it (``refusal_ahead``: the move
             # to its standoff, the line down, the lift as if carrying), all with the blocker held out of the world.
             tries = ((choice.grasp, choice.release), *choice.alternatives)
@@ -5575,7 +5096,7 @@ class BinPickingOrchestrator:
         )
         attempts.append(PickAttempt(
             attempt_index=attempt_index, target_index=judged.target_index, reasons=reasons, score=0.0,
-            action="clear_blocker", ordering_decision=None, **fields, **self._fusion_of(judged.target_index),
+            action="clear_blocker", **fields, **self._fusion_of(judged.target_index),
             blocker=B.SET_ASIDE,
         ))
         return relooked
@@ -5678,7 +5199,7 @@ class BinPickingOrchestrator:
         attempts.append(PickAttempt(
             attempt_index=attempt_index, target_index=judged.target_index,
             reasons=(GraspFailureReason.CONTROLLER_NOT_OPERATIONAL,) if controller is not None else (),
-            score=0.0, action="clear_blocker", ordering_decision=None,
+            score=0.0, action="clear_blocker",
             **motion, blocker=code,
         ))
         return PickReport(outcome=outcome, attempts=tuple(attempts))
@@ -5716,23 +5237,13 @@ class BinPickingOrchestrator:
         self, frame: PerceptionFrame, target_index: int | None, fused_cloud: "np.ndarray | None", *,
         centre: "Maybe[tuple[float, float, float] | None]" = UNSET,
     ) -> "tuple[float, float, float] | None":
-        """Keep the part this attempt failed on, as ``next_target`` skips it (:attr:`failed_part`), and return where it
-        stood: its label, its BASE centre (``centre`` where the caller read it already) and its footprint."""
-        from src.robot.grasping.recovery.exclusion_zones import footprint_diagonal_mm  # noqa: PLC0415
-        from src.robot.grasping.recovery.push_gate import FailedPart  # noqa: PLC0415
-
+        """Keep where the part this attempt failed on stood, BASE mm (``centre`` where the caller read it already), what
+        an exhausted run reports, and return it; ``None`` where the attempt went for no part."""
         if chosen(centre):
             where = centre
         else:
             where = self._target_centre_base_mm(frame, target_index, fused_cloud_base_mm=fused_cloud)
-        label = self._label_key_of(target_index)
-        if where is None or target_index is None:
-            self.failed_part = None
-            return where
-        points = fused_cloud if fused_cloud is not None and np.asarray(fused_cloud).size else \
-            self._target_surface_base_mm(frame, target_index)
-        diagonal = footprint_diagonal_mm(points) if points is not None and len(points) >= 2 else None
-        self.failed_part = FailedPart(label=label, centre_mm=where, footprint_diagonal_mm=diagonal) if label else None
+        self._failed_centre_mm = None if target_index is None else where
         return where
 
     def _a_surface_not_a_part(
@@ -5803,7 +5314,7 @@ class BinPickingOrchestrator:
         of which a region keeps out. A task's own regions name no label and keep every kind out
         (``exclusion_zones.ExclusionRegion``)."""
         labels = self.target_labels or (str(self.target_label or ""),)
-        return any(zones.kept_out_by_a_region(label=label, centre_mm=centre_mm) for label in labels)
+        return any(zones.excludes(label=label, centre_mm=centre_mm) for label in labels)
 
     def _unclaimed_of(
         self, frame: PerceptionFrame, scene: "list[Any] | tuple[Any, ...]", turned_away: list[int],
@@ -5812,7 +5323,7 @@ class BinPickingOrchestrator:
         """The labels of the objects ``turned_away`` (indices into ``scene``) the label gate turned away from a sort, one
         per object, in the camera's order: the parts no rule clearly claims (the owner, 2026-10-09: such a part stays
         where it lies and is named at the end). A surface the parts lie on is no part (:meth:`_a_surface_not_a_part`),
-        and one standing in a region its task keeps out is in a bin or at a drop already (:meth:`_exclusion_of`): both
+        and one standing in a region its task keeps out is in a bin or at a drop already (:meth:`_kept_out`): both
         are left out. One object boxed under two descriptions comes back as two segmentations whose masks overlap by
         :data:`_SAME_OBJECT_IOU` or more (the class list's ``ambiguous``, ``vlm.parsing.claimed_once``): it is one part
         left, and named once (the review of 2026-10-09)."""
@@ -5821,7 +5332,7 @@ class BinPickingOrchestrator:
         for idx in turned_away:
             if self._a_surface_not_a_part(frame, idx):
                 continue
-            if zones is not None and self._exclusion_of(zones, idx, scene[idx], frame) == "region":
+            if zones is not None and self._kept_out(zones, idx, scene[idx], frame):
                 continue
             mask = getattr(getattr(scene[idx], "segmentation", None), "mask", None)
             if mask is not None:
@@ -5832,26 +5343,20 @@ class BinPickingOrchestrator:
             said.append(self._label_key_of(idx))
         return tuple(said)
 
-    def _exclusion_of(self, zones: "ExclusionZones", index: int, obj: Any, frame: PerceptionFrame) -> str:
-        """What keeps object ``index`` of the frame being ranked out of the pick: ``"region"`` where it stands in a
-        region its task keeps out (whatever zone holds it too), ``"zone"`` where only a zone ``next_target`` made for its
-        label holds it, ``""`` where nothing does. The zones say whether anything applies to its label (an empty one
-        included) before its centre is read."""
+    def _kept_out(self, zones: "ExclusionZones", index: int, obj: Any, frame: PerceptionFrame) -> bool:
+        """Whether object ``index`` of the frame being ranked stands in a region its task keeps out. The regions say
+        whether any applies to its label (an empty one included) before its centre is read."""
         label = _label_key(obj.segmentation)
         if not zones.applies(label):
-            return ""
+            return False
         cloud = getattr(obj, "fused_cloud_base_mm", None) if self._current_look is not None else None
         centre = self._target_centre_base_mm(frame, index, fused_cloud_base_mm=cloud)
-        if centre is None:
-            return ""
-        if zones.kept_out_by_a_region(label=label, centre_mm=centre):
-            return "region"
-        return "zone" if zones.excludes(label=label, centre_mm=centre) else ""
+        return centre is not None and zones.excludes(label=label, centre_mm=centre)
 
-    def _only_excluded(self, zones: "ExclusionZones", excluded: list[int], *, by_regions: bool) -> GraspResult:
-        """The result of a frame whose every part of the label is one ``next_target`` skips or its task keeps out: no
-        candidate, no reason a recovery could act on, the zones' sentence, and whether a region of the task held every
-        one of them (``by_regions``). A sort's parts are said kind by kind, one sentence each, in the camera's order."""
+    def _only_excluded(self, zones: "ExclusionZones", excluded: list[int]) -> GraspResult:
+        """The result of a frame whose every part of the label stands where its task keeps out: no candidate, no reason a
+        recovery could act on, and the regions' sentence. A sort's parts are said kind by kind, one sentence each, in the
+        camera's order."""
         if self.target_labels:
             kinds: dict[str, int] = {}
             for index in excluded:
@@ -5861,69 +5366,18 @@ class BinPickingOrchestrator:
         else:
             label = self.target_label or self._label_key_of(excluded[0])
             sentence = zones.only_excluded_sentence(label=label, count=len(excluded))
-        return GraspResult(reasons=(), telemetry={"only_excluded": sentence, "excluded_parts": len(excluded),
-                                                  "excluded_by_regions": bool(by_regions)})
+        return GraspResult(reasons=(), telemetry={"only_excluded": sentence, "excluded_parts": len(excluded)})
 
     @staticmethod
     def _only_excluded_of(result: "GraspResult | None") -> str:
-        """The sentence of a result that saw only parts ``next_target`` skips, ``""`` otherwise."""
+        """The sentence of a result that saw only parts its task keeps out, ``""`` otherwise."""
         telemetry = getattr(result, "telemetry", None)
         said = telemetry.get("only_excluded") if isinstance(telemetry, Mapping) else None
         return said if isinstance(said, str) else ""
 
-    @staticmethod
-    def _excluded_by_regions_of(result: "GraspResult | None") -> bool:
-        """Whether a result that saw only skipped parts saw each of them in a region its task keeps out."""
-        telemetry = getattr(result, "telemetry", None)
-        return isinstance(telemetry, Mapping) and telemetry.get("excluded_by_regions") is True
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    def _shadow_telemetry_from_winner(
-        self, candidates: tuple[Any, ...]
-    ) -> ShadowSuccessTelemetry:
-        """Re-derive the shadow-success telemetry from the top-1 candidate's metadata.
-
-        Shared by the blend and uncertainty reranks, which both re-point the telemetry at the
-        executed winner when a rerank changes top-1.
-        """
-        new_winner_md = getattr(candidates[0], "metadata", None) or {}
-        new_prob = new_winner_md.get(SHADOW_METADATA_KEY_PROBABILITY)
-        ctx = self.shadow_success_context
-        return ShadowSuccessTelemetry(
-            predicted_success_probability=(
-                float(new_prob)
-                if isinstance(new_prob, (int, float)) and not isinstance(new_prob, bool)
-                else None
-            ),
-            success_probability_model_version=(
-                ctx.version_label if ctx is not None else None
-            ),
-            model_lifecycle_phase=(ctx.lifecycle_phase if ctx is not None else None),
-        )
-
-    def _apply_rerank_result(
-        self,
-        best_result: GraspResult,
-        shadow_telemetry: ShadowSuccessTelemetry | None,
-        candidates: tuple[Any, ...],
-        telemetry: RankingBlendTelemetry | UncertaintyRerankTelemetry | None,
-    ) -> tuple[GraspResult, ShadowSuccessTelemetry | None]:
-        """Apply a rerank result to ``best_result``; shared by the blend and uncertainty reranks.
-        When the rerank fired (``telemetry.applied``) the reranked candidates and the new top score
-        are swapped in; when it also changed top-1, ``shadow_telemetry`` is re-pointed at the new
-        winner so the executed candidate's probability is reported. Otherwise the inputs come back
-        unchanged."""
-        if telemetry is not None and telemetry.applied:
-            new_top_score = float(candidates[0].score) if candidates else 0.0
-            best_result = replace(
-                best_result, candidates=candidates, top_score=new_top_score
-            )
-            if telemetry.top1_changed:
-                shadow_telemetry = self._shadow_telemetry_from_winner(candidates)
-        return best_result, shadow_telemetry
 
     def _stamp_deep_ranker(  # noqa: ANN001, ANN202
         self, result, extra_kwargs: dict, fused_scene, index: int,
@@ -6050,95 +5504,10 @@ class BinPickingOrchestrator:
         if outcome is PolicyOutcome.CAMERA_FRAME_REJECTED:
             # The policy refused a camera-frame grasp; surface distinctly.
             return "camera_frame_rejected", PickOutcome.CAMERA_FRAME_REJECTED
-        if outcome is PolicyOutcome.APPROACH_PATH_BLOCKED:
-            # Every candidate's approach/retreat sweep hit a neighbour: refused, no motion.
-            return "approach_path_blocked", PickOutcome.APPROACH_PATH_BLOCKED
         if outcome is PolicyOutcome.GRIPPER_FAULT:
             # The hand needs a person; the policy's report carries why, and the attempt copies it.
             return "gripper_fault", PickOutcome.GRIPPER_FAULT
         return "execution_failed", PickOutcome.EXECUTION_FAILED
-
-    def _maybe_run_ranking_shadow(
-        self,
-        *,
-        pre_blend_candidates: tuple,
-        post_blend_candidates: tuple,
-        attempt_index: int,
-    ) -> None:
-        """Invoke the ranking shadow router.
-
-        Strict no-op when:
-          * :attr:`shadow_router` is :data:`None`.
-          * The router has no :attr:`ranking_policy`.
-          * The pre-blend candidate set is empty.
-
-        Builds 15-key feature rows per candidate from the ``shadow`` +
-        ``rl_state_features`` metadata blocks plus the three
-        ``geometric_score`` / ``feasibility_score`` /
-        ``shadow_predicted_success_probability`` signals, and stashes the
-        typed :class:`RankingShadowTelemetry` on
-        :attr:`_ranking_telemetry`. Any exception is converted to a
-        fallback row by the router itself, and anything raised while
-        the rows are built or the router runs is caught inside
-        :meth:`_ShadowTelemetryAggregator.run_ranking_shadow`, which
-        returns ``(None, None, None)`` and leaves the three slots
-        unset. This helper adds no handler of its own.
-        """
-
-        router = self.shadow_router
-        if router is None or getattr(router, "ranking_policy", None) is None:
-            return
-        if not pre_blend_candidates:
-            return
-        # The wired path delegates to the aggregator; assign all 3 slots from the return. The
-        # aggregator returns (None, None, None) on its broad except. The no-router / no-candidates
-        # guards above return early without writing any slot, so a direct call leaves all three at
-        # their construction-default None.
-        (
-            self._ranking_telemetry,
-            self._candidate_log,
-            self._behavior_candidate_id,
-        ) = self._shadow.run_ranking_shadow(
-            pre_blend_candidates=pre_blend_candidates,
-            post_blend_candidates=post_blend_candidates,
-            attempt_index=attempt_index,
-        )
-
-    # ------------------------------------------------------------------
-    # Sequencing-shadow helpers
-    # ------------------------------------------------------------------
-
-    def _finalize_sequencing_shadow(self) -> None:
-        """Delegate to the aggregator's sequencing shadow (called from :meth:`run`'s ``finally``).
-        Assigns both _sequencing_telemetry and _sequencing_states from the return; on the unwired
-        path the aggregator returns (None, None), so _sequencing_states keeps its per-pick reset
-        value."""
-        telemetry, states = self._shadow.finalize_sequencing(attempts=self._sequencing_current_attempts)
-        self._sequencing_telemetry = telemetry
-        if states is not None:
-            self._sequencing_states = states
-
-    def _finalize_perception_shadow(self) -> None:
-        """Delegate to the aggregator's perception-budget shadow.
-
-        Called from :meth:`run`'s ``finally``. Assigns the slot from the return; the aggregator
-        returns None on the unwired and except paths.
-        """
-        self._perception_telemetry = self._shadow.finalize_perception(
-            attempts=self._sequencing_current_attempts
-        )
-
-    def _finalize_recovery_shadow(self) -> None:
-        """Delegate to the aggregator's recovery shadow.
-
-        Called from :meth:`run`'s ``finally``. Assigns the slot from the return; the aggregator
-        returns None on the unwired, success and except paths.
-        """
-        self._recovery_telemetry = self._shadow.finalize_recovery(
-            attempts=self._sequencing_current_attempts
-        )
-
-    # ------------------------------------------------------------------
 
     def _external_scene_points_camera_frame(
         self, camera_to_base: "Transform | None"
@@ -6181,7 +5550,7 @@ class BinPickingOrchestrator:
         waste in the one path that runs on every attempt.
         """
 
-        support = self.support_config
+        support = self.declared_support
         container = getattr(support, "container", None) if support is not None else None
         if container is None or not bool(getattr(container, "wall_collision_enabled", False)):
             return None
@@ -6233,27 +5602,21 @@ class BinPickingOrchestrator:
         # The counters describe THIS pick. Cleared before any stand-down below, or a pick that stands
         # down early keeps the dict of the last pick that fused, and the service turns it into this
         # record's `fused_view_count` (review of 2026-09-24). The other cameras' views go the same
-        # way: the scene builder promotes objects from them (`promote_unmatched`), and views kept
-        # from the last pick that fused would bring an object seen at another moment into this scene.
+        # way: views kept from the last pick that fused would bring a surface seen at another moment
+        # into this scene.
         self._fusion_geometry_telemetry = {}
         self._last_other_views = ()
         if self._current_look is not None:
             return self._fused_looks(frame, camera_to_base)
-        config = self.fusion_geometry_config
-        if config is None or not bool(config.enabled):
+        if not self.camera_frame_resolvers:
             return None
         if not self._fixed_cameras_placeable(camera_to_base):
             return None
         assert camera_to_base is not None  # narrowed by _fixed_cameras_placeable
 
-        from src.robot.grasping.multiview.association import AssociationMetric
         from src.robot.grasping.multiview.scene_geometry import fuse_scene_geometry
 
-        # The fusion clock (`LatencyStage.FUSION`) starts once the other cameras' frames are in hand,
-        # before they are placed (`_fixed_camera_views` reads it). Their capture, detection and
-        # segmentation are perception, and a fusion budget read against them would breach for a
-        # reason that is not fusion. It stops when the fused scene is built.
-        views, missing, grounded_nothing, fusion_t0_ns = self._fixed_camera_views(config)
+        views, missing, grounded_nothing, fusion_t0_ns = self._fixed_camera_views()
 
         # One entry per segmentation, in order, and not compacted. `cloud_for(idx)` is addressed by
         # segmentation index at the candidate loop, so dropping a mask-less segmentation here would
@@ -6284,46 +5647,38 @@ class BinPickingOrchestrator:
             }
             return None
 
-        # Kept for the scene builder, which needs the same views and must not re-acquire them: a
-        # second `acquire_all` would be a second detect and segment pass per camera, and worse, a
-        # second moment, so the objects would be grouped across frames taken at different times.
+        # Kept for the cameras that vouch for the way in (`_scene_views`), which must not re-acquire them: a second
+        # `acquire_all` would be a second detect and segment pass per camera, and worse, a second moment.
         self._last_other_views = tuple(views)
 
-        with_neighbours = bool(getattr(config, "neighbour_scene_enabled", False))
         # Each mask less its rim, where the calculator cuts one: the fused footprint SFE reads, the other cameras' views
         # cut the same way (`_fixed_camera_views`). None asks the fusion for no footprint, as before.
         primary_footprints = self._footprints(primary_masks, frame.depth_map, frame.intrinsics) or None
+        # At the fixed cameras' tolerances (``association.DEFAULT_*``), the numbers every fused cell ran since the
+        # fusion's keys left on 2026-10-16. The other cameras' views of the neighbours stay out of the collision filter:
+        # on the reference corpus they rescued about as many grasps as they destroyed.
         fused = fuse_scene_geometry(
             primary_masks,
             frame.depth_map,
             frame.intrinsics,
             np.asarray(camera_to_base.to_matrix(), dtype=np.float64),
             views,
-            metric=AssociationMetric(str(config.metric)),
-            min_score=float(config.min_score),
-            neighbour_mm=float(config.neighbour_mm),
-            max_centroid_mm=float(config.max_centroid_mm),
-            with_neighbours=with_neighbours,
-            neighbour_voxel_mm=float(getattr(config, "neighbour_voxel_mm", 8.0)),
-            # Scoring-only decimation. `getattr` keeps a config object without the field on the
-            # untouched path, and 0.0 is off, so this line changes nothing anywhere it is not set.
-            score_voxel_mm=float(getattr(config, "score_voxel_mm", 0.0)),
             primary_footprints=primary_footprints,
         )
         self._stamp_fusion(fused, fusion_t0_ns, missing=missing, grounded_nothing=grounded_nothing,
-                           with_neighbours=with_neighbours)
+                           with_neighbours=False)
         return fused
 
     def _fixed_cameras_placeable(self, camera_to_base: "Transform | None") -> bool:
-        """Whether an enabled `grasping.fusion.geometry` has what it needs to place the other cameras' views.
+        """Whether a cell that fuses its cameras has what it needs to place the other cameras' views.
 
-        Enabled but unbuildable is a deployment error, not a runtime hiccup, so it is said plainly every time rather
-        than folded into the missing-camera policy of :meth:`_fixed_camera_views`.
+        Fused but unbuildable is a deployment error, not a runtime hiccup, so it is said plainly every time rather
+        than folded into the missing-camera warning of :meth:`_fixed_camera_views`.
         """
         if self.multi_camera_perception is not None and camera_to_base is not None:
             return True
         _LOG.warning(
-            "grasping.fusion.geometry is enabled but %s; the cell is running single-view",
+            "the cell fuses its cameras but %s; it is running single-view",
             "no multi-camera perception source is wired"
             if self.multi_camera_perception is None
             else "no CAMERA->BASE transform is available",
@@ -6334,14 +5689,7 @@ class BinPickingOrchestrator:
         self, fused: "FusedSceneGeometry", fusion_t0_ns: int, *, missing: list[str], grounded_nothing: list[str],
         with_neighbours: bool,
     ) -> None:
-        """Record the fusion span and stamp what the fusion did, as :meth:`_fused_scene` has always stamped it."""
-        fusion_ms = (time.monotonic_ns() - fusion_t0_ns) / 1_000_000.0
-        # `fusion_latency_ms`, recorded only where another camera's view entered the fusion
-        # (`views_used`, the record's `fused_view_count`), so a pick that stood down to one view
-        # reports no fusion time rather than a zero, and the SLO gate skips it. A later attempt of
-        # the same pick that fuses replaces the span, as every stage does.
-        if fused.views_used and self.latency_tracker is not None:
-            self.latency_tracker.record(LatencyStage.FUSION, fusion_ms)
+        """Stamp what the fusion did, as :meth:`_fused_scene` has always stamped it."""
         # Stamp what ran, not what was configured: the same rule the geometry stage follows.
         self._fusion_geometry_telemetry = {
             "fused_views_used": len(fused.views_used),
@@ -6350,28 +5698,25 @@ class BinPickingOrchestrator:
             "fused_objects_total": len(fused.clouds_base_mm),
             # Delivered a frame, grounded nothing on it. Not a fault, and not the same as absent.
             "cameras_grounded_nothing": len(grounded_nothing),
-            # Configured, delivered no frame at all. What `on_camera_unavailable` acts on.
+            # Fused, delivered no frame at all: warned of, and the pick goes on with the others.
             "cameras_absent": len(missing),
             # How well the cameras agreed, not just how many answered: the mean association score
             # over the pairs that won their assignment. The telemetry catalog declares
             # `fusion_evidence_quality` as a unit interval without saying what it means; this is the
             # association's own confidence, the only quantity in the fusion that is one. Bounded
-            # [0, 1] for every metric (overlap is a fraction, centroid is clipped, box-IoU is a
-            # ratio), so the catalog's validator holds whichever is configured.
+            # [0, 1]: the overlap is a fraction, so the catalog's validator holds.
             "fused_evidence_quality": _mean_winning_association_score(fused),
         }
         if with_neighbours:
             self._fusion_geometry_telemetry["fused_neighbour_points"] = fused.neighbour_points
 
-    def _fixed_camera_views(
-        self, config: "FusionGeometryConfig",
-    ) -> "tuple[list[ObservedView], list[str], list[str], int]":
+    def _fixed_camera_views(self) -> "tuple[list[ObservedView], list[str], list[str], int]":
         """Every other camera's segmented view placed in BASE, with the cameras absent and those that grounded nothing.
 
-        Acquires every other camera once (``multi_camera_perception.acquire_all()``) and applies the missing-camera
-        policy (``on_camera_unavailable``: refuse raises, anything else warns). A camera with no resolver, or none that
-        placed this frame, is dropped with a warning; one that grounded nothing is counted, not dropped silently. The
-        last element is ``time.monotonic_ns()`` read as the frames came in, where the fusion clock starts.
+        Acquires every other camera once (``multi_camera_perception.acquire_all()``) and warns of a fused camera that
+        delivered no frame, then goes on with the ones that did. A camera with no resolver, or none that placed this
+        frame, is dropped with a warning; one that grounded nothing is counted, not dropped silently. The last element
+        is ``time.monotonic_ns()`` read as the frames came in, where the fusion clock starts.
         """
         from src.robot.grasping.multiview.scene_geometry import ObservedView
 
@@ -6380,25 +5725,19 @@ class BinPickingOrchestrator:
         observations = tuple(self.multi_camera_perception.acquire_all())
         fusion_t0_ns = time.monotonic_ns()
         delivered = {observation.camera_id for observation in observations}
-        # The configured list first, the resolver map only as a fallback for a caller that wired
-        # this by hand. An expectation derived from the resolvers that built cannot notice a camera
-        # whose resolver never built, so that camera is one nobody waits for.
-        expected = set(self.configured_camera_ids) or set(resolvers)
+        # Every fused camera but the primary, which delivers through `perception`. The resolvers are built
+        # fail-closed for exactly the cameras the cell fuses, so a camera whose calibration did not load never
+        # got this far.
+        expected = set(resolvers) - {self.primary_camera_id}
         missing = sorted(expected - delivered)
         # Why each absent camera was absent, when the rig recorded it. Absence is the protocol's only
-        # error channel, so without this the policy below can say that a camera did not deliver and
+        # error channel, so without this the warning below can say that a camera did not deliver and
         # not whether the device is unplugged, the pipeline never started, or a driver raised.
         why_absent = dict(getattr(self.multi_camera_perception, "last_failures", None) or {})
         if missing:
             reasons = "; ".join(f"{cam}: {why_absent[cam]}" for cam in missing if cam in why_absent)
-            if str(config.on_camera_unavailable) == "refuse":
-                raise RuntimeError(
-                    f"grasping.fusion.geometry: configured camera(s) {missing} delivered no frame "
-                    "and on_camera_unavailable='refuse'"
-                    + (f" ({reasons})" if reasons else "")
-                )
             _LOG.warning(
-                "grasping.fusion.geometry: camera(s) %s delivered no frame%s; continuing with %s",
+                "camera fusion: camera(s) %s delivered no frame%s; continuing with %s",
                 missing,
                 f" ({reasons})" if reasons else "",
                 sorted(delivered & expected) or "no other camera (single-view)",
@@ -6416,43 +5755,31 @@ class BinPickingOrchestrator:
                 # extrinsic would fuse a real surface into the wrong place, which is worse than
                 # not fusing it at all.
                 _LOG.warning(
-                    "grasping.fusion.geometry: camera %r has no CAMERA->BASE resolver, so its view "
-                    "is dropped: a fused camera needs grasping.fusion.enabled, an enabled entry in "
-                    "fusion.cameras and its calibration declared on its rig, "
-                    "camera.cameras.rigs[<id>].extrinsics",
+                    "camera fusion: camera %r has no CAMERA->BASE resolver, so its view is dropped: a fused "
+                    "camera needs its calibration declared on its rig, camera.cameras.rigs[<id>].extrinsics",
                     observation.camera_id,
                 )
                 continue
             other_to_base = resolver.camera_to_base_for_frame(observation.frame, arm=self.arm)
             if other_to_base is None:
                 _LOG.warning(
-                    "grasping.fusion.geometry: camera %r resolved no CAMERA->BASE this frame; its "
-                    "view is dropped",
+                    "camera fusion: camera %r resolved no CAMERA->BASE this frame; its view is dropped",
                     observation.camera_id,
                 )
                 continue
-            # The segmentation, not just its mask. A mask is enough to fuse a surface onto an
-            # object the primary already found, and not enough to grasp from: the calculator takes a
-            # segmentation, this camera's depth and this camera's intrinsics, and a bare mask is one
-            # of the three. Carrying the pair keeps them in step, so an object promoted from this
-            # camera cannot end up with one camera's mask and another's depth.
-            segmented = tuple(
-                (seg, mask)
-                for seg, mask in ((s, getattr(s, "mask", None))
-                                  for s in observation.frame.segmentations)
-                if mask is not None
-            )
-            masks = tuple(mask for _seg, mask in segmented)
+            # Its masks alone: another camera fuses a surface onto the primary's objects and grasps none.
+            masks = tuple(mask for mask in (getattr(seg, "mask", None) for seg in observation.frame.segmentations)
+                          if mask is not None)
             if not masks:
                 # A camera that delivered a frame and grounded nothing on it. That is a legitimate
                 # answer, not a fault: a camera looking at an empty stretch of bin has done its job,
-                # so it counts as delivered and the missing-camera policy above stays out of it.
-                # It used to be a bare `continue`. The option's own description promises that a cell
-                # must never fall back to single-view silently, and this was the way it did.
+                # so it counts as delivered and the missing-camera warning above stays out of it.
+                # It used to be a bare `continue`, and a cell must never fall back to single-view
+                # silently.
                 grounded_nothing.append(observation.camera_id)
                 _LOG.info(
-                    "grasping.fusion.geometry: camera %r delivered a frame and grounded nothing on "
-                    "it; it contributes no surface this pick",
+                    "camera fusion: camera %r delivered a frame and grounded nothing on it; it contributes no "
+                    "surface this pick",
                     observation.camera_id,
                 )
                 continue
@@ -6460,7 +5787,6 @@ class BinPickingOrchestrator:
                 ObservedView(
                     name=observation.camera_id,
                     masks=masks,
-                    segmentations=tuple(seg for seg, _mask in segmented),
                     depth_map=observation.frame.depth_map,
                     intrinsics=observation.frame.intrinsics,
                     camera_to_base=np.asarray(other_to_base.to_matrix(), dtype=np.float64),
@@ -6477,18 +5803,17 @@ class BinPickingOrchestrator:
         """The fixed cameras' views for every look of a wrist pick: acquired once, at its first look, and kept.
 
         A fixed camera sees the same cell from every look of the wrist, so acquiring it again per look would be a
-        second detect and segment pass per camera for the same answer. Only with ``grasping.fusion.geometry`` enabled,
-        under its missing-camera policy. A rig that lists the wrist camera itself hands back a copy of the first look,
+        second detect and segment pass per camera for the same answer. Only on a cell that fuses its cameras. A rig that
+        lists the wrist camera itself hands back a copy of the first look,
         placed at the first look's pose for every later one: it is left out, because the looks already fuse that
         camera, each at the pose it was taken from.
         """
         if self._fixed_views is None:
-            config = self.fusion_geometry_config
             views: list[ObservedView] = []
             missing: list[str] = []
             grounded_nothing: list[str] = []
-            if config is not None and bool(config.enabled) and self._fixed_cameras_placeable(camera_to_base):
-                views, missing, grounded_nothing, _placed_ns = self._fixed_camera_views(config)
+            if self.camera_frame_resolvers and self._fixed_cameras_placeable(camera_to_base):
+                views, missing, grounded_nothing, _placed_ns = self._fixed_camera_views()
                 views = [view for view in views if not (self.primary_camera_id and view.name == self.primary_camera_id)]
             self._fixed_views = (tuple(views), missing, grounded_nothing)
         return self._fixed_views
@@ -6501,29 +5826,28 @@ class BinPickingOrchestrator:
         The looks' surfaces are the ones :meth:`_look_view` kept: each mask less the pixels behind a depth step and
         the grazing ones, on the measured surface. Two looks of one wrist camera disagree by more than two fixed cameras
         do, the more the wrist turned between them, so while an earlier look takes part the association runs at the
-        wrist tolerances (``association.WRIST_VIEW_*``) unless the fusion config asks for wider ones. The neighbours
+        wrist tolerances (``association.WRIST_VIEW_*``), and with the fixed cameras alone at theirs. The neighbours
         every look saw are returned beside each object's cloud (``with_neighbours``), the seam the candidate filter
         reads its obstacles from, so a part only an earlier look saw stays an obstacle to this look's grasps. With no
         earlier look the fixed cameras are fused as :meth:`_fused_scene` fuses them.
 
         ``None`` when there is nothing to fuse with, or this look placed nothing; the counters are stamped as the fixed
-        cameras' fusion stamps them, and only where that fusion is enabled, so a wrist cell without it keeps the
-        telemetry it had.
+        cameras' fusion stamps them, and where nothing was fused only on a cell that fuses fixed cameras, so a wrist
+        cell of one camera keeps the telemetry it had.
         """
         from src.robot.grasping.multiview.association import (
+            DEFAULT_MIN_SCORE,
             DEFAULT_NEIGHBOUR_MM,
             WRIST_VIEW_MIN_SCORE,
             WRIST_VIEW_NEIGHBOUR_MM,
             WRIST_VIEW_SCORE_VOXEL_MM,
-            AssociationMetric,
         )
         from src.robot.grasping.multiview.scene_geometry import fuse_scene_geometry
 
         look = self._current_look
         assert look is not None  # the caller's branch
         self._last_fused_scene = None
-        config = self.fusion_geometry_config
-        fixed_on = config is not None and bool(config.enabled)
+        fixed_on = bool(self.camera_frame_resolvers)
         fixed, missing, grounded_nothing = self._fixed_views_of_the_pick(camera_to_base)
         earlier = [seen.view for seen in self._look_views if seen.view is not None]
         views = [*earlier, *fixed]
@@ -6546,19 +5870,10 @@ class BinPickingOrchestrator:
         primary_footprints = (tuple(empty if footprint is None else footprint for footprint in look.footprints)
                               if look.footprints else None)
         if earlier:
-            metric = AssociationMetric(str(config.metric)) if config is not None else AssociationMetric.OVERLAP
-            min_score = float(config.min_score) if config is not None else WRIST_VIEW_MIN_SCORE
-            neighbour_mm = max(float(config.neighbour_mm) if config is not None else DEFAULT_NEIGHBOUR_MM,
-                               WRIST_VIEW_NEIGHBOUR_MM)
-            score_voxel_mm = max(float(getattr(config, "score_voxel_mm", 0.0)) if config is not None else 0.0,
-                                 WRIST_VIEW_SCORE_VOXEL_MM)
+            min_score, neighbour_mm, score_voxel_mm = WRIST_VIEW_MIN_SCORE, WRIST_VIEW_NEIGHBOUR_MM, WRIST_VIEW_SCORE_VOXEL_MM
         else:
-            assert config is not None  # the fixed views exist only where their fusion is enabled
-            metric = AssociationMetric(str(config.metric))
-            min_score = float(config.min_score)
-            neighbour_mm = float(config.neighbour_mm)
-            score_voxel_mm = float(getattr(config, "score_voxel_mm", 0.0))
-        with_neighbours = bool(earlier) or bool(getattr(config, "neighbour_scene_enabled", False))
+            min_score, neighbour_mm, score_voxel_mm = DEFAULT_MIN_SCORE, DEFAULT_NEIGHBOUR_MM, 0.0
+        with_neighbours = bool(earlier)
         fusion_t0_ns = time.monotonic_ns()
         fused = fuse_scene_geometry(
             primary_masks,
@@ -6566,12 +5881,9 @@ class BinPickingOrchestrator:
             np.asarray(frame.intrinsics, dtype=np.float64),
             look.camera_to_base,
             views,
-            metric=metric,
             min_score=min_score,
             neighbour_mm=neighbour_mm,
-            max_centroid_mm=float(config.max_centroid_mm) if config is not None else 150.0,
             with_neighbours=with_neighbours,
-            neighbour_voxel_mm=float(getattr(config, "neighbour_voxel_mm", 8.0)) if config is not None else 8.0,
             score_voxel_mm=score_voxel_mm,
             primary_footprints=primary_footprints,
         )
@@ -6580,38 +5892,13 @@ class BinPickingOrchestrator:
         self._last_fused_scene = fused
         return fused
 
-    def calculator_for(self, camera_id: str):  # noqa: ANN201
-        """The calculator bound to ``camera_id``'s intrinsics, or the cell's own.
-
-        The fallback is not a convenience: a cell with one camera has one calculator and no map, and
-        every object it ever sees is the primary's, so the lookup must answer without a map existing.
-        A miss with a map present is also the cell's own calculator rather than a refusal, because
-        that combination means promotion produced an object from a camera nobody built a calculator
-        for, and refusing the pick over it would be a larger failure than computing it in the primary
-        lens and saying so.
-        """
-        table = self.camera_calculators
-        if not table:
-            return self.calculator
-        found = table.get(camera_id)
-        if found is None:
-            _LOG.warning(
-                "no calculator built for camera %r; computing its object in the primary camera's "
-                "lens, which places the grasp with the wrong intrinsics", camera_id)
-            return self.calculator
-        return found
-
     def _scene_objects(self, frame, camera_to_base, fused_scene):  # noqa: ANN001, ANN202
-        """The objects this pick may attempt, and the camera each one is grasped from.
+        """The objects this pick may attempt: one entry per segmentation of the primary frame, in its own order,
+        carrying the primary's depth and intrinsics and the fused cloud of each where the cameras fused one.
 
-        Default-off means the same list, not a similar one. With `promote_unmatched` false this
-        returns exactly one entry per segmentation of the primary frame, in the primary's own order,
-        carrying the primary's depth and intrinsics. Position for position it is the list the loop
-        iterated before this method existed, so nothing measured against that loop moves.
-
-        With it on, an object no primary segmentation corresponds to survives instead of being
-        dropped. Detection and segmentation already ran on that camera and cost a full pass; what was
-        missing was anywhere for the result to go.
+        Position for position it is the list the loop iterated before this method existed, so nothing measured
+        against that loop moves. An object only another camera saw is not among them: letting a camera introduce
+        one (``promote_unmatched``) left on 2026-10-16, never switched on in a shipped tree (the owner's cleanup).
         """
         from src.robot.grasping.multiview.scene_geometry import (  # noqa: PLC0415
             ObservedView,
@@ -6635,57 +5922,7 @@ class BinPickingOrchestrator:
         clouds = tuple(
             fused_scene.cloud_for(index) for index in range(len(primary.masks))
         ) if fused_scene is not None else None
-
-        config = self.fusion_geometry_config
-        if config is None or not bool(getattr(config, "promote_unmatched", False)):
-            return build_scene_objects([primary], (), fused_clouds=clouds)
-
-        from src.robot.grasping.multiview.association import (  # noqa: PLC0415
-            AssociationMetric,
-            ViewCandidates,
-            cluster_views,
-        )
-        from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
-
-        views = [primary, *self._last_other_views]
-        candidates = [
-            ViewCandidates(
-                name=view.name,
-                clouds_base_mm=tuple(
-                    to_base_mm(mask, view.depth_map, view.intrinsics, view.camera_to_base)
-                    for mask in view.masks
-                ),
-            )
-            for view in views
-        ]
-        clusters = cluster_views(
-            candidates,
-            metric=AssociationMetric(str(config.metric)),
-            min_score=float(config.min_score),
-            neighbour_mm=float(config.neighbour_mm),
-            max_centroid_mm=float(config.max_centroid_mm),
-            score_voxel_mm=float(getattr(config, "score_voxel_mm", 0.0)),
-        )
-        objects = build_scene_objects(
-            views, clusters, fused_clouds=clouds,
-            # The same clouds the clustering scored, so a promoted object seen by two cameras
-            # is grasped from both. Reused rather than rebuilt: back-projecting them a second
-            # time would be the same arithmetic on the same frames for the same answer.
-            view_clouds=[view.clouds_base_mm for view in candidates],
-        )
-        promoted = sum(1 for obj in objects if obj.promoted)
-        if promoted:
-            # Said once per pick, because an object appearing that the primary camera cannot see is
-            # the whole point of the feature and also the thing an operator will want to check first
-            # when a cell reaches for something they did not expect it to know about.
-            _LOG.info(
-                "grasping.fusion.geometry: %d object(s) promoted from a camera other than %r; "
-                "%d object(s) in the scene",
-                promoted, self.primary_camera_id, len(objects),
-            )
-        self._fusion_geometry_telemetry["objects_promoted"] = promoted
-        self._fusion_geometry_telemetry["objects_in_scene"] = len(objects)
-        return objects
+        return build_scene_objects(primary, fused_clouds=clouds)
 
     def _offer_masks_to_planner_world(
         self, frame: "PerceptionFrame", target_index: "int | None", *,
@@ -6761,23 +5998,9 @@ class BinPickingOrchestrator:
         return name
 
     def _best_result_over_segmentations(
-        self, frame: PerceptionFrame
-    ) -> "tuple[GraspResult | None, int | None, OrderingDecision | None]":
-        """Thin wrapper: records the ranking latency span, then delegates.
-
-        A wrapper rather than a span inside the body because this is the one call every pick path
-        makes, open-loop and decision alike, so this single site covers both.
-        """
-        tracker = self.latency_tracker
-        if tracker is None:
-            return self._best_result_over_segmentations_inner(frame)
-        with tracker.span(LatencyStage.RANKING):
-            return self._best_result_over_segmentations_inner(frame)
-
-    def _best_result_over_segmentations_inner(
         self,
         frame: PerceptionFrame,
-    ) -> tuple[GraspResult | None, int | None, OrderingDecision | None]:
+    ) -> tuple[GraspResult | None, int | None]:
         """Compute a grasp for each segmentation; return the best success.
 
         Falls back to the last non-success result (with its reasons)
@@ -6791,17 +6014,9 @@ class BinPickingOrchestrator:
         segmentation, because all segmentations in a single
         :class:`PerceptionFrame` were captured at the same TCP pose.
 
-        When :attr:`target_ordering` is set and enabled the
-        per-segmentation winners are passed through
-        :func:`select_target` and the chosen candidate plus the
-        :class:`OrderingDecision` are returned. Otherwise the legacy
-        ``argmax(top_score)`` path runs verbatim and the returned
-        decision is ``None``.
-
-        With :attr:`lazy_objects` or :attr:`fine_search_waits` on, and the selector off, the parts that pass the
-        gates are computed by :meth:`_lazy_choice` instead: one at a time, the first good part taken, or with SFE's
-        fine search waiting while another part may have a full result. A frame none of whose parts has a grasp fails
-        as it always did, every part computed in full.
+        With :attr:`lazy_objects` on, the parts that pass the gates are computed by :meth:`_lazy_choice` instead: one
+        at a time, the first good part taken. A frame none of whose parts has a grasp fails as it always did, every
+        part computed.
         """
         # What this frame fuses, said by this frame alone: emptied before anything below can raise or
         # stand down, and filled where a fused cloud is handed to the generator.
@@ -6815,8 +6030,7 @@ class BinPickingOrchestrator:
             camera_to_base = self.frame_resolver.camera_to_base_for_frame(
                 frame, arm=self.arm
             )
-        # Stash this frame's CAMERA->BASE so _execute can map the camera-frame neighbour cloud
-        # (on result.metadata) into the candidate (BASE) frame before the swept-volume validation.
+        # Stash this frame's CAMERA->BASE: the planner world places the target by it.
         self._pending_camera_to_base = camera_to_base
         # Transform the fused multi-view scene cloud (BASE) into this frame's CAMERA frame once
         # (the same camera_to_base for every segmentation of the frame). None when not supplied.
@@ -6842,9 +6056,9 @@ class BinPickingOrchestrator:
             _LOG.warning(
                 "container walls are configured but no CAMERA->BASE transform is available; the "
                 "wall-collision check is not running for this attempt")
-        # The objects this pick may attempt. With `promote_unmatched` off this is one entry per
-        # segmentation of the primary frame, in the primary's order, so the loop below runs on
-        # exactly the list it ran on before scene objects existed.
+        # The objects this pick may attempt: one entry per segmentation of the primary frame, in the
+        # primary's order, so the loop below runs on exactly the list it ran on before scene objects
+        # existed.
         scene = self._scene_objects(frame, camera_to_base, fused_scene)
         self._last_scene_objects = tuple(scene)
         if fused_scene is not None:
@@ -6856,8 +6070,7 @@ class BinPickingOrchestrator:
         # Neighbour masks stay the primary frame's, deliberately. They are the clutter around a
         # target in the frame the grasp is synthesised in, and a mask from another camera is in
         # another camera's pixels: handing it to the dense sampler would place clutter by index into
-        # an image it does not belong to. A promoted object's neighbours are a separate question and
-        # this change does not answer it.
+        # an image it does not belong to.
         other_masks = [getattr(seg, "mask", None) for seg in frame.segmentations] + list(
             getattr(frame, "parts_beside", ()) or ())
         ctx = _FrameContext(frame=frame, camera_to_base=camera_to_base, external_scene_cam=external_scene_cam,
@@ -6867,34 +6080,21 @@ class BinPickingOrchestrator:
         best_index: int | None = None
         last_failure: GraspResult | None = None
         last_failure_index: int | None = None
-        # Collect successful per-segmentation results so the target
-        # selector can rank them after all segmentations have been
-        # scored. Both arms of the conditional below allocate the
-        # list; what ``ordering_active`` gates is the append, so with
-        # ordering off the list stays empty and the selector below
-        # short-circuits.
-        ordering_active = (
-            self.target_ordering is not None and self.target_ordering.enabled
-        )
-        successes: list[tuple[int, GraspResult]] = [] if ordering_active else []  # type: ignore[assignment]
-        # The parts computed one at a time, the first good one taken, or with SFE's fine search waiting
-        # (:meth:`_lazy_choice`): never beside the selector, which ranks every part's result. The parts the gates below
+        # The parts computed one at a time, the first good one taken (:meth:`_lazy_choice`). The parts the gates below
         # let through are kept for it in the camera's order, with their surfaces in BASE.
-        lazy = (self.lazy_objects or self.fine_search_waits) and not ordering_active
+        lazy = self.lazy_objects
         # A later look of a pick that follows its parts (:attr:`follow_looks`), whose earlier looks keep a part, ranks
         # that part first and the others only where it has no grasp (:meth:`_kept_part_first`); a lazy ranking computes
-        # it alone already. Never beside the selector either.
-        kept_first = not lazy and not ordering_active and self.follow_looks and self._pinned_members is not None
+        # it alone already.
+        kept_first = not lazy and self.follow_looks and self._pinned_members is not None
         eligible: list[int] = []
         surfaces: dict[int, "np.ndarray | None"] = {}
         # How many segmentations the hard label gate below let through. Zero of them, with a label
         # set, is a nameable failure rather than an empty reason tuple.
         label_matches = 0
-        # The parts next_target skips (the campaign's exclusion zones), by segmentation index, and of them those no region
-        # of the task holds: a part skipped after a failed pick, which still stands there to be picked.
+        # The parts the task keeps out (the campaign's exclusion regions), by segmentation index.
         zones = self.exclusion_zones
         excluded: list[int] = []
-        zoned: list[int] = []
         # On a sort, while the pick's first look is still to be recorded: the objects the label gate turned away, the
         # parts no rule claims (PickReport.unclaimed_labels).
         collect = bool(self.target_labels) and self._unclaimed_at_first_look is None
@@ -6923,12 +6123,9 @@ class BinPickingOrchestrator:
                 _LOG.info("segmentation %d (%s) is not taken as a part: %s", idx,
                           getattr(seg, "label", "") or "?", surface)
                 continue
-            # Next to the label gate: a part of the same label that next_target skips is no target either.
-            held = self._exclusion_of(zones, idx, obj, frame) if zones is not None else ""
-            if held:
+            # Next to the label gate: a part standing where the task keeps out is no target either.
+            if zones is not None and self._kept_out(zones, idx, obj, frame):
                 excluded.append(idx)
-                if held != "region":
-                    zoned.append(idx)
                 continue
             # A target: past the label gate, no surface, not kept out. A task counts them at its pick's first look.
             self._targets_in_frame += 1
@@ -6938,8 +6135,6 @@ class BinPickingOrchestrator:
                 continue
             result = self._rank_object(ctx, idx, obj).result
             if result.is_success:
-                if ordering_active:
-                    successes.append((idx, result))
                 if best_success is None or result.top_score > best_success.top_score:
                     best_success = result
                     best_index = idx
@@ -6985,55 +6180,28 @@ class BinPickingOrchestrator:
                         },
                     ),
                     None,
-                    None,
                 )
             if last_failure is None and excluded and len(excluded) == label_matches and zones is not None:
-                # Every part the label gate let through is one next_target skips: stop, rather than try one of them
-                # again or another object.
-                return self._only_excluded(zones, excluded, by_regions=not zoned), None, None
-            return last_failure, last_failure_index, None
+                # Every part the label gate let through stands where the task keeps out: stop, rather than pick one of
+                # them or another object.
+                return self._only_excluded(zones, excluded), None
+            return last_failure, last_failure_index
+        return best_success, best_index
 
-        if not ordering_active or len(successes) <= 1:
-            return best_success, best_index, None
-
-        # ---- clutter-aware ordering ----
-        candidates = _build_target_candidates(
-            successes, frame.depth_map, frame.segmentations
-        )
-        assert self.target_ordering is not None  # narrow for the checker
-        decision = select_target(
-            candidates=candidates, config=self.target_ordering
-        )
-        # Map the selector's choice (index into ``candidates``) back
-        # to the originating segmentation index + cached GraspResult.
-        if decision.chosen_index is None:
-            return best_success, best_index, decision
-        chosen_seg_idx, chosen_result = successes[decision.chosen_index]
-        return chosen_result, chosen_seg_idx, decision
-
-    def _rank_object(
-        self, ctx: _FrameContext, idx: int, obj: Any, *, fine: bool = True, support: Any = UNSET,
-    ) -> _RankedObject:
+    def _rank_object(self, ctx: _FrameContext, idx: int, obj: Any, *, support: Any = UNSET) -> _RankedObject:
         """Compute object ``idx`` of the frame ``ctx`` holds: its grasps by the calculator of the camera that saw it,
         against its neighbours, the walls and its support, kept along the closing axis (:meth:`_closing_along`), and
         kept per object (``_results_by_object``), a computing again of it replacing the one before.
 
-        ``fine`` off leaves SFE's fine search for later where the calculator can (:meth:`_fine_search_waiting`): the
-        result is then not ``complete`` where the coarse grid alone found few grasps. ``support`` is the support
-        resolved for the object already, where the caller resolved it; unset, it is resolved here.
+        ``support`` is the support resolved for the object already, where the caller resolved it; unset, it is resolved
+        here.
         """
         seg = obj.segmentation
         frame = ctx.frame
         camera_to_base = ctx.camera_to_base
         fused_scene = ctx.fused_scene
         support_model = ctx.support_model
-        # A promoted object is not in `other_masks` at all, so `j != idx` would exclude an
-        # unrelated primary object instead of itself. Excluding nothing is right for it: every
-        # primary mask genuinely is clutter around it.
-        neighbours = [
-            m for j, m in enumerate(ctx.other_masks)
-            if m is not None and not (not obj.promoted and j == idx)
-        ]
+        neighbours = [m for j, m in enumerate(ctx.other_masks) if m is not None and j != idx]
         extra_kwargs: dict = {}
         if camera_to_base is not None:
             extra_kwargs["camera_to_base"] = camera_to_base
@@ -7056,7 +6224,7 @@ class BinPickingOrchestrator:
         # explicit external cloud still wins, so enabling fusion cannot change a runner that
         # supplies one.
         elif fused_scene is not None and camera_to_base is not None:
-            neighbour_base = (None if obj.promoted else fused_scene.neighbour_for(idx))
+            neighbour_base = fused_scene.neighbour_for(idx)
             if neighbour_base is not None and neighbour_base.size:
                 neighbour_cam = self._base_points_to_camera(neighbour_base, camera_to_base)
                 if neighbour_cam is not None:
@@ -7084,9 +6252,8 @@ class BinPickingOrchestrator:
             if object_cloud is not None and object_cloud.size:
                 extra_kwargs["geometry_points_base_mm"] = object_cloud
                 # The same views less their rim, for SFE's footprint alone (robot.grasping.geometry.footprint_rim_mm):
-                # the cloud above stays what the jaw faces, the planner world's hold-out and the push read. A promoted
-                # object's cloud is stacked from the views of its cluster, which carry no footprint: it is read whole.
-                footprint = None if obj.promoted else fused_scene.footprint_for(idx)
+                # the cloud above stays what the jaw faces, the planner world's hold-out and the push read.
+                footprint = fused_scene.footprint_for(idx)
                 if footprint is not None:
                     extra_kwargs["footprint_points_base_mm"] = footprint
                 # Named here and nowhere else: this is the line the fused cloud reaches the
@@ -7095,11 +6262,6 @@ class BinPickingOrchestrator:
                     obj, idx, fused_scene, primary_name=self._look_name_ranked())
         if self.gripper_model is not None:
             extra_kwargs["gripper_model"] = self.gripper_model
-        if self.corridor_config is not None:
-            extra_kwargs["corridor_config"] = self.corridor_config
-        if self.feasibility_config is not None:
-            extra_kwargs["feasibility_config"] = self.feasibility_config
-            extra_kwargs["feasibility_weight"] = self.feasibility_weight
         # The plane is BASE-framed, and the calculator's collision filter runs on CAMERA-frame
         # poses, so it needs the transform to place the table at all: without one it refuses
         # rather than silently skipping the check. The calculator is never handed an
@@ -7107,7 +6269,7 @@ class BinPickingOrchestrator:
         # base-frame grasp either, so the plane is withheld and the warning says so instead of
         # the check being dropped quietly (a silently-skipped table check is the exact defect
         # this whole seam exists to close).
-        support_cfg = self.support_config
+        declared = self.declared_support
         if not chosen(support):
             # A look of a wrist pick refines the support from the target's cloud fused over its looks, when there is one.
             support = self._resolve_support(seg, frame, camera_to_base, self._looks_cloud_of(obj), support_model)
@@ -7115,9 +6277,9 @@ class BinPickingOrchestrator:
             # The model rides beside the plane (contract 2): the calculator reads its surfaces for what is support and
             # what an obstacle, for SFE's support under the part, and for the solids the open hand keeps off.
             extra_kwargs["support_model"] = support_model
-        if support is not None and support_cfg is not None and camera_to_base is not None:
+        if support is not None and declared is not None and camera_to_base is not None:
             extra_kwargs["support_plane"] = support.plane
-            extra_kwargs["min_table_clearance_mm"] = support_cfg.min_clearance_mm
+            extra_kwargs["min_table_clearance_mm"] = declared.min_clearance_mm
             # Where the table ended up, and whether it was declared or observed.
             # `SupportResolution.as_telemetry` was written for this and had no caller anywhere in
             # the tree; the only plane number reaching a log was a camera depth from the
@@ -7139,25 +6301,13 @@ class BinPickingOrchestrator:
             _LOG.warning(
                 "support plane configured but no CAMERA->BASE transform is available; "
                 "the table-clearance check is not running for this attempt")
-        # The calculator for the camera this object was seen by, and its depth. A calculator
-        # is bound to one camera's intrinsics at construction, so computing a promoted object
-        # with the primary's calculator would synthesise a grasp using the wrong focal length
-        # and the wrong principal point on the right pixels: plausible numbers, wrong place.
-        # `calculator_for` returns the cell's own calculator for every object the primary saw,
-        # which is every object unless promotion is on, so this line is the line it replaced.
-        calculator = self.calculator_for(obj.camera_id)
-        if self.sfe_workers is not None:
-            # SFE's units on the cell's workers, for this call and every one that asks again of the same frame.
-            extra_kwargs["sfe_workers"] = self.sfe_workers
+        calculator = self.calculator
         if ctx.scene_views:
             extra_kwargs["scene_views"] = ctx.scene_views
-        with self._asking_more_along_the_axis(calculator) as cap, self._fine_search_waiting(calculator, not fine):
+        with self._asking_more_along_the_axis(calculator) as cap:
             result = calculator.compute_result(
                 seg,
                 obj.depth_map,
-                pixel_to_mm=None,
-                dense_sampling=self.dense_sampling,
-                grasp_sampling_mode=self._resolved_sampling_mode,
                 other_object_masks=neighbours,
                 **extra_kwargs,
             )
@@ -7169,7 +6319,6 @@ class BinPickingOrchestrator:
             cloud_base_mm=extra_kwargs.get("geometry_points_base_mm"),
             call=_Call(seg=seg, depth=obj.depth_map, neighbours=tuple(neighbours), kwargs=dict(extra_kwargs),
                        camera_id=str(obj.camera_id)),
-            complete=not _fine_search_deferred(result),
         )
         self._results_by_object[idx] = ranked
         return ranked
@@ -7200,18 +6349,15 @@ class BinPickingOrchestrator:
         surfaces: "Mapping[int, np.ndarray | None]",
     ) -> int | None:
         """Which of the parts ``eligible`` (indices into ``scene``, in the camera's order) a pick goes for where it
-        computes them one at a time (:attr:`lazy_objects`) or lets SFE's fine search wait (:attr:`fine_search_waits`);
-        ``None`` where none has a grasp. Every part computed is kept per object, as every ranking keeps them.
+        computes them one at a time (:attr:`lazy_objects`); ``None`` where none has a grasp. Every part computed is kept
+        per object, as every ranking keeps them.
 
         * A later look of a wrist pick whose part is kept (``_pinned_members``): that part alone, in full, or nothing
           where this look did not see it. :meth:`_judge` reads its result alone.
         * Otherwise the parts in the order they stand apart (:meth:`_isolation_key`) where the first good part is
           taken, else in the camera's order. The first good part (:meth:`_a_good_part`) is taken, and the parts after it
-          are not computed. Where the fine search waits, a part is computed without it but for the last, which gets it
-          where no part has a full result with a grasp yet; a part whose coarse grid alone found few grasps waits.
-        * None taken: the best of the parts computed in full that have a grasp. Where there is none, the parts that
-          waited get the fine search, in the same order, the first good one taken; failing that, the best of them all,
-          every part now computed in full: the part the ranking took before.
+          are not computed.
+        * None taken: the best of the parts computed that have a grasp, the part the ranking took before.
         """
         if self._pinned_members is not None:
             target = self._pinned_object(ctx.fused_scene, self._pinned_members)
@@ -7233,30 +6379,13 @@ class BinPickingOrchestrator:
             _LOG.info("the parts are computed in the order they stand apart, the first good one taken: %s", "; ".join(
                 f"part {idx} ({'wider than the stroke' if keys[idx][0] else 'fits'}"
                 f"{', under another' if under[idx] else ''}, crowded {keys[idx][1]:.1f})" for idx in order))
-        waits = self.fine_search_waits
-        deferred: list[int] = []
-        held = False
         for position, idx in enumerate(order):
-            fine = not waits or (position == len(order) - 1 and not held)
-            ranked = self._rank_object(ctx, idx, scene[idx], fine=fine, support=supports.get(idx, UNSET))
-            if not ranked.complete:
-                deferred.append(idx)
-                continue
-            held = held or ranked.result.is_success
+            ranked = self._rank_object(ctx, idx, scene[idx], support=supports.get(idx, UNSET))
             if self.lazy_objects and self._a_good_part(ctx, idx, ranked):
                 _LOG.info("part %d is good (%.3f, %.2f asked): it is taken, and %d part(s) after it are not computed",
                           idx, float(ranked.result.top_score), float(self.accept_score), len(order) - position - 1)
                 return idx
-        if held:
-            return self._best_of(complete_only=True)
-        if deferred:
-            _LOG.info("no part has a full result with a grasp: the %d part(s) that waited get SFE's fine search",
-                      len(deferred))
-        for idx in deferred:
-            ranked = self._rank_object(ctx, idx, scene[idx], support=supports.get(idx, UNSET))
-            if self.lazy_objects and self._a_good_part(ctx, idx, ranked):
-                return idx
-        return self._best_of(complete_only=False)
+        return self._best_of()
 
     def _kept_part_first(
         self, ctx: _FrameContext, scene: "list[Any] | tuple[Any, ...]", eligible: list[int],
@@ -7275,16 +6404,15 @@ class BinPickingOrchestrator:
         for idx in eligible:
             if idx != target:
                 self._rank_object(ctx, idx, scene[idx])
-        return self._best_of(complete_only=False)
+        return self._best_of()
 
-    def _best_of(self, *, complete_only: bool) -> int | None:
+    def _best_of(self) -> int | None:
         """The part of the last ranking whose best grasp scores highest, the first in the camera's order on a tie, as
-        the ranking always took it; of the full results alone where ``complete_only``. ``None`` where none has a
-        grasp."""
+        the ranking always took it. ``None`` where none has a grasp."""
         best: int | None = None
         for idx in sorted(self._results_by_object):
             ranked = self._results_by_object[idx]
-            if not ranked.result.is_success or (complete_only and not ranked.complete):
+            if not ranked.result.is_success:
                 continue
             if best is None or ranked.result.top_score > self._results_by_object[best].result.top_score:
                 best = idx
@@ -7305,12 +6433,12 @@ class BinPickingOrchestrator:
         return failure, index
 
     def _a_good_part(self, ctx: _FrameContext, idx: int, ranked: _RankedObject) -> bool:
-        """Whether part ``idx`` is good enough for a lazy ranking to take it without computing the rest: a full result
+        """Whether part ``idx`` is good enough for a lazy ranking to take it without computing the rest: a result
         with a grasp, none of the rescan reasons (the test :meth:`_judge` makes of a look), a best grasp scoring
         :attr:`accept_score` or more, and with :attr:`both_faces` on a hand with jaws both contact faces of that grasp
         seen, on the cloud :meth:`_judge` and a fixed camera's check judge them on."""
         result = ranked.result
-        if not ranked.complete or not result.is_success or set(result.reasons) & _RESCAN_REASONS:
+        if not result.is_success or set(result.reasons) & _RESCAN_REASONS:
             return False
         if float(result.top_score) < float(self.accept_score):
             return False
@@ -7348,17 +6476,17 @@ class BinPickingOrchestrator:
 
     def _fits_the_stroke(self, obj: Any, surface: "np.ndarray | None", support_mm: float | None) -> bool:
         """Whether the hand closes across object ``obj``: the short side of its footprint over ``support_mm``
-        (``support_footprint.reconstruct_support_prism``) no wider than the calculator's stroke less
+        (``support_prism.reconstruct_support_prism``) no wider than the calculator's stroke less
         :data:`_STROKE_SPARE_MM`. Read on the cloud its generator is handed where it is handed one, else on ``surface``,
         its surface in this frame. ``True`` where nothing can be read."""
-        from src.robot.grasping.generation.support_footprint import reconstruct_support_prism  # noqa: PLC0415
+        from src.robot.grasping.generation.support_prism import reconstruct_support_prism  # noqa: PLC0415
 
         cloud = surface
         if self.external_target_geometry_base_mm is not None and self.target_label is not None:
             cloud = self.external_target_geometry_base_mm
         elif obj.fused_cloud_base_mm is not None and np.asarray(obj.fused_cloud_base_mm).size:
             cloud = obj.fused_cloud_base_mm
-        stroke = getattr(self.calculator_for(obj.camera_id), "max_grip_mm", None)
+        stroke = getattr(self.calculator, "max_grip_mm", None)
         if support_mm is None or cloud is None or isinstance(stroke, bool) or not isinstance(stroke, (int, float)):
             return True
         try:
@@ -7406,7 +6534,7 @@ class BinPickingOrchestrator:
         order reads them (:meth:`_crowding`, :meth:`_under_another`); ``None`` where mask and depth do not fit."""
         mask = np.asarray(obj.segmentation.mask).astype(bool)
         measured = getattr(ctx.frame, "surface_depth_map", None)
-        depth = np.asarray(obj.depth_map if obj.promoted or measured is None else measured, dtype=np.float64)
+        depth = np.asarray(obj.depth_map if measured is None else measured, dtype=np.float64)
         if mask.shape != depth.shape[:2]:
             return None
         with np.errstate(invalid="ignore"):
@@ -7448,25 +6576,9 @@ class BinPickingOrchestrator:
         """The object's cloud fused over a wrist pick's looks, while a look is ranked and it has one: what its support
         is refined from (:meth:`_resolve_support`). ``None`` otherwise."""
         cloud = obj.fused_cloud_base_mm
-        if self._current_look is None or obj.promoted or cloud is None or not cloud.size:
+        if self._current_look is None or cloud is None or not cloud.size:
             return None
         return cloud
-
-    @contextmanager
-    def _fine_search_waiting(self, calculator: Any, wait: bool) -> Iterator[None]:
-        """The ranking of one object by ``calculator`` with SFE's fine search left for later where ``wait``: its
-        ``sfe_fine_pass`` off while it ranks, and as it was again once it has, raise or not. Nothing where it is not to
-        wait, or the calculator has no such switch (a deep calculator, a stand-in): it ranks in full, as it always
-        did."""
-        before = getattr(calculator, "sfe_fine_pass", None)
-        if not wait or not isinstance(before, bool):
-            yield
-            return
-        calculator.sfe_fine_pass = False
-        try:
-            yield
-        finally:
-            calculator.sfe_fine_pass = before
 
     def _closing_along(self, result: GraspResult, camera_id: str, cap: "int | None" = None) -> GraspResult:
         """``result`` with only the grasps that close along the closing axis the policy names (``closing_axis``), each
@@ -7507,7 +6619,7 @@ class BinPickingOrchestrator:
         else:
             return result
         if kept is not result:
-            self._overlay_the_kept(self.calculator_for(camera_id), kept)
+            self._overlay_the_kept(self.calculator, kept)
         return kept
 
     def _turned_onto_its_branch(self, result: GraspResult) -> GraspResult:
@@ -7646,11 +6758,8 @@ class BinPickingOrchestrator:
         anything was sent with the hand kept out of the part's keep-out box (the owner's "try the next grasps").
 
         The grasps, best first, are ``result.best`` and then the rest of ``result.candidates`` in rank order, at most
-        :data:`GRASPS_TRIED_PER_ATTEMPT`. Where approach validation is wired (``approach_path_policy`` set and this
-        orchestrator's ``mode_label`` in ``_approach_path_modes``) only the candidates whose approach and retreat sweep
-        is clear of the scene's neighbour cloud are tried, with the cell's own hand, and where none is the answer is
-        ``APPROACH_PATH_BLOCKED`` with nothing moved. With both jaw contact faces asked for (``both_faces``, a jaw hand)
-        only ``result.best`` is tried: its faces are the ones that were judged.
+        :data:`GRASPS_TRIED_PER_ATTEMPT`. With both jaw contact faces asked for (``both_faces``, a jaw hand) only
+        ``result.best`` is tried: its faces are the ones that were judged.
 
         A next grasp follows only where the try before failed on a motion a guard or the planner refused before it was
         sent (``generated_view.REFUSED_BEFORE_SENDING``, or the planner's own no-plan sentence) and every motion it did
@@ -7690,12 +6799,6 @@ class BinPickingOrchestrator:
         assert self.policy is not None  # ensured by __post_init__
         pool: tuple[GraspPoint, ...] = (grasp,) if self._grips_only_the_judged_grasp() else (
             grasp, *(candidate for candidate in result.candidates if candidate is not grasp))
-        if self.approach_path_policy is not None and self.mode_label in self._approach_path_modes:
-            cloud = self._obstacle_cloud_in_candidate_frame(result)
-            pool = tuple(candidate for candidate in pool if self._approach_sweep_is_clear(candidate, cloud))
-            if not pool:
-                # Every ranked candidate's sweep is blocked: refuse rather than drive into an obstacle.
-                return _Tried(report=PolicyReport(outcome=PolicyOutcome.APPROACH_PATH_BLOCKED))
         order = pool[:GRASPS_TRIED_PER_ATTEMPT]
         ranks = {id(candidate): rank for rank, candidate in enumerate(result.candidates)}
         # Read whatever the order's length: a wrist pick goes back there after its last try as before its next (S1).
@@ -7892,7 +6995,7 @@ class BinPickingOrchestrator:
                 return True, True, False
             entered = any(self._jaws_in_the_box(pose, target_box) is not False for pose in waypoints)
             return bool(waypoints), entered, True
-        if outcome in (PolicyOutcome.CAMERA_FRAME_REJECTED, PolicyOutcome.APPROACH_PATH_BLOCKED):
+        if outcome is PolicyOutcome.CAMERA_FRAME_REJECTED:
             return False, False, False
         if outcome is PolicyOutcome.GRIPPER_FAULT and not waypoints:
             return False, False, False
@@ -7957,47 +7060,6 @@ class BinPickingOrchestrator:
         except (TypeError, ValueError):
             return None
 
-    def _obstacle_cloud_in_candidate_frame(self, result: GraspResult) -> "np.ndarray | None":
-        """The scene neighbour cloud in the winning candidate's frame, or ``None`` to skip the check.
-
-        The calculator surfaces a CAMERA-frame cloud on ``result.metadata``. Candidates are
-        BASE-frame when a frame_resolver is wired (the production path), so transform the cloud with
-        the stashed CAMERA->BASE. Fail-safe: a BASE candidate with no transform available returns
-        ``None``, skipping the check and proceeding, rather than validate a base grasp against a
-        camera cloud (a mis-framed verdict).
-        """
-        meta = result.metadata or {}
-        cloud = meta.get("scene_points_mm")
-        if cloud is None:
-            return None
-        cloud = np.asarray(cloud, dtype=np.float64)
-        if cloud.size == 0:
-            return None
-        best = result.best
-        if best is not None and best.frame is GraspFrame.BASE:
-            transform = self._pending_camera_to_base
-            if transform is None:
-                return None  # skip: do not validate a base grasp against a camera-frame cloud
-            mat = np.asarray(transform.to_matrix(), dtype=np.float64)
-            return (cloud @ mat[:3, :3].T) + mat[:3, 3]
-        return cloud  # candidate is camera-frame, so the cloud is already camera-frame
-
-    def _approach_sweep_is_clear(
-        self, candidate: GraspPoint, cloud: "np.ndarray | None"
-    ) -> bool:
-        """True iff the candidate's approach and retreat sweeps are clear of the obstacle cloud."""
-        try:
-            grasp_pose = _grasp_point_to_grasp_pose(candidate)
-        except ValueError:
-            # Degenerate axes (approach ~parallel to closing) cannot build a sweep; the calculator
-            # already accepted this candidate's final pose, so proceed rather than spuriously refuse.
-            return True
-        # The cell's own hand, not the 2F-85's defaults the validator falls back to (E2-9 of the cell analysis).
-        approach_report, retreat_report = validate_approach_and_retreat(
-            grasp_pose, obstacle_points_mm=cloud, policy=self.approach_path_policy, gripper_model=self.gripper_model,
-        )
-        return approach_report.is_clear and retreat_report.is_clear
-
 
 #: The share of a blocker's points that has to lie on a part the detector named for it to be taken as the pick.
 _BLOCKER_NAMED_SHARE = 0.5
@@ -8015,8 +7077,8 @@ def _named_share(points: np.ndarray, named: np.ndarray) -> float:
 
 
 def _seen_refusals(result: Any) -> int:
-    """How many of the tries for a part met a neighbour the camera saw (``scene_obstacles.refusal_counts``, SFE's and the
-    body's, B.1's ``seen_fingers`` and ``seen_corridor``); 0 where the result says nothing of them."""
+    """How many of the tries for a part met a neighbour the camera saw (``scene_obstacles.refusal_counts``, the body's,
+    B.1's ``seen_fingers`` and ``seen_corridor``); 0 where the result says nothing of them."""
     from src.robot.grasping.generation.scene_obstacles import refusal_counts  # noqa: PLC0415
 
     telemetry = getattr(result, "telemetry", None)
@@ -8076,11 +7138,9 @@ def _stamp(result: "GraspResult", payload: dict) -> None:
 def _views_behind(obj: Any, index: int, fused_scene: Any, primary_name: str | None = None) -> tuple[str, ...]:
     """The cameras whose surfaces make up ``obj``'s fused cloud, the camera it is grasped from first; ``()`` for one.
 
-    Read the way each cloud was built. A primary object's cloud is its own surface plus every other camera's blob the
-    association assigned to it (`fuse_scene_clouds`), so those cameras are read off the associations, in view order.
-    A promoted object's cloud is its cluster's members (`build_scene_objects`), whose cameras
-    `SceneObject.views_used` already names, the owner first. A camera named twice counts once, so a rig that lists the
-    primary fuses nothing onto it; fewer than two cameras is one view and reads as empty. A primary with no id in the
+    Read the way each cloud was built: an object's cloud is its own surface plus every other camera's blob the
+    association assigned to it (`fuse_scene_clouds`), so those cameras are read off the associations, in view order. A
+    camera named twice counts once, so a rig that lists the primary fuses nothing onto it; fewer than two cameras is one view and reads as empty. A primary with no id in the
     rig is named ``primary``. ``primary_name`` names the primary instead: a look of a wrist pick is ``rig@look``, so two
     looks of one camera are two views.
 
@@ -8090,16 +7150,12 @@ def _views_behind(obj: Any, index: int, fused_scene: Any, primary_name: str | No
     cloud = getattr(obj, "fused_cloud_base_mm", None)
     if cloud is None or not np.asarray(cloud).size:
         return ()
-    if getattr(obj, "promoted", False):
-        named = getattr(obj, "views_used", ())
-        views = [str(view) for view in named] if isinstance(named, (tuple, list)) else []
-    else:
-        views = [primary_name or str(getattr(obj, "camera_id", "") or "primary")]
-        associations = getattr(fused_scene, "associations", ())
-        for association in associations if isinstance(associations, (tuple, list)) else ():
-            assignment = getattr(association, "assignment", ())
-            if isinstance(assignment, (tuple, list)) and index < len(assignment) and assignment[index] is not None:
-                views.append(str(getattr(association, "view", "")))
+    views = [primary_name or str(getattr(obj, "camera_id", "") or "primary")]
+    associations = getattr(fused_scene, "associations", ())
+    for association in associations if isinstance(associations, (tuple, list)) else ():
+        assignment = getattr(association, "assignment", ())
+        if isinstance(assignment, (tuple, list)) and index < len(assignment) and assignment[index] is not None:
+            views.append(str(getattr(association, "view", "")))
     distinct = tuple(dict.fromkeys(view for view in views if view))
     return distinct if len(distinct) > 1 else ()
 

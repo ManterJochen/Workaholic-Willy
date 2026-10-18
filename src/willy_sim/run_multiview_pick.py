@@ -7,7 +7,6 @@ instead of one overhead camera, several fixed eye-to-hand cameras, an overhead p
 each localize the prompted target, and their BASE-frame centroids are fused with visibility weights, so
 a target the overhead loses to occlusion or to the reaching arm is still localized from whichever
 oblique sees it. The fused centroid drives the wrist view pose that ``service.pick()`` works from.
-``run_occlusion_probe`` measures the same camera roles.
 
 The switchable modes name the camera set that localizes; the wrist refine and grasp are identical in
 all of them:
@@ -29,8 +28,6 @@ On-box only, so Isaac is required. Run with Isaac's bundled python from the repo
 from __future__ import annotations
 
 import argparse
-import hashlib
-import time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -104,103 +101,11 @@ TALL_TARGET_OBJECTS = [
     ("blue cube", (0.12, 0.22, 0.90), (450.0, 105.0, 25.0)),                               # 30x30x50
 ]
 
-# Blocker scene: the only scene that gives `grasping.ordering` something to decide.
-#
-# `_blocks(a, b)` in `loop/target_selector.py` is true when a is at least `depth_tolerance_mm` (10)
-# closer to the camera than b and a's mask, dilated by `adjacency_radius_px` (5), touches b's. So the
-# scene has to supply three things at once, and the other scenes each miss one:
-#   * both objects graspable: `close` fails here, because 30x30x50 cubes are too short for a top-down
-#     jaw (all_table_conflict), so `successes` never reaches two and the selector is not called.
-#   * different heights: a top-down camera reads height as depth, and equal heights give no "in front
-#     of" relation at all. `tall`'s cubes differ, 90 mm against 50, which is why they are reused here.
-#   * adjacent masks: `tall` fails here, its cubes being 100 mm apart, which nothing bridges after a
-#     5 px dilate.
-#
-# 50 mm centre to centre along +Y, a 20 mm face gap, with the tall cube as the blocker. The neighbour
-# sits on the Y axis because a parallel jaw closes along one axis, and `close` puts its neighbour
-# exactly where the fingers go. Whether a 20 mm gap falls inside the 5 px dilation depends on the
-# camera and not on arithmetic here.
-BLOCKER_OBJECTS = [
-    ("green cube", (0.10, 0.65, 0.18), (450.0, 0.0, 45.0), (30.0, 30.0, 90.0)),   # Tall = the blocker
-    ("red cube", (0.90, 0.12, 0.12), (450.0, 50.0, 25.0)),                        # shorter, 20 mm away
-]
-
-# Blocker-conflict scene: the one where ordering can change the choice. In the blocker scene above the
-# blocker also carries the better local grasp, so preferring it says nothing; the baseline picks it
-# anyway.
-#
-# To overturn a choice the unlock term has to beat the local-score gap, and `max_local_score_drop`
-# (0.1) bounds how much quality ordering may trade away. So the blocker has to be worse to grasp and
-# still worth taking first. Taller is forced, because a top-down camera reads height as depth and only
-# the nearer object can block, which leaves width as the lever: a 60 mm wide jaw grasp scores below a
-# 30 mm one while the height still makes the object the blocker.
-BLOCKER_CONFLICT_OBJECTS = [
-    ("green cube", (0.10, 0.65, 0.18), (450.0, 0.0, 45.0), (60.0, 30.0, 90.0)),   # Tall + wide: blocks, grasps worse
-    ("red cube", (0.90, 0.12, 0.12), (450.0, 65.0, 25.0)),                        # narrow + short: 40 mm
-    #                                                                               depth difference, above
-    #                                                                               the 10 mm the blocker
-    #                                                                               relation requires
-]
-
-# Corridor scene: the positive control `occlusion.hard_reject_enabled` has never had. The analyzer has
-# only ever been observed lowering false blockage, never raising it on a neighbour that genuinely sits
-# in the descent corridor. `occlude` cannot supply one: its wall blocks the fixed obliques' view, 70 mm
-# to the side of a corridor whose radius is 20 mm.
-#
-# What the analyzer samples, per `scoring/corridor.py`: nine rays, the centre plus eight at
-# `radius_mm` (20), marched up to `max_distance_mm` (200) along the approach axis over the depth map,
-# with `confidence = 0.5*depth + 0.5*mask`. That second half is why the obstacle has to be a perceived
-# object and not a fixture: a wall only the depth map sees caps the confidence at 0.5, below the 0.7
-# reject threshold, however solidly it blocks. The same holds on a real cell, where hard_reject can
-# only refuse what perception reports.
-#
-# So the scene uses a tall neighbour whose body sits inside the 20 mm corridor radius and towers
-# through the march. It is placed on +Y, the axis a parallel jaw does not close on, so a 5 mm face gap
-# does not make the target ungraspable.
-CORRIDOR_OBJECTS = [
-    # 90 mm rather than the 50 mm default: a 50 mm target passes the silhouette stage and then loses
-    # every candidate at the support-footprint stage, the short-object top-down jaw limit `tall`
-    # exists for. In a corridor scene that failure would read as the obstacle's doing and is nothing
-    # of the kind.
-    ("green cube", (0.10, 0.65, 0.18), (450.0, 0.0, 45.0), (30.0, 30.0, 90.0)),  # target, graspable
-    ("gray wall", (0.45, 0.45, 0.45), (450.0, 40.0, 75.0), (40.0, 40.0, 150.0)), # near face at y=+20
-    # This scene deliberately yields no grasp, and that is its result. The corridor radius is 20 mm
-    # and the 2F-85's body needs more lateral clearance than that, so an obstacle inside the corridor
-    # is an obstacle inside the gripper: the collision and footprint filter kills the candidate before
-    # the corridor ever scores it. Move the wall far enough out for the target to be graspable and the
-    # wall leaves the corridor too, so the blockage falls back to the clean-scene level. That is why a
-    # corridor measurement can only ever see blockage fall.
-]
-
 # Each spec is (name, color, position_mm[, size_mm]); the optional 4th element makes the tuple heterogeneous.
 SCENES: "dict[str, list[tuple[Any, ...]]]" = {
     "clutter": CLUTTER_OBJECTS, "close": CLOSE_NEIGHBOUR_OBJECTS, "occlude": OCCLUDE_OBJECTS,
-    "tall": TALL_TARGET_OBJECTS, "blocker": BLOCKER_OBJECTS, "corridor": CORRIDOR_OBJECTS, "blocker_conflict": BLOCKER_CONFLICT_OBJECTS,
+    "tall": TALL_TARGET_OBJECTS,
 }
-
-# --------------------------------------------------------------------------------------------------------
-# Perception budget collect: the deterministic stop/continue data-collection policy.
-# --------------------------------------------------------------------------------------------------------
-# A LinUCB perception-budget policy trained on a corpus that carries fusion_latency on every record sees
-# only the continue action and comes out degenerate: one cell, one action. Training a non-degenerate one
-# needs a collect corpus with both actions, varied occlusion states and varied reward. Stop commits on the
-# first oblique's view; continue spends an extra view and genuinely fuses the obliques, the strongest
-# occlusion-resolving signal available here. So the collect policy explores: it continues with a
-# probability that rises with the measured occlusion, while keeping enough spread that both actions appear
-# across occlusion buckets and the reward can show which one pays. The draw is deterministic per (seed,
-# episode) through a sha256 uniform, with no random-number state and no wall clock.
-#
-# The action strings equal PERCEPTION_ACTION_STOP and PERCEPTION_ACTION_CONTINUE in
-# `perception_budget_policy`; they are the collect policy's own choice. The offline trainer re-derives the
-# label independently from the presence of extra.fusion_latency_ms, so a continue episode must stamp
-# fusion_latency or it is read back as a stop.
-#
-# A base of 0.45 keeps the stop and continue counts balanced even at low measured occlusion, where a
-# well-seen target gives an occlusion near 0, so the action distribution is non-degenerate whatever the
-# scene. The occlusion gain then tilts the draw toward continue as the single view loses the target,
-# reaching about 0.85 at full occlusion.
-PERCEPTION_COLLECT_BASE_CONTINUE_PROB: float = 0.45
-PERCEPTION_COLLECT_OCC_GAIN: float = 0.40
 
 
 def _trace_calc() -> bool:
@@ -213,35 +118,6 @@ def _trace_calc() -> bool:
 
     return bool(os.environ.get("WILLY_TRACE_CALC", "").strip())
 
-
-def _perception_seeded_uniform(seed: int, episode: int, *, salt: str = "") -> float:
-    """A deterministic uniform in ``[0, 1)`` keyed on ``(seed, episode, salt)`` (no wall-clock / no rng state)."""
-
-    h = hashlib.sha256(f"perception-collect:{salt}:{int(seed)}:{int(episode)}".encode()).hexdigest()
-    return int(h[:8], 16) / float(0xFFFFFFFF)
-
-
-def perception_collect_decision(
-    *,
-    occlusion_ratio: float,
-    seed: int,
-    episode: int,
-    base_continue_prob: float = PERCEPTION_COLLECT_BASE_CONTINUE_PROB,
-    occ_gain: float = PERCEPTION_COLLECT_OCC_GAIN,
-) -> "tuple[str, float]":
-    """Return ``(action, continue_prob)`` for one collect episode; ``action`` in ``{"stop", "continue"}``.
-
-    ``continue_prob = clamp(base + occ_gain * occlusion, 0, 1)``, and the action is continue when the
-    seeded uniform falls below it. Higher occlusion means more continue, with per-episode exploration,
-    so both actions get support and the reward can show which one pays, which is what makes the
-    training corpus non-degenerate. Pure and deterministic, with no dependency on Isaac.
-    """
-
-    occ = 0.0 if occlusion_ratio < 0.0 else (1.0 if occlusion_ratio > 1.0 else float(occlusion_ratio))
-    p = base_continue_prob + occ_gain * occ
-    p = 0.0 if p < 0.0 else (1.0 if p > 1.0 else p)
-    u = _perception_seeded_uniform(seed, episode, salt="decision")
-    return ("continue" if u < p else "stop"), float(p)
 
 # Deterministic per-run target disturbances (dx, dy in mm) applied after the first localize, standing in
 # for the target shifting during the approach through a neighbour nudge or settling. Sized to defeat an
@@ -478,7 +354,13 @@ def compare_grasp_views(
                 max_grip_width_mm=g.max_width_mm, min_grip_width_mm=g.min_width_mm,
             )
         calc = cache[key]
-        result = calc.compute_result(segs[target_idx], frame.depth_map, camera_to_base=c2b)
+        # Over the bench the cell declares: the calculator plans every grasp in BASE over its support.
+        from src.geometry import Frame  # noqa: PLC0415
+        from src.robot.grasping.collision import SupportPlane  # noqa: PLC0415
+        from src.robot.grasping.collision.support_resolver import bench_height_mm  # noqa: PLC0415
+
+        bench = SupportPlane(offset_mm=bench_height_mm(cfg.robot), frame=Frame.BASE)
+        result = calc.compute_result(segs[target_idx], frame.depth_map, camera_to_base=c2b, support_plane=bench)
         out[name] = {"px": px, "success": bool(result.is_success),
                      "score": round(float(result.top_score), 3) if result.is_success else None}
         grasps[name] = result.best if result.is_success else None
@@ -523,32 +405,23 @@ def _reorient_topdown(grasp: "GraspPoint") -> "GraspPoint":
 
 
 def _print_block_carriers(report: Any) -> None:
-    """Print one line per pick naming every carrier the thirteen `grasping.*` blocks act through.
+    """Print one line per pick naming what the `grasping.*` blocks the service runs did on it.
 
     Unconditional, because a null result that cannot be told apart from "the block never ran"
-    is not a measurement. The calculator log line is the wrong place to look: only three of
-    the thirteen blocks touch the calculator at all, and the rest act on the service and the
-    orchestrator.
+    is not a measurement.
 
     The line also carries `telemetry['reason']`, which is how a refused run explains itself:
     `mode_not_available` names a stage, while the reason names the cause, for instance
     `per_call_mode_requires_different_sampling_mode`. `execution_failed` swallowing cuRobo's own
     message has the same shape.
 
-    Every field name below is read off the dataclass. A guessed name prints None for every
-    block in every run, which is indistinguishable from "no block fired": a broken instrument
-    reporting exactly what it is meant to detect. The names that catch a guess out are
-    `predicted_success_probability`, `reason_code` and `fused`. Read the dataclass before
-    adding a field here.
+    Every field name below is read off the dataclass. A guessed name prints None in every run,
+    which is indistinguishable from "nothing fired". Read the dataclass before adding a field here.
 
     The two halves answer different questions. `cfg_on` is what the service believes is
-    enabled, which proves the YAML arrived; the carriers are what actually ran. A block that
-    shows enabled in the first half and nothing in the second is wired but inert.
+    enabled, which proves the YAML arrived; the rest is what actually ran.
     """
     tel = dict(getattr(report, "telemetry", None) or {})
-    dec = getattr(report, "decision", None)
-    unc = getattr(report, "uncertainty", None)
-    shadow = getattr(report, "shadow_success_telemetry", None)
     eff = getattr(report, "effective_config", None)
     on: list[str] = []
     if eff is not None:
@@ -556,12 +429,6 @@ def _print_block_carriers(report: Any) -> None:
             on = sorted(k for k, v in eff.to_dict().items() if k.endswith("_enabled") and v is True)
         except Exception:  # noqa: BLE001 (a trace must never break the pick)
             on = ["<to_dict failed>"]
-    # The per-stage latency spans and anything else the report folded in. Without them the
-    # `performance` block cannot be judged: no SLO_BREACH firing makes "no breach because fast" and
-    # "no breach because nothing was measured" look the same, and the spans that separate the two live
-    # in report.telemetry. Filtered rather than dumped whole, because the dict also carries attempt_id
-    # and sampling_mode, which say nothing about latency.
-    lat = {k: v for k, v in tel.items() if "ms" in k or "latency" in k or "p95" in k}
     # Why the motion failed, per attempt, from the fields PickAttempt carries. `execution_failed`
     # names a stage; these name the cause, which on the occlude scene is the whole question.
     _atts = getattr(getattr(report, "pick_report", None), "attempts", None) or ()
@@ -570,27 +437,14 @@ def _print_block_carriers(report: Any) -> None:
         for a in _atts
         if getattr(a, "motion_status", None) or getattr(a, "motion_message", None)
     ]
-    # Which object the loop took, and what the selector said about it. `ordering` changes exactly this
-    # and nothing else, so a run that does not print it cannot measure the block however many picks it
-    # does. Only meaningful without a target label: with one there is a single executable
-    # segmentation.
+    # Which object the loop took. Only meaningful without a target label: with one there is a single
+    # executable segmentation.
     _last = _atts[-1] if _atts else None
-    _ord = getattr(_last, "ordering_decision", None)
     parts = [
         f"cfg_on={on}",
         f"chosen_target={getattr(_last, 'target_index', None)}",
-        f"ordering={_ord.to_dict() if _ord is not None else None}",
-        f"latency={lat}",
         f"motion={motion}",
         f"reason={tel.get('reason')}",
-        f"decision={getattr(getattr(dec, 'action', None), 'value', None)}"
-        f"/{getattr(dec, 'reason_code', None)}",
-        f"dec_uncertainty={getattr(dec, 'uncertainty_score', None)}",
-        f"unc_fused={getattr(unc, 'fused', None)}",
-        f"unc_available={getattr(unc, 'fused_available', None)}",
-        f"unc_fail_closed={getattr(unc, 'fail_closed', None)}",
-        f"shadow_p={getattr(shadow, 'predicted_success_probability', None)}",
-        f"shadow_phase={getattr(shadow, 'model_lifecycle_phase', None)}",
         # Count and names. "1 action" is not an answer when the safety rule is about which action: a
         # `rescan` after a planner refusal re-perceives and moves nothing. The trail carries the loop's
         # action names, so print them; the count alone cannot tell them apart. A push of the part
@@ -600,8 +454,6 @@ def _print_block_carriers(report: Any) -> None:
         f"recovery_actions={len(getattr(report, 'recovery_actions', ()) or ())}",
         f"recovery_trail={tel.get('recovery_trail_actions')}"
         f"/{tel.get('recovery_trail_terminal_reason')}",
-        f"blend={getattr(report, 'ranking_blend_telemetry', None) is not None}",
-        f"rerank={getattr(report, 'uncertainty_rerank_telemetry', None) is not None}",
         # The cameras fused into the picked object's cloud, empty when it came from one camera.
         f"fused={list(getattr(report, 'fused_views', ()) or ())}",
     ]
@@ -624,38 +476,25 @@ def run_multiview_gate(
     view_height_mm: float = 275.0,
     continuous_guard: bool = False,
     scene_collision: bool = False,
-    approach_validate: bool = False,
     fuse_geometry: bool = False,
-    fuse_neighbours: bool = False,
     # Which boot path builds the service. "config", the default, goes through from_robot_config, the
     # path a real cell takes, so a number measured here is a statement about that cell rather than
     # about this runner's hand-wiring. "components" is the runner's own wiring and stays as the
     # comparison: the two must agree before the default is worth trusting.
     boot: str = "config",
-    # Which GraspMode the service is built in, which is not the camera set: that is ``mode`` above.
-    #
-    # The mode decides which config blocks can fire, and "easy" reaches almost none of them: of the
-    # `grasping.*` blocks that carry an `apply_modes` gate, easy is in exactly one, `success_model`.
-    # Measuring the others without this knob gives a green "no effect, harmless" result for blocks
-    # that are unreachable by construction, which would then run for the first time on a real cell.
+    # Which GraspMode the service is built in, which is not the camera set: that is ``mode`` above. The mode
+    # decides the sampler and which recovery actions are allowed.
     grasp_mode: str = "easy",
-    # See ``run_eih_pick.build_service``: hand the sub-policy ownership to the config block so that
-    # toggling `decision` is what changes the run, not this runner.
-    config_subpolicies: bool = False,
-    # Opt-in reachability filter; see run_eih_pick.build_service. Two effects at once: it discards
-    # unreachable candidates, and it is the precondition for `grasping.feasibility` to re-rank at all.
-    # Measure them apart, IK alone first and then IK with the feasibility layer.
+    # Opt-in reachability filter; see run_eih_pick.build_service: it discards unreachable candidates.
     ik_service: bool = False,
     # The paired baseline for the multi-object perception default. True restores the single-mask wrist
     # source, so the multi-object default and its predecessor can be measured as a pair on the same
     # scene and the same seed. A default changed without its own baseline gives a number nobody can
     # attribute afterwards.
     single_mask_perception: bool = False,
-    # The only configuration in which `grasping.ordering` can be measured. With a target label exactly
-    # one segmentation is executable, so the selector is handed a single candidate and the block is
-    # structurally inert. Bin-clearing semantics, with no label and every object a legitimate target,
-    # is the situation ordering exists for. See `run_eih_pick.build_service(clear_any_object=...)` for
-    # why an unlabelled frame is correct here and a bug under a prompt.
+    # Bin-clearing semantics, with no label and every object a legitimate target. See
+    # `run_eih_pick.build_service(clear_any_object=...)` for why an unlabelled frame is correct here and a bug
+    # under a prompt.
     clear_any: bool = False,
     scene: str = "clutter",
     # Where the ground-truth oracle puts the perceived surface. The sources in
@@ -676,11 +515,6 @@ def run_multiview_gate(
     probe_refine: bool = False,
     bin_preset: str | None = None,
     calibrated: bool = False,
-    collect_perception: bool = False,
-    perception_continue_mode: str = "fusion",
-    perception_jitter_mm: float = 30.0,
-    record_log: str | None = None,
-    seed: int = 0,
 ) -> GateResult:
     """Localize from the ``mode`` camera set, refine at the wrist, grasp, and score on the lift gate.
 
@@ -719,12 +553,11 @@ def run_multiview_gate(
         bin_walls=_bin_walls, real_klt_bin=_real_klt, curobo_bin_world=bin_preset is not None,
         cell_kwargs=cell_kwargs, service_from_config=(boot == "config"),
         grasp_lift_mm=grasp_lift_mm, ground_truth_depth=ground_truth_depth,
-        mode=grasp_mode, config_subpolicies=config_subpolicies, ik_service=ik_service,
+        mode=grasp_mode, ik_service=ik_service,
         multi_object_perception=not single_mask_perception, clear_any_object=clear_any,
         camera_world=CameraWorldDecline("run_multiview_pick: this runner plans without a live camera world"),
     )
-    print(f"[grasp-mode] service built in mode={grasp_mode!r} "
-          f"(config_subpolicies={config_subpolicies})", flush=True)
+    print(f"[grasp-mode] service built in mode={grasp_mode!r}", flush=True)
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
 
     from src.willy_sim.scene import camera_to_base_ground_truth
@@ -838,22 +671,6 @@ def run_multiview_gate(
     # filter. Off by default and set only under --scene-collision. getattr keeps this safe if the
     # runtime shape changes.
     orch = getattr(getattr(service, "runtime", None), "orchestrator", None)
-    # The swept-volume approach-path validator consumes the same cloud: it rejects or avoids a grasp
-    # whose open-gripper descent would sweep through a neighbour the single synthesis view cannot see.
-    # It reads result.metadata["scene_points_mm"], so the fused cloud has to be injected and
-    # approach_validate implies scene_collision. Wired for the orchestrator's current mode_label, so
-    # the mode does not change and there are no side effects.
-    if approach_validate:
-        scene_collision = True
-        if orch is not None:
-            from src.robot.grasping.motion.trajectory_safety import ApproachPathPolicy
-
-            orch.approach_path_policy = ApproachPathPolicy(
-                standoff_mm=50.0, retreat_mm=100.0, num_approach_samples=6, num_retreat_samples=4,
-                collision_margin_mm=20.0,
-            )
-            orch._approach_path_modes = frozenset({orch.mode_label})
-            print(f"Lever B / G12 approach validator wired (mode_label={orch.mode_label!r}, margin=20mm)", flush=True)
     if scene_collision and orch is None:
         print("WARN: --scene-collision set but no orchestrator on the service runtime -> Lever B inert", flush=True)
 
@@ -873,7 +690,6 @@ def run_multiview_gate(
         if orch is None:
             print("WARN: --fuse-geometry set but no orchestrator on the service runtime -> inert", flush=True)
         else:
-            from src.config.schema.robot.grasping_schema import FusionGeometryConfig
             from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
             from src.robot.grasping.types.perception import MappedCameraRig
 
@@ -883,16 +699,7 @@ def run_multiview_gate(
             orch.camera_frame_resolvers = {
                 name: StaticCameraToBaseResolver(c2b) for name, (_src, c2b) in cameras.items()
             }
-            orch.fusion_geometry_config = FusionGeometryConfig(
-                enabled=True, neighbour_scene_enabled=fuse_neighbours
-            )
-            print(f"geometry fusion wired over {sorted(cameras)} "
-                  f"(metric=overlap, min_score=0.30, "
-                  f"neighbour_scene={'on' if fuse_neighbours else 'off'})", flush=True)
-    elif fuse_neighbours:
-        # The neighbour cloud is built from the same cross-camera association as the target cloud,
-        # so it cannot be produced without it. Say so rather than accepting a flag that does nothing.
-        print("WARN: --fuse-neighbours needs --fuse-geometry -> inert", flush=True)
+            print(f"geometry fusion wired over {sorted(cameras)} (overlap, min_score 0.30)", flush=True)
 
     # Measure the best grasp-synthesis view. Move the arm to home, where it occludes the overhead, which
     # is the realistic in-workspace case, then synthesize a grasp from each camera and report which view
@@ -915,157 +722,12 @@ def run_multiview_gate(
     # With no target label the gate must not watch one prim. `--clear-any` lets the loop take whichever
     # object it judges best, so measuring only `target_prim` would read about 0 mm on a perfectly good
     # pick of a neighbour and report a failure that did not happen. Watch every object, take the
-    # largest lift and name which one moved; that name is the ordering measurement. Empty when a label
-    # is set, leaving every other path unchanged.
+    # largest lift and name which one moved. Empty when a label is set, leaving every other path unchanged.
     _all_objs = (
         [(lbl, SingleRigidPrim(prim)) for prim, lbl in handles.object_specs]
         if clear_any else []
     )
 
-    # Perception-budget collect: emit a non-degenerate stop/continue corpus for the LinUCB policy. Per
-    # episode, measure occlusion as the stop view's visible pixels against the best-viewing camera's,
-    # decide stop or continue, localize accordingly, drive the same wrist-refine pick, and log the
-    # record with the four perception fields the trainer needs (views_seen, candidate_count,
-    # expected_occlusion_ratio, fusion_latency_ms) plus cycle_time_s and the sim ground-truth outcome.
-    # Continue means spending an extra view: 'fusion' fuses every active camera, 'reperceive' fuses the
-    # two obliques. Gated on --collect-perception, so with the flag off this path is inert and the run
-    # is byte-identical.
-    if collect_perception:
-        from src.willy_sim.harness.instrumentation import write_pick_artifacts
-        from src.willy_sim.run_dense_pick import _failure_taxonomy_from_sim, _scene_family_id
-
-        obliques = [n for n in ("oblique_L", "oblique_R") if n in cameras]
-        if "overhead" not in cameras or not obliques:
-            raise SystemExit("--collect-perception needs overhead + >=1 oblique camera (use --mode eth3)")
-        calc = getattr(getattr(getattr(service, "runtime", None), "orchestrator", None), "calculator", None)
-        # The arm at home is the dominant top-down occluder and the overhead sees almost nothing, so the
-        # obliques are the occlusion resolvers and the perception-budget tradeoff maps onto them. Stop
-        # commits on one oblique's localization, spending a single view; it still picks, because the
-        # wrist refine corrects a rough centroid, but one biased side view misses more often when the
-        # target is partly hidden from it. Continue spends the extra view: 'fusion' fuses every active
-        # camera and 'reperceive' fuses both obliques. Continue always stamps fusion_latency, and that
-        # is what carries the continue label. Stopping on the overhead instead would localize nothing
-        # under the arm and give no budget contrast at all.
-        stop_cams = {obliques[0]: cameras[obliques[0]]}
-        if perception_continue_mode == "reperceive":
-            continue_cams = {n: cameras[n] for n in obliques}
-        else:
-            continue_cams = dict(cameras)
-        object_labels = [lbl for (_p, lbl) in object_specs]
-        run_id = f"mvpercep-{int(time.time())}"
-        print(f"=== PERCEPTION-BUDGET COLLECT (continue_mode={perception_continue_mode!r}: STOP={list(stop_cams)} "
-              f"vs CONTINUE={list(continue_cams)}) seed={seed} runs={runs} ===", flush=True)
-        pb_results = []
-        for i in range(runs):
-            try:
-                gripper.open()
-                arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
-                # Seeded per-episode target jitter so occlusion (hence the state cell) varies across episodes.
-                jx = (_perception_seeded_uniform(seed, i, salt="jx") - 0.5) * 2.0 * perception_jitter_mm
-                jy = (_perception_seeded_uniform(seed, i, salt="jy") - 0.5) * 2.0 * perception_jitter_mm
-                new_pos = np.asarray(home_pos, dtype=np.float64).copy()
-                new_pos[0] += jx / 1000.0
-                new_pos[1] += jy / 1000.0
-                obj.set_world_pose(position=new_pos, orientation=np.asarray(home_quat))
-                try:
-                    obj.set_linear_velocity(np.zeros(3))
-                    obj.set_angular_velocity(np.zeros(3))
-                except Exception:  # noqa: BLE001
-                    pass
-                session.step_n(30)
-
-                # 1) measure occlusion: how much the stop single-oblique view loses vs the best-viewing camera
-                #    (a neighbour / the target's pose hides it from that one side). A genuine, measured [0,1]
-                #    signal that varies with the per-episode jitter (which oblique sees the target best shifts).
-                _cocc, per_occ = multi_view_localize(cameras, target_idx)
-                stop_px = float(per_occ.get(obliques[0], {}).get("target_px", 0.0))
-                best_px = max((float(v.get("target_px", 0.0)) for v in per_occ.values()), default=0.0)
-                occ = 1.0 - (stop_px / best_px) if best_px > 0.0 else 1.0
-                occ = 0.0 if occ < 0.0 else (1.0 if occ > 1.0 else occ)
-
-                # 2) the collect policy's stop/continue decision (occlusion-correlated + seeded exploration).
-                action, cont_p = perception_collect_decision(occlusion_ratio=occ, seed=seed, episode=i)
-
-                # 3) localize per the action, timing the continue fusion (the extra-view cost).
-                t_local0 = time.perf_counter()
-                if action == "continue":
-                    fused_c, per = multi_view_localize(continue_cams, target_idx)
-                    fusion_latency_ms: "float | None" = (time.perf_counter() - t_local0) * 1000.0
-                    views_seen = max(sum(1 for v in per.values() if float(v.get("target_px", 0.0)) > 0.0), 2)
-                else:
-                    fused_c, per = multi_view_localize(stop_cams, target_idx)
-                    fusion_latency_ms = None
-                    views_seen = 1
-
-                if fused_c is None:
-                    # No selected view saw the target: a failed episode, not an error. Typically the
-                    # stop view was occluded.
-                    outcome_str, pick_outcome, sim_lifted, lift_mm, candidate_count = "no_perception", "no_perception", False, 0.0, 0
-                    report = None
-                else:
-                    arm.move(topdown_view_pose(fused_c, p_cam_tool, view_height_mm))
-                    z0 = float(np.asarray(obj.get_world_pose()[0])[2])
-                    report = service.pick()
-                    z1 = float(np.asarray(obj.get_world_pose()[0])[2])
-                    outcome_str = str(getattr(getattr(report, "outcome", None), "value", None))
-                    _pr = getattr(report, "pick_report", None)
-                    pick_outcome = str(getattr(getattr(_pr, "outcome", None), "value", None))
-                    lift_mm = (z1 - z0) * 1000.0
-                    sim_lifted = bool(lift_mm >= gate.lift_threshold_mm)
-                    candidate_count = int((getattr(calc, "last_telemetry", None) or {}).get("final", 0))
-                cycle_time_s = time.perf_counter() - t_local0
-
-                extra: dict[str, Any] = {
-                    "sim_runner": "multiview_perception",
-                    "views_seen": int(views_seen),
-                    "candidate_count": int(candidate_count),
-                    "expected_occlusion_ratio": round(float(occ), 4),
-                    "perception_cost": float(views_seen),  # OPE reward: more views cost more (the budget)
-                    "cycle_time_s": float(cycle_time_s),
-                    "sim_lift_mm": round(float(lift_mm), 2),
-                    "sim_lifted": bool(sim_lifted),
-                    "object_set": object_labels,
-                    "scene_family_id": _scene_family_id(kind="multiview", target_label=str(target_label)),
-                    "scene_id": f"{run_id}-ep{i:04d}",
-                    "attempt_index": i,
-                    "timestamp": float(i),
-                    "perception_action_collect": action,  # the collect policy's own choice (audit)
-                    "perception_continue_prob": round(float(cont_p), 4),
-                    "camera_pose_hash": hashlib.sha256(f"{target_label}|{action}|{run_id}".encode()).hexdigest()[:16],
-                }
-                if fusion_latency_ms is not None:
-                    extra["fusion_latency_ms"] = round(float(fusion_latency_ms), 3)
-                elif "fusion_latency_ms" in (getattr(report, "telemetry", None) or {}):
-                    # A stop spent no extra view. The pick's own geometry fusion (--fuse-geometry)
-                    # stamps the key on the report, and the record starts from the report's
-                    # telemetry, so without this the trainer would read the stop as a continue.
-                    extra["fusion_latency_ms"] = None
-                # Demote a pipeline 'succeeded' that did not lift to a real failure token, so that
-                # derive_outcome_class, and the OPE reward built on it, reflects the measured lift
-                # rather than the pipeline's self-report.
-                _ftc = _failure_taxonomy_from_sim(outcome_str, str(pick_outcome), bool(sim_lifted))
-                if _ftc is not None:
-                    extra["failure_taxonomy_class"] = _ftc
-
-                passed = sim_lifted
-                pb_results.append({"run": i, "action": action, "occ": round(occ, 3), "cont_p": round(cont_p, 3),
-                                "views": views_seen, "cands": candidate_count, "lift_mm": round(lift_mm, 1),
-                                "succeeded": sim_lifted, "passed": passed, "outcome": outcome_str})
-                print(f"RUN {i}: occ={occ:.3f} p_cont={cont_p:.3f} -> {action.upper():8s} views={views_seen} "
-                      f"cands={candidate_count} lift={lift_mm:.1f} lifted={sim_lifted} outcome={outcome_str}", flush=True)
-                if report is not None and record_log:
-                    write_pick_artifacts(report, attempt_id=f"{run_id}-{i:04d}", record_log=record_log, extra=extra)
-            except Exception as exc:  # noqa: BLE001 (a safety abort / pick failure = a failed episode, not a crash)
-                print(f"RUN {i}: ABORTED ({type(exc).__name__}: {exc})", flush=True)
-                pb_results.append({"run": i, "succeeded": False, "passed": False, "aborted": str(exc)})
-
-        n_pass = sum(1 for r in pb_results if r.get("passed"))
-        n_stop = sum(1 for r in pb_results if r.get("action") == "stop")
-        n_cont = sum(1 for r in pb_results if r.get("action") == "continue")
-        gate_ok = gate_passed(n_pass, runs, gate.pass_fraction)
-        print(f"\n=== PERCEPTION-BUDGET COLLECT: {n_pass}/{runs} lifted | STOP={n_stop} CONTINUE={n_cont} "
-              f"-> record_log={record_log!r} ===", flush=True)
-        return GateResult(runs=runs, passed=n_pass, results=pb_results, gate_passed=gate_ok, target=target_label)
 
     # Read-only discriminance check: whether a re-perceive from the always-watching obliques tracks a
     # target that shifted after the first localize, and whether an open-loop grasp carrying the stale
@@ -1334,37 +996,23 @@ def main() -> int:
                     help="which path builds the service: 'config' = from_robot_config (what a real "
                          "cell runs), 'components' = the historical runner hand-wiring. Keep both: "
                          "they must agree before the default is worth trusting")
-    ap.add_argument("--fuse-neighbours", action="store_true",
-                    help="with --fuse-geometry: also give the COLLISION filter each object's view of "
-                         "everything that is NOT it, fused across the same cameras (finger_collision "
-                         "is 60 %% of the remaining mis-ranks once the target cloud is fused)")
-    ap.add_argument("--approach-validate", action="store_true",
-                    help="Lever B / G12: wire the swept-volume approach validator (implies --scene-collision)")
     ap.add_argument("--grasp-mode", default="easy",
                     choices=["easy", "auto", "dense_clutter"],
                     help="which GraspMode builds the service (NOT the camera set; that is --mode). "
-                         "The mode decides which grasping.* config blocks can fire at all: EASY is in "
-                         "the apply_modes of exactly one of them")
+                         "The mode decides the sampler and the recovery actions allowed")
     ap.add_argument("--view-height-mm", type=float, default=275.0,
                     help="wrist-camera height above the localized centroid. The validated pick band "
-                         "is 250-300; raise it only to fit MORE objects in one frame (--clear-any "
-                         "needs at least two graspable at once before ordering has anything to decide)")
+                         "is 250-300; raise it only to fit MORE objects in one frame")
     ap.add_argument("--clear-any", action="store_true",
                     help="bin-clearing semantics: no target label, so EVERY object is an executable "
-                         "target and the loop chooses which goes first. The only configuration in "
-                         "which grasping.ordering can act; with a label it is structurally inert")
+                         "target and the loop chooses which goes first")
     ap.add_argument("--single-mask-perception", action="store_true",
                     help="restore the pre-2026-08-17 single-mask wrist perception (one segmentation = "
                          "the target, other_object_masks empty). The paired baseline for the "
                          "multi-object default; use it to attribute a change to the switch")
     ap.add_argument("--ik-service", action="store_true",
                     help="wire a RobotArmIKService on the live sim arm: candidates that fail IK are "
-                         "DISCARDED (read rejected_ik), and grasping.feasibility can finally re-rank. "
-                         "two effects in one flag; measure IK alone before adding feasibility")
-    ap.add_argument("--config-subpolicies", action="store_true",
-                    help="suppress the runner's hand-built decision engine so the grasping.decision "
-                         "config block is its only source (needs --boot config). Without it the "
-                         "constructor argument wins and toggling that block measures nothing")
+                         "DISCARDED (read rejected_ik)")
     ap.add_argument("--scene", default="clutter", choices=sorted(SCENES),
                     help="object scene: clutter = 3 separated cubes | close = touching-neighbour value "
                          "| occlude = a tall OCCLUDER beside a default target | tall = the same three "
@@ -1392,25 +1040,14 @@ def main() -> int:
     ap.add_argument("--calibrated", action="store_true",
                     help="use each camera's own CALIBRATED extrinsics, the eth_<id>.json run_eth_calibrate wrote "
                          "for this robot model, read through the rig loader, instead of --mode + the sim GT oracle")
-    ap.add_argument("--collect-perception", action="store_true",
-                    help="C: emit a NON-DEGENERATE perception-budget STOP/CONTINUE corpus (needs --mode eth3 + "
-                         "--record-log). STOP=overhead-only, CONTINUE=genuine oblique fusion; occlusion-driven "
-                         "seeded exploration -> both actions + varied reward for the v5 LinUCB trainer.")
-    ap.add_argument("--perception-continue-mode", default="fusion", choices=("fusion", "reperceive"),
-                    help="CONTINUE = 'fusion' (both obliques, the strongest signal) | 'reperceive' (a lighter "
-                         "overhead + one-oblique 2nd view)")
-    ap.add_argument("--perception-jitter-mm", type=float, default=30.0,
-                    help="per-episode seeded target jitter (mm) so occlusion (hence the state) varies across episodes")
-    ap.add_argument("--record-log", default=None, help="JSONL path to append the collected GraspAttemptRecords to")
-    ap.add_argument("--seed", type=int, default=0, help="deterministic collect seed (STOP/CONTINUE + jitter)")
     add_cell_arguments(ap)   # --robot-model / --profile
     args = ap.parse_args()
     result = run_multiview_gate(
         runs=args.runs, mode=args.mode, headless=not args.gui, data_dir=args.data,
         marker=args.marker, prompt=args.prompt, continuous_guard=args.continuous_guard,
-        scene_collision=args.scene_collision, approach_validate=args.approach_validate,
-        fuse_geometry=args.fuse_geometry, fuse_neighbours=args.fuse_neighbours,
-        boot=args.boot, grasp_mode=args.grasp_mode, config_subpolicies=args.config_subpolicies,
+        scene_collision=args.scene_collision,
+        fuse_geometry=args.fuse_geometry,
+        boot=args.boot, grasp_mode=args.grasp_mode,
         ik_service=args.ik_service, single_mask_perception=args.single_mask_perception,
         clear_any=args.clear_any, view_height_mm=args.view_height_mm,
         scene=args.scene, grasp_lift_mm=args.grasp_lift_mm,
@@ -1418,8 +1055,6 @@ def main() -> int:
         compare_views=args.compare_views, execute_best_view=args.execute_best_view,
         reorient_topdown=args.reorient_topdown, probe_refine=args.probe_refine,
         bin_preset=args.bin, calibrated=args.calibrated, cell_kwargs=cell_profile_kwargs(args),
-        collect_perception=args.collect_perception, perception_continue_mode=args.perception_continue_mode,
-        perception_jitter_mm=args.perception_jitter_mm, record_log=args.record_log, seed=args.seed,
     )
     return 0 if result.passed else 1
 

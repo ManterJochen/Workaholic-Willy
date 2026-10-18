@@ -8,7 +8,7 @@ silence, or a microphone that delivers nothing, returns `TIMED_OUT` at the bound
 
 Nothing here acts. The transcript is a proposal a human confirms, "Stopp" included.
 
-`from_config` builds `SileroVoiceActivityDetector` from `models.stt.vad_model_path` when no detector is
+`from_config` builds `SileroVoiceActivityDetector` from the weights folder when no detector is
 chosen, and takes the engine it is handed, which is the one `shared_speech()` holds for uploads. The
 detector is its own: it carries state from one window to the next. The source is the cell PC's
 microphone unless one is chosen. A `PushToTalkSource` (`push_to_talk.py`) serves audio only while the
@@ -127,9 +127,8 @@ class Listener:
     """A voice stream cut into utterances, each transcribed: say something, get the words.
 
     ```python
-    speech = load_speech_section()
-    engine = shared_speech().for_config(config=speech).engine
-    with Listener.from_config(config=speech, engine=engine) as listener:
+    held = shared_speech().for_tree()   # models.stt and the weights folder of the tree WILLY_PROFILE names
+    with Listener.from_config(config=held.config, engine=held.engine, weights_root=held.weights_root) as listener:
         utterance = listener.listen(timeout_s=10.0)
     ```
 
@@ -172,21 +171,24 @@ class Listener:
         detector: Maybe[VoiceActivityDetector] = UNSET,
         endpointing: Maybe[Endpointing] = UNSET,
         timeout_s: Maybe[float | None] = UNSET,
+        weights_root: str | None = None,
     ) -> Listener:
-        """A listener on the cell PC's microphone, from the keys of ``models.stt``. Opens and loads nothing.
+        """A listener on the cell PC's microphone, from the speech section. Opens and loads nothing.
 
         Args:
             config (SpeechToTextConfig): The speech section, ``load_speech_section()``.
             engine (SpeechEngine): The transcriber, the one the process
-                holds: ``shared_speech().for_config(config=config).engine``.
+                holds: ``shared_speech().for_tree().engine``.
             source (Maybe[AudioSource]): Where audio comes from; unset is the cell PC's microphone, and
                 ``PushToTalkSource.from_config(config=config)`` the same behind the talk switch (default: UNSET).
-            detector (Maybe[VoiceActivityDetector]): The voice detector; unset is Silero from
-                ``models.stt.vad_model_path``, this listener's own (default: UNSET).
+            detector (Maybe[VoiceActivityDetector]): The voice detector; unset is Silero from the weights folder,
+                this listener's own (default: UNSET).
             endpointing (Maybe[Endpointing]): How utterances close; unset is ``Endpointing()``, whose values are
                 placeholders (default: UNSET).
             timeout_s (Maybe[float | None]): The bound ``listen()`` uses, seconds; unset is 30, ``None`` no bound
                 (default: UNSET).
+            weights_root (str | None): The folder Silero is read from, the tree's ``models.weights_root``
+                (``held.weights_root``); ``None`` is the repository's (default: None).
 
         Returns:
             Listener: The listener; open it with ``with``.
@@ -194,7 +196,7 @@ class Listener:
         if not chosen(detector):
             from src.models.speech.silero import SileroVoiceActivityDetector
 
-            detector = SileroVoiceActivityDetector.from_config(config=config)
+            detector = SileroVoiceActivityDetector.from_config(config=config, weights_root=weights_root)
         if not chosen(source):
             source = MicrophoneSource.from_config(config=config)
         return cls.from_parts(

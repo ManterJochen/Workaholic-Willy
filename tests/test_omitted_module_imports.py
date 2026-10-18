@@ -22,10 +22,8 @@ import pytest
 #: robotiq, the GUI viz path, and the camera-setup capture modules).
 _OMITTED_MODULES = (
     "src.models._inference",
-    "src.models.detection.zero_shot.detector",
     "src.models.detection.closed_set.detector",
     "src.models.segmentation.realtime.segmenter",
-    "src.models.segmentation.research.segmenter",
     "src.robot.grippers.robotiq",
     "src.robot.grasping.visualization.debug_draw",
     "src.robot.grasping.visualization.open3d_viewer",
@@ -46,14 +44,16 @@ class OmittedModuleImportSmokeTests(unittest.TestCase):
 
 
 def test_factory_selection_guards_are_torch_free() -> None:
-    """The factory raises a clear error when a selected backend has no config block,
-    without importing torch (the guard runs before the lazy wrapper import)."""
-    from src.models.factory import build_object_detector, build_segmenter
+    """The factory raises a clear error when the selected stack has no config block, without importing torch (the
+    guard runs before the lazy wrapper import)."""
+    from src.config.schema.models.models_schema import PipelineConfig
+    from src.models.factory import build_perception
 
-    with pytest.raises(ValueError):
-        build_object_detector(SimpleNamespace(detector="rtdetr", rtdetr=None))
-    with pytest.raises(ValueError):
-        build_segmenter(SimpleNamespace(segmenter_backend="oneformer", oneformer=None))
+    with pytest.raises(ValueError, match="models.rtdetr"):
+        build_perception(SimpleNamespace(pipeline=PipelineConfig(kind="closed_set"), rtdetr=None, segmenter=object(),
+                                         weights_root=None))
+    with pytest.raises(ValueError, match="segmenter"):
+        build_perception(SimpleNamespace(pipeline=PipelineConfig(), rtdetr=None, segmenter=None, weights_root=None))
 
 
 if __name__ == "__main__":

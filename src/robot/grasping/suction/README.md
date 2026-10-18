@@ -54,9 +54,9 @@ surface gripper is binary and carries no seal model at all.
 
 ## Traps
 
-- The cup is not the default collision envelope. `SuctionCupGripperModel` in
-  [collision/](../collision/README.md) is selected by `robot.grasping.gripper_geometry.kind: suction`;
-  a cell that leaves that key at `parallel_jaw` filters suction candidates against jaw fingers.
+- The cup is not the cell's collision envelope. A cell plans the jaw its registry hand describes
+  ([collision/](../collision/README.md), `jaw_envelope`); a caller that filters suction candidates hands the
+  calculator a `SuctionCupGripperModel` itself, or they are filtered against jaw fingers.
 - `prepare_scene` receives depth in metres, although `synthesize_suction_grasps` takes millimetres,
   because metres is the unit the published RGB-D formulations use. A scorer that assumes otherwise
   scores at a thousand times the intended scale without saying so.

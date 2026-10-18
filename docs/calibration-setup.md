@@ -51,7 +51,7 @@ Declare the rig in [`config/camera/cam.yaml`](../config/camera/cam.yaml) under `
 shipped tree already carries one such rig, `realsense_d435`, with `enabled: false`:
 
 ```yaml
-- rig_id: realsense_d435   # keys the artifact; fusion.cameras names the rig by this id too
+- rig_id: realsense_d435   # keys the artifact and names the camera everywhere else
   enabled: true
   source: rgbd
   rgbd_backend: realsense  # the schema default is `opencv`, which returns empty depth on a D435
@@ -177,7 +177,7 @@ down, taught, or guided by hand (section 5). Tilt them: a planar ArUco viewed ne
 IPPE flip ambiguity that wrecks the AX=XB rotation, so views 20 to 40 degrees off face-on count for
 more than views straight on, and the preview shows each view's tilt while you guide the arm.
 
-`robot.workspace_limits` decides where a station may be: the screen skips a station of a file whose
+`robot.motion.workspace` decides where a station may be: the screen skips a station of a file whose
 grasp centre lies outside it, the arm's own gate refuses a pose outside it, and while you guide the arm
 a pose outside it turns the preview red and is not captured. Shrink the box to a region that is safe
 and where the marker stays visible before you run.
@@ -319,9 +319,7 @@ declares `safety.self_collision.planner_margin_mm` it also looks up the committe
 sweep's planner starts on, the lookup `real_cell --check` makes in its `planner margin` row: a
 combination nobody measured is refused there, with the `scripts/arms/gate.py` command that
 measures it, instead of after the arm has connected. A coupling plate of a thickness no file measured
-is one such combination, and so is a declared `safety.planning_world.payload.length_mm`, which reserves
-16 attach slots and needs a file measured with them (`_a16`), where `payload.enabled: false` plans on the
-committed `_a0` file. An undeclared margin is left to `real_cell --check`, which blocks on it with its own
+is one such combination. An undeclared margin is left to `real_cell --check`, which blocks on it with its own
 fix, so run that first. `--dry-run` builds the arm and opens that one camera, then stops before any
 motion; it starts no planner either. An arm that offers no hand guiding is refused for `--freedrive` and
 `--adjust` before that, at the config stage, which `--check` runs too: it asks the arm the tree builds, never
@@ -378,8 +376,8 @@ about them), with a bar that fills as you close in, and moves on to the next aft
 capture.
 
 **The boundaries are shown, never enforced.** Every sample is checked against the cable window (the
-joint-limit guard's window, half a turn either side of home on a cell that sets
-`safety.joint_limits.within_half_turn_of_home`, less its margin) and the workspace box. Outside, the
+joint-limit guard's window, half a turn either side of home on every real arm, less its margin) and the workspace
+box. Outside, the
 preview turns red with a sentence that names the joint, its angle and the allowed range, or the box
 face and how far past it the TCP stands, and Enter does not capture there. The arm is never held,
 locked or stopped because of a boundary: an arm that locks while a person pushes it is how a hand gets
@@ -439,7 +437,7 @@ joint stations:
 At the cell, each station is screened as the sweep reaches it, before it moves. A joint move does not
 pass the workspace box, so for a joint station the sweep reads where its joints put the grasp centre
 from the arm's own forward kinematics (on a UR, the controller's, with the tool frame, as the home gate
-reads home) and boxes that. A station whose grasp centre lies outside `workspace_limits`, or within
+reads home) and boxes that. A station whose grasp centre lies outside `robot.motion.workspace`, or within
 both `min_distance_mm` and `min_angle` of a station kept before it, is reported with its label and
 reason (`outside_workspace`, `too_similar`) and never moved to; so is a pose of the file, and so is a
 joint station whose grasp centre the arm cannot place (`not_boxed`). A joint station that passes is
@@ -625,16 +623,16 @@ from the shipped `config/` the repository's `calibration/real` is `../calibratio
 calibration command prints names the file by its absolute path, which works from any tree; see
 [Configuration](guide/01-configuration.md) for how a copied tree rewrites its `../` paths.
 
-That alone gives a one-camera cell its `CAMERA->BASE`. The primary rig's `extrinsics` is read
-whether or not `grasping.fusion.enabled` is on, and it is what the real-cell preflight's
+That alone gives a one-camera cell its `CAMERA->BASE`. The primary rig's `extrinsics` is what the
+real-cell preflight's
 `camera -> base` row and `from_robot_config` look for. `build_real_cell` hands the camera section to
 `from_robot_config`, and a real cell built without one is refused, naming
 `camera.cameras.rigs[<primary rig id>].extrinsics`.
 
 On a cell that plans with cuRobo, the shipped planner, a declared calibration also makes the live
-camera world mandatory. Every enabled RGB-D rig that declares `extrinsics` feeds it, so enable
-`safety.planning_world` with a measured `support_plane` and `perceived.enabled` in the same step,
-with the primary rig among the calibrated ones. Without that world the build is refused, naming the
+camera world mandatory. Every enabled RGB-D rig that declares `extrinsics` feeds it, so declare
+`safety.planning_world.support_plane`, measured, in the same step (the camera world is on wherever the bench is
+declared), with the primary rig among the calibrated ones. Without that world the build is refused, naming the
 calibrated rigs, and the `camera world` row of `real_cell --check` blocks.
 
 A wrist camera is declared the same way, with its `eih_<rig_id>.json` and the four tolerances the
@@ -669,53 +667,49 @@ connect: connect a few times and set them just above the spread you see. The res
 artifact with the live tool pose on every frame, so a wrist primary needs no `frame_resolver=` in
 code.
 
-A second camera takes its own rig with its own `extrinsics`, an entry naming it in `fusion.cameras`,
-and two flags. The shipped worked example for a two-camera cell is `config/robot/robot.eth2.yaml`
-with `config/camera/cam.eth2.yaml`, loaded as `WILLY_PROFILE=ur5e,eth2`. Its robot half, for a
-primary camera `cam_left` and a second camera `cam_right`:
+A second camera takes its own rig with its own `extrinsics`, and that is all: a cell fuses by itself
+wherever two or more enabled RGB-D rigs declare their calibration, the primary among them. The shipped
+worked example for a two-camera cell is `config/camera/cam.eth2.yaml`, loaded as
+`WILLY_PROFILE=ur5e,eth2`, for a primary camera `cam_left` and a second camera `cam_right`:
 
 ```yaml
-robot:
-  grasping:
-    fusion:
-      enabled: true              # the line that makes the per-camera map live
-      geometry:
-        enabled: true            # what makes a second view reach the grasp
-      cameras:
-        cam_right:
-          enabled: true          # keyed by rig id; the calibration stays on the rig
+cameras:
+  primary_rig_id: cam_left
+  rigs:
+    - rig_id: cam_left
+      enabled: true
+      source: rgbd
+      serial_number: "${WILLY_CAM_LEFT_SERIAL:-left-camera-serial-not-set}"
+      extrinsics: {mounting_mode: eye_to_hand, artifact_path: ../calibration/real/eth_cam_left.json}
+    - rig_id: cam_right
+      enabled: true
+      source: rgbd
+      serial_number: "${WILLY_CAM_RIGHT_SERIAL:-right-camera-serial-not-set}"
+      extrinsics: {mounting_mode: eye_to_hand, artifact_path: ../calibration/real/eth_cam_right.json}
 ```
 
-`fusion.cameras` names which rigs are fused and holds nothing else, and an id in it that names no
-rig in `camera.cameras.rigs` is refused at load. `fusion.enabled` is the switch the per-camera map
-hangs off: it builds each enabled camera's CAMERA to BASE resolver, and only while
-`fusion.geometry.enabled` is on too, because nothing else asks for the map. With `fusion.enabled`
-`false` and geometry on, the map comes back empty and the pick runs single-view, and the loop warns on
-every pick that each other camera's view was dropped. With geometry off, the map is never built and
-no pick warns.
+A camera that is not to take part is switched off on its rig, `enabled: false`. Which cameras a tree
+fuses, `CameraFusionPlan.from_tree(tree)` says without opening anything, and the cell says it at boot:
+one line naming what it fuses, or a WARNING where two or more enabled RGB-D rigs are declared and they
+do not fuse.
 
-**The primary camera may be listed in `fusion.cameras`.** `_build_multi_camera_rig` in
+**The primary camera is one of the fused cameras.** `_build_multi_camera_rig` in
 `src/robot/execution/autonomous_grasp/cells.py` leaves it out of the extra-camera rig, because the
-primary already streams through the main perception source, and the orchestrator's
-`configured_camera_ids`, the cameras a pick waits for, leaves it out as well. Both are decided in code
-from `camera.cameras.primary_rig_id`, so listing the primary costs nothing, and a two-camera cell can
-name both of its cameras.
+primary already streams through the main perception source, and a pick waits for every fused camera
+but the primary. Both are decided in code from `camera.cameras.primary_rig_id`.
 
-Three consequences of how the multi-camera path is built. Each camera named in the map must also be
-an RGB-D rig in `camera.cameras.rigs` that declares its `extrinsics`: an id that names no rig is
-refused at load, and a rig that is not RGB-D or declares no calibration is refused at build time,
-rather than warned about on every pick. The two perception models are loaded once and shared, so a four-camera
-cell costs four inference passes and one set of weights. And the counter that warns about a
-single-view cell reads the same map, so it reports one calibrated camera and recommends adding a
-second while the cell is in fact fusing two.
+Two consequences of how the multi-camera path is built. The two perception models are loaded once and
+shared, so a four-camera cell costs four inference passes and one set of weights. And a fused camera
+that delivers no frame is warned of on that pick, with the reason the rig recorded, and the pick goes
+on with the cameras that did.
 
 A declared artifact that is missing, stale or invalid raises at construction, naming its rig key,
-rather than degrading to one view in silence. That holds for the primary rig and for every enabled
-fused camera.
+rather than degrading to one view in silence. That holds for the primary rig and for every fused
+camera.
 
-This multi-camera path has never run on hardware. `build_real_components` opens each other enabled
-camera in `fusion.cameras` through its `Camera` owner, and the wiring has been proven against fake
-cameras and fake models; no physical camera has been opened by it.
+This multi-camera path has never run on hardware. `build_real_components` opens each other fused
+camera through its `Camera` owner, and the wiring has been proven against fake cameras and fake
+models; no physical camera has been opened by it.
 
 ## 8. Verify, and what to do when it is bad
 
@@ -736,7 +730,7 @@ Aim at a known object and measure where the TCP actually lands.
 | Residual is `marginal` or `poor` | marker size, flexing mount, motion blur, too few tilts, wrong dictionary | fix the physical cause, do not add poses to average it away |
 | Far fewer accepted samples than poses | marker not found, or poses too similar | read the per-pose lines: `marker_not_found` says what the camera saw, `sample_rejected` names the stored pose it is too close to. The preview window shows the judged frames, and while you guide the arm whether a pose is new enough. Check lighting and framing, spread the poses further |
 | Solve refuses with "two independent axes" | the poses only rotated about one axis | tilt the tool about more directions: guiding by hand, turn the wrist between poses as well as moving it; in a stations file, add stations tilted another way |
-| Cell refuses every motion, or still behaves single-view | the primary rig declares no `extrinsics`, or `fusion.enabled` still false | section 7, then `real_cell --check` |
+| Cell refuses every motion, or still behaves single-view | the primary rig declares no `extrinsics`, or a second camera's rig declares none or is switched off | section 7, then `real_cell --check` |
 | Cell refuses to build once a rig is calibrated | a cuRobo cell with a calibrated RGB-D rig and `safety.planning_world` off or incomplete | section 7, then `real_cell --check` and its `camera world` row |
 | A wrist pick warns `the looks measure the part's shared surface ... mm apart (median), more than 6.0 mm` | the wrist camera moved against the tool: a loosened bracket, a knock | check the mount, then recalibrate the wrist camera (section 9) |
 
@@ -759,11 +753,10 @@ normals within 30 degrees, from 20 shared points up). A healthy cell reads a mil
 6 mm a WARNING says the hand-eye calibration may have drifted, and the attempt line prints the gap.
 Nothing is changed for it, and it cannot see a camera that slid along the surface it looks at.
 
-The watchdog carries `hand_eye_residual_trend` thresholds, but only the synthetic replay datasets fill
-the field it reads, and it needs `grasping.watchdog.mode` plus `grasping.decision.enabled` on. The
-watchdog itself is already on: `mode` defaults to `shadow`, which evaluates and emits telemetry, and
-only `disabled` turns it off. `decision.enabled` is the gate that is false, and the watchdog is built
-inside the decision path. For a fixed camera, the drift signal is picks landing off target.
+The drift watchdog, whose `hand_eye_residual_trend` thresholds only the synthetic replay datasets ever fed,
+left on 2026-10-16 with its block and the decision path it was built in (`grasping.watchdog`,
+`grasping.decision`): it ran in the shadow only, and nothing read its telemetry. For a fixed camera, the drift
+signal is picks landing off target.
 
 Keep the old calibration before you overwrite it. The runner writes atomically, but there is no
 archive and no rollback:

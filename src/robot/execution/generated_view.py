@@ -215,7 +215,7 @@ class GeneratedView:
 
 
 def _degrees(joints: Any) -> list[float]:
-    """Joints in degrees: a ``JointPositions``, or a sequence of radians (``home_joint_positions``)."""
+    """Joints in degrees: a ``JointPositions``, or a sequence of radians (the arm's ``home_joint_positions``)."""
     if isinstance(joints, JointPositions):
         return [float(value) for value in joints.degrees()]
     return [math.degrees(float(value)) for value in joints]
@@ -331,7 +331,7 @@ def go_to_generated_view(
     ``image_size`` (width, height) its lens and image, all BASE millimetres. For each, in order, before anything moves
     toward it: ``arm.nearest_configuration`` (a ``RobotKinematicsError`` gives the turn up), then no joint more than
     :data:`MAX_JOINT_TRAVEL_DEG` from ``here``, where the arm stands, and none more than :data:`CABLE_WINDOW_DEG` from
-    ``home`` (joints, or radians as ``home_joint_positions`` gives them). Then the straight joint line to it
+    ``home`` (joints, or radians as the arm's ``home_joint_positions`` gives them). Then the straight joint line to it
     (``motion.move_joints_on_the_line``), judged by the arm against its camera world. A line refused before anything was
     sent gives the turn up and the next is tried; at most ``max_motions`` lines are driven, and a turn the screen gave
     up sent nothing and does not count. A move driven past :data:`WARN_BEYOND_DEG`, of the turn or of a joint, is said

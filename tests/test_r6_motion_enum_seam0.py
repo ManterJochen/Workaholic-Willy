@@ -11,8 +11,8 @@ dataclass repr unchanged).
 This golden pins exactly that byte-identical surface so the swap is provably safe. The CHANGES rows (str / f-string
 / %s) are deliberately NOT asserted here — they are an intended, surfaced change documented below; the only
 runtime LOGIC that consumed the qualified str() form (recovery._motion_executed + service.py legacy-move
-predicate) is fixed to an identity check IN THE SAME COMMIT as the swap (R6.1a), and guarded by the hardened
-real-enum assertion in test_r4_recovery_seam0.
+predicate) was fixed to an identity check IN THE SAME COMMIT as the swap (R6.1a); recovery._motion_executed left on
+2026-10-16 with the agitation it judged (the owner's cleanup).
 
 CHANGES rows (captured pre-swap; flip to the .value form after R6.1a — NOT a regression):
     str(MotionStatus.EXECUTED)      "MotionStatus.EXECUTED"        -> "executed"

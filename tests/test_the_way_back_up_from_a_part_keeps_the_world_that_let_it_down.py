@@ -12,8 +12,8 @@ at the part, held the part between the fingers. What this file pins:
 * inside ``held_world`` a line refreshes no world: it is judged against the one the last refresh built, and stamped
   with that refresh; outside it refreshes as ever (``HoldsItsWorld``);
 * a grasp holds the arm's world from the part until the arm is back up: the lift judged before the jaws close, the
-  close, the attach and the lift, or the line back up with the jaws open; the move to the standoff and the line down
-  refresh as ever, and an arm that does not hold its world grasps as before.
+  close and the lift, or the line back up with the jaws open; the move to the standoff and the line down refresh as
+  ever, and an arm that does not hold its world grasps as before.
 
 Honesty bucket (1) for the grasp, the real policy over a scripted arm and the owner's toggle hand; (2) for the driver,
 the real UR driver, its real guard and planner client over the test bench's camera and sidecar.
@@ -44,7 +44,7 @@ from tests.test_a_grasp_judges_its_lift_carrying_before_it_closes import (
     _JudgingArm,
     _policy,
 )
-from tests.test_a_stopped_controller_moves_no_jaws import _toggle
+from tests.test_a_stopped_controller_moves_no_jaws import _changes, _toggle
 from tests.test_every_verb_meets_the_camera_world import _Camera as _BenchCamera
 from tests.test_every_verb_meets_the_camera_world import _Client, _mesh_backend_available, _ur
 from tests.test_every_verb_meets_the_camera_world import _world as _bench_world
@@ -84,7 +84,7 @@ class AGraspHoldsItsWorldFromThePartUntilItIsBackUpTests(unittest.TestCase):
         self.assertIsInstance(_HoldingArm([]), HoldsItsWorld)
         self.assertNotIsInstance(_JudgingArm([]), HoldsItsWorld)
 
-    def test_a_lift_that_runs_is_judged_closed_on_attached_and_run_in_the_held_world(self) -> None:
+    def test_a_lift_that_runs_is_judged_closed_on_and_run_in_the_held_world(self) -> None:
         events: list[Any] = []
         report = _policy(_HoldingArm(events), _toggle(events)).execute(_grasp())
 
@@ -95,9 +95,9 @@ class AGraspHoldsItsWorldFromThePartUntilItIsBackUpTests(unittest.TestCase):
         inside = _between(events)
         kinds = [e[0] if isinstance(e, tuple) else e for e in inside]
         self.assertIn("judge", kinds, "the lift was not judged inside the held world")
-        self.assertIn("attach", kinds, "the part was not attached inside the held world")
+        self.assertEqual(1, len(_changes(inside)), "the jaws did not close inside the held world")
         self.assertIn(("move", _LIFT, True), inside, "the lift did not run inside the held world")
-        self.assertLess(kinds.index("judge"), kinds.index("attach"))
+        self.assertLess(kinds.index("judge"), _changes(inside)[0])
         self.assertEqual(1, sum(1 for e in events if isinstance(e, tuple) and e[0] == "held"))
 
     def test_a_lift_refused_backs_out_up_the_line_in_the_held_world(self) -> None:
@@ -107,7 +107,7 @@ class AGraspHoldsItsWorldFromThePartUntilItIsBackUpTests(unittest.TestCase):
         self.assertIs(PolicyOutcome.CARRIED_RETREAT_REFUSED, report.outcome, report.motion_message)
         inside = _between(events)
         self.assertIn(("move", _STANDOFF, True), inside, "the line back up did not run inside the held world")
-        self.assertFalse([e for e in inside if isinstance(e, tuple) and e[0] == "attach"], "a part was attached")
+        self.assertEqual([], _changes(inside), "the jaws were told to close")
 
     def test_the_held_block_says_why(self) -> None:
         events: list[Any] = []

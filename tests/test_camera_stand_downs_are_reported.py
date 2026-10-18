@@ -4,18 +4,20 @@ A fused cell has three outcomes per camera and they call for three different ans
 
 * it delivered a frame and surfaces were fused          -- the working case
 * it delivered a frame and grounded nothing on it       -- legitimate; an empty stretch of bin
-* it delivered no frame at all                          -- a fault; what `on_camera_unavailable` is for
+* it delivered no frame at all                          -- a fault, warned of with its reason
 
 ⛔⛔ TWO OF THE THREE WERE INVISIBLE. A camera that grounded nothing left `_fused_scene` through a
 bare `continue` with no log and no counter, and a camera that FAILED could not be observed at all:
 `MappedCameraRig.acquire_all` built its tuple in a generator with no exception handling, so one
 camera's error propagated out of the pick. The protocol it implements promises the opposite twenty
 lines above it -- "a camera that failed to produce a frame is simply ABSENT from the returned tuple"
--- and because the exception left before the expected-against-delivered comparison ran, BOTH branches
-of `on_camera_unavailable` were unreachable with the only rig in the tree.
+-- and because the exception left before the expected-against-delivered comparison ran, the warning
+of a missing camera was unreachable with the only rig in the tree.
 
-The schema states the cost in the option's own words: "a cell must never fall back to single-view
-silently, which is the whole failure this option exists to make visible."
+A cell must never fall back to single-view silently: that is the whole failure the warning exists to
+make visible. A fused camera that delivers no frame is warned of and the pick goes on with the ones
+that did; the refusal a cell could be set to instead (`on_camera_unavailable: refuse`) left with the
+fusion keys on 2026-10-16, set in no shipped tree (the owner's cleanup).
 
 ⚠ NEVER RUN ON HARDWARE. No physical multi-camera cell exists; this is proved against a fake rig.
 """
@@ -27,7 +29,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from src.config.schema.robot.grasping_schema import FusionGeometryConfig
 from src.geometry import Frame, Transform
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
 from src.robot.grasping.types.perception import MappedCameraRig, PerceptionFrame
@@ -62,14 +63,14 @@ class _Resolver:
         return _IDENTITY
 
 
-def _orchestrator(rig, **kwargs) -> BinPickingOrchestrator:  # noqa: ANN001
+def _orchestrator(rig, cameras: tuple[str, ...] = ("left", "right")) -> BinPickingOrchestrator:  # noqa: ANN001
+    """A cell fusing ``cameras``: a resolver each, as the overlay builds them for the cameras a cell fuses."""
     return BinPickingOrchestrator(
         arm=SimpleNamespace(),  # type: ignore[arg-type]
         calculator=SimpleNamespace(),  # type: ignore[arg-type]
         perception=SimpleNamespace(acquire=_frame),  # type: ignore[arg-type]
         multi_camera_perception=rig,
-        camera_frame_resolvers={"left": _Resolver(), "right": _Resolver()},  # type: ignore[dict-item]
-        **kwargs,
+        camera_frame_resolvers={camera: _Resolver() for camera in cameras},  # type: ignore[misc]
     )
 
 
@@ -104,54 +105,14 @@ class TheRigKeepsGoingWhenOneCameraFailsTests(unittest.TestCase):
         self.assertEqual({}, rig.last_failures)
 
 
-class TheFailureIsNowVisibleToThePolicyTests(unittest.TestCase):
-    """The point of the repair above: `on_camera_unavailable` can finally see a failed camera."""
+class TheFailureIsNowVisibleTests(unittest.TestCase):
+    """The point of the repair above: the pick can finally see a failed camera."""
 
-    def test_refuse_fires_on_a_camera_that_raised(self) -> None:
-        orch = _orchestrator(
-            MappedCameraRig({"left": _Camera(), "right": _Camera(fails="pipeline not started")}),
-            configured_camera_ids=("left", "right"),
-            fusion_geometry_config=FusionGeometryConfig(
-                enabled=True, on_camera_unavailable="refuse"),
-        )
-
-        with self.assertRaises(RuntimeError) as ctx:
-            orch._fused_scene(_frame(), _IDENTITY)
-
-        self.assertIn("right", str(ctx.exception))
-
-    def test_the_refusal_says_WHY_the_camera_was_absent(self) -> None:
-        """A refusal that names a camera and not its fault sends an operator to look at the wrong
-        thing. The reason is the only part of the message that shortens the search.
-
-        ⚠ IT MUST BE THE POLICY'S REFUSAL, NOT THE CAMERA'S OWN EXCEPTION, and asserting only on the
-        reason text cannot tell them apart: with the old rig the camera's `RuntimeError` reached this
-        line unchanged and carried the same words. So the policy is named too.
-        """
-        orch = _orchestrator(
-            MappedCameraRig({"left": _Camera(), "right": _Camera(fails="pipeline not started")}),
-            configured_camera_ids=("left", "right"),
-            fusion_geometry_config=FusionGeometryConfig(
-                enabled=True, on_camera_unavailable="refuse"),
-        )
-
-        with self.assertRaises(RuntimeError) as ctx:
-            orch._fused_scene(_frame(), _IDENTITY)
-
-        message = str(ctx.exception)
-        self.assertIn("on_camera_unavailable='refuse'", message)
-        self.assertIn("pipeline not started", message)
-
-    def test_degrade_warns_with_the_reason_and_keeps_the_pick(self) -> None:
-        orch = _orchestrator(
-            MappedCameraRig({"left": _Camera(), "right": _Camera(fails="pipeline not started")}),
-            configured_camera_ids=("left", "right"),
-            fusion_geometry_config=FusionGeometryConfig(
-                enabled=True, on_camera_unavailable="degrade"),
-        )
+    def test_a_camera_that_raised_is_warned_of_with_its_reason_and_the_pick_goes_on(self) -> None:
+        orch = _orchestrator(MappedCameraRig({"left": _Camera(), "right": _Camera(fails="pipeline not started")}))
 
         with self.assertLogs(_LOGGER, level="WARNING") as logs:
-            orch._fused_scene(_frame(), _IDENTITY)
+            self.assertIsNotNone(orch._fused_scene(_frame(), _IDENTITY), "the camera that delivered is fused")
 
         joined = "\n".join(logs.output)
         self.assertIn("right", joined)
@@ -162,22 +123,15 @@ class ACameraThatFindsNothingIsNotAFaultTests(unittest.TestCase):
     """It delivered. A bin can be empty where one camera happens to be looking."""
 
     def test_it_does_NOT_count_as_missing(self) -> None:
-        """Under `refuse` this decides whether a legitimate scene stops the cell every pick."""
-        orch = _orchestrator(
-            MappedCameraRig({"left": _Camera(), "right": _Camera(grounded=False)}),
-            configured_camera_ids=("left", "right"),
-            fusion_geometry_config=FusionGeometryConfig(
-                enabled=True, on_camera_unavailable="refuse"),
-        )
+        orch = _orchestrator(MappedCameraRig({"left": _Camera(), "right": _Camera(grounded=False)}))
 
-        orch._fused_scene(_frame(), _IDENTITY)  # must not raise
+        _views, missing, grounded_nothing, _clock = orch._fixed_camera_views()
+
+        self.assertEqual([], missing)
+        self.assertEqual(["right"], grounded_nothing)
 
     def test_it_says_so_instead_of_dropping_out_in_silence(self) -> None:
-        orch = _orchestrator(
-            MappedCameraRig({"left": _Camera(), "right": _Camera(grounded=False)}),
-            configured_camera_ids=("left", "right"),
-            fusion_geometry_config=FusionGeometryConfig(enabled=True),
-        )
+        orch = _orchestrator(MappedCameraRig({"left": _Camera(), "right": _Camera(grounded=False)}))
 
         with self.assertLogs(_LOGGER, level="INFO") as logs:
             orch._fused_scene(_frame(), _IDENTITY)
@@ -189,8 +143,7 @@ class ACameraThatFindsNothingIsNotAFaultTests(unittest.TestCase):
         orch = _orchestrator(
             MappedCameraRig({"left": _Camera(), "right": _Camera(grounded=False),
                              "third": _Camera(fails="unplugged")}),
-            configured_camera_ids=("left", "right", "third"),
-            fusion_geometry_config=FusionGeometryConfig(enabled=True),
+            cameras=("left", "right", "third"),
         )
 
         orch._fused_scene(_frame(), _IDENTITY)
@@ -202,11 +155,7 @@ class ACameraThatFindsNothingIsNotAFaultTests(unittest.TestCase):
     def test_the_counters_are_stamped_even_when_NOTHING_contributed(self) -> None:
         """The early return is where a silent cell is most likely, so it stamps too. Without this,
         'no camera looked' and 'every camera looked and found nothing' produce the same telemetry."""
-        orch = _orchestrator(
-            MappedCameraRig({"left": _Camera(grounded=False), "right": _Camera(grounded=False)}),
-            configured_camera_ids=("left", "right"),
-            fusion_geometry_config=FusionGeometryConfig(enabled=True),
-        )
+        orch = _orchestrator(MappedCameraRig({"left": _Camera(grounded=False), "right": _Camera(grounded=False)}))
 
         self.assertIsNone(orch._fused_scene(_frame(), _IDENTITY))
         self.assertEqual(2, orch._fusion_geometry_telemetry["cameras_grounded_nothing"])
@@ -216,17 +165,13 @@ class AStandDownLeavesNoCountOfTheLastPickTests(unittest.TestCase):
     """The telemetry describes THIS pick, so a pick that stood down early carries no count of the one before.
 
     ⛔ It did. `_fused_scene` stamped its counters only once it reached the rig, so a pick that stood down
-    before it (fusion off, no multi-camera source, no CAMERA->BASE) kept the dict of the last pick that
+    before it (no camera fused, no multi-camera source, no CAMERA->BASE) kept the dict of the last pick that
     fused, and the service turned it into that record's `fused_view_count` (found by the review of
     2026-09-24 that added `fused_views` to the attempt).
     """
 
     def _fused_once(self) -> BinPickingOrchestrator:
-        orch = _orchestrator(
-            MappedCameraRig({"left": _Camera(), "right": _Camera()}),
-            configured_camera_ids=("left", "right"),
-            fusion_geometry_config=FusionGeometryConfig(enabled=True),
-        )
+        orch = _orchestrator(MappedCameraRig({"left": _Camera(), "right": _Camera()}))
         orch._fused_scene(_frame(), _IDENTITY)
         self.assertTrue(orch._fusion_geometry_telemetry, "the first pick fused and stamped its counters")
         return orch
@@ -239,18 +184,18 @@ class AStandDownLeavesNoCountOfTheLastPickTests(unittest.TestCase):
 
         self.assertEqual({}, orch._fusion_geometry_telemetry)
 
-    def test_a_pick_with_fusion_switched_off_carries_no_count_of_the_last(self) -> None:
+    def test_a_pick_of_a_cell_that_fuses_no_camera_carries_no_count_of_the_last(self) -> None:
         orch = self._fused_once()
-        orch.fusion_geometry_config = FusionGeometryConfig(enabled=False)
+        orch.camera_frame_resolvers = None
 
         self.assertIsNone(orch._fused_scene(_frame(), _IDENTITY))
 
         self.assertEqual({}, orch._fusion_geometry_telemetry)
 
     def test_a_pick_that_stands_down_keeps_no_other_camera_view_of_the_last(self) -> None:
-        """⛔ The views the scene builder promotes objects from (``promote_unmatched``) were set only where fusion ran,
-        so a pick that stood down kept the last fused pick's views, and an object from another moment could be promoted
-        into this one's scene and grasped (review of 2026-09-24, outside the fused-views change)."""
+        """⛔ The other cameras' views were set only where fusion ran, so a pick that stood down kept the last fused
+        pick's views (review of 2026-09-24, outside the fused-views change), and a camera of another moment would
+        vouch for this pick's way in (``_scene_views``)."""
         orch = self._fused_once()
         self.assertTrue(orch._last_other_views, "the first pick fused and kept the other camera's view")
 

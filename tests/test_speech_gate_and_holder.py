@@ -168,11 +168,11 @@ class TheHolderTests(unittest.TestCase):
 
         built: list[str] = []
 
-        def engine(config: SpeechToTextConfig) -> Any:
+        def engine(config: SpeechToTextConfig, weights_root: str | None) -> Any:
             built.append(f"engine:{config.language}")
             return RecordingEngine()
 
-        def gate(config: SpeechToTextConfig) -> Any:
+        def gate(config: SpeechToTextConfig, weights_root: str | None) -> Any:
             built.append(f"gate:{config.language}")
             return _gate()
 
@@ -193,6 +193,14 @@ class TheHolderTests(unittest.TestCase):
         self.assertIsNot(first.engine, second.engine)
         self.assertEqual(built, ["engine:auto", "gate:auto", "engine:german", "gate:german"])
 
+    def test_another_weights_folder_builds_new_ones(self) -> None:
+        holder, built = self._counting()
+        first = holder.for_config(config=_config(), weights_root="D:/one")
+        second = holder.for_config(config=_config(), weights_root="D:/two")
+        self.assertIsNot(first.engine, second.engine)
+        self.assertEqual(("D:/one", "D:/two"), (first.weights_root, second.weights_root))
+        self.assertEqual(4, len(built))
+
     def test_forget_drops_what_it_holds(self) -> None:
         holder, built = self._counting()
         holder.for_config(config=_config())
@@ -211,6 +219,9 @@ class TheHolderTests(unittest.TestCase):
         holder, _ = self._counting()
         held = holder.for_tree(root, profile=None)
         self.assertEqual(held.config, load_speech_section(root, profile=None))
+        from src.config.loader import load_weights_root
+
+        self.assertEqual(held.weights_root, load_weights_root(root, profile=None), "and its weights folder")
 
     def test_the_default_holder_builds_whisper_and_silero_and_loads_nothing(self) -> None:
         import torch

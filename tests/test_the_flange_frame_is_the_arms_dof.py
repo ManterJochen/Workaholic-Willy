@@ -1,6 +1,6 @@
 """Everything bolted to the flange hangs from the arm's own flange frame, its dof, and not from a six (P0f F9a).
 
-The hand, a coupling plate, a wrist camera and a carried part all hang from the flange, and the guard, the self filter
+The hand, a coupling plate and a wrist camera all hang from the flange, and the guard, the self filter
 and the planner's evidence placed each at DH frame 6, the flange of every UR. On an arm with a seventh joint every one
 of them would have hung from the sixth link, silently: a guard judging a hand one joint short of where it is. Each is
 now placed at the description's ``dof``, which is 6 on every UR, so no hash moves (the evidence recompute holds all 47
@@ -77,14 +77,6 @@ class TheSelfFilterHangsTheHandFromTheFlangeTests(_Twin):
         self.assertEqual({7}, {sphere.frame for sphere in seven})
         self.assertEqual({6}, {sphere.frame for sphere in six})
         self.assertEqual({int}, {type(sphere.frame) for sphere in six})
-
-    def test_a_carried_part_hangs_where_the_hand_does(self) -> None:
-        hand = _hand()
-        with self._patched(self_envelope):
-            spheres = self_envelope.hand_spheres(hand, "ur5e")
-        assert spheres is not None
-        capsule = self_envelope.payload_capsule(hand, spheres, length_mm=30.0, lateral_margin_mm=2.0)
-        self.assertEqual(7, capsule.frame)
 
     def test_the_arm_links_are_the_descriptions(self) -> None:
         """A link the description names and the bundle does not carry is refused, never skipped."""

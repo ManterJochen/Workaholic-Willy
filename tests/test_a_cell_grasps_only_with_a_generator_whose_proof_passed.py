@@ -317,8 +317,6 @@ class EveryBuildSiteSaysWhoItBuildsForTests(unittest.TestCase):
 
     _EVALUATORS: dict[str, set[str]] = {
         "datagen/eval/ladder.py": {"build_calculator"},
-        "datagen/rl/occupancy.py": {"build_calculator", "preflight_calculator"},
-        "datagen/rl/collect.py": {"preflight_calculator"},
         "src/willy_sim/run_m1_pick.py": {"build_calculator"},
         "src/willy_sim/run_m2_pick.py": {"build_calculator"},
         "src/willy_sim/run_eih_pick.py": {"build_calculator"},

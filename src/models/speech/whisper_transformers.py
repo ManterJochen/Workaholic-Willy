@@ -31,14 +31,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from src.config.schema.models.models_schema import (
-    InferenceOptimization,
-    SpeechLanguage,
-    SpeechToTextConfig,
-)
+from src.config.schema.models.models_schema import SpeechLanguage, SpeechToTextConfig
 from src.contracts import UNSET, Maybe, chosen, resolve
 from src.models.constants import MODELS_LOG_DIR, WHISPER_LOG_FILE
-from src.models.speech.capture import to_mono_at_rate
+from src.models.speech.capture import MICROPHONE_SAMPLERATE, to_mono_at_rate
 from src.models.speech.engine import (
     WHISPER_WINDOW_S,
     RecordingTooLong,
@@ -52,9 +48,12 @@ from src.utility.log_cfg import create_logger
 if TYPE_CHECKING:  # pragma: no cover, typing only
     import numpy as np
 
+    from src.models._inference import LoadSettings
+
 __all__ = ["WhisperTransformersEngine"]
 
-#: The only task this stack runs (`models.stt.task`).
+#: The only task this stack runs: Whisper transcribes and never translates, so the text stays in the language it was
+#: spoken in (it was the one value `models.stt.task` took, until the key left on 2026-10-17).
 _TASK: Final[str] = "transcribe"
 #: How far into a returned sequence the decoder prompt reaches: start, language, task, no timestamps.
 _PROMPT_TOKENS: Final[int] = 4
@@ -62,7 +61,8 @@ _PROMPT_TOKENS: Final[int] = 4
 _AUTO_LANGUAGES: Final[tuple[str, str]] = ("de", "en")
 #: What `from_parts` uses for an argument nobody chose.
 _DEFAULT_LANGUAGE: Final[SpeechLanguage] = "auto"
-_DEFAULT_SAMPLERATE: Final[int] = 16000
+#: The rate Whisper is fed at, the microphone's (16 kHz for every Whisper checkpoint, and for Silero).
+_DEFAULT_SAMPLERATE: Final[int] = MICROPHONE_SAMPLERATE
 
 
 def _import_stack() -> tuple[Any, Any]:
@@ -116,16 +116,19 @@ class WhisperTransformersEngine:
         language: SpeechLanguage,
         samplerate: int,
         local_files_only: bool,
-        optim: InferenceOptimization | None,
+        settings: LoadSettings | None,
         device: Maybe[str],
         processor: Maybe[Any],
         model: Maybe[Any],
+        named: str | None = None,
     ) -> None:
         self._source = source
         self._language: SpeechLanguage = language
         self._samplerate = samplerate
         self._local_files_only = local_files_only
-        self._optim = optim
+        self._settings = settings
+        #: The ``models.stt.model_id`` the source was read from, for a refusal; ``None`` for a source given as it is.
+        self._named = named
         self._device_choice = device
         self._processor: Any = processor if chosen(processor) else None
         self._model: Any = model if chosen(model) else None
@@ -141,17 +144,28 @@ class WhisperTransformersEngine:
 
     @classmethod
     def from_config(
-        cls, *, config: SpeechToTextConfig, device: Maybe[str] = UNSET
+        cls, *, config: SpeechToTextConfig, device: Maybe[str] = UNSET, weights_root: str | None = None,
     ) -> WhisperTransformersEngine:
-        """The YAML door: `models.stt` resolved into the arguments `from_parts` takes. Loads nothing."""
-        return cls.from_parts(
-            source=config.model_path if config.local else config.model_id,
+        """The speech section's door: `models.stt` resolved into the arguments `from_parts` takes. Loads nothing.
+
+        The weights are read from ``config.model_id`` through the one resolver (:mod:`src.models.weights`): the
+        folder under ``weights_root`` (``models.weights_root``; ``None`` is the repository's), else the Hugging Face
+        cache, never a download. Whisper loads as the owner's cell ran it (:data:`~src.models._inference.WHISPER`).
+        """
+        from src.models._inference import WHISPER  # noqa: PLC0415 (torch; this module is stdlib only at import)
+        from src.models.weights import locate_weights  # noqa: PLC0415
+
+        found = locate_weights(config.model_id, kind="speech", root=weights_root)
+        engine = cls.from_parts(
+            source=found.source,
             language=config.language,
-            samplerate=config.samplerate,
-            local_files_only=config.local,
-            optim=config.optim,
+            samplerate=_DEFAULT_SAMPLERATE,
+            local_files_only=True,
+            settings=WHISPER,
             device=device,
         )
+        engine._named = config.model_id
+        return engine
 
     @classmethod
     def from_parts(
@@ -161,7 +175,7 @@ class WhisperTransformersEngine:
         language: Maybe[SpeechLanguage] = UNSET,
         samplerate: Maybe[int] = UNSET,
         local_files_only: Maybe[bool] = UNSET,
-        optim: Maybe[InferenceOptimization | None] = UNSET,
+        settings: Maybe[LoadSettings | None] = UNSET,
         device: Maybe[str] = UNSET,
         processor: Maybe[Any] = UNSET,
         model: Maybe[Any] = UNSET,
@@ -171,9 +185,9 @@ class WhisperTransformersEngine:
         ``source`` is a local directory or a Hub id. ``processor`` and ``model`` hand in parts that are
         already built, together or not at all, and ``source`` then only names them in the report. Left
         UNSET: ``language`` is auto, ``samplerate`` 16000, ``local_files_only`` True (a local directory
-        that is not there is refused rather than read as a Hub id), ``optim`` none (transformers' own
-        load defaults), and ``device`` resolves through `get_device` at load: ``WILLY_DEVICE``, then
-        cuda, mps, cpu.
+        that is not there is refused rather than read as a Hub id), ``settings`` none (transformers' own
+        load defaults; ``from_config`` passes the owner's cell's), and ``device`` resolves through
+        `get_device` at load: ``WILLY_DEVICE``, then cuda, mps, cpu.
         """
         if chosen(processor) != chosen(model):
             raise ValueError(
@@ -185,7 +199,7 @@ class WhisperTransformersEngine:
             language=resolve("language", language, _DEFAULT_LANGUAGE),
             samplerate=resolve("samplerate", samplerate, _DEFAULT_SAMPLERATE),
             local_files_only=resolve("local_files_only", local_files_only, True),
-            optim=resolve("optim", optim, None),
+            settings=resolve("settings", settings, None),
             device=device,
             processor=processor,
             model=model,
@@ -226,14 +240,12 @@ class WhisperTransformersEngine:
         Left to `from_pretrained`, a missing directory is read as a Hub repo id and refused as one, which
         sends an operator looking for a Hub problem instead of a fetch that never ran.
         """
-        if self._local_files_only and not Path(self._source).is_dir():
+        if self._local_files_only and self._a_folder() and not Path(self._source).is_dir():
+            from src.models.weights import fetch_hint  # noqa: PLC0415 (stdlib only)
+
             raise SpeechModelMissing(
-                key="models.stt.model_path", path=self._source, kind="directory",
-                fetch=(
-                    "fetch the checkpoint with `python scripts/model_weights/fetch.py` (`--list` names "
-                    "each entry), or set models.stt.local: false to download models.stt.model_id from "
-                    "the Hub on first use"
-                ),
+                key=self._key(), named=self._named, path=self._source, kind="directory",
+                fetch=fetch_hint(self._named or self._source, folder=Path(self._source)),
             )
 
     def _refuse_an_incomplete_directory(self) -> None:
@@ -248,7 +260,7 @@ class WhisperTransformersEngine:
         transformers, such a directory stops with errors about building a tokenizer rather than about the files it
         lacks.
         """
-        if not self._local_files_only:
+        if not self._local_files_only or not self._a_folder():
             return
         folder = Path(self._source)
 
@@ -264,7 +276,7 @@ class WhisperTransformersEngine:
             missing.append(_WEIGHT_FILES[0])
         if missing:
             raise SpeechModelIncomplete(
-                key="models.stt.model_path", path=self._source, missing=tuple(missing),
+                key=self._key(), named=self._named, path=self._source, missing=tuple(missing),
                 problem=(
                     f"that directory lacks {', '.join(missing)} (resolved: {folder.resolve()}). The engine loads "
                     f"{', '.join(_NEEDED_FILES)}, the weights, and a tokenizer: tokenizer.json, or "
@@ -302,9 +314,9 @@ class WhisperTransformersEngine:
             return
         folder = Path(self._source)
         files = ("tokenizer.json", *_VOCABULARY_FILES, *_SPECIAL_TOKEN_FILES)
-        missing = tuple(name for name in files if not (folder / name).is_file()) if self._local_files_only else ()
+        missing = tuple(name for name in files if not (folder / name).is_file()) if self._a_folder() else ()
         raise SpeechModelIncomplete(
-            key="models.stt.model_path" if self._local_files_only else "models.stt.model_id",
+            key=self._key(), named=self._named,
             path=self._source, missing=missing,
             problem=(
                 f"the tokenizer built from it does not hold the decoder prompt as special tokens: {'; '.join(wrong)}"
@@ -313,11 +325,22 @@ class WhisperTransformersEngine:
             fetch=_FETCH,
         )
 
+    def _a_folder(self) -> bool:
+        """Whether the source is a folder: the weights folder's copy or one a caller names, rather than an id the
+        Hugging Face cache holds."""
+        from src.models.weights import names_a_folder  # noqa: PLC0415 (stdlib only)
+
+        return names_a_folder(self._source)
+
+    def _key(self) -> str:
+        """The config key a refusal names: the model id a tree's section named, or the source a caller handed in."""
+        return "models.stt.model_id" if self._named is not None else "the Whisper source"
+
     def _load_weights(self, transformers: Any, device: Any) -> None:
         from src.models._inference import build_load_kwargs, finalize_model, weight_load_errors
 
         base = {"local_files_only": True} if self._local_files_only else None
-        model_kwargs = build_load_kwargs(self._optim, device, base)
+        model_kwargs = build_load_kwargs(self._settings, device, base)
         self._model_dtype = model_kwargs.get("torch_dtype")
         self._logger.info(
             "Loading Whisper from '%s' on %s (dtype %s).", self._source, device, self._model_dtype
@@ -341,7 +364,7 @@ class WhisperTransformersEngine:
             raise
         self._refuse_a_tokenizer_without_the_prompt(processor, model)
         self._processor = processor
-        self._model = finalize_model(model, device, self._optim)
+        self._model = finalize_model(model, device, self._settings)
 
     def _prepare_decoder(self) -> None:
         generation: Any = getattr(self._model, "generation_config", None)

@@ -1,7 +1,7 @@
 """Every camera grasp closes the way round the cell's hand and camera naturally stand: chosen, never dropped or tilted.
 
 The owner's final decision of 2026-09-30. Camera grasps stay completely free: any closing direction, any tilt. The cell
-names how its hand and camera naturally stand, ``robot.natural_closing_axis``: a name ``Pose.tool_down`` takes (``x``,
+names how its hand and camera naturally stand, ``robot.motion.natural_closing_axis``: a name ``Pose.tool_down`` takes (``x``,
 ``-x``, ``y``, ``-y``, ``radial``, ``-radial``, ``tangential``, ``-tangential``, a leading "+" allowed) or a quaternion
 (x, y, z, w) whose tool +X is the natural closing direction. Of a grasp's two equivalent wrist turns, half a turn about its
 approach apart (the same two contact faces, the jaws swapped), the pick takes the one whose tool +X lies nearest the
@@ -12,7 +12,7 @@ calculator is asked for 36 candidates and the best 12 along the axis are kept, a
 built through the cell take the natural orientation where the program names none: ``robot.tool_down(x, y, z)``. Unset,
 nothing changes.
 
-The owner's cell: ``robot.natural_closing_axis: "-y"``, the tool +X along base -y, where the D415's image stands upright.
+The owner's cell: ``robot.motion.natural_closing_axis: "-y"``, the tool +X along base -y, where the D415's image stands upright.
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ from src.robot.grasping.loop import pick_loop
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator, PickOutcome
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
 from src.robot.grasping.motion.grasp_motion import GraspMotion
-from src.robot.grasping.scoring.success_probability import RankingBlendTelemetry
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame
 from tests._helpers import _FakeArm, _FakePerception, _perception_frame
@@ -73,6 +72,7 @@ from tests.test_a_pick_closes_along_the_axis_its_program_names import (
 )
 from tests.test_a_scene_plans_the_trees_hand import _replace
 from tests.test_a_wrist_pick_looks_until_its_grasp_is_safe import LOOK_MINUS_X, LOOK_PLUS_X, _Cell, _keys
+from tests._wrist_views import Box
 from tests.test_robot_parts import _loaded_after
 
 #: The owner's natural orientation, as his cell names it.
@@ -193,13 +193,13 @@ class TheNearerWayRoundIsTakenTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# The cell names it: robot.natural_closing_axis
+# The cell names it: robot.motion.natural_closing_axis
 # ---------------------------------------------------------------------------------------------------------------------
 
 
 class TheCellNamesItsNaturalOrientationTests(unittest.TestCase):
     def test_unset_by_default_and_in_the_shipped_trees(self) -> None:
-        self.assertIsNone(RobotConfig().natural_closing_axis)
+        self.assertIsNone(RobotConfig().motion.natural_closing_axis)
         self.assertIsNone(natural_closing_axis_of(RobotConfig()))
         self.assertIsNone(natural_closing_axis_of(_console_dummy().robot))
         self.assertIsNone(natural_closing_axis_of(object()), "anything with no such key names none")
@@ -208,10 +208,10 @@ class TheCellNamesItsNaturalOrientationTests(unittest.TestCase):
         for written, name in (("-y", "-y"), ("y", "y"), ("+y", "y"), ("x", "x"), ("-radial", "-radial"),
                               ("tangential", "tangential")):
             with self.subTest(written=written):
-                config = RobotConfig.model_validate(yaml.safe_load(f"natural_closing_axis: {written}"))
+                config = RobotConfig.model_validate(yaml.safe_load(f"motion:\n  natural_closing_axis: {written}"))
                 self.assertEqual(closing_axis_of(name), natural_closing_axis_of(config))
         quaternion = ", ".join(repr(float(value)) for value in _OWNERS.quaternion_xyzw)
-        config = RobotConfig.model_validate(yaml.safe_load(f"natural_closing_axis: [{quaternion}]"))
+        config = RobotConfig.model_validate(yaml.safe_load(f"motion:\n  natural_closing_axis: [{quaternion}]"))
         taught = natural_closing_axis_of(config)
         assert taught is not None
         self.assertAlmostEqual(0.0, _off(taught.heading_at(*_AT[:2]), -90.0), places=9)
@@ -219,10 +219,10 @@ class TheCellNamesItsNaturalOrientationTests(unittest.TestCase):
     def test_what_names_no_axis_is_refused_at_load_naming_the_key(self) -> None:
         for value in ("z", "", "-", [0.0, 0.0, 0.0, 0.0], [0.0, 0.7071068, 0.0, 0.7071068], [1.0, 0.0, 0.0], 3):
             with self.subTest(value=value), self.assertRaises(ValidationError) as refused:
-                RobotConfig.model_validate({"natural_closing_axis": value})
+                RobotConfig.model_validate({"motion": {"natural_closing_axis": value}})
             self.assertIn("natural_closing_axis", str(refused.exception))
         with self.assertRaises(ValidationError) as vertical:
-            RobotConfig.model_validate({"natural_closing_axis": [0.0, 0.7071068, 0.0, 0.7071068]})
+            RobotConfig.model_validate({"motion": {"natural_closing_axis": [0.0, 0.7071068, 0.0, 0.7071068]}})
         self.assertIn("names no heading", str(vertical.exception))
 
 
@@ -247,8 +247,8 @@ class ReadingItLoadsNoGraspingStackTests(unittest.TestCase):
         quaternion = [float(value) for value in _OWNERS.quaternion_xyzw]
         script = "\n".join((
             "from src.config.schema.robot import RobotConfig",
-            "RobotConfig(natural_closing_axis='-y')",
-            f"RobotConfig.model_validate({{'natural_closing_axis': {quaternion!r}}})",
+            "RobotConfig.model_validate({'motion': {'natural_closing_axis': '-y'}})",
+            f"RobotConfig.model_validate({{'motion': {{'natural_closing_axis': {quaternion!r}}}}})",
         ))
         self.assertEqual([], _loaded_after(script, _READING_MUST_NOT_LOAD))
 
@@ -258,7 +258,7 @@ class ReadingItLoadsNoGraspingStackTests(unittest.TestCase):
             "from src.robot.drivers.dummy.arm import DummyRobotArm",
             "from src.robot.execution.robot import Robot",
             "robot = Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None,",
-            "                         robot_config=RobotConfig(natural_closing_axis='-y'))",
+            "                         robot_config=RobotConfig.model_validate({'motion': {'natural_closing_axis': '-y'}}))",
             "robot.tool_down(-130.0, -700.0, 50.0)",
         ))
         self.assertEqual([], _loaded_after(script, ("src.robot.grasping",)))
@@ -335,20 +335,6 @@ class ThePickLoopTurnsEveryGraspTests(unittest.TestCase):
         for grasp, nearer in zip(executed.candidates, (-90.0, -120.0, -45.0), strict=True):
             self.assertAlmostEqual(0.0, _off(_heading_deg(grasp.axis), nearer), places=6)
 
-    def test_a_rerank_that_puts_a_later_grasp_first_executes_it_turned_as_well(self) -> None:
-        """The reranks run after the turn and may put any candidate first: the one they put first was turned too."""
-        orchestrator, arm, _ = _loop((_grasp(90.0, score=0.95), _grasp(60.0, score=0.9)), natural_closing_axis=_MINUS_Y)
-
-        def reversed_order(candidates: Any, **_: Any) -> Any:
-            return tuple(reversed(candidates)), _blend_that_put_another_first(len(candidates))
-
-        with mock.patch.object(pick_loop, "maybe_blend_rerank_candidates", side_effect=reversed_order):
-            report = orchestrator.run()
-
-        self.assertIs(PickOutcome.EXECUTED, report.outcome)
-        self.assertEqual([0.9, 0.95], [grasp.score for grasp in report.executed_grasp.candidates])  # type: ignore[union-attr]
-        self.assertAlmostEqual(-120.0, _closed_along(arm), places=6)
-
     def test_beside_the_simulators_twist_it_turns_nothing_and_the_twist_moves_as_it_always_did(self) -> None:
         """``align_closing_to_base_x`` turns every grasp about base Z to close along base X itself, whichever way round
         it came, so a turn would change only the side a leaning approach leans to. The natural orientation stands down
@@ -374,14 +360,6 @@ class ThePickLoopTurnsEveryGraspTests(unittest.TestCase):
 
                 self.assertIn("natural_closing_axis", str(refused.exception))
                 self.assertEqual([], cell.arm.motions)
-
-
-def _blend_that_put_another_first(candidates: int) -> RankingBlendTelemetry:
-    """What the probability blend says when it fired and changed the grasp that comes first."""
-    return RankingBlendTelemetry(
-        enabled=True, applied=True, skip_reason=None, weight=0.5, mode_label="dense_clutter", lifecycle_phase="active",
-        n_candidates=candidates, top1_changed=True, winner_geometric_score=None, winner_predicted_probability=None,
-        winner_final_score=None, pre_blend_top1_geometric_score=None)
 
 
 class BothFacesJudgesTheGraspTurnedTheNaturalWayRoundTests(unittest.TestCase):
@@ -513,10 +491,10 @@ class AProgramsAxisChoosesAmongMoreCandidatesTests(unittest.TestCase):
 
     def test_the_scene_asks_its_generator_for_as_many(self) -> None:
         scene = Scene.from_cloud(_block(), support_height_mm=0.0)
-        generate = scene_module.generate_support_footprint_grasps
-        for closing_axis, asked in (("-y", 36), (None, None)):
+        generate = scene_module.body_grasps
+        for closing_axis, asked in (("-y", 36), (None, 12)):
             with self.subTest(closing_axis=closing_axis), mock.patch.object(
-                    scene_module, "generate_support_footprint_grasps", side_effect=generate) as generator:
+                    scene_module, "body_grasps", side_effect=generate) as generator:
                 scene.grasps(closing_axis=closing_axis) if closing_axis else scene.grasps()
                 self.assertEqual(asked, generator.call_args.kwargs.get("max_candidates"))
 
@@ -546,7 +524,12 @@ class AProgramsAxisChoosesAmongMoreCandidatesTests(unittest.TestCase):
 
 def _with(natural: Any) -> Any:
     """The owner's hand profile, naming ``natural`` as its natural orientation."""
-    return _replace(_cell(), "natural_closing_axis", natural)
+    return _replace(_cell(), "motion.natural_closing_axis", natural)
+
+
+#: A bar 60 mm along x and 30 mm along y about the cube's centre: the Hand-E closes across it along y alone, so the
+#: north and south looks are the ones that show its grasp's faces (the part's body takes either way across a cube).
+Y_BAR = Box((-30.0, -715.0, 0.0), (30.0, -685.0, 40.0), "part")
 
 
 class TheSceneAndTheLocatorTakeItFromTheConfigTests(unittest.TestCase):
@@ -582,15 +565,15 @@ class TheSceneAndTheLocatorTakeItFromTheConfigTests(unittest.TestCase):
             self.assertTrue(Scene.from_robot_config(_cell(), cloud).grasps().candidates)
 
     def test_the_locator_judges_the_faces_of_the_grasp_turned_the_natural_way_round(self) -> None:
-        """From the north look alone the cube's best grasp closes along +y: jaw 2 on the north face it sees, jaw 1 on
-        the south face it does not. A hand that naturally closes along -y takes it half a turn round, and the refusal
-        names jaw 2; the part's scene gives the program that same grasp."""
+        """From the north look alone a bar only y fits the Hand-E across (:data:`Y_BAR`) is grasped closing along +y:
+        jaw 2 on the north face it sees, jaw 1 on the south face it does not. A hand that naturally closes along -y
+        takes it half a turn round, and the refusal names jaw 2; the part's scene gives the program that same grasp."""
         said: dict[str, Any] = {}
         for natural in (None, "-y"):
             built = _arm(NORTH)
             config = _cell() if natural is None else _with(natural)
-            located = _locator(_Wrist(built)).look_around("a part", [NORTH.joints], robot=_robot(built, config=config),
-                                                          both_faces=True)
+            located = _locator(_Wrist(built, (Y_BAR,))).look_around("a part", [NORTH.joints],
+                                                                     robot=_robot(built, config=config), both_faces=True)
             best = replace(located, refused="").scene(0, config).grasps().best
             assert best is not None
             said[str(natural)] = (located.jaw_faces_seen, located.refused, _heading_deg(best.closing_axis))
@@ -606,8 +589,8 @@ class TheSceneAndTheLocatorTakeItFromTheConfigTests(unittest.TestCase):
         built = _arm(NORTH, SOUTH)
         config = _with("-y")
 
-        located = _locator(_Wrist(built)).look_around("a part", [NORTH.joints, SOUTH.joints],
-                                                      robot=_robot(built, config=config), both_faces=True)
+        located = _locator(_Wrist(built, (Y_BAR,))).look_around("a part", [NORTH.joints, SOUTH.joints],
+                                                                 robot=_robot(built, config=config), both_faces=True)
 
         self.assertEqual(((True, True), ""), (located.jaw_faces_seen, located.refused))
         best = located.scene(0, config).grasps().best
@@ -628,7 +611,7 @@ class APickRunClosesTheNaturalWayRoundTests(unittest.TestCase):
     def _run(natural: Any, motion: GraspMotion | None = None) -> Any:
         config = _console_dummy().robot
         if natural is not None:
-            config = _replace(config, "natural_closing_axis", natural)
+            config = _replace(config, "motion.natural_closing_axis", natural)
         cell = Cell.rehearsal(config, motion=motion if motion is not None else GraspMotion())
         return PickRun.from_cell(cell, runs=1, recording=Recording.off()).execute()
 
@@ -670,7 +653,7 @@ class APickRunClosesTheNaturalWayRoundTests(unittest.TestCase):
 
 
 def _desk_robot(natural: Any = None) -> Robot:
-    config = RobotConfig() if natural is None else RobotConfig(natural_closing_axis=natural)
+    config = RobotConfig() if natural is None else RobotConfig.model_validate({"motion": {"natural_closing_axis": natural}})
     return Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None, robot_config=config)
 
 
@@ -712,7 +695,7 @@ class ARobotsPosesTakeItsNaturalOrientationTests(unittest.TestCase):
         """As ``Robot.preflight`` reads it since P0e: a robot handed no ``robot_config`` reads no tree, not the one an
         arm keeps (``arm.config``, which only the UR driver does), so its jaws close along ``x``."""
         arm = DummyRobotArm()
-        arm.config = RobotConfig(natural_closing_axis="-y")  # type: ignore[attr-defined]
+        arm.config = RobotConfig.model_validate({"motion": {"natural_closing_axis": "-y"}})  # type: ignore[attr-defined]
 
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
 
@@ -721,15 +704,15 @@ class ARobotsPosesTakeItsNaturalOrientationTests(unittest.TestCase):
 
     def test_the_tree_the_robot_was_built_from_wins_over_the_one_its_arm_keeps(self) -> None:
         arm = DummyRobotArm()
-        arm.config = RobotConfig(natural_closing_axis="-y")  # type: ignore[attr-defined]
+        arm.config = RobotConfig.model_validate({"motion": {"natural_closing_axis": "-y"}})  # type: ignore[attr-defined]
 
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None,
-                                 robot_config=RobotConfig(natural_closing_axis="y"))
+                                 robot_config=RobotConfig.model_validate({"motion": {"natural_closing_axis": "y"}}))
 
         self.assertEqual(Pose.tool_down(*_AT, closing_axis="y"), robot.tool_down(*_AT))
 
     def test_a_cells_robot_reads_the_cells_tree(self) -> None:
-        cell = Cell.rehearsal(_replace(_console_dummy().robot, "natural_closing_axis", "-y"))
+        cell = Cell.rehearsal(_replace(_console_dummy().robot, "motion.natural_closing_axis", "-y"))
         cell.build()
         self.assertEqual(Pose.tool_down(*_AT, closing_axis="-y"), cell.robot.tool_down(*_AT))
 

@@ -118,17 +118,6 @@ class RobotAxisTests(unittest.TestCase):
         cmd = cell_command("py", "m1", "easy", runs=3, result_json="r.json", robot_model="ur3e")
         self.assertEqual(cmd[cmd.index("--robot-model") + 1], "ur3e")
 
-    def test_radial_closing_is_opt_in(self) -> None:
-        """The shorter arm needs it (a UR3e cannot reach a TANGENTIAL top-down close at any azimuth);
-        leaving it off must change nothing."""
-        from src.willy_sim.run_mode_matrix import cell_command
-
-        self.assertNotIn(
-            "--radial-closing", cell_command("py", "m1", "easy", runs=1, result_json="r.json"))
-        self.assertIn(
-            "--radial-closing",
-            cell_command("py", "m1", "easy", runs=1, result_json="r.json", radial_closing=True))
-
     def test_cells_are_labelled_by_robot_only_when_it_is_not_the_default(self) -> None:
         from src.willy_sim.run_mode_matrix import scene_label
 

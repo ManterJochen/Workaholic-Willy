@@ -237,7 +237,12 @@ def main(argv: "list[str] | None" = None) -> int:
     # Taking the cross-process lock is part of `connected()`. A UR controller accepts one control
     # script, so whoever asks second is told who holds it. A simulated or dummy cell owns no
     # controller and yields no key, so two rehearsals can run at once.
+    from src.robot.execution.cell import ConnectedArms  # noqa: PLC0415
+
     session = cell.connected(announce=_narrate)
+    if isinstance(session, ConnectedArms):
+        print("[connect] REFUSED: real_cell drives a cell of one arm; this one has several", flush=True)
+        return _EXIT_CONFIG
     try:
         session.__enter__()
     except CellBusy as exc:
@@ -257,8 +262,8 @@ def main(argv: "list[str] | None" = None) -> int:
     run = PickRun.from_service(
         service,
         runs=args.runs,
-        # Explicit, with no default at the factory. The shipped tree has `record_log_path: null`,
-        # so this runner writes no corpus, and the result block says so.
+        # Explicit, with no default at the factory: this runner keeps no corpus of its own, and the cell's
+        # records go where its tree says (the log folder's grasp_records.jsonl where it names no file).
         recording=Recording.off(),
         # Printed as each attempt lands, not collected and printed at the end. Without the hook
         # every `run N:` line arrives after the log lines of every pick, which at a bench is the

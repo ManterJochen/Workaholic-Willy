@@ -1,6 +1,6 @@
 """A cell profile declares where its wrist camera looks from, in degrees; a program's looks override them (plan step 6).
 
-``robot.look_joint_positions_deg``: one list per look, one value per joint, in degrees as the pendant and ``--where``
+``robot.motion.look_deg``: one list per look, one value per joint, in degrees as the pendant and ``--where``
 show them. It stays in degrees in the loaded config, and the service reads it into ``JointPositions.deg`` once, as
 ``configured_looks``. There is deliberately no radians twin: a look is where the arm goes next, and a unit that cannot
 be told is refused as a look everywhere else. What the loader cannot refuse, radians written into the degrees key, the
@@ -39,12 +39,12 @@ def _config(**keys: Any) -> RobotConfig:
 
 class TheLooksLoadInDegreesTests(unittest.TestCase):
     def test_degrees_load_and_become_joint_positions(self) -> None:
-        config = _config(look_joint_positions_deg=LOOKS_DEG)
+        config = _config(motion={"look_deg": LOOKS_DEG})
         calculator, perception = _calc_and_perception()
 
         service = AutonomousGraspService.from_robot_config(config, calculator=calculator, perception=perception)
 
-        self.assertEqual(tuple(tuple(row) for row in LOOKS_DEG), config.look_joint_positions_deg,
+        self.assertEqual(tuple(tuple(row) for row in LOOKS_DEG), config.motion.look_deg,
                          "the loaded config keeps the looks in degrees")
         self.assertEqual(CONFIGURED, service.configured_looks)
         self.assertAlmostEqual(-math.pi / 2, service.configured_looks[0].values[0])
@@ -54,7 +54,7 @@ class TheLooksLoadInDegreesTests(unittest.TestCase):
 
         service = AutonomousGraspService.from_robot_config(_config(), calculator=calculator, perception=perception)
 
-        self.assertIsNone(_config().look_joint_positions_deg)
+        self.assertIsNone(_config().motion.look_deg)
         self.assertEqual((), service.configured_looks)
 
     def test_mixed_lengths_non_finite_or_past_a_turn_are_refused_at_load(self) -> None:
@@ -68,18 +68,18 @@ class TheLooksLoadInDegreesTests(unittest.TestCase):
         }
         for why, looks in refused.items():
             with self.subTest(why), self.assertRaises(ValidationError) as caught:
-                _config(look_joint_positions_deg=looks)
-            self.assertIn("look_joint_positions_deg", str(caught.exception))
+                _config(motion={"look_deg": looks})
+            self.assertIn("robot.motion.look_deg", str(caught.exception))
 
     def test_a_turn_either_way_is_a_look(self) -> None:
-        self.assertIsNotNone(_config(look_joint_positions_deg=[[360.0, -360.0, 0.0, 0.0, 0.0, 0.0]]))
+        self.assertIsNotNone(_config(motion={"look_deg": [[360.0, -360.0, 0.0, 0.0, 0.0, 0.0]]}))
 
     def test_a_length_unlike_home_is_refused(self) -> None:
         home = [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0]
         with self.assertRaises(ValidationError) as caught:
-            _config(home_joint_positions_deg=home, look_joint_positions_deg=[LOOKS_DEG[0][:5]])
+            _config(motion={"home_deg": home, "look_deg": [LOOKS_DEG[0][:5]]})
         self.assertIn("home", str(caught.exception))
-        self.assertIsNotNone(_config(home_joint_positions_deg=home, look_joint_positions_deg=LOOKS_DEG))
+        self.assertIsNotNone(_config(motion={"home_deg": home, "look_deg": LOOKS_DEG}))
 
 
 class TheDeskSaysALookThatReadsAsRadiansTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class TheDeskSaysALookThatReadsAsRadiansTests(unittest.TestCase):
     def test_the_desk_warns_a_look_that_reads_as_radians(self) -> None:
         from src.robot.execution.real_cell.preflight import CheckStatus
 
-        row = self._row(_config(look_joint_positions_deg=[LOOKS_DEG[0], [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]]))
+        row = self._row(_config(motion={"look_deg": [LOOKS_DEG[0], [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]]}))
 
         self.assertIs(CheckStatus.WARN, row.status)
         self.assertIn("look 2", row.detail)
@@ -104,7 +104,7 @@ class TheDeskSaysALookThatReadsAsRadiansTests(unittest.TestCase):
     def test_looks_in_degrees_pass_the_desk(self) -> None:
         from src.robot.execution.real_cell.preflight import CheckStatus
 
-        row = self._row(_config(look_joint_positions_deg=LOOKS_DEG))
+        row = self._row(_config(motion={"look_deg": LOOKS_DEG}))
 
         self.assertIs(CheckStatus.OK, row.status)
         self.assertIn("2 look(s)", row.detail)

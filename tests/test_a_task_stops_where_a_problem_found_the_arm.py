@@ -12,9 +12,7 @@ Restart's first motion is the planned move home (the console's half). What ends 
   did not confirm;
 * ``recovery_needs_person``: a pick's push stopped where the arm stands (``tests/test_a_task_moves_nothing_while_a_
   person_is_needed.py``);
-* ``part_still_held``: a place refused before its release, so the part is still in the jaws; and a part the pick
-  gripped that the planner declined to carry (``payload_model`` not ``planner_and_filter``), so every carry would be
-  planned as if the hand were empty;
+* ``part_still_held``: a place refused before its release, so the part is still in the jaws;
 * ``return_failed``: the move to the return pose was refused;
 * ``cell_fault``: a camera that could not vouch for the cell, a link that dropped;
 * ``failed_in_a_row`` and ``detector_failed``: three failed picks, or a detector that failed where nothing was found.
@@ -34,7 +32,6 @@ from typing import Any
 
 from src.geometry import Pose
 from src.robot.core import JointPositions, MotionStatus
-from src.robot.core.arm_capabilities import PayloadModel
 from src.robot.core.errors import CameraWorldUnavailable
 from tests._task_fakes import (
     PROTECTIVE,
@@ -307,45 +304,6 @@ class ThePlaceAndTheReturnTests(unittest.TestCase):
                          ran.hooks.of("task.placed")[0])
         self.assertEqual([], motions(ran.after("task.placed")))
         self.assertNotIn("task.return_started", ran.names())
-
-
-class TheCarriedPartTests(unittest.TestCase):
-    """Between the close and the release only the planner holds the part (build plan item 9). A task refuses to start
-    on an arm whose configuration models no carried part; and after every pick it reads what the attach left in force,
-    because the planner can still decline the part there (its sidecar answers no, the hand model is missing): a part
-    nobody models is carried nowhere, not to the drop, not back where it was gripped."""
-
-    def test_a_part_the_planner_declined_at_the_pick_is_carried_nowhere(self) -> None:
-        """Red before: the task read ``payload_declined_reason`` once, at its start, and carried a part the planner
-        declined to the drop and home, every motion planned as if the hand were empty."""
-        from src.robot.execution.task import TaskStop
-
-        for attaches in (PayloadModel.FILTER_ONLY, PayloadModel.NONE):
-            with self.subTest(attaches=attaches.value):
-                log: list[Any] = []
-                ran = run(["part", "part"], arm=TaskArm(log, attaches=attaches), scope="until_empty")
-
-                self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
-                self.assertTrue(ran.report.holding)
-                self.assertEqual((0, 1), (ran.report.parts_placed, ran.report.picks))
-                self.assertEqual(1, do0_changes(log), "the jaws changed after the pick")
-                carried = motions(log[log.index(("attach",)):])
-                self.assertEqual(1, len(carried), f"the task moved the part after the pick's own lift: {carried}")
-                self.assertNotIn("task.drop_planned", ran.names())
-                self.assertNotIn("task.return_started", ran.names())
-                self.assertIn("planner", ran.report.sentence)
-
-    def test_a_part_the_planner_declined_is_not_carried_to_the_bins_look_either(self) -> None:
-        from src.robot.execution.task import PlaceAt, TaskStop
-
-        log: list[Any] = []
-        arm = TaskArm(log, fk_table={_key(L1): AT_L1}, attaches=PayloadModel.FILTER_ONLY)
-        locator = ScriptedLocator({"blue bin": [bin_object()]}, arm=arm, log=log)
-        ran = run(["part"], arm=arm, place=PlaceAt(camera="blue bin"), wrist=True, looks=(L1,), locators=[locator])
-
-        self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
-        self.assertNotIn("task.carry_started", ran.names())
-        self.assertEqual(1, len(motions(log[log.index(("attach",)):])))
 
 
 class HaltBetweenTheMotionsTests(unittest.TestCase):

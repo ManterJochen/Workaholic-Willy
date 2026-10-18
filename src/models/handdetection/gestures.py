@@ -26,9 +26,14 @@ from typing import Any, Final, Literal, Optional
 import numpy as np
 
 from src.models.handdetection.constants import (
+    DETECTION_THRESHOLD,
     GESTURE_MODEL_URL,
     GESTURE_RECOGNIZER_LOG_FILE,
+    MAX_HANDS,
+    MIN_GESTURE_CONFIDENCE,
     MODELS_LOG_DIR,
+    PRESENCE_THRESHOLD,
+    TRACKING_THRESHOLD,
 )
 from src.models.handdetection.model_files import require_mediapipe, resolve_model_file
 from src.models.handdetection.palm_detector import PalmDetector
@@ -84,12 +89,12 @@ class ThumbGestureRecognizer:
         self,
         model_path: str,
         *,
-        max_hands: int = 2,
-        threshold: float = 0.5,
-        tracking_threshold: float = 0.5,
-        presence_threshold: float = 0.5,
-        min_gesture_confidence: float = 0.5,
-        config_key: str = "models.gesturedetect.model_path",
+        max_hands: int = MAX_HANDS,
+        threshold: float = DETECTION_THRESHOLD,
+        tracking_threshold: float = TRACKING_THRESHOLD,
+        presence_threshold: float = PRESENCE_THRESHOLD,
+        min_gesture_confidence: float = MIN_GESTURE_CONFIDENCE,
+        config_key: str = "the gesture bundle (mediapipe-gesture) under models.weights_root",
     ) -> None:
         require_mediapipe("gesture recognition")
         resolved = resolve_model_file(

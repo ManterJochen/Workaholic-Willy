@@ -3,8 +3,9 @@
 The review of 2026-09-26 found four readers ``mount_tool`` did not reach: the payload guard kept the tree's payload, so
 a mount of 50 kg on a 5 kg envelope was accepted and pushed at the next connect; the wrist cameras the arm holds were
 checked against the tool frame they were calibrated with only when they were handed in; a hand placed by one tool frame
-could be mounted with another; and a capsule guard models the tool from the tree's dimensions, which no mount changes.
-Each now follows the mount or refuses it, with nothing changed where it refuses. The planner is stopped before anything
+could be mounted with another; and a capsule guard modelled the tool from the tree's dimensions, which no mount
+changed (its fingers are the mounted hand's registry jaw since 2026-10-17). Each now follows the mount or refuses it,
+with nothing changed where it refuses. The planner is stopped before anything
 changes, and a tool frame a controller reported for the old tool is forgotten.
 """
 
@@ -26,8 +27,8 @@ _QUAT = (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
 _Q = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
 
 
-def _tree(*, backend: str = "fcl", enforce: bool = True, hand: str = "robotiq_2f85", source: str = "willy") -> Any:
-    return kit_tree("ik", safety={"payload": {"enforce": enforce, "mass_kg": 1.5, "cog_mm": (0.0, 0.0, 60.0)},
+def _tree(*, backend: str = "fcl", hand: str = "robotiq_2f85", source: str = "willy") -> Any:
+    return kit_tree("ik", safety={"payload": {"mass_kg": 1.5, "cog_mm": (0.0, 0.0, 60.0)},
                                   "self_collision": {"backend": backend}},
                     gripper={"model": hand, "tool_frame": {"source": source, "offset_mm": _OFFSET,
                                                           "rotation_quat_xyzw": _QUAT},
@@ -83,14 +84,6 @@ class AMountedToolIsWhatEveryGuardJudgesTests(unittest.TestCase):
         arm.connect()
         self.assertEqual([call.args for call in fake.calls("set_payload")], [(1.5, [0.0, 0.0, 60.0])])
 
-    def test_a_mount_keeps_whether_the_payload_is_guarded(self) -> None:
-        arm, _fake = _arm(_tree(enforce=False))
-        enforced = replace(arm.mounted_tool, payload=arm.mounted_tool.payload.model_copy(update={"enforce": True}))
-        with self.assertRaises(ToolChangeRefused) as refused:
-            arm.mount_tool(enforced)
-        self.assertIn("safety.payload.enforce", str(refused.exception))
-        self.assertFalse(arm.mounted_tool.payload.enforce)
-
     def test_a_frame_the_wrist_cameras_were_not_placed_with_is_refused(self) -> None:
         arm, _fake = _arm(_tree())
         arm.set_wrist_bodies([_Body(arm._declared_tool_matrix())])
@@ -115,13 +108,17 @@ class AMountedToolIsWhatEveryGuardJudgesTests(unittest.TestCase):
             replace(tool, tool_frame=turned)
         self.assertIn("another tool frame", str(refused.exception))
 
-    def test_a_capsule_guard_is_not_handed_another_hand(self) -> None:
+    def test_a_capsule_guard_takes_another_hand_from_its_registry_file(self) -> None:
+        """The capsule models the mounted hand's fingers from its registry file, so it takes another hand as the exact
+        meshes do; it refused one while its tool was the tree's dimensions, which no mount changed (until 2026-10-17)."""
         arm, _fake = _arm(_tree(backend="capsule"))
-        before = arm.mounted_tool
-        with self.assertRaises(ToolChangeRefused) as refused:
-            arm.mount_tool(MountedTool.from_config(_tree(backend="capsule", hand="robotiq_hande")))
-        self.assertIn("capsule", str(refused.exception))
-        self.assertIs(arm.mounted_tool, before)
+        guard = arm.safety_preflight._path_authority(arm)
+        assert guard is not None
+        self.assertNotEqual(49.99, guard._capsule_jaw().aperture_mm, "the premise: another hand before the mount")
+        hande = MountedTool.from_config(_tree(backend="capsule", hand="robotiq_hande"))
+        arm.mount_tool(hande)
+        self.assertIs(arm.mounted_tool, hande)
+        self.assertEqual(49.99, guard._capsule_jaw().aperture_mm, "the fingers are the Hand-E's registry jaw")
 
     def test_a_capsule_guard_takes_the_same_hand_with_another_payload(self) -> None:
         arm, _fake = _arm(_tree(backend="capsule"))

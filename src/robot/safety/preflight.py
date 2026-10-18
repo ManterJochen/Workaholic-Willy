@@ -4,24 +4,21 @@ This is the single entry point every driver consults before commanding motion. I
 the configured guards in a deterministic order and short-circuits on the first
 rejection:
 
-1. workspace, the Cartesian box and its optional margin
+1. workspace, the Cartesian box less its 20 mm margin
 2. joint_limit, the per-axis joint hard limits and margin
 3. ik_quality, the IK solution quality
 4. self_collision, link against link and link against fixture
 5. payload, the mass, centre-of-gravity and inertia envelope
 6. motion_continuity, the step size between consecutive commands
 
-The workspace box is the one non-negotiable guard and is always wired. Every other
-family is added by :meth:`SafetyPreflight.from_safety_config` only where its
-``enforce`` flag is set, which leaves callers unchanged.
+:meth:`SafetyPreflight.from_safety_config` wires every one of them on every cell, at the
+numbers of the arm it is built for (``guard_numbers``): no family can be switched off
+since 2026-10-17 (the owner's cleanup took the ``enforce`` flags).
 
-Failing open against failing closed
------------------------------------
-Every guard family has an ``enforce: bool`` flag in :class:`RobotSafetyConfig`. With
-``enforce`` at ``False`` the guard is left out of the pipeline at construction and
-never executes at all. With ``enforce`` at ``True`` and a guard returning
-:attr:`SafetyReason.UNAVAILABLE`, the preflight fails closed: the motion is rejected
-with the guard ``motion_status_override``, which defaults to
+Failing closed
+--------------
+A guard returning :attr:`SafetyReason.UNAVAILABLE` makes the preflight fail closed: the
+motion is rejected with the guard ``motion_status_override``, which defaults to
 :attr:`MotionStatus.CONTROLLER_REJECTED`, so the operator sees a refusal rather than a
 silent acceptance.
 
@@ -51,15 +48,15 @@ from src.robot.core import MotionCommand, MotionResult, MotionStatus
 from .continuity import MotionContinuityGuard
 from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext, SafetyGuard
+from .guard_numbers import CELL, GuardNumbers
 from .ik_quality import IKQualityGuard
 from .joint_limits import JointLimitGuard
 from .payload import PayloadGuard
 from .self_collision import SelfCollisionGuard
-from .workspace import WorkspaceGuard
+from .workspace import WORKSPACE_MARGIN_MM, WorkspaceGuard
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import (
-        AttachedPayloadConfig,
         RobotSafetyConfig,
         WorkspaceLimitsConfig,
     )
@@ -121,14 +118,14 @@ class WorkspaceSafetyGuard:
 
 
 def no_path_guard_refusal() -> str:
-    """Why every planned or sampled path is refused where no self-collision guard is wired.
+    """Why every planned or sampled path is refused by a pipeline that holds no self-collision guard.
 
-    One home for the sentence, so the real cell checklist tells an operator exactly what
-    the gate would say.
+    Every pipeline :meth:`SafetyPreflight.from_safety_config` builds holds one; one assembled from
+    guards by hand may not, and judging a path with it would accept every sample unexamined.
     """
-    return ("no self_collision guard is wired, so nothing here can judge a path: "
-            "safety.self_collision.enforce is false in this cell. A planned path is "
-            "refused rather than executed unexamined")
+    return ("no self_collision guard is in this safety pipeline, so nothing here can judge a path: "
+            "it was assembled without one rather than built from the cell's safety config. A planned "
+            "path is refused rather than executed unexamined")
 
 
 def exact_mesh_path_refusal() -> str:
@@ -150,14 +147,12 @@ class SafetyPreflight:
     Construction
     ------------
     The plain constructor takes a pre-assembled sequence of guards in the order they
-    run. Callers use :meth:`from_safety_config`, or :meth:`from_workspace_only` for a
-    minimal pipeline, rather than hand-rolling the sequence, because those factories
-    enforce the canonical guard order and the ``enforce``-flag handling.
+    run. Callers use :meth:`from_safety_config` rather than hand-rolling the sequence,
+    because it wires every family in the canonical guard order.
     """
 
-    # The canonical order of guard names. :meth:`from_safety_config` sorts whatever
-    # guard set the operator configured into the execution order the module docstring
-    # documents.
+    # The canonical order of guard names. :meth:`from_safety_config` sorts the guards it
+    # wires, and any extra one, into the execution order the module docstring documents.
     _CANONICAL_ORDER: tuple[str, ...] = (
         "workspace",
         "joint_limit",
@@ -168,33 +163,20 @@ class SafetyPreflight:
     )
 
     def __init__(
-        self, guards: Sequence[SafetyGuard], *, whole_path_judge: bool = False,
-        carried_part: "AttachedPayloadConfig | None" = None, arm_model: "Maybe[str | None]" = UNSET,
+        self, guards: Sequence[SafetyGuard], *, arm_model: "Maybe[str | None]" = UNSET,
     ) -> None:
         # Copy to a tuple, so the pipeline is immutable after construction. A guard
         # instance stays mutable, because it owns its own cache, but the sequence
         # cannot be reordered or extended at runtime.
         self._guards: tuple[SafetyGuard, ...] = tuple(guards)
         self._logger = create_robot_logger("SafetyPreflight", SAFETY_PREFLIGHT_LOG_FILE)
-        #: The part the hand may carry, as the safety config this pipeline was built from declares it
-        #: (``safety.planning_world.payload``); ``None`` for a pipeline assembled from guards alone. Kept here since
-        #: P0e, where :meth:`carried_reach_mm` read it off the arm's own tree, which only the UR driver keeps.
-        self._carried_part = carried_part
         #: The arm model this pipeline was built for (:meth:`from_safety_config`), ``UNSET`` for one assembled from
         #: guards alone. Its self-collision guard refuses an arm that reports another UR (P0e E6).
         self._arm_model = arm_model
-        # Whether a path gate judges a path whole before it judges it sample by sample
-        # (safety.self_collision.whole_path_judge, :meth:`_first_suspect`). Off, every sample is
-        # judged one at a time from the first, as it always was.
-        self._whole_path_judge = bool(whole_path_judge)
-        # Why a path was judged one sample at a time all the same, each said once at INFO.
+        # A path gate judges a path whole before it judges it sample by sample (:meth:`_first_suspect`), on every cell
+        # since 2026-10-17 as on the owner's: why a path was judged one sample at a time all the same, each said once
+        # at INFO.
         self._one_at_a_time_said: set[str] = set()
-        if self._whole_path_judge:
-            self._logger.info(
-                "Safety preflight judges each path whole first (safety.self_collision.whole_path_judge): every "
-                "sample before the first a guard might refuse is passed on a proof, every sample from it on is "
-                "judged one at a time, as without the switch"
-            )
         # The continuity memo: the last accepted Pose and JointPositions for this
         # preflight instance. Every accepted evaluation writes it, so the continuity
         # guard has the previous target to compare against on the next call.
@@ -206,15 +188,9 @@ class SafetyPreflight:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_workspace_only(cls, workspace_guard: WorkspaceGuard) -> "SafetyPreflight":
-        """Construct a preflight carrying the workspace guard alone.
-
-        It is for a driver that has not wired the rest of the guard pipeline.
-        """
-        return cls([WorkspaceSafetyGuard(workspace_guard)])
-
-    @classmethod
-    def from_tree(cls, tree: Any, *, extra_guards: Iterable[SafetyGuard] = ()) -> "SafetyPreflight":
+    def from_tree(
+        cls, tree: Any, *, extra_guards: Iterable[SafetyGuard] = (), numbers: GuardNumbers = CELL,
+    ) -> "SafetyPreflight":
         """The preflight a loaded tree's robot section describes, built as the cell's driver builds it.
 
             gate = SafetyPreflight.from_tree(load_tree())
@@ -224,7 +200,8 @@ class SafetyPreflight:
         selects is passed to the guard, as the UR driver passes ``robot.ur.model`` and the Isaac cell
         ``robot.sim.robot_model``. A tree that did not load, or loaded with no robot block, is
         refused with its own refusal (``ConfigError``); an exact mesh guard on a tree that names no hand
-        is refused naming ``robot.gripper.model``.
+        is refused naming ``robot.gripper.model``. ``numbers`` are the arm's guard numbers, as
+        :meth:`from_safety_config` takes them: a real arm's are the cell's, the default.
         """
         from src.robot.safety.planning.hand import planner_hand  # noqa: PLC0415
 
@@ -233,8 +210,8 @@ class SafetyPreflight:
         # is the default nobody chose (``RobotConfig.arm``).
         selected = robot.arm
         return cls.from_safety_config(
-            robot.safety, robot.workspace_limits, extra_guards=extra_guards,
-            hand=planner_hand(robot, data_dir=tree.root), arm_model=selected.model or None,
+            robot.safety, robot.motion.workspace, extra_guards=extra_guards,
+            hand=planner_hand(robot, data_dir=tree.root), arm_model=selected.model or None, numbers=numbers,
         )
 
     @classmethod
@@ -246,18 +223,19 @@ class SafetyPreflight:
         extra_guards: Iterable[SafetyGuard] = (),
         hand: "Maybe[PlannerHand]" = UNSET,
         arm_model: str | None,
+        numbers: GuardNumbers = CELL,
     ) -> "SafetyPreflight":
         """Build the canonical preflight pipeline from configuration.
 
         Parameters
         ----------
         safety_cfg
-            The vendor-neutral safety knobs. Each sub-block carries an ``enforce``
-            flag, and a disabled block is left out of the pipeline entirely, so its
-            guard never runs.
+            The vendor-neutral safety config: the self-collision guard's distances,
+            fixtures and backend, and the payload. Every guard family is wired whatever
+            it says.
         workspace_cfg
-            The Cartesian workspace box. The workspace guard always runs, because the
-            box is the single non-negotiable safety surface for the operator cell.
+            The Cartesian workspace box, shrunk by :data:`~.workspace.WORKSPACE_MARGIN_MM`
+            on every face before the workspace guard holds it.
         extra_guards
             Optional additional guards, injected after the canonical set. Each is named
             for the canonical slot it belongs in, and the factory re-sorts the full set
@@ -276,57 +254,47 @@ class SafetyPreflight:
             approach disagrees with the hand model's raises the same way. The self-collision
             guard then refuses to judge an arm that reports another UR
             (:meth:`SelfCollisionGuard.refusal_for`).
+        numbers
+            What the guards hold this arm to that no cell configures (:mod:`.guard_numbers`):
+            :data:`~.guard_numbers.CELL`, the owner's cell's, for every real arm, the default;
+            an arm whose physics differ passes its own, as the sim harness passes the Isaac
+            arm's (``src/willy_sim/guard_numbers.py``).
         """
-        # The workspace guard is non-negotiable and is always wired.
-        workspace_margin = float(safety_cfg.limits.workspace_margin_mm)
-        narrowed = _shrink_workspace(workspace_cfg, workspace_margin)
-        workspace_guard = WorkspaceGuard(limits=narrowed)
-        guards: list[SafetyGuard] = [WorkspaceSafetyGuard(workspace_guard)]
-        # Wire the per-family guards whose ``enforce`` flag is ``True``.
-        # ``enforce=False`` removes the guard from the pipeline at construction. It
-        # does not merely silence the log: the safety surface for that family is gone
-        # until the operator flips the flag back.
-        if safety_cfg.joint_limits.enforce:
-            guards.append(JointLimitGuard(safety_cfg.joint_limits))
-        if safety_cfg.ik_quality.enforce:
-            guards.append(
-                IKQualityGuard(
-                    safety_cfg.ik_quality,
-                    joint_limits_config=safety_cfg.joint_limits,
-                )
-            )
-        if safety_cfg.self_collision.enforce:
-            # No hand is implied. An exact mesh guard on a resolvable arm reads hand
-            # geometry, and with no hand named it would check the 2F-85 every arm bundle
-            # carries, which on a Hand-E cell that forgot its name passes by coincidence.
-            # It is refused here, at build, where the model resolves.
-            from src.robot.safety.planning.hand import guard_hand_refusal
+        workspace_guard = WorkspaceGuard(limits=_shrink_workspace(workspace_cfg, WORKSPACE_MARGIN_MM))
+        # No hand is implied. An exact mesh guard on a resolvable arm reads hand
+        # geometry, and with no hand named it would check the 2F-85 every arm bundle
+        # carries, which on a Hand-E cell that forgot its name passes by coincidence.
+        # It is refused here, at build, where the model resolves.
+        from src.robot.safety.planning.hand import guard_hand_refusal
 
-            # The unset hand and the unplaceable frame, refused in one place (`guard_hand_refusal`), which a tool
-            # mounted after the build meets as well (P0i i5).
-            refusal = guard_hand_refusal(safety_cfg.self_collision, hand, arm_model)
-            if refusal is not None:
-                from src.config.loader import ConfigError
+        # The unset hand and the unplaceable frame, refused in one place (`guard_hand_refusal`), which a tool
+        # mounted after the build meets as well (P0i i5).
+        refusal = guard_hand_refusal(safety_cfg.self_collision, hand, arm_model)
+        if refusal is not None:
+            from src.config.loader import ConfigError
 
-                # The whole placement. A frame that is a mirror, oblique, points into the
-                # wrist, or is clocked by anything other than a quarter turn places no hand
-                # model: the hand carries UNSET, and a guard built on it would measure the
-                # hand where its own model puts it rather than where this cell says it is,
-                # which is an implied default for a safety identity. The planner refuses such
-                # a cell when it starts, and an ik cell never starts one. This is the only
-                # frame refusal: an approach along +Z, which a real UR flange declares, is
-                # placed like one along the model's +Y.
-                raise ConfigError(refusal)
-            guards.append(SelfCollisionGuard(safety_cfg.self_collision, hand=hand, built_for=arm_model))
-        if safety_cfg.payload.enforce:
-            guards.append(PayloadGuard(safety_cfg.payload))
-        if safety_cfg.motion_continuity.enforce:
-            guards.append(MotionContinuityGuard(safety_cfg.motion_continuity))
+            # The whole placement. A frame that is a mirror, oblique, points into the
+            # wrist, or is clocked by anything other than a quarter turn places no hand
+            # model: the hand carries UNSET, and a guard built on it would measure the
+            # hand where its own model puts it rather than where this cell says it is,
+            # which is an implied default for a safety identity. The planner refuses such
+            # a cell when it starts, and an ik cell never starts one. This is the only
+            # frame refusal: an approach along +Z, which a real UR flange declares, is
+            # placed like one along the model's +Y.
+            raise ConfigError(refusal)
+        # Every family, on every cell (the owner's cleanup, 2026-10-17, took the switch that left one out).
+        guards: list[SafetyGuard] = [
+            WorkspaceSafetyGuard(workspace_guard),
+            JointLimitGuard(half_turn_about_home=numbers.half_turn_about_home),
+            IKQualityGuard(numbers),
+            SelfCollisionGuard(safety_cfg.self_collision, hand=hand, built_for=arm_model,
+                               base_yaw_deg=numbers.base_yaw_deg),
+            PayloadGuard(safety_cfg.payload),
+            MotionContinuityGuard(numbers),
+        ]
         guards.extend(extra_guards)
         guards.sort(key=lambda g: cls._guard_order_key(g.name))
-        whole = bool(getattr(safety_cfg.self_collision, "whole_path_judge", False))
-        return cls(guards, whole_path_judge=whole, carried_part=safety_cfg.planning_world.payload,
-                   arm_model=arm_model)
+        return cls(guards, arm_model=arm_model)
 
     @staticmethod
     def _guard_order_key(name: str) -> int:
@@ -356,27 +324,6 @@ class SafetyPreflight:
     def guard_names(self) -> tuple[str, ...]:
         """The guard ``name`` properties, in execution order."""
         return tuple(g.name for g in self._guards)
-
-    @property
-    def omitted_guards(self) -> tuple[str, ...]:
-        """The canonical guard families that are not in this pipeline, in canonical order.
-
-        The absence is the safety fact. :attr:`guard_names` says what will run, so an
-        operator reads a guard count and stops; what a count cannot show is which family
-        is gone, and `from_safety_config` removes a whole family where its ``enforce``
-        flag is ``False``, which does not merely silence the log.
-
-        A cell with self-collision off and a cell with it on both report a working
-        pipeline, and this is the difference between them. It is derived rather than
-        declared, being the canonical set minus what is wired, so a guard that failed to
-        construct for any reason appears here too.
-
-        ``workspace`` can never appear, because it is wired unconditionally as the one
-        non-negotiable surface. Seeing it here means something is wrong with this
-        property rather than with the cell.
-        """
-        wired = set(self.guard_names)
-        return tuple(name for name in self._CANONICAL_ORDER if name not in wired)
 
     # ------------------------------------------------------------------
     # Context builders
@@ -566,6 +513,18 @@ class SafetyPreflight:
                 told += 1
         return told
 
+    def set_partner_bodies(self, bodies: "Sequence[AxisAlignedBox]") -> int:
+        """Tell every guard that can hold them where the other arms of the cell stand: each part a box carrying its
+        hull (``partner_arm.partner_bodies``), judged with the declared boxes. Returns how many guards were told; an
+        empty sequence holds none (owner, 2026-10-15)."""
+        told = 0
+        for guard in self._guards:
+            setter = getattr(guard, "set_partner_bodies", None)
+            if callable(setter):
+                setter(tuple(bodies))
+                told += 1
+        return told
+
     def set_finger_opening(self, width_mm: float | None) -> int:
         """Tell every guard that holds the hand's fingers how wide they stand open, between their inner faces,
         millimetres (lever G, 2026-10-13: a Robotiq hand told a width before the line down opens no wider); ``None``
@@ -619,10 +578,9 @@ class SafetyPreflight:
     def mount_refusal(self, tool: "MountedTool", arm: "RobotArm | None" = None) -> str | None:
         """Why this pipeline cannot judge with ``tool`` mounted, or ``None`` (P0i i5 and its review).
 
-        The self collision guard's own refusal (:meth:`SelfCollisionGuard.mount_refusal`); a payload the tree could
+        The self collision guard's own refusal (:meth:`SelfCollisionGuard.mount_refusal`), and a payload the tree could
         not declare (the schema's own sentence, since a tool built with ``dataclasses.replace`` or ``model_copy`` meets
-        no validator on the way); and a payload that says it is enforced where this pipeline was built without a
-        payload guard, or the other way round: a mount keeps whether the payload is guarded.
+        no validator on the way).
         """
         guard = self._path_authority(arm)
         if guard is not None:
@@ -636,14 +594,6 @@ class SafetyPreflight:
         except ValidationError as exc:
             said = "; ".join(str(error.get("msg", "")) for error in exc.errors())
             return f"the mounted payload is not one robot.safety.payload could declare: {said}"
-        guarded = self._payload_guard() is not None
-        if bool(tool.payload.enforce) != guarded:
-            return (
-                f"this pipeline was built {'with' if guarded else 'without'} a payload guard "
-                f"(safety.payload.enforce: {str(guarded).lower()}), and the mounted payload says enforce: "
-                f"{str(bool(tool.payload.enforce)).lower()}: a mount keeps whether the payload is guarded, so build "
-                "the cell with the tool it carries"
-            )
         return None
 
     def mount_tool(self, tool: "MountedTool", arm: "RobotArm | None" = None) -> None:
@@ -784,11 +734,15 @@ class SafetyPreflight:
         is what a sample is, whether it came from a joint move or from the inverse
         kinematics of a line.
 
-        With ``safety.self_collision.whole_path_judge`` on, the guards first look at the whole
-        path at once and name the first sample any of them might refuse, never later than
-        the first one does (:meth:`_first_suspect`). Every sample before it is passed on a
-        proof that each guard accepts it; from it on, every sample is judged here exactly as
-        with the switch off, so the verdict, the sample it names and its message are the same.
+        The guards first look at the whole path at once and name the first sample any of them
+        might refuse, never later than the first one does (:meth:`_first_suspect`). Every
+        sample before it is passed on a proof that each guard accepts it; from it on, every
+        sample is judged here one at a time, so the verdict, the sample it names and its
+        message are those of judging every sample one at a time from the first
+        (``tests/test_a_whole_path_is_judged_as_every_sample_is.py``). On the owner's cell a
+        route the exact guard took 2.3 to 2.6 s for, judged so (905 samples, 128 boxes), took
+        12 ms on the desk instead of 0.96 s, about 0.03 s on the cell; every cell judges so
+        since 2026-10-17.
         """
         from src.robot.core import JointPositions
 
@@ -800,7 +754,7 @@ class SafetyPreflight:
 
         self.reset()  # a judged path is a restart, as a commanded joint move is
         total = len(configs)
-        start = self._first_suspect(configs, arm) if self._whole_path_judge else 0
+        start = self._first_suspect(configs, arm)
         rejected: "MotionResult | None" = None
         for index, values in enumerate(configs[start:], start):
             joints = JointPositions(tuple(float(v) for v in values))
@@ -846,7 +800,7 @@ class SafetyPreflight:
     def _first_suspect(self, configs: "Sequence[Sequence[float]]", arm: "RobotArm | None") -> int:
         """The first sample of ``configs`` any guard of a joint move might refuse, each guard asked of the whole path at
         once (``first_suspect``): never later than the first it refuses, so every sample before it is accepted by
-        every guard, and :meth:`gate_joint_path` judges from it on as it judges every sample with the switch off.
+        every guard, and :meth:`gate_joint_path` judges every sample from it on one at a time.
 
         It never refuses and never accepts on its own. It answers 0, every sample judged one at a time, where any guard
         cannot say: one that offers no ``first_suspect`` (a site-local guard), one that answers ``None`` (the
@@ -895,8 +849,7 @@ class SafetyPreflight:
             self._logger.debug("whole-path judge: this path is judged one sample at a time: %s", said)
         else:
             self._one_at_a_time_said.add(why)
-            self._logger.info("Safety preflight judges this path one sample at a time although "
-                              "safety.self_collision.whole_path_judge is on: %s", said)
+            self._logger.info("Safety preflight judges this path one sample at a time, not whole first: %s", said)
         return 0
 
     @property
@@ -1019,14 +972,14 @@ class SafetyPreflight:
         which is what bounds a point's arc when the last joint turns.
 
         The hand's sphere map as the guard places it (grown to hold its mesh, coupling plates
-        included), every wrist camera's fill, and a carried part wherever the cell declares its
-        length, attached or not: a bound that holds only while nothing is attached is not a
-        bound. ``0.0`` where no hand is named, so there is nothing past the flange for the guard
-        to judge. ``None`` where a hand is named and cannot be placed.
+        included) and every wrist camera's fill. No part in the jaws is modelled (the owner,
+        2026-10-05, every cell since 2026-10-17): a closed hand is judged as an empty one, so the
+        bound is the hand's. ``0.0`` where no hand is named, so there is nothing past the flange
+        for the guard to judge. ``None`` where a hand is named and cannot be placed.
         """
         import numpy as np
 
-        from .planning.self_envelope import hand_spheres, payload_capsule
+        from .planning.self_envelope import hand_spheres
 
         hand = self.planner_hand(arm)
         if not chosen(hand):
@@ -1044,11 +997,6 @@ class SafetyPreflight:
         for wrist in self.wrist_bodies(arm):
             for centre, radius in wrist.envelope_spheres_mm():  # type: ignore[attr-defined]
                 furthest = max(furthest, reach(centre, centre, radius))
-        part = self._carried_part
-        if part is not None and part.enabled and part.length_mm:
-            capsule = payload_capsule(hand, spheres, length_mm=float(part.length_mm),
-                                      lateral_margin_mm=float(part.lateral_margin_mm))
-            furthest = max(furthest, reach(capsule.start_mm, capsule.end_mm, capsule.radius_mm))
         return furthest
 
     def gate_joint_target(
@@ -1133,11 +1081,8 @@ def _shrink_workspace(
 ) -> "WorkspaceLimitsConfig":
     """Return a :class:`WorkspaceLimitsConfig` shrunk by ``margin_mm`` on every face.
 
-    A margin at or below zero returns ``cfg`` unchanged. A margin that would invert any
-    axis raises :class:`ValueError`.
+    A margin that would invert any axis raises :class:`ValueError`.
     """
-    if margin_mm <= 0.0:
-        return cfg
     new = {
         "x_min": cfg.x_min + margin_mm,
         "x_max": cfg.x_max - margin_mm,
@@ -1148,7 +1093,8 @@ def _shrink_workspace(
     }
     if new["x_min"] >= new["x_max"] or new["y_min"] >= new["y_max"] or new["z_min"] >= new["z_max"]:
         raise ValueError(
-            f"workspace_margin_mm={margin_mm} inverts the workspace box "
-            f"{(cfg.x_min, cfg.x_max, cfg.y_min, cfg.y_max, cfg.z_min, cfg.z_max)}"
+            f"robot.motion.workspace {(cfg.x_min, cfg.x_max, cfg.y_min, cfg.y_max, cfg.z_min, cfg.z_max)} is no wider "
+            f"than twice the {margin_mm:g} mm every cell keeps inside each face on some axis, so no pose would be "
+            "left inside it: widen the box"
         )
     return cfg.__class__(**new)

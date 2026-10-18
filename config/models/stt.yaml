@@ -1,32 +1,15 @@
-# Whisper speech-to-text: where the weights come from, how the microphone is opened, and what the
-# decoder is asked for. Read by `src.models.speech.holder.SpeechHolder`, which the console reaches
-# over POST /v1/voice/transcribe and, for a push to talk turn at the cell PC, POST /v1/voice/listen.
-# Nothing on the grasp path reads this block.
+# Whisper speech to text: which checkpoint, and which language it decodes. Read by
+# `src.models.speech.holder.SpeechHolder`, which the console reaches over POST /v1/voice/transcribe
+# and, for a push to talk turn at the cell PC, POST /v1/voice/listen. Nothing on the grasp path
+# reads this block.
+#
+# The id is read from <models.weights_root>/speech/<org>--<name>, which
+# `python scripts/model_weights/fetch.py whisper-turbo` writes at one pinned commit, 1.6 GB. The
+# Silero voice detector that scores every recording before Whisper is asked comes from the same
+# folder (`fetch.py silero-vad`), and the cell PC's microphone opens at 16 kHz, one channel of
+# int16 in blocks of 8000 frames: both fixed in src/models/speech.
 stt:
-  # `local: True` below reads `model_path` from disk and downloads nothing, and
-  # `python scripts/model_weights/fetch.py whisper-turbo` writes that directory, pinned to one hub
-  # commit. It lands as 1.6 GB of safetensors. ${WILLY_PROJECT_ROOT} is the repository, where the
-  # fetch writes, so both paths hold wherever this config folder lives.
   model_id: "openai/whisper-large-v3-turbo"
-  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/speech/openai--whisper-large-v3-turbo"
-  # The Silero voice detector, read from disk whatever `local` says. Every recording is scored for
-  # speech before Whisper is asked what was said, because Whisper answers silence with a word.
-  # `python scripts/model_weights/fetch.py silero-vad` writes it, pinned by hash.
-  vad_model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit"
-  # The microphone stream. Audio that arrives from anywhere else is resampled to `samplerate`, so
-  # that key is the model's input rate and not only a device setting.
-  samplerate: 16000
-  blocksize: 8000
-  channels: 1
-  dtype: "int16"
   # `auto` picks German or English per recording; `german` or `english` forces that language token.
-  # `task` accepts `transcribe` alone, so the text stays in the language it was spoken in.
+  # Whisper transcribes and never translates, so the text stays in the language it was spoken in.
   language: "auto"
-  task: "transcribe"
-  local: True
-  optim:
-    torch_dtype: auto
-    attn_implementation: sdpa
-    channels_last: false
-    compile: false
-    compile_mode: reduce-overhead

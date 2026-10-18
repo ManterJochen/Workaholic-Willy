@@ -67,7 +67,7 @@ An object's points leave out the mask pixels that measure more than 10 mm behind
 mask within 3 px: depth-to-colour misregistration at a part's far edge puts the table behind the part
 inside the mask, and on a camera tilted 45 degrees that table lies 40 mm behind the part. The mask itself
 stays as segmented, and `keep_out(i)` holds all of it out of the planner world. `scene(i, robot_config)`
-plans with the hand `grasping.gripper_geometry` describes and on the support the pick loop would use,
+plans with the hand the tree names (its registry file) and on the support the pick loop would use,
 raised to the object's own lowest point when its surface reaches down to what it stands on.
 
 A set-down measures the held part's hang below the grasp from `scene.part_bottom_mm`: the table (or
@@ -131,7 +131,7 @@ another way (the owner's `Pose.tool_down(..., closing_axis="-y")` for `"-y"`) is
 raises `ValueError` naming `look_around`, as does any axis after a look around that named none. One
 `locate()` judges nothing, so its scene takes any axis. A value that names no axis raises before anything
 moves, and the per-look line reads `no grasp on the part (closing_axis ...)` where the axis left none.
-Without a named axis, the cell's `robot.natural_closing_axis` turns every grasp the nearer way round, read
+Without a named axis, the cell's `robot.motion.natural_closing_axis` turns every grasp the nearer way round, read
 from the robot config handed in: `both_faces` judges the turned grasp, and its refusal names the jaw after
 the turn. Hand `look_around` and `located.scene` the same tree.
 
@@ -172,7 +172,7 @@ What `acquire()` does with a frame:
 | Warm-up | discards `warmup_grabs` frames, 5 by default (`PICK_FRAME_WARMUP_GRABS`), so auto exposure settles |
 | Depth burst | the depth is the median of `burst_grabs` grabs after the warm-ups, 7 by default (`PICK_FRAME_BURST_GRABS`, `burst_depth`), kept where more than half of them read the pixel: a speck or an edge's flicker fewer read is out, a hole most read is filled; the colour is the last grab's, the stamp spans the burst, and one log line says what the median took out and filled and how long it took |
 | Lens | the device's own matrix; `intrinsics=` overrides it, and `source.intrinsics_source` says `factory` or `override` |
-| Depth | published as the sensor measured it, holes (0) included; where a grasp is anchored is set by `robot.grasping.geometry` |
+| Depth | published as the sensor measured it, holes (0) included; where a grasp is anchored is the support-footprint stage's ([generation/](../grasping/generation/README.md)) |
 | Masks | used exactly as segmented; `mask_completion=` can fill them to a box (see below) |
 | Labels | `object_labels=` maps the detector's free phrases onto your object names, so `label == target` works: a phrase maps onto the name whose every word it holds (see below) |
 | Colour | a part mapped onto a name whose words name a colour is judged on its pixels first (`colour_check=`, see below); a part of another colour keeps its mask under a label no object carries |
@@ -194,7 +194,8 @@ A sort's source maps onto every rule's kind at once (`object_labels=("green part
 list, `"each separate green part | each separate red part"`): the detector's `ambiguous`, "orange part" and "green or
 red part" map onto none, and the pick loop's label gate, which takes any of the kinds (`target_labels`), passes them by.
 
-**The colour check** ([`colour_check.py`](colour_check.py), `robot.grasping.colour_check`). Asked for "each separate
+**The colour check** ([`colour_check.py`](colour_check.py), on every cell; `robot.grasping.colour_check` until
+2026-10-17). Asked for "each separate
 grey cube", Qwen3-VL boxed the green and the orange parts as well and labelled every box with the prompt's words
 (the owner's cell, 2026-10-08). So a part mapped onto a name whose head names one colour (the words before a place
 word, English or German: "grauer Würfel auf der schwarzen Matte" names grey) is judged on its own pixels before any
@@ -202,14 +203,15 @@ fusion reads it, in about 2 ms:
 
 - **The pixels.** The mask eroded by 2 px, in CIELAB; pixels darker than L* 20 left out (the mat, a shadow, the
   edge's bleed) unless black is wanted; a pixel coloured from C* 12.
-- **Clipped pixels** (`robot.grasping.colour_check_clipped`, `exclude` as shipped, the owner's choice of 2026-10-09:
-  "wenn das schon so gut war, dann nutzen wir das doch instant"). A pixel with one or two channels at 250 or over and
-  not all three is left out of every count, the 50 pixels' included (`CLIPPED_AT`, `ColourClipped`), and the
-  verdict says how many were. The colour camera runs on auto exposure and clips an orange part's red channel where
+- **Clipped pixels** (every cell's, the owner's choice of 2026-10-09: "wenn das schon so gut war, dann nutzen wir
+  das doch instant"; `robot.grasping.colour_check_clipped: exclude` until 2026-10-17). A pixel with one or two
+  channels at 250 or over and not all three is left out of every count, the 50 pixels' included (`CLIPPED_AT`), and
+  the verdict says how many were. The colour camera runs on auto exposure and clips an orange part's red channel where
   the mat around it is dark: its hue is then read off green alone and lands in the yellow band. On the 31 looks the
   cell recorded on 2026-10-07, through `judge_colour` itself: orange right 53 of 89 times with them counted, 89 of 89
   left out; the 69 grey, 30 white and 99 green sightings and the yellow bin judged exactly as before. No red part
-  stood in those views. `keep` counts them, as before; glare, clipped in all three channels, is counted either way.
+  stood in those views. Glare, clipped in all three channels, is counted; `keep`, which counted every clipped pixel,
+  left with the key.
 - **Grey, white or black.** Half the part coloured or more refuses it, more than a fifth leaves it unsure; otherwise
   the 80th percentile of its colourless pixels' L* says grey up to 74 and white from 80, unsure between, and black is
   a median L* up to 25. A part mostly darker than L* 20 is black.
@@ -224,13 +226,14 @@ fusion reads it, in about 2 ms:
 A refused part keeps its mask, its depth and its place in the planner world under a label no object carries ("green
 object, not grey cube"): the label gate passes it by, and it stays a neighbour for the calculator, the push, the
 blocker and the planner. Every verdict is logged with what the detector called the part (`perception_source.log`).
-`colour_check="log"` judges and logs and changes nothing; `"off"` judges nothing. The thresholds come from 142 part
+`colour_check="off"` judges nothing, as the library's `locate` runs; `log`, which judged and changed nothing, left
+on 2026-10-17. The thresholds come from 142 part
 sightings on 9 of the cell's home views (2026-10-07/08): every part was half coloured or more, or a fifth or less, and
 the grey parts read p80 L* 52-69, the white ones 80-100.
 
-**The task's own places, hidden from the detector** (`robot.grasping.hide_own_places`, off by default; the owner,
-2026-10-08 night). Every look that saw the task's bin had the detector box every part already placed in it, 2 to 4 s a
-box on the cell, each then left out as standing in the bin. Where the cell turns it on, a pick hands `acquire` a
+**The task's own places, hidden from the detector** (every cell built from a tree; the owner, 2026-10-08 night;
+`robot.grasping.hide_own_places` until 2026-10-17). Every look that saw the task's bin had the detector box every part
+already placed in it, 2 to 4 s a box on the cell, each then left out as standing in the bin. Now a pick hands `acquire` a
 `hide` that answers which pixels to paint (`kept_out_pixels`): every pixel its own depth places in a region the task
 keeps out of every label (the bin's footprint and 10 mm, the circle about a drop), and nothing of a part that reaches
 out of one. What stands more than 5 mm over the declared support is painted whole or not at all: a patch of it with 25
@@ -256,14 +259,15 @@ follow (`acquire(follow=)`), which reads that look's own frame, no extra grab:
    every third pixel, inside the cell's workspace: changed where off by more than 10 mm, or new over the support where
    the kept frame read a hole or something farther (a part set down on the shiny profiles, where the last frame read
    holes, shows only this second way). Left out: the task's keep-out regions (its bin, the circle about its drop: an
-   expected change), each kept part's footprint grown by `max_shift_mm` and 15 mm, and the taken part's, which must read
+   expected change), each kept part's footprint grown by `max_shift_mm` (10 mm, `FOLLOW_SHIFT_MM`, every cell's since
+   2026-10-17) and 15 mm, and the taken part's, which must read
    at most 10 mm over the support. A changed cluster of 1000 px, or half the smallest kept part, grounds the frame.
 2. **Each part where it stood**, z-buffered by the locator's rule: 80 % of it seen with depth, 85 % of that within
    8 mm and its colour within dE 10 stands where it stood, boxed by its pixels and 12 px; 60 % farther by 10 mm is gone
    and grounds the frame; anything between is boxed wider by `max_shift_mm` for its mask to measure the move.
 3. **SAM2 on the boxes** (`backend.segment_boxes`), no detector asked.
 4. **Each mask accepted** where its pixels are 0.6 to 1.5 of the kept part's, it moved at most `max_shift_mm` and crept
-   at most `max_creep_mm` since its grounding, at most 2 % of its surface lies 15 mm past the kept footprint shifted by
+   at most `max_creep_mm` (20 mm, `FOLLOW_CREEP_MM`) since its grounding, at most 2 % of its surface lies 15 mm past the kept footprint shifted by
    that move, its top stands within 6 mm and its colour within dE 10; then the colour check and the label mapping run
    on it as on every mask, and a refusal grounds the frame. Every mask is clipped to that shifted footprint and 15 mm.
 
@@ -283,7 +287,7 @@ on the cell's recorded frames and noted in the module.
 
 | Refusal | When | What to do |
 |---|---|---|
-| `LocatorRefused` | the rig has no depth of its own, a stereo pair | locate with an RGB-D rig |
+| `LocatorRefused` | the camera hands out a raw stereo pair, two images and no depth: an owner a stereo catalogue built | locate with the rig's own owner, `Camera.from_tree(tree, rig_id=...)`, which gives an RGB-D rig's depth and a calibrated stereo pair's alike |
 | `RigNotCalibrated` | the rig declares no `extrinsics`; the message names the key | calibrate it (examples 07 and 08) and paste the block |
 | `LocatorRefused` | a wrist rig and no `tool_pose=` | pass `tool_pose=robot.arm.get_tcp_pose` |
 | `LocatorRefused` | a wrist rig solved against another flange to TCP than the cell has now | recalibrate, or restore the tool frame it was solved with |
@@ -295,8 +299,8 @@ on the cell's recorded frames and noted in the module.
 | `ValueError` | `set_prompt("")`, or a source built with neither `backend=` nor `detector=` and `segmenter=` | pass a phrase, or a backend |
 | `RuntimeError` | `acquire()` on a device that reports no lens matrix, with no `intrinsics=` | open the camera first, or pass a calibrated matrix |
 
-The locator's refusals run before the models load. A wrist camera takes up to
-`robot.safety.planning_world.perceived.fresh_frame_attempts` more frames, 3 by default, before it raises.
+The locator's refusals run before the models load. A wrist camera takes up to 3 more frames, every cell's since
+2026-10-17 (`shutter_motion.FRESH_FRAME_ATTEMPTS`), before it raises.
 
 ## Why masks are not filled to their box
 
@@ -328,10 +332,10 @@ The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-v
 | Mask completion default `none` | measured on a real camera setup |
 | `capture`, `pixel_to_base`, `pixels_to_base`, `tcp_above` | pinned by tests on ray-cast frames (`tests/test_a_pixel_of_your_own_lands_in_base.py`): 1e-6 mm on exact depth, 0.5 mm on whole millimetres; never run on the cell, where example 18 is its check |
 | `look_around`: the fused looks, `both_faces`, the generated view, the held frames | pinned by tests with fake arms and cameras (`tests/test_a_located_part_is_looked_at_from_every_look.py`); never touched hardware |
-| The colour check and the label mapping | rule checked offline on 9 of the cell's recorded home views (142 sightings); pinned by tests on painted patches and a ray-cast mat (`tests/test_a_task_picks_the_grey_parts_and_ends_without_a_long_search.py`); not yet run on the cell (`colour_check: log` first) |
-| The clipped pixels left out (`colour_check_clipped: exclude`) | measured offline through `judge_colour` on the cell's 31 recorded looks of 2026-10-07 (orange 53 to 89 of 89, every other part as before); pinned by tests on painted patches (`tests/test_the_colour_check_leaves_clipped_pixels_out.py`); no red part measured; not yet run on the cell |
-| Following the parts a task kept (`kept_scene.py`) | thresholds measured offline on the cell's recorded frames of 2026-10-07/08 (CPU); pinned by tests on ray-cast frames (`tests/test_a_kept_scene_follows_only_what_stands_where_it_stood.py`, `tests/test_a_task_follows_its_parts_instead_of_grounding_them_again.py`); never run on the cell, off until a bench run proves it |
-| The task's own places hidden from the detector (`kept_out_pixels`) | pinned by tests on ray-cast frames, flying pixels and holes included (`tests/test_the_tasks_own_places_are_hidden_from_the_detector.py`); needs a backend that takes `detect_on`; never run on real depth or the cell, off by default |
+| The colour check and the label mapping | rule checked offline on 9 of the cell's recorded home views (142 sightings); pinned by tests on painted patches and a ray-cast mat (`tests/test_a_task_picks_the_grey_parts_and_ends_without_a_long_search.py`); on at the owner's cell since 2026-10-08, in every cell since 2026-10-17 |
+| The clipped pixels left out | measured offline through `judge_colour` on the cell's 31 recorded looks of 2026-10-07 (orange 53 to 89 of 89, every other part as before); pinned by tests on painted patches (`tests/test_the_colour_check_leaves_clipped_pixels_out.py`); no red part measured; on at the owner's cell since 2026-10-09, in every cell since 2026-10-17 |
+| Following the parts a task kept (`kept_scene.py`) | thresholds measured offline on the cell's recorded frames of 2026-10-07/08 (CPU); pinned by tests on ray-cast frames (`tests/test_a_kept_scene_follows_only_what_stands_where_it_stood.py`, `tests/test_a_task_follows_its_parts_instead_of_grounding_them_again.py`); on at the owner's cell by its tree, in every cell since 2026-10-17 |
+| The task's own places hidden from the detector (`kept_out_pixels`) | pinned by tests on ray-cast frames, flying pixels and holes included (`tests/test_the_tasks_own_places_are_hidden_from_the_detector.py`); needs a backend that takes `detect_on`; on at the owner's cell by its tree, in every cell since 2026-10-17 |
 
 How the stack behaves on real depth, which returns zeros inside a mask and leaks at its edges, is not
 measured. It is the largest untested surface in the stack, and it can be tested without a robot: a
@@ -344,7 +348,7 @@ camera on a desk, pointed at the real parts, through the exerciser above.
 | [`locator.py`](locator.py) | `Locator`, `Located`, `LocatedObject`, `LocatedOrientation`, `LocatorRefused`, `SetDown`, `Measured` |
 | [`pixel_to_base.py`](pixel_to_base.py) | `capture`, `CapturedFrame`, `pixel_to_base`, `pixels_to_base`, `PixelPoint`, `PixelRefused`, `tcp_above`: a pixel of your own in BASE, and a TCP pose proposed over it |
 | [`realsense_source.py`](realsense_source.py) | `RealSenseVisionPerceptionSource`, the live camera source of a real cell; `kept_out_pixels` and `painted_copy`, the regions a task keeps out painted over the detector's copy of a frame |
-| [`colour_check.py`](colour_check.py) | `colour_named`, `judge_colour`, `ColourVerdict`, `ColourCheck`, `ColourClipped`, `CLIPPED_AT`, `ask_colour`, `refused_label`: the colour a phrase names against a part's pixels |
+| [`colour_check.py`](colour_check.py) | `colour_named`, `judge_colour`, `ColourVerdict`, `ColourCheck`, `CLIPPED_AT`, `ask_colour`, `refused_label`: the colour a phrase names against a part's pixels |
 | [`kept_scene.py`](kept_scene.py) | `KeptScene`, `KeptPart`, `Following`, `Accepted`: the parts a task kept, found again on a new frame with no detector, or why not |
 | [`mask_completion.py`](mask_completion.py) | the three mask fill policies and the measurement behind the default |
 | [`viewfinder.py`](viewfinder.py) | `ColourPeekable`, `peek_color_of`, `colour_source_kind`, `COLOUR_SOURCE_KINDS` |

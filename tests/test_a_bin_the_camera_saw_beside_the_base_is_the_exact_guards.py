@@ -8,13 +8,14 @@ refused samples are admitted only where all of this holds:
 
 * the second judgement clears the world and the bounds of every refused sample and finds the robot itself as the first
   did (its self pairs are decided as F1 decides them);
-* no part is carried, for the arm or for the planner: the carried part is the planner's alone;
 * the exact guard and the planner hold the same boxes the camera saw, and the exact guard accepts every refused sample
   right there with them, turned, at ``perceived_min_distance_mm``;
 * the exact mesh engine runs.
 
-The bench, the declared fixtures and meshes, and the carried part stay the planner's. Anything unexpected leaves the
-refusal standing, and the sentence says which authority it stands on.
+Whatever the hand holds: no cell models a part in the jaws (the owner, 2026-10-05, "mehr Griffe"; every cell since
+2026-10-17), so jaws closed on one are judged as an empty hand is. The bench and what else was declared to the planner
+stay the planner's. Anything unexpected leaves the refusal standing, and the sentence says which authority it stands
+on.
 
 The exact guard here is the real one, on the committed UR10 and Hand-E bundles, and the camera world the real pipeline:
 a bin ray cast straight down, the live world, its refresh. The planner is a double: its world is the boxes it holds, and
@@ -35,13 +36,13 @@ import math
 import unittest
 from functools import lru_cache
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
 import numpy as np
 
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions, MotionCommand, MotionStatus
-from src.robot.core.arm_capabilities import PayloadModel
 from src.robot.drivers.ur.pose_adapter import pose_to_urpose
 from src.robot.safety._capsule import AxisAlignedBox
 from src.robot.safety._fcl_self_collision import mesh_backend_status
@@ -50,6 +51,7 @@ from src.robot.safety.planning import CuroboUnavailableError, StateRefusalKind
 from src.robot.safety.planning.band import PoseVerdict
 from src.robot.safety.planning.curobo_client import PathJudgement, RefusedSample
 from tests._plan_end import pose_where_it_ends
+from tests._route_planner import the_planner_holds_more
 from tests._seen_scenes import Solid, open_bin
 from tests.test_a_pose_only_the_planners_spheres_refuse_is_the_exact_guards import BandPlanner
 from tests.test_the_guard_holds_the_boxes_the_planner_holds import _refresh
@@ -75,7 +77,21 @@ OFF_ON = [math.radians(v) for v in (0.0, -60.0, 80.0, -90.0, -90.0, 0.0)]
 #: planner's reach and the line clearance, so a line from here meets the bin only on its way.
 AWAY = [math.radians(v) for v in (-30.0, -60.0, 80.0, -95.0, -90.0, 0.0)]
 _DECLINED = "unit double: the boxes the camera saw are handed to both authorities by hand"
+#: The clearance a straight joint line keeps from the planner's world in these scenes, millimetres: they were measured at
+#: 10, every cell's until 2026-10-05, and their premises need it (the lamp meets the line only at 10), so the arm is held
+#: to it here (:func:`setUpModule`). Every cell keeps 3 since 2026-10-17 (``path_samples.LINE_CLEARANCE_MM``), by the
+#: same mechanism.
 _LINE_MM = 10.0
+_LINE_HELD = mock.patch("src.robot.drivers.planned.arm.LINE_CLEARANCE_MM", _LINE_MM)
+
+
+def setUpModule() -> None:  # noqa: D103 (the line clearance above)
+    _LINE_HELD.start()
+
+
+def tearDownModule() -> None:  # noqa: D103
+    _LINE_HELD.stop()
+
 
 
 def _needs_the_engine() -> None:
@@ -83,16 +99,14 @@ def _needs_the_engine() -> None:
         raise unittest.SkipTest("no exact mesh backend on this box")
 
 
-def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, carried_part_mm: "float | None" = None,
-         mesh_first: bool = False) -> Any:
+def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, mesh_first: bool = False) -> Any:
     """The owner-like UR10 with the Hand-E standing at Q, built as ``owner_like_arm`` builds it, ``fixtures`` declared where given.
 
     It keeps the distances this file's scenes were measured at: 10 mm from the arm and a declared fixture, 5 mm from a
-    seen box, a 10 mm line clearance. The owner ships 3, 3 and 3 since 2026-10-05; the mechanism is the same.
-    ``carried_part_mm`` declares how far a carried part hangs past the fingertips: the cell then models a carried part
-    (``safety.planning_world.payload.length_mm``); the owner's models none. These scenes pin Option 1, which mesh first
-    (``safety.planned_motion.mesh_first``, on as shipped) never reaches where it applies, so it is off unless
-    ``mesh_first``: its own scene beside this bin is ``test_a_joint_path_is_judged_whole_and_sent_without_a_pause.py``."""
+    seen box, a 10 mm line clearance (:data:`_LINE_MM`). The owner ships 3, 2 and 3 since 2026-10-05; the mechanism is
+    the same. These scenes pin Option 1, which mesh first (on, as on every cell) never reaches where it applies, so the
+    planner is asked beside the exact guard unless ``mesh_first`` (:func:`tests._route_planner.the_planner_holds_more`):
+    mesh first's own scene beside this bin is ``test_a_joint_path_is_judged_whole_and_sent_without_a_pause.py``."""
     _needs_the_engine()
     from src.config.schema.robot import RobotConfig
     from src.robot.drivers.ur.arm import URRobotArm
@@ -101,23 +115,18 @@ def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, carried_part_mm: "fl
 
     arm: Any = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
-        "workspace_limits": OPEN_WORKSPACE,
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo", "workspace": OPEN_WORKSPACE},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "safety": {"payload": {"enforce": False},
-                   "planned_motion": {"line_clearance_mm": _LINE_MM, "mesh_first": bool(mesh_first)},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
-                                      "planner_margin_mm": 4.0, "fixtures": list(fixtures or [])},
-                   **({} if carried_part_mm is None else
-                      {"planning_world": {"payload": {"length_mm": float(carried_part_mm)}}})},
+        "safety": {"self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
+                                      "planner_margin_mm": 4.0, "fixtures": list(fixtures or [])}},
     }))
     arm._conn = MagicMock()
     arm._conn.is_connected = True
     arm._conn.get_joint_positions.return_value = list(Q)
     arm._conn.moveJ.return_value = True
-    return arm
+    return arm if mesh_first else the_planner_holds_more(arm)
 
 
 def _backend(arm: Any) -> Any:
@@ -185,8 +194,8 @@ _FAR_PART = AxisAlignedBox(center_mm=np.array([500.0, 400.0, 30.0]), half_extent
 
 class HandKnownOpen:
     """A hand known empty and open, as the owner's toggle reads once a person said its jaws stand open: connected, its
-    count standing and saying open. The camera's boxes are set aside for no other hand (the owner, 2026-10-01; what other
-    hands say is ``test_the_cameras_boxes_are_set_aside_only_for_a_hand_known_open.py``)."""
+    count standing and saying open. The camera's boxes are set aside whatever the hand reads (every cell since
+    2026-10-17; what each hand says is ``test_the_cameras_boxes_are_set_aside_whatever_the_hand_holds.py``)."""
 
     toggles_without_sensor = True
     jaws_closed = False
@@ -206,21 +215,25 @@ class HandKnownOpen:
 KNOWN_OPEN = HandKnownOpen()
 
 
+class HandClosedOnAPart(HandKnownOpen):
+    """The owner's toggle once its count says the jaws closed on a part: no hand reads empty and open then, and the
+    camera's boxes are set aside all the same (the owner, 2026-10-05; every cell since 2026-10-17)."""
+
+    jaws_closed = True
+
+
 class SeenWorldPlanner(BandPlanner):
     """cuRobo beside the base: its world is the boxes it holds, met where the exact meshes come within :data:`REACH_MM`
     plus the clearance asked of a box it holds and has not set aside; the robot itself is the band double's.
 
     ``judge_joint_path`` takes ``ignore_perceived`` as the glue does: every camera box it holds, by name, or it refuses as
-    the sidecar refuses. ``carries_part`` is what the glue says of a part the planner may hold. Every report is recorded
-    with the names it set aside, ``()`` where none.
+    the sidecar refuses. Every report is recorded with the names it set aside, ``()`` where none.
     """
 
-    def __init__(self, arm: Any, world: "tuple[AxisAlignedBox, ...]", *, carries_part: bool = False,
-                 **kwargs: Any) -> None:
+    def __init__(self, arm: Any, world: "tuple[AxisAlignedBox, ...]", **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._backend = _backend(arm)
         self.world = {box.name: box for box in world}
-        self.carries_part = carries_part
         self.aside: tuple[str, ...] = ()
 
     def in_world(self, config: "list[float] | tuple[float, ...]", clearance_mm: float) -> bool:
@@ -248,20 +261,14 @@ class SeenWorldPlanner(BandPlanner):
         """Every report asked with the camera's boxes set aside."""
         return [call for call in self.named("judge") if call[4]]
 
-    def detach_payload(self) -> bool:
-        """The glue's detach, confirmed: it holds no part after it."""
-        self.calls.append(("detach",))
-        self.carries_part = False
-        return True
-
 
 def _cell(real_mm: float = 30.0, *, yaw_deg: float = 30.0, world: "tuple[AxisAlignedBox, ...] | None" = None,
           seen: "tuple[AxisAlignedBox, ...] | None" = None, fixtures: "list[dict[str, Any]] | None" = None,
-          planner_cls: "type[SeenWorldPlanner]" = SeenWorldPlanner, carried_part_mm: "float | None" = None,
-          mesh_first: bool = False, **kwargs: Any) -> "tuple[Any, SeenWorldPlanner]":
+          planner_cls: "type[SeenWorldPlanner]" = SeenWorldPlanner, mesh_first: bool = False,
+          **kwargs: Any) -> "tuple[Any, SeenWorldPlanner]":
     """The arm at Q with a bin ``real_mm`` from its meshes the camera saw, held by both authorities, carrying a hand
-    known empty and open (:data:`KNOWN_OPEN`); ``carried_part_mm`` and ``mesh_first`` as :func:`_arm` takes them."""
-    arm = _arm(fixtures, carried_part_mm=carried_part_mm, mesh_first=mesh_first)
+    known empty and open (:data:`KNOWN_OPEN`); ``mesh_first`` as :func:`_arm` takes it."""
+    arm = _arm(fixtures, mesh_first=mesh_first)
     boxes = _seen(real_mm, yaw_deg) if seen is None else seen
     arm._preflight.set_perceived_obstacles(boxes)
     planner = planner_cls(arm, (_BENCH, *boxes) if world is None else world, **kwargs)
@@ -318,7 +325,6 @@ class TheScenesPremisesTests(unittest.TestCase):
         self.assertGreater(to_seen, 5.0)
         self.assertLess(to_seen, REACH_MM)
         self.assertGreater(_distance(backend, Q, (_BENCH,)), REACH_MM + _LINE_MM, "the bench refuses nothing at Q")
-        self.assertEqual(float(arm.config.safety.planned_motion.line_clearance_mm), _LINE_MM)
         self.assertEqual(float(arm.config.safety.self_collision.perceived_min_distance_mm), 5.0)
 
 
@@ -380,34 +386,23 @@ class TheCamerasBoxesAloneAreTheExactGuardsTests(unittest.TestCase):
 
 
 class WhatStaysThePlannersTests(unittest.TestCase):
-    def test_the_same_bin_while_a_part_is_carried_is_refused(self) -> None:
-        """⭐ The carried part is the planner's alone: nothing is set aside while the arm or the planner may hold one."""
-        for what, carried in (("the planner holds one", {"carries_part": True}), ("the arm holds one", {})):
-            with self.subTest(what=what):
-                arm, planner = _cell(**carried)
-                if not carried:
-                    arm._attached_payload = (120.0, 5.0)
-                result = _line(arm, Q_ON)
-                self.assertIs(result.status, MotionStatus.SELF_COLLISION_REJECTED)
-                arm._conn.moveJ.assert_not_called()
-                self.assertEqual(planner.set_aside(), [], "the planner was never asked with the boxes set aside")
-                for said in ("the planner refused this straight joint line at sample 0", "the planner's world",
-                             "a part is carried"):
-                    self.assertIn(said, result.message or "")
-
-    def test_a_planner_that_cannot_say_it_holds_no_part_is_refused(self) -> None:
+    def test_the_same_bin_with_the_jaws_closed_on_a_part_runs_as_for_an_empty_hand(self) -> None:
+        """⭐ No cell models a part in the jaws (the owner, 2026-10-05; every cell since 2026-10-17): with the jaws
+        closed on one the planner is asked again with the camera's boxes set aside, and the exact guard decides. Red
+        before on a cell that modelled the carried part: nothing was set aside while one was carried."""
         arm, planner = _cell()
-        del planner.carries_part
-        self.assertFalse(hasattr(planner, "carries_part"))
-        standing = _decide(arm, planner, [Q], 0.0)
-        assert standing is not None
-        self.assertIn("cannot say", standing.reason)
-        self.assertEqual(planner.set_aside(), [])
+        arm.set_hand(HandClosedOnAPart())
+        result = _line(arm, Q_ON)
+        self.assertTrue(result.ok, result.message)
+        arm._conn.moveJ.assert_called_once()
+        self.assertNotEqual(planner.set_aside(), [], "the camera's boxes were set aside, as for an empty hand")
 
     def test_the_same_bin_declared_stays_the_planners(self) -> None:
-        """⭐ A declared fixture is never set aside. The square bin's near wall 30 mm from the meshes, declared at its
-        measured place: the exact guard keeps its 10 mm and accepts it, the planner's line clearance meets it, and the
-        refusal stands on the planner's world even with the camera's own boxes set aside. Seen, the same bin runs."""
+        """⭐ A box declared to the planner is never set aside. The square bin's near wall 30 mm from the meshes,
+        declared at its measured place to both (a cell's fixtures stay the guard's since 2026-10-17; a caller that hands
+        one to the planner gets this): the exact guard keeps its 10 mm and accepts it, the planner's line clearance
+        meets it, and the refusal stands on the planner's world even with the camera's own boxes set aside. Seen, the
+        same bin runs."""
         y, solids = _bin(30.0, 0.0)
         wall = solids[3]
         self.assertAlmostEqual(_distance(_backend(_arm()), Q, _solids([wall])), 30.0, delta=0.05)
@@ -622,22 +617,11 @@ class OffTheBandThePlannersWorldAloneRefusesTests(unittest.TestCase):
         self.assertEqual(len(planner.set_aside()), 1, "the guard spoke after the planner's second judgement")
 
     def test_what_stays_the_planners_off_the_band(self) -> None:
-        """⭐ The carried part the planner models, a declared wall and the bench stay the planner's on a refusal it typed
-        WORLD. Jaws closed on a part nobody models are judged as an empty hand is (the owner, 2026-10-05)."""
-        for what in ("the planner holds one", "the arm holds one"):
-            with self.subTest(what=what):
-                arm, planner = _cell(carries_part=what == "the planner holds one")
-                if what == "the arm holds one":
-                    _modelled_part(arm)
-                _from(arm, planner, OFF)
-                result = _line(arm, OFF_ON)
-                self.assertFalse(result.ok)
-                arm._conn.moveJ.assert_not_called()
-                self.assertIn("a part is carried", result.message or "")
-                self.assertEqual(planner.set_aside(), [], "the planner was never asked with the boxes set aside")
-        with self.subTest(what="the jaws closed on one nobody models"):
+        """⭐ A declared wall and the bench stay the planner's on a refusal it typed WORLD. Jaws closed on a part are
+        judged as an empty hand is (the owner, 2026-10-05; every cell since 2026-10-17)."""
+        with self.subTest(what="the jaws closed on a part"):
             arm, planner = _cell()
-            self.assertFalse(arm.attach_payload(40.0), "this cell models no carried part")
+            arm.set_hand(HandClosedOnAPart())
             _from(arm, planner, OFF)
             self.assertTrue(_line(arm, OFF_ON).ok, "judged as an empty hand is")
             self.assertNotEqual(planner.set_aside(), [])
@@ -706,7 +690,7 @@ class TheScreenSaysWhatAMoveDoesBesideTheBinTests(unittest.TestCase):
                 line = screen.line("BESIDE_BIN")
                 self.assertTrue(line.startswith("BESIDE_BIN: beside the boxes the camera saw: "), line)
                 for said in (f"the {count} box(es) the camera saw", "5 mm", "Straight lines", "a planned move",
-                             "carries a part"):
+                             "whatever the hand holds"):
                     self.assertIn(said, screen.detail)
                 if joints is Q:
                     self.assertIn("forearm_link and wrist_2_link", screen.detail, "the band is said beside it")
@@ -717,19 +701,13 @@ class TheScreenSaysWhatAMoveDoesBesideTheBinTests(unittest.TestCase):
                 self.assertTrue(_line(arm, joints).ok, "the move the screen promises runs")
 
     def test_what_the_screen_still_calls_an_error_beside_the_bin(self) -> None:
-        """Where no move goes, the screen still says ERROR and why: a part carried, a declared wall the planner meets with
-        the camera's boxes set aside, the bench under the housing, a bin the exact guard itself refuses."""
-        arm, planner = _cell(carries_part=True)
-        screen = arm.screen_configuration(JointPositions(tuple(OFF)))
-        self.assertIs(screen.verdict, PoseVerdict.PLANNER_REFUSED)
-        self.assertTrue(screen.line("BESIDE_BIN").startswith("ERROR BESIDE_BIN: refused by the planner"))
-        self.assertIn("a part is carried", screen.detail)
-        self.assertEqual(planner.set_aside(), [])
-
+        """Where no move goes, the screen still says ERROR and why: a declared wall the planner meets with the camera's
+        boxes set aside, the bench under the housing, a bin the exact guard itself refuses."""
         wall, fixture = _declared_wall(20.0)
         arm, planner = _cell(seen=(_FAR_PART,), world=(_BENCH, wall, _FAR_PART), fixtures=[fixture])
         screen = arm.screen_configuration(JointPositions(tuple(OFF)))
         self.assertIs(screen.verdict, PoseVerdict.PLANNER_REFUSED)
+        self.assertTrue(screen.line("BESIDE_BIN").startswith("ERROR BESIDE_BIN: refused by the planner"))
         self.assertIn("set aside too", screen.detail)
 
         raised = AxisAlignedBox(center_mm=np.array([0.0, 0.0, -5.0]), half_extents_mm=np.array([1000.0, 1000.0, 25.0]),
@@ -745,69 +723,41 @@ class TheScreenSaysWhatAMoveDoesBesideTheBinTests(unittest.TestCase):
         self.assertTrue(screen.is_error)
 
 
-def _modelled_part(arm: Any) -> None:
-    """The jaws closed on a part the planner models, as a grasp's attach on a cell that models one leaves the arm."""
-    arm._closed_on_part = True
-    arm._attached_payload = (120.0, 5.0)
+class AnArmThatClosesOnAPartBesideTheBinLeavesAsItCameTests(unittest.TestCase):
+    """⭐ What the owner had to know (verifier W, 2026-10-01, measured on the GPU with a real attach): the camera's boxes
+    were set aside only for an empty hand, so an arm admitted beside the bin empty-handed that closed on a part the
+    planner modelled was held there until a person opened the jaws. No cell models a part in the jaws (the owner,
+    2026-10-05: "mehr Griffe"; every cell since 2026-10-17): jaws closed on one are judged as an empty hand is, the
+    camera's boxes set aside and the hand left unread, and the exact guard still judges the arm and the hand. So the
+    arm leaves as it came."""
 
-
-class AnArmThatClosesOnAPartBesideTheBinIsHeldThereTests(unittest.TestCase):
-    """⭐ What the owner has to know (verifier W, 2026-10-01, measured on the GPU with a real attach): the camera's boxes
-    are set aside only for an empty hand. An arm admitted beside the bin empty-handed that closes on a part the planner
-    models is held there: every way out starts at the pose the planner's world refuses, and nothing is set aside while
-    that part is carried. Nothing moves; the refusal says how a person gets it out. A grasp therefore judges its lift
-    carrying before it closes and does not close there (the owner, 2026-10-01:
-    ``test_a_grasp_judges_its_lift_carrying_before_it_closes``); these hold the arm that closed there all the same.
-
-    A part the cell models nowhere is judged as an empty hand is (the owner, 2026-10-05: "mehr Griffe"): nobody judges it
-    against the camera's boxes either way, and the exact guard still judges the arm and the hand."""
-
-    def test_a_part_the_cell_does_not_model_is_judged_as_an_empty_hand_is(self) -> None:
-        """⭐ A cell whose planning_world.payload models no part (here no length is declared) closes its jaws on one, and
-        the line beside the bin runs as it runs empty-handed: the boxes set aside, the exact guard deciding."""
-        arm, planner = _cell()
-        self.assertIsNotNone(arm.payload_declined_reason())
-        self.assertFalse(arm.attach_payload(40.0))
-        self.assertTrue(arm._closed_on_part, "the arm still knows its jaws closed on a part")
-        self.assertIs(arm.payload_model(), PayloadModel.NONE)
-        self.assertFalse(planner.carries_part, "the planner was handed nothing")
-        result = _line(arm, Q_ON)
-        self.assertTrue(result.ok, result.message)
-        self.assertNotEqual(planner.set_aside(), [], "the camera's boxes were set aside, as for an empty hand")
-
-    def test_an_empty_hand_goes_in_and_a_carried_part_does_not_come_out_on_its_own(self) -> None:
+    def test_an_empty_hand_goes_in_and_comes_out_with_the_part(self) -> None:
         arm, planner = _cell()
         _from(arm, planner, AWAY)
         self.assertTrue(_line(arm, OFF).ok, "empty-handed, the line into the pose beside the bin runs")
         _from(arm, planner, OFF)
-        _modelled_part(arm)  # what a grasp's attach leaves on a cell that models the part
-        before = arm._conn.moveJ.call_count
+        arm.set_hand(HandClosedOnAPart())
         for target in (AWAY, OFF_ON):
             with self.subTest(target=target):
                 result = _line(arm, target)
-                self.assertFalse(result.ok)
-                for said in ("at sample 0 of", "the planner's world", "a part is carried", "Robot.release"):
-                    self.assertIn(said, result.message or "")
-        self.assertEqual(arm._conn.moveJ.call_count, before, "nothing moved")
-        self.assertTrue(arm.detach_payload(), "what a release does once the jaws opened")
-        self.assertTrue(_line(arm, AWAY).ok, "empty-handed again, it leaves")
+                self.assertTrue(result.ok, result.message)
+        self.assertEqual(arm._conn.moveJ.call_count, 3, "in, and out each way")
 
-    def test_the_tool_line_out_is_held_the_same_way(self) -> None:
-        """The retreat after a close is a moveL: carrying, it is refused at its first sample as every line out is."""
+    def test_the_tool_line_out_runs_the_same_way(self) -> None:
+        """The retreat after a close is a moveL: with the jaws closed on the part it runs as the empty hand's does."""
         arm, planner = _cell()
         arm.ik = lambda pose, *, seed=None: JointPositions(tuple(Q))
         arm._motion = MagicMock()
         arm._motion.move_to.return_value = True
         flange = np.asarray(ur_link_transforms_mm("ur10", np.asarray(Q))[-1])
         arm._motion.get_current_pose.return_value = pose_to_urpose(Pose.from_matrix(flange, frame=Frame.BASE))
-        _modelled_part(arm)
+        arm.set_hand(HandClosedOnAPart())
         start = arm.get_tcp_pose()
         with arm.without_camera_world(_DECLINED):
             result = arm.move(start, linear=True)
-        self.assertFalse(result.ok)
-        arm._motion.move_to.assert_not_called()
-        for said in ("at sample 0 of", "a part is carried", "Robot.release"):
-            self.assertIn(said, result.message or "")
+        self.assertTrue(result.ok, result.message)
+        arm._motion.move_to.assert_called_once()
+        self.assertNotEqual(planner.set_aside(), [])
 
 
 if __name__ == "__main__":

@@ -2,11 +2,11 @@
 at load (owner decision 15; build plan 1.8, library L11).
 
 A taught pose is where a task puts its part (the default place) or where it returns to; it lives in
-``robot.named_poses`` under its NAME, the YAML key and the word the command reader hands on, with a free LABEL the
+``robot.motion.named_poses`` under its NAME, the YAML key and the word the command reader hands on, with a free LABEL the
 chat and the cards say ("Ablage links"). What is held here, on the schema and on a tree of two layers:
 
 * a name is an ASCII identifier of at most 32 characters, no Python keyword, never ``home`` (Home stays
-  ``robot.home_joint_positions``), no word YAML reads as true, false or null (``yes``, ``off``, ``null``) and none of
+  ``robot.motion.home_deg``), no word YAML reads as true, false or null (``yes``, ``off``, ``null``) and none of
   the loader's own words (``__null__``); the console and the schema read one rule (``pose_name_refusal``);
 * the joints keep the looks' rules: degrees, finite, at most a full turn either way, one per joint of the home where it
   is set, and every pose as long as the others;
@@ -15,7 +15,7 @@ chat and the cards say ("Ablage links"). What is held here, on the schema and on
   one word (without case, spaces folded): an unlabelled pose is said by its name;
 * only a clear pose or one in the planner's band is a taught pose: an unscreened or refused verdict is refused at load;
   a pose written by hand carries none, and a task screens it before it moves;
-* ``robot.default_place_pose`` names a pose of the tree, or nothing;
+* ``robot.motion.default_place_pose`` names a pose of the tree, or nothing;
 * poses of two layers merge KEY BY KEY, as every mapping of the tree does: a pose named in both takes the later layer's
   keys over the earlier one's, so a pose written by hand into a later layer with its joints alone keeps the screen a
   lower layer gave other joints. A screen read off the tree is therefore no proof about the joints beside it: a task
@@ -47,8 +47,9 @@ def _pose(joints: "list[float] | None" = None, **fields: Any) -> dict[str, Any]:
             "taught_at": "2026-10-01T09:12:00+02:00", "screen": "clear", "note": "", **fields}
 
 
-def _robot(**fields: Any) -> RobotConfig:
-    return RobotConfig.model_validate({"vendor": "ur", **fields})
+def _robot(**motion: Any) -> RobotConfig:
+    """A UR tree whose ``robot.motion`` block holds ``motion``."""
+    return RobotConfig.model_validate({"vendor": "ur", "motion": motion})
 
 
 class APoseLoadsTests(unittest.TestCase):
@@ -56,29 +57,29 @@ class APoseLoadsTests(unittest.TestCase):
         robot = _robot(named_poses={"drop_left": _pose(), "park": _pose(PARK, label="Parken", screen="band",
                                                                        note="in the planner's cushion band: ...")},
                        default_place_pose="drop_left")
-        drop = robot.named_poses["drop_left"]
+        drop = robot.motion.named_poses["drop_left"]
         self.assertIsInstance(drop, NamedPoseConfig)
         self.assertEqual(tuple(DROP), drop.joints_deg)
         self.assertEqual("Ablage links", drop.label)
         self.assertEqual("clear", drop.screen)
         self.assertEqual("2026-10-01T09:12:00+02:00", drop.taught_at)
-        self.assertEqual("band", robot.named_poses["park"].screen)
-        self.assertEqual("drop_left", robot.default_place_pose)
+        self.assertEqual("band", robot.motion.named_poses["park"].screen)
+        self.assertEqual("drop_left", robot.motion.default_place_pose)
 
     def test_no_pose_and_no_default_is_the_shipped_default(self) -> None:
         robot = _robot()
-        self.assertEqual({}, dict(robot.named_poses))
-        self.assertIsNone(robot.default_place_pose)
+        self.assertEqual({}, dict(robot.motion.named_poses))
+        self.assertIsNone(robot.motion.default_place_pose)
 
     def test_a_pose_written_by_hand_needs_only_its_joints(self) -> None:
         robot = _robot(named_poses={"park": {"joints_deg": PARK}})
-        park = robot.named_poses["park"]
+        park = robot.motion.named_poses["park"]
         self.assertEqual(("", None, None, ""), (park.label, park.taught_at, park.screen, park.note))
 
     def test_a_label_may_be_any_words_within_its_bounds(self) -> None:
         for label in ("Ablage links", "Ablage für Teile", "#2 links", "Kiste 3 (blau)", "x" * 40):
             with self.subTest(label=label):
-                self.assertEqual(label, _robot(named_poses={"drop": _pose(label=label)}).named_poses["drop"].label)
+                self.assertEqual(label, _robot(named_poses={"drop": _pose(label=label)}).motion.named_poses["drop"].label)
 
 
 class ANameIsAPoseNameTests(unittest.TestCase):
@@ -135,14 +136,13 @@ class TheJointsKeepTheLooksRulesTests(unittest.TestCase):
                 with self.assertRaises(ValidationError) as caught:
                     _robot(named_poses={"drop": _pose(joints)})
                 self.assertIn(said, str(caught.exception))
-                self.assertIn("robot.named_poses", str(caught.exception))
+                self.assertIn("robot.motion.named_poses", str(caught.exception))
 
     def test_a_pose_names_one_value_per_joint_of_the_home(self) -> None:
         with self.assertRaises(ValidationError) as caught:
-            _robot(home_joint_positions_deg=[0.0, -90.0, 90.0, -90.0, -90.0, 0.0],
-                   named_poses={"drop": _pose(DROP[:5])})
+            _robot(home_deg=[0.0, -90.0, 90.0, -90.0, -90.0, 0.0], named_poses={"drop": _pose(DROP[:5])})
         self.assertIn("home", str(caught.exception))
-        _robot(home_joint_positions_deg=[0.0, -90.0, 90.0, -90.0, -90.0, 0.0], named_poses={"drop": _pose()})
+        _robot(home_deg=[0.0, -90.0, 90.0, -90.0, -90.0, 0.0], named_poses={"drop": _pose()})
 
     def test_every_pose_names_as_many_joints_as_the_others(self) -> None:
         with self.assertRaises(ValidationError) as caught:
@@ -210,7 +210,7 @@ class TheDefaultPlaceNamesAPoseTests(unittest.TestCase):
             _robot(default_place_pose="drop")
 
     def test_none_is_no_default(self) -> None:
-        self.assertIsNone(_robot(named_poses={"drop": _pose()}, default_place_pose=None).default_place_pose)
+        self.assertIsNone(_robot(named_poses={"drop": _pose()}, default_place_pose=None).motion.default_place_pose)
 
 
 class PosesMergeAcrossLayersTests(unittest.TestCase):
@@ -226,43 +226,49 @@ class PosesMergeAcrossLayersTests(unittest.TestCase):
         reload_config()
         shutil.rmtree(self.tmp.parent, ignore_errors=True)
 
-    def _append(self, path: Path, text: str) -> None:
-        with path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
+    def _into_motion(self, path: Path, text: str) -> None:
+        """``text`` written into the ``robot.motion`` block of ``path``, right under the line that opens it."""
+        raw = path.read_bytes().decode("utf-8")
+        head = "  motion:\r\n" if "  motion:\r\n" in raw else "  motion:\n"
+        self.assertEqual(1, raw.count(head), f"fixture drift: {path.name} opens no one robot.motion block")
+        path.write_bytes(raw.replace(head, head + text, 1).encode("utf-8"))
 
     def test_the_cell_layer_adds_its_poses_to_the_ones_below(self) -> None:
-        self._append(self.tmp / "robot" / "robot.ur10.yaml",
-                     "  named_poses:\n    park:\n      joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n"
-                     "      label: \"Parken\"\n")
+        self._into_motion(self.tmp / "robot" / "robot.ur10.yaml",
+                          "    named_poses:\n      park:\n        joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n"
+                          "        label: \"Parken\"\n")
         (self.tmp / "robot" / "robot.cell.yaml").write_text(
-            "robot:\n  named_poses:\n    drop_left:\n      joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]\n"
-            "      label: \"Ablage links\"\n      screen: clear\n    park:\n      joints_deg: "
-            "[-91.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n      label: \"Parken\"\n      screen: band\n"
-            "  default_place_pose: drop_left\n", encoding="utf-8")
+            "robot:\n  motion:\n    named_poses:\n      drop_left:\n"
+            "        joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]\n"
+            "        label: \"Ablage links\"\n        screen: clear\n      park:\n        joints_deg: "
+            "[-91.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n        label: \"Parken\"\n        screen: band\n"
+            "    default_place_pose: drop_left\n", encoding="utf-8")
         reload_config()
         robot = load_config(self.tmp, profile="ur10,cell").robot
-        self.assertEqual({"drop_left", "park"}, set(robot.named_poses))
-        self.assertEqual(-91.0, robot.named_poses["park"].joints_deg[0], "the later layer's pose wins")
-        self.assertEqual("band", robot.named_poses["park"].screen)
-        self.assertEqual("drop_left", robot.default_place_pose)
+        self.assertEqual({"drop_left", "park"}, set(robot.motion.named_poses))
+        self.assertEqual(-91.0, robot.motion.named_poses["park"].joints_deg[0], "the later layer's pose wins")
+        self.assertEqual("band", robot.motion.named_poses["park"].screen)
+        self.assertEqual("drop_left", robot.motion.default_place_pose)
         reload_config()
         below = load_config(self.tmp, profile="ur10").robot
-        self.assertEqual({"park"}, set(below.named_poses))
-        self.assertIsNone(below.default_place_pose)
+        self.assertEqual({"park"}, set(below.motion.named_poses))
+        self.assertIsNone(below.motion.default_place_pose)
 
     def test_a_pose_named_in_two_layers_merges_key_by_key(self) -> None:
         """⚠ What a screen read off a merged tree is worth: a pose the cell's layer names with its joints alone keeps the
         label, the screen and the note a lower layer gave OTHER joints. So no caller trusts ``screen`` as proof about the
         joints beside it: a task screens every pose before it moves (build plan 1.3.3), and the pose door writes all
         five keys of a pose at once, so a pose it wrote never mixes layers."""
-        self._append(self.tmp / "robot" / "robot.ur10.yaml",
-                     "  named_poses:\n    park:\n      joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n"
-                     "      label: \"Parken\"\n      screen: clear\n      note: \"screened on the old bracket\"\n")
+        self._into_motion(self.tmp / "robot" / "robot.ur10.yaml",
+                          "    named_poses:\n      park:\n        joints_deg: [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n"
+                          "        label: \"Parken\"\n        screen: clear\n"
+                          "        note: \"screened on the old bracket\"\n")
         (self.tmp / "robot" / "robot.cell.yaml").write_text(
-            "robot:\n  named_poses:\n    park:\n      joints_deg: [10.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n",
+            "robot:\n  motion:\n    named_poses:\n      park:\n"
+            "        joints_deg: [10.0, -80.0, -110.0, -80.0, 90.0, 0.0]\n",
             encoding="utf-8")
         reload_config()
-        park = load_config(self.tmp, profile="ur10,cell").robot.named_poses["park"]
+        park = load_config(self.tmp, profile="ur10,cell").robot.motion.named_poses["park"]
         self.assertEqual(10.0, park.joints_deg[0], "the later layer's joints")
         self.assertEqual(("Parken", "clear", "screened on the old bracket"), (park.label, park.screen, park.note),
                          "the lower layer's record, kept beside joints it never screened")

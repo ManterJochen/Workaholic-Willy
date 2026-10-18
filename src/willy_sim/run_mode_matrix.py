@@ -4,8 +4,8 @@
 runs as its own subprocess, one boot per cell. The driver holds three on-box rules:
 
 * each child's stdout/stderr is redirected to a log file, never a pipe (a pipe destabilizes Kit's boot);
-* HF offline is forced, so the vision scene reads the cached GroundingDINO/SAM2 and cannot hit the
-  httpx-client-closed crash;
+* HF offline is forced, so the vision scene reads the VLM and SAM2 from ``models.weights_root`` and
+  cannot hit the httpx-client-closed crash;
 * a per-cell timeout records a hung boot as failed and moves on, killing the whole child tree
   (``taskkill /T`` on Windows) so a stuck Isaac never leaks RAM into the next cell.
 
@@ -84,14 +84,11 @@ def cell_command(
     record_log: Optional[str] = None,
     debug_frames: Optional[str] = None,
     robot_model: Optional[str] = None,
-    radial_closing: bool = False,
 ) -> list[str]:
     """Build the argv that runs one ``(scene, mode)`` cell as a subprocess.
 
     ``robot_model`` is omitted for the default robot, so that robot's argv never changes; naming
-    another model selects that robot's config layer in the runner. ``radial_closing`` is the
-    shorter-arm grasp fix: a UR3e cannot reach a tangential top-down close at any azimuth, so its
-    matrix should be taken with it on.
+    another model selects that robot's config layer in the runner.
     """
 
     spec = SCENES[scene]
@@ -99,8 +96,6 @@ def cell_command(
            "--result-json", result_json, *spec["extra"]]
     if robot_model and robot_model != DEFAULT_ROBOT:
         cmd += ["--robot-model", robot_model]
-    if radial_closing:
-        cmd += ["--radial-closing"]
     if record_log:
         cmd += ["--record-log", record_log]
     if debug_frames:
@@ -177,7 +172,6 @@ def run_matrix(
     modes: Sequence[str],
     runs: int,
     robots: Sequence[str] = (DEFAULT_ROBOT,),
-    radial_closing: bool = False,
     out: str,
     logdir: str,
     timeout_s: float,
@@ -208,12 +202,12 @@ def run_matrix(
             python, scene, mode, runs=runs, result_json=result_json,
             record_log=(str(Path(record_dir) / f"{tag}.jsonl") if record_dir else None),
             debug_frames=(str(Path(frames_dir) / tag) if frames_dir else None),
-            robot_model=robot, radial_closing=radial_closing,
+            robot_model=robot,
         )
         cell: dict[str, Any] = {"scene": label, "robot": robot, "mode": mode, "log": log_path}
         print(f"[matrix] {tag}: launching (timeout {timeout_s:.0f}s) -> {log_path}", flush=True)
-        # The argv at debug: it carries the per-cell flags (--radial-closing, --record-log, the robot
-        # layer) that decide what the cell measured, and the child cannot report its own argv.
+        # The argv at debug: it carries the per-cell flags (--record-log, the robot layer) that decide
+        # what the cell measured, and the child cannot report its own argv.
         _LOG.debug("cell %s argv: %s", tag, " ".join(cmd))
         _started = time.perf_counter()
         with open(log_path, "w", encoding="utf-8") as lf:
@@ -295,9 +289,6 @@ def main() -> None:
                          "Cells on a non-default robot are labelled '<robot>/<scene>', so a single-robot "
                          "matrix is unchanged. NOTHING else guards a second robot: the U12 soak gate is "
                          "robot-agnostic and synthetic and stays green through a completely broken cell.")
-    ap.add_argument("--radial-closing", action="store_true",
-                    help="aim a symmetric object's jaw along the RADIAL axis. A shorter arm (UR3e) cannot "
-                         "reach a TANGENTIAL top-down close at any azimuth, so its matrix needs this on.")
     ap.add_argument("--scenes", type=str, default="m1,m2,eih")
     ap.add_argument("--modes", type=str, default="easy,auto")
     ap.add_argument("--runs", type=int, default=3)
@@ -318,7 +309,6 @@ def main() -> None:
         scenes=[s.strip() for s in args.scenes.split(",") if s.strip()],
         modes=[m.strip() for m in args.modes.split(",") if m.strip()],
         robots=[r.strip() for r in args.robots.split(",") if r.strip()],
-        radial_closing=args.radial_closing,
         runs=args.runs, out=args.out, logdir=args.logdir, timeout_s=args.timeout_s,
         record_dir=args.record_dir, frames_dir=args.frames_dir, python=args.python,
     )

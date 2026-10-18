@@ -72,8 +72,8 @@ exactly one place:
 from src.contracts import UNSET, Maybe, chosen, resolve
 
 
-def attempts(explicit: Maybe[int] = UNSET, from_config: Maybe[int] = UNSET) -> int:
-    return resolve("max_attempts", explicit, from_config, 5)  # the last layer is the code default
+def mode(explicit: Maybe[str] = UNSET, from_config: Maybe[str] = UNSET) -> str:
+    return resolve("default_mode", explicit, from_config, "dense_clutter")  # the last layer is the code default
 
 
 def chain(profile: Maybe[str | None] = UNSET) -> str:
@@ -91,7 +91,6 @@ def chain(profile: Maybe[str | None] = UNSET) -> str:
 | `KeyExplanation` ([`src/config/explain.py`](../config/explain.py)) | yes | no |
 | `IOSnapshot`, `TransitionResult` ([`src/robot/execution/io_bench/pins.py`](../robot/execution/io_bench/pins.py)) | yes | no |
 | `TrainingRunReport` ([`src/robot/grasping/deep/train/report.py`](../robot/grasping/deep/train/report.py)) | yes | no |
-| `DecisionReport` ([`src/robot/grasping/decision.py`](../robot/grasping/decision.py)) | no | yes |
 | `PreflightReport` ([`src/robot/execution/real_cell/preflight.py`](../robot/execution/real_cell/preflight.py)) | yes | yes |
 | `PickRunReport` ([`src/robot/execution/pick_run.py`](../robot/execution/pick_run.py)) | yes | yes |
 | `AutonomousGraspReport` ([`src/robot/execution/autonomous_grasp/report.py`](../robot/execution/autonomous_grasp/report.py)) | yes | yes |

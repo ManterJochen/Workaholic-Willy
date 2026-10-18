@@ -61,6 +61,7 @@ def section_sources(root: Path) -> list[tuple[Path, str, str]]:
     """
     return [
         (root / "camera" / "cam.yaml", "cameras", "camera.cameras"),
+        # Removed on 2026-10-17 and still read where a tree carries it, so its refusal names the file and line.
         (root / "camera" / "stereomatcher.yaml", "stereomatcher", "camera.stereomatcher"),
         (root / "camera" / "hand_eye.yaml", "hand_eye", "camera.hand_eye"),
         (root / "robot" / "robot.yaml", "robot", "robot"),
@@ -91,7 +92,7 @@ def index_chains(root: Path, layers: tuple[str, ...] = ()) -> dict[str, list[Ori
         if section is None:
             continue
         if not isinstance(section.value, dict):
-            # A layer that replaced the whole section (`stereomatcher: "__null__"`, `cameras: []`) wrote
+            # A layer that replaced the whole section (`cameras: "__null__"`, `cameras: []`) wrote
             # the one line that explains it: nothing is left inside it to name.
             chains[prefix] = list(section.origins)
         _flatten(section.value, prefix, chains)

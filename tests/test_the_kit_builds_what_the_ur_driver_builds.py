@@ -42,16 +42,15 @@ _BUILT: dict[str, Callable[[], RobotConfig]] = {
     "ik": lambda: kit_tree("ik"),
     "curobo": lambda: kit_tree("curobo", safety={"self_collision": {"planner_margin_mm": 4.0}}),
     "ur3e": lambda: kit_tree("curobo", model="ur3e"),
-    "ur10 with a home": lambda: kit_tree("curobo", model="ur10", home_joint_positions=[0.2, -1.4, 1.3, -1.5, -1.57, 0.1]),
+    "ur10 with a home": lambda: kit_tree("curobo", model="ur10", motion={"home_deg": [11.5, -80.2, 74.5, -85.9, -90.0, 5.7]}),
     "+Z frame": lambda: kit_tree("curobo", gripper={"tool_frame": _REAL_UR}),
     "+Y frame": lambda: kit_tree("curobo", gripper={"tool_frame": _ISAAC}),
     "hande profile": lambda: load_robot_config(profile="hande"),
     "ursim profile": lambda: load_robot_config(profile="ursim"),
     "wrist camera cell": lambda: wrist_cell(),
     "camera world cell": lambda: _camera_world_cell(),
-    "planning world with a part": lambda: kit_tree("curobo", safety={"planning_world": {
-        "enabled": True, "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-        "payload": {"enabled": True, "length_mm": 120.0, "lateral_margin_mm": 10.0}}}),
+    "planning world with its bench": lambda: kit_tree("curobo", safety={"planning_world": {
+        "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}}}),
 }
 
 #: The trees both must refuse, and a word of the sentence.

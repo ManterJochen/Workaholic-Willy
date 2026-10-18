@@ -102,7 +102,7 @@ def described_ur_model(model: str | None) -> str | None:
     the cell names the model its arm reports (every driver that exists does; ``planning/hand.py`` says where it could
     not). The vendor does not enter: the Isaac arm is ``vendor="sim"`` and drives
     the UR it names, and a UR driven over ROS 2 will be another vendor again. A model nobody describes, the dummy's
-    ``dummy-6dof`` or a KUKA's, gets ``None`` and no chain.
+    ``dummy-6dof`` or another vendor's, gets ``None`` and no chain.
     """
     if not model or ur_dh_rows(model) is None:
         return None

@@ -576,7 +576,7 @@ class TheLongestSortFitsTests(_Reads):
         loads = _Loads(answer=_sort()[1:])
         holder = _holder(loads)
         self.addCleanup(holder.forget)
-        reading = read_command(SORT, models=_models(backend="vlm"), poses=POSES, weights_present=True, holder=holder,
+        reading = read_command(SORT, models=_models(), poses=POSES, weights_present=True, holder=holder,
                                known=True)
         self.assertEqual((False, (GREEN_RULE, RED_RULE)), (reading.known, reading.rules))
         self.assertEqual(COMMAND_MAX_NEW_TOKENS, loads.model.calls[0]["max_new_tokens"])

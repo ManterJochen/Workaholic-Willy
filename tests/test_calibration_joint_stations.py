@@ -36,7 +36,7 @@ import numpy as np
 from src.calibration import MountingMode
 from src.calibration.exceptions import CalibrationDataError
 from src.config.schema.camera import HandEyeConfig
-from src.config.schema.robot import MotionLimitsConfig, RobotConfig, WorkspaceLimitsConfig
+from src.config.schema.robot import RobotConfig, RobotMotionConfig, WorkspaceLimitsConfig
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions
 from src.robot.core.camera_world import active_decline
@@ -234,7 +234,7 @@ class _Source:
 
 
 def _routine(arm: _Arm, *, limits: WorkspaceLimitsConfig = _WIDE, min_samples: int = 4,
-             motion_limits: MotionLimitsConfig | None = None) -> tuple[CalibrationRoutine, list[tuple[str, dict]]]:
+             motion_limits: RobotMotionConfig | None = None) -> tuple[CalibrationRoutine, list[tuple[str, dict]]]:
     events: list[tuple[str, dict]] = []
     routine = CalibrationRoutine(
         arm=arm, marker_source=_Source(arm), workspace_limits=limits,  # type: ignore[arg-type]
@@ -257,7 +257,7 @@ class JointStationsRunAsJudgedJointMovesTests(unittest.TestCase):
         stations: list[Any] = [JointStation(_joints(i), label=f"j{i}") for i in range(5)]
         stations.insert(2, Pose.from_matrix(tool[5], frame=Frame.BASE, label="pose"))
         arm = _Arm({tuple(_joints(i).tolist()): tool[i] for i in range(5)})
-        routine, _ = _routine(arm, motion_limits=MotionLimitsConfig(max_velocity=0.4, max_acceleration=0.3))
+        routine, _ = _routine(arm, motion_limits=RobotMotionConfig(max_velocity=0.4, max_acceleration=0.3))
         result = routine.run_with_poses(stations)
 
         commanded = arm.commanded()
@@ -289,7 +289,7 @@ class JointStationsRunAsJudgedJointMovesTests(unittest.TestCase):
         self.assertEqual((verdict.index, verdict.label, verdict.counted, verdict.reason),
                          (7, "j6", False, "outside_workspace"))
         self.assertTrue(verdict.detail.startswith("the grasp centre at these joints (720.0, 240.0, 280.0) mm is "
-                                                  "outside workspace_limits (x -100.0 to 650.0"), verdict.detail)
+                                                  "outside robot.motion.workspace (x -100.0 to 650.0"), verdict.detail)
         self.assertTrue(verdict.detail.endswith("so nothing moved"), verdict.detail)
         moving = [data["index"] for kind, data in events if kind == RobotCalibrationEvent.MOVING_TO_POSE]
         self.assertEqual(moving, [1, 2, 3, 4, 5, 6], "a station that never moves announced a move")

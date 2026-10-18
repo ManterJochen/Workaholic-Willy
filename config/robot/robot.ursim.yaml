@@ -6,7 +6,7 @@
 # stays `ur` and the real driver runs: this is not a simulated driver. The profile also
 # declares what `URRobotArm.connect()` refuses to start without:
 #
-#   * `safety.payload.enforce: true` with `mass_kg: 0.0`: connecting would push
+#   * `safety.payload.mass_kg: 0.0`, the shipped "not weighed yet": connecting would push
 #     setPayload(0.0) and overwrite the controller's payload for a mounted tool.
 #   * `gripper.tool_frame.source: undeclared`: nobody has said where the grasp centre sits
 #     on the flange, so the driver cannot know whether a commanded pose means the TCP or
@@ -76,7 +76,6 @@ robot:
 
   safety:
     payload:
-      enforce: true
       mass_kg: 1.5
       # Not [0, 0, 0]: that is the "not measured yet" marker, and pushing it would tell the
       # controller a 1.5 kg tool is a point mass at the flange face, so `connect()` refuses

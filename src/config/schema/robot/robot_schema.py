@@ -23,21 +23,13 @@ from .sim_schema import (
     SimObjectConfig,
     SimSceneConfig,
     SimTableConfig,
-    home_in_radians,
 )
 from .calibration_schema import RobotCalibrationConfig, RobotCalibrationQualityBandsMm
 
 from .safety_schema import (
-    DwellSafetyConfig,
     FixtureBoxConfig,
-    IkQualitySafetyConfig,
-    JointLimitSafetyConfig,
-    LimitsSafetyConfig,
-    MotionContinuitySafetyConfig,
     PayloadSafetyConfig,
     RobotSafetyConfig,
-    AttachedPayloadConfig,
-    PerceivedWorldConfig,
     PlannerMeshConfig,
     PlanningWorldConfig,
     SelfCollisionSafetyConfig,
@@ -47,83 +39,26 @@ from .tool_frame_schema import ToolFrameConfig
 from .place_schema import PlaceGridConfig, RobotPlaceConfig
 
 from .grasping_schema import (
-    BlockerGraphSchemaConfig,
-    GraspingDecisionConfig,
-    GraspingFeasibilityConfig,
-    GraspingOcclusionConfig,
-    GraspingOrderingConfig,
-    GraspingPerformanceConfig,
-    GraspingRecoveryConfig,
-    GraspingRecoveryFixtureConfig,
-    GraspingSuccessModelConfig,
-    GraspingUncertaintyConfig,
-    GraspingWatchdogConfig,
-    RobotGraspingApproachValidationConfig,
     RobotGraspingConfig,
-    RobotGraspingFusionConfig,
-    UncertaintyChannelWeightsConfig,
-)
-
-from .rl_schema import (
-    RLExperimentalConfig,
-    RL_ACTIVE_MODES,
-    RL_MODE_GEOMETRY_ONLY,
-    RL_MODE_HYBRID_ML,
-    RL_MODE_RL_ACTIVE,
-    RL_MODE_RL_EXPERIMENTAL,
-    RL_MODE_RL_SHADOW,
-    RL_MODE_VALUES,
-    RobotRLConfig,
 )
 
 __all__ = [
-    "BlockerGraphSchemaConfig",
     "DummyConfig",
-    "DwellSafetyConfig",
     "FixtureBoxConfig",
-    "GraspingDecisionConfig",
-    "GraspingFeasibilityConfig",
-    "GraspingOcclusionConfig",
-    "GraspingOrderingConfig",
-    "GraspingPerformanceConfig",
-    "GraspingRecoveryConfig",
-    "GraspingRecoveryFixtureConfig",
-    "GraspingSuccessModelConfig",
-    "GraspingUncertaintyConfig",
-    "GraspingWatchdogConfig",
     "GripperConfig",
-    "IkQualitySafetyConfig",
     "ArmSelection",
-    "JointLimitSafetyConfig",
-    "LimitsSafetyConfig",
-    "MotionContinuitySafetyConfig",
-    "MotionLimitsConfig",
     "RobotMotionConfig",
     "NamedPoseConfig",
     "POSE_LABEL_MAX_CHARS",
     "POSE_NAME_MAX_CHARS",
     "PayloadSafetyConfig",
     "PlaceGridConfig",
-    "RLExperimentalConfig",
-    "RL_ACTIVE_MODES",
-    "RL_MODE_GEOMETRY_ONLY",
-    "RL_MODE_HYBRID_ML",
-    "RL_MODE_RL_ACTIVE",
-    "RL_MODE_RL_EXPERIMENTAL",
-    "RL_MODE_RL_SHADOW",
-    "RL_MODE_VALUES",
     "RobotCalibrationConfig",
     "RobotCalibrationQualityBandsMm",
     "RobotConfig",
-    "RobotGraspingApproachValidationConfig",
     "RobotGraspingConfig",
-    "RobotGraspingFusionConfig",
     "RobotPlaceConfig",
-    "RobotRLConfig",
     "RobotSafetyConfig",
-    "SafePoseConfig",
-    "AttachedPayloadConfig",
-    "PerceivedWorldConfig",
     "PlannerMeshConfig",
     "PlanningWorldConfig",
     "SelfCollisionSafetyConfig",
@@ -138,7 +73,6 @@ __all__ = [
     "URConfig",
     "OnRobotGripperConfig",
     "VacuumGripperConfig",
-    "UncertaintyChannelWeightsConfig",
     "WorkspaceLimitsConfig",
     "pose_label_refusal",
     "pose_name_refusal",
@@ -146,66 +80,8 @@ __all__ = [
 ]
 
 
-class MotionLimitsConfig(StrictModel):
-    """Hard upper bounds on commanded velocity and acceleration."""
-
-    max_velocity: float = Field(default=1.0, gt=0.0, le=3.14)
-    max_acceleration: float = Field(default=0.5, gt=0.0, le=5.0)
-
-
-class RobotMotionConfig(StrictModel):
-    """How this cell's motions are planned, whichever arm drives them, and when the next leg of a pick or a place is
-    judged: as it runs, or ahead while the arm waits or moves.
-
-    ``planner`` was ``robot.ur.motion_planner`` until 2026-10-13 (aurora's P0c), where it sat in a vendor block that
-    every tree materialises: a sim or dummy tree carried ``curobo`` as well, and readers outside the UR driver acted on
-    it. Every vendor plans the same way, so the choice is the cell's rather than one vendor's. The Isaac driver is not
-    governed by this key yet and says so: its planner lives in its own driver config (``robot.sim``), and a runner can
-    override it per run.
-
-    ``judge_next_leg`` (map4 motion C7, the owner, 2026-10-09):
-
-    * ``"off"``, the default and today's behaviour: every leg is judged when the arm stands at its start, and the jaws'
-      stroke is waited out before anything else is asked.
-    * ``"in_settles"``: the change of the jaws goes out once, as ever, and while their stroke is waited out the next leg
-      is judged: the line out of a place, and, in a world held across the stroke (``safety.planning_world.hold``), the
-      joint move a task declared after the pick or the place. Nothing is sent before the stroke is over.
-    * ``"in_settles_and_motion"``: as ``"in_settles"``, and a declared joint move not judged in a stroke is judged on a
-      second thread while the line before it runs, on an arm that watches its sends (``robot.ur.brake_on_halt``: a halt
-      brakes the line in flight). Elsewhere it falls back to ``"in_settles"`` and says so once in the log.
-
-    A leg judged ahead runs only where the arm stands within 0.5 mm of where it was judged from and nothing else it was
-    judged on changed since (the world's refresh, the carried part, the hand, the camera's boxes, a halt); otherwise it
-    is judged again where the arm stands. Judging ahead sends nothing and switches no output.
-    """
-
-    #: ``curobo``, the default, plans a global collision-free trajectory in the process-isolated cuRobo planner
-    #: (``safety.planning``), to the goal configuration nearest the arm, and runs it as one ``moveJ`` per kept waypoint:
-    #: the plan is shortened to the fewest of its own waypoints whose legs stay within the path gate's step of it, the
-    #: local path gate and the planner both judge those legs, and exactly that list runs. ``ik`` is the controller's
-    #: calibrated IK and a ``moveJ``/``moveL`` straight line, which knows nothing about the cell and will drive through
-    #: anything in it. ``curobo`` fails closed: a move returns CONTROLLER_REJECTED when the planner is unavailable and
-    #: TIMEOUT when no collision-free plan exists, and never degrades to blind IK, so a cell without a cuRobo environment
-    #: does not move at all. Check that environment with ``python -m src.robot.safety.planning --doctor``.
-    planner: Literal["ik", "curobo"] = "curobo"
-    judge_next_leg: Literal["off", "in_settles", "in_settles_and_motion"] = Field(default="off")
-
-
-class SafePoseConfig(StrictModel):
-    """Cartesian position the robot can retreat to at operator request.
-
-    Position only. The single reader is the willy_sim reach doctor (``harness/reach.py``), which
-    asks whether the point lies inside the arm's envelope, and orientation does not enter that
-    question. Nothing moves to this pose; orientation belongs with the code that would.
-    """
-
-    x: float = 0.0
-    y: float = -300.0
-    z: float = 400.0
-
-
 class WorkspaceLimitsConfig(StrictModel):
-    """Cartesian workspace bounding box in millimetres."""
+    """The box in BASE, millimetres, every commanded pose stays inside (``robot.motion.workspace``)."""
 
     x_min: float = -500.0
     x_max: float = 500.0
@@ -687,10 +563,10 @@ _YAML_WORDS: Final[frozenset[str]] = frozenset({"yes", "no", "true", "false", "o
 def pose_name_refusal(name: object) -> str:
     """Why ``name`` cannot name a pose taught in the console, or ``""`` where it can.
 
-    A name is the YAML key under ``robot.named_poses`` and the word the command reader hands back for the label a
+    A name is the YAML key under ``robot.motion.named_poses`` and the word the command reader hands back for the label a
     person said, so it is an ASCII identifier (letters, digits and underscores, not starting with a digit) of at most
     :data:`POSE_NAME_MAX_CHARS` characters, no Python keyword, and never ``home`` in any case: Home is the arm's own
-    ``robot.home_joint_positions``, configured there and taught nowhere else. It is no word YAML reads as true, false
+    ``robot.motion.home_deg``, configured there and taught nowhere else. It is no word YAML reads as true, false
     or null (``yes``, ``off``, ``null``, in any case: the key would read back as no name), and it does not have the
     shape of the loader's own words (``__null__``, the overlay reset, which would turn a default place naming it into
     none). The one rule the schema, the pose writer and teaching read (``teach.name_refusal``).
@@ -705,7 +581,7 @@ def pose_name_refusal(name: object) -> str:
     if keyword.iskeyword(name):
         return f"{name!r} is a Python keyword, and a pose name is none"
     if name.lower() == "home":
-        return (f"{name!r} is Home, the arm's own home pose (robot.home_joint_positions): it is configured there and "
+        return (f"{name!r} is Home, the arm's own home pose (robot.motion.home_deg): it is configured there and "
                 "taught nowhere else")
     if name.casefold() in _YAML_WORDS:
         return (f"{name!r} is a word YAML reads as true, false or null, in any case, not as a name: the pose door "
@@ -758,7 +634,7 @@ class NamedPoseConfig(StrictModel):
     The console frees the arm, a person guides it there, and the pose is screened by the exact guard and the planner
     while the arm holds; only a pose both clear, or one in the planner's cushion band, is written, into the last layer
     of the profile chain (the owner, Q10). A place pose says where the part's BOTTOM is let go: a task raises the tool
-    over it by the part's hang. The name it is kept under (``robot.named_poses.<name>``) follows
+    over it by the part's hang. The name it is kept under (``robot.motion.named_poses.<name>``) follows
     :func:`pose_name_refusal`.
     """
 
@@ -854,50 +730,69 @@ _VENDOR_ARM_BLOCKS: Final[dict[str, tuple[str, bool]]] = {
 }
 
 
-class RobotConfig(StrictModel):
-    """Top-level robot configuration tree.
+class RobotMotionConfig(StrictModel):
+    """How this cell moves, whichever arm drives it: how its motions are planned and how fast they may go, the box it
+    works in, its home and its looks, the way its jaws close, the poses taught to it, and how a task sets its parts
+    down.
 
-    ``vendor`` selects which driver the robot runtime instantiates and defaults to ``ur``.
-    Vendor-specific transport settings live in named sibling blocks (``ur``, ``sim``, ``dummy``) so
-    each driver owns its own typed surface: a UR cell's transport under ``ur``. Only the block
-    matching ``vendor`` is consulted at runtime; the others stay valid but unused. The ``kuka:``
-    block went with the EthernetKRL driver (2026-09-19).
+    ``planner`` was ``robot.ur.motion_planner`` until 2026-10-13 (aurora's P0c), where it sat in a vendor block that
+    every tree materialises: a sim or dummy tree carried ``curobo`` as well, and readers outside the UR driver acted on
+    it. Every vendor plans the same way, so the choice is the cell's rather than one vendor's. The Isaac driver is not
+    governed by this key yet and says so: its planner lives in its own driver config (``robot.sim``), and a runner can
+    override it per run.
 
-    The config layer imports no robot runtime module, so validation works on hosts that only edit
-    or lint YAML.
+    The next leg of a pick or a place is judged ahead on every arm planned with cuRobo, as the owner's cell ran it (map4
+    motion C7, ``robot.motion.judge_next_leg: in_settles_and_motion`` until 2026-10-17): the change of the jaws goes out
+    once, as ever, and while their stroke is waited out the next leg is judged: the line out of a place, and, in the
+    world held across the stroke, the joint move a task declared after the pick or the place. A declared joint move not
+    judged in a stroke is judged on a second thread while the line before it runs, on an arm whose halt brakes the line
+    in flight (every UR); elsewhere in the strokes alone. Nothing is sent before the stroke is over.
+
+    A leg judged ahead runs only where the arm stands within 0.5 mm of where it was judged from and nothing else it was
+    judged on changed since (the world's refresh, the hand, the camera's boxes, a halt); otherwise it is judged again
+    where the arm stands. Judging ahead sends nothing and switches no output.
+
+    The limits, the box, the home, the looks, the closing axis, the poses and the place stood beside this block until
+    2026-10-17 (``robot.motion_limits``, ``robot.workspace_limits``, ``robot.home_joint_positions_deg``,
+    ``robot.look_joint_positions_deg``, ``robot.natural_closing_axis``, ``robot.named_poses``,
+    ``robot.default_place_pose``, ``robot.place``; the owner's cleanup). A tree that still writes one is refused at load
+    naming its key here, and ``python -m src.config migrate`` moves them; the home in radians
+    (``robot.home_joint_positions``) and ``robot.safe_pose`` left.
     """
 
-    vendor: str = Field(default="ur", min_length=1)
-    ur: URConfig = Field(default_factory=URConfig)
-    sim: SimConfig = Field(default_factory=SimConfig)
-    dummy: DummyConfig = Field(default_factory=DummyConfig)
-    motion_limits: MotionLimitsConfig = Field(default_factory=MotionLimitsConfig)
-    #: How this cell's motions are planned, and when the next leg of a pick or a place is judged
-    #: (:class:`RobotMotionConfig`).
-    motion: RobotMotionConfig = Field(default_factory=RobotMotionConfig)
-    workspace_limits: WorkspaceLimitsConfig = Field(default_factory=WorkspaceLimitsConfig)
-    gripper: GripperConfig = Field(default_factory=GripperConfig)
-    #: Joint configuration the arm returns to on ``move_home()``, in radians. ``None`` uses the home the
-    #: arm's description states (``home_rad`` per joint, ``config/arms/``), which for every UR is the pose
-    #: authored for a UR5e, shoulder lift and wrist 1 at -pi/2: on a UR3e it puts the grasp centre at
-    #: z = 561.9 mm and r = 466.9 mm, 93.4% of that arm's 500 mm reach and past the 85% this project
-    #: treats as near-singular, while a UR3e cell's own ``workspace_limits`` stop at z = 320. A cell
-    #: on any other arm gives its own value, or its first motion leaves the declared workspace.
-    #: ``sim.home_joint_positions`` is the sim-side twin of this field.
-    home_joint_positions: tuple[float, ...] | None = None
-    #: The same home in DEGREES, as the pendant shows it and ``python -m src.robot.execution.io_bench --where`` prints it.
-    #: Exactly one of the two may be given. Read once, at load: the loaded config carries the home in radians in
-    #: ``home_joint_positions`` and ``None`` here, so every consumer reads the one unit it always read.
-    home_joint_positions_deg: tuple[float, ...] | None = None
+    #: ``curobo``, the default, plans a global collision-free trajectory in the process-isolated cuRobo planner
+    #: (``safety.planning``), to the goal configuration nearest the arm, and runs it as one ``moveJ`` per kept waypoint:
+    #: the plan is shortened to the fewest of its own waypoints whose legs stay within the path gate's step of it, the
+    #: local path gate and the planner both judge those legs, and exactly that list runs. ``ik`` is the controller's
+    #: calibrated IK and a ``moveJ``/``moveL`` straight line, which knows nothing about the cell and will drive through
+    #: anything in it. ``curobo`` fails closed: a move returns CONTROLLER_REJECTED when the planner is unavailable and
+    #: TIMEOUT when no collision-free plan exists, and never degrades to blind IK, so a cell without a cuRobo environment
+    #: does not move at all. Check that environment with ``python -m src.robot.safety.planning --doctor``.
+    planner: Literal["ik", "curobo"] = "curobo"
+    #: The hard upper bounds on a commanded motion's velocity and acceleration: every motion is held to them
+    #: (``clamp_to_motion_limits``).
+    max_velocity: float = Field(default=1.0, gt=0.0, le=3.14)
+    max_acceleration: float = Field(default=0.5, gt=0.0, le=5.0)
+    #: The box in BASE, millimetres, every commanded pose stays inside (the workspace guard), and where a stereo rig
+    #: fixed in the cell starts its depth search.
+    workspace: WorkspaceLimitsConfig = Field(default_factory=WorkspaceLimitsConfig)
+    #: The joint configuration the arm returns to on ``move_home()``, in DEGREES, one value per joint, as the pendant
+    #: shows it and ``python -m src.robot.execution.io_bench --where`` prints it; every driver reads it in radians
+    #: (:attr:`home_rad`). ``None`` uses the home the arm's description states (``home_rad`` per joint,
+    #: ``config/arms/``), which for every UR is the pose authored for a UR5e, shoulder lift and wrist 1 at -90 degrees: on
+    #: a UR3e it puts the grasp centre at z = 561.9 mm and r = 466.9 mm, 93.4% of that arm's 500 mm reach and past the 85%
+    #: this project treats as near-singular, while a UR3e cell's own ``workspace`` stops at z = 320. A cell on any other
+    #: arm gives its own value, or its first motion leaves the declared workspace. ``sim.home_joint_positions`` is the
+    #: sim-side twin of this field.
+    home_deg: tuple[float, ...] | None = None
     #: Where the camera looks from before each pick when its program names no look: one list per look, in DEGREES,
     #: one value per joint, as the pendant shows them and ``python -m src.robot.execution.io_bench --where`` prints them,
     #: visited in this order. A wrist camera's pick fuses each look with the ones before it and stops at the first
     #: whose grasp is safe. A fixed camera's arm is moved to them too, before it perceives, and its pick stops at the
-    #: first look that finds something. Kept in degrees in the loaded config, and read once by the pick service into
-    #: joint positions (``configured_looks``); there is deliberately no radians twin, because a look is where the arm
-    #: goes next and its unit must be said. A program's own looks override these. ``None`` configures none: a wrist
-    #: camera then looks from home, and a fixed camera does not move to look.
-    look_joint_positions_deg: tuple[tuple[float, ...], ...] | None = None
+    #: first look that finds something. Read once by the pick service into joint positions (``configured_looks``). A
+    #: program's own looks override these. ``None`` configures none: a wrist camera then looks from home, and a fixed
+    #: camera does not move to look.
+    look_deg: tuple[tuple[float, ...], ...] | None = None
     #: How the hand and its camera naturally stand: the direction the jaws close along where nothing else says (the
     #: owner's decision, 2026-09-30). A name of ``CLOSING_AXES``, the names ``Pose.tool_down`` takes (``x``, ``-x``,
     #: ``y``, ``-y``, ``radial``, ``-radial``, ``tangential``, ``-tangential``, a leading "+" allowed; ``radial`` and
@@ -908,64 +803,47 @@ class RobotConfig(StrictModel):
     #: ``Scene.grasps`` take the one whose tool +X lies nearer this direction at the grasp's place; none is left out or
     #: tilted, and a program's own ``closing_axis`` takes precedence. Beside the simulator's twist
     #: (``GraspMotion(align_closing_to_base_x=True)``), which chooses the way round itself, it turns no grasp (a push
-    #: still takes the natural way round). A pose built
-    #: through the cell, ``robot.tool_down(x, y, z)``, closes along it where the program names no axis. ``None``, the
-    #: default, turns no grasp, and ``robot.tool_down`` closes along ``x``, as ``Pose.tool_down`` does. Refused at load:
-    #: an unknown name, a quaternion that is none, and one whose tool +X stands within 10 degrees of the vertical, which
-    #: names no direction.
+    #: still takes the natural way round). A pose built through the cell, ``robot.tool_down(x, y, z)``, closes along it
+    #: where the program names no axis. ``None``, the default, turns no grasp, and ``robot.tool_down`` closes along
+    #: ``x``, as ``Pose.tool_down`` does. Refused at load: an unknown name, a quaternion that is none, and one whose tool
+    #: +X stands within 10 degrees of the vertical, which names no direction.
     natural_closing_axis: str | tuple[float, float, float, float] | None = None
     #: Poses taught by hand in the console (:class:`NamedPoseConfig`), under their NAMES: a place a task puts its part
     #: at, or a pose it returns to. Written by the console's pose writer alone, into the last layer of the profile
     #: chain, and only once the exact guard and the planner cleared the pose or found it in the planner's band; the
     #: console never renames or deletes one (edit them here). Refused at load: a name that is no pose name
     #: (``pose_name_refusal``: ``home`` among them), joints that break the looks' rules, and two poses under one label.
-    #: Home stays ``home_joint_positions``.
+    #: Home stays :attr:`home_deg`.
     named_poses: dict[str, NamedPoseConfig] = Field(default_factory=dict)
     #: The pose a task places at when its command names no target: a name in ``named_poses``, or ``None`` for none, and
     #: a task that names no place is then refused. Chosen in the console.
     default_place_pose: str | None = None
-    #: How a task sets its parts down (:class:`RobotPlaceConfig`): into a box below its rim, side by side on a flat
-    #: place, the hang from what the pick measured, the carry over the rim. Every default is what a task did before.
+    #: How a task sets its parts down (:class:`RobotPlaceConfig`): into a box below its rim or over it, side by side on a
+    #: flat place, the carry over the rim, and how far the cell's parts hang.
     place: RobotPlaceConfig = Field(default_factory=RobotPlaceConfig)
 
-    safe_pose: SafePoseConfig = Field(default_factory=SafePoseConfig)
-    calibration: RobotCalibrationConfig = Field(default_factory=RobotCalibrationConfig)
-    safety: RobotSafetyConfig = Field(default_factory=RobotSafetyConfig)
-    grasping: RobotGraspingConfig = Field(default_factory=RobotGraspingConfig)
-    # RL optimisation extension layer. The defaults, mode='hybrid_ml' with no artifact loaded,
-    # run no RL at all and preserve production behaviour byte-identically. RL-active modes are
-    # schema-gated and runtime-rejected; see src/robot/grasping/rl.
-    rl: RobotRLConfig = Field(default_factory=RobotRLConfig)
+    @property
+    def home_rad(self) -> tuple[float, ...] | None:
+        """The home in radians, as every driver, the joint window about it and the sim arm read it.
 
-    @model_validator(mode="after")
-    def _home_in_degrees_loads_as_radians(self) -> "RobotConfig":
-        """``home_joint_positions_deg`` becomes ``home_joint_positions`` in radians; both at once is refused.
-
-        First among the validators, so every rule after it reads the home in the unit it always read.
+        Returns:
+            tuple[float, ...] | None: :attr:`home_deg` in radians; ``None`` where the tree sets no home.
         """
-        home = home_in_radians(self.home_joint_positions, self.home_joint_positions_deg, "robot.home_joint_positions")
-        if self.home_joint_positions_deg is not None:
-            object.__setattr__(self, "home_joint_positions", home)
-            object.__setattr__(self, "home_joint_positions_deg", None)
-            # Stated as the radians it now is, so what the model says was set matches what it holds.
-            stated = (self.model_fields_set - {"home_joint_positions_deg"}) | {"home_joint_positions"}
-            object.__setattr__(self, "__pydantic_fields_set__", stated)
-        return self
+        return None if self.home_deg is None else tuple(math.radians(value) for value in self.home_deg)
 
     @model_validator(mode="after")
-    def _looks_are_joints_in_degrees(self) -> "RobotConfig":
-        """``look_joint_positions_deg`` names at least one look, each a finite joint vector in degrees, all one length.
+    def _looks_are_joints_in_degrees(self) -> "RobotMotionConfig":
+        """``look_deg`` names at least one look, each a finite joint vector in degrees, all one length.
 
         Refused at load: a list that names no look (leave the key out instead), a look that names no joint or holds a
         value that is not a finite number, looks of different lengths, a length unlike the home's where the home is
-        set (after the home above is read in radians), and a value past a full turn either way
-        (:data:`LOOK_MAX_ABS_DEG`). Radians written into this key cannot be told from small degrees here; the real
-        cell's desk check says a look that reads so.
+        set, and a value past a full turn either way (:data:`LOOK_MAX_ABS_DEG`). Radians written into this key cannot be
+        told from small degrees here; the real cell's desk check says a look that reads so.
         """
-        looks = self.look_joint_positions_deg
+        looks = self.look_deg
         if looks is None:
             return self
-        key = "robot.look_joint_positions_deg"
+        key = "robot.motion.look_deg"
         if not looks:
             raise ValueError(f"{key} names no look: give one list of joint degrees per look, or leave the key out")
         for number, look in enumerate(looks, start=1):
@@ -982,25 +860,25 @@ class RobotConfig(StrictModel):
             raise ValueError(
                 f"{key}: the looks name {', '.join(str(n) for n in lengths)} joints; every look names one value in "
                 "degrees per joint of the arm")
-        home = self.home_joint_positions
+        home = self.home_deg
         if home is not None and lengths[0] != len(home):
             raise ValueError(
-                f"{key}: each look names {lengths[0]} joints and the home (robot.home_joint_positions) {len(home)}; a "
-                "look names one value per joint of the arm, as the home does")
+                f"{key}: each look names {lengths[0]} joints and the home (robot.motion.home_deg) {len(home)}; a look "
+                "names one value per joint of the arm, as the home does")
         return self
 
     @model_validator(mode="after")
-    def _named_poses_are_poses_a_task_can_go_to(self) -> "RobotConfig":
+    def _named_poses_are_poses_a_task_can_go_to(self) -> "RobotMotionConfig":
         """``named_poses`` holds poses under pose names, each a finite joint vector in degrees; the default names one.
 
         Refused at load: a name :func:`pose_name_refusal` refuses; a pose that names no joint, holds a value that is not
         a finite number or turns a joint past a full turn (:data:`LOOK_MAX_ABS_DEG`); poses of different lengths, and a
-        length unlike the home's where the home is set (read in radians by the rule above); two poses that answer to
-        one word (:func:`pose_words`: a pose answers to its name and to its label, compared without case and with
-        spaces folded), since the command reader hands a pose on by the word a person said and an unlabelled pose is
-        said by its name; and a ``default_place_pose`` that names no pose of the tree.
+        length unlike the home's where the home is set; two poses that answer to one word (:func:`pose_words`: a pose
+        answers to its name and to its label, compared without case and with spaces folded), since the command reader
+        hands a pose on by the word a person said and an unlabelled pose is said by its name; and a
+        ``default_place_pose`` that names no pose of the tree.
         """
-        key = "robot.named_poses"
+        key = "robot.motion.named_poses"
         lengths: dict[int, str] = {}
         answers: dict[str, str] = {}
         for name, pose in self.named_poses.items():
@@ -1029,17 +907,17 @@ class RobotConfig(StrictModel):
             named = ", ".join(f"{name} {length}" for length, name in sorted(lengths.items()))
             raise ValueError(f"{key}: the poses name different numbers of joints ({named}); every pose names one value "
                              "in degrees per joint of the arm")
-        home = self.home_joint_positions
+        home = self.home_deg
         if home is not None and lengths and next(iter(lengths)) != len(home):
             length, name = next(iter(lengths.items()))
             raise ValueError(
-                f"{key}.{name} names {length} joints and the home (robot.home_joint_positions) {len(home)}; a pose "
-                "names one value per joint of the arm, as the home does")
+                f"{key}.{name} names {length} joints and the home (robot.motion.home_deg) {len(home)}; a pose names one "
+                "value per joint of the arm, as the home does")
         place = self.default_place_pose
         if place is not None and place not in self.named_poses:
             known = ", ".join(sorted(self.named_poses)) or "none"
-            raise ValueError(f"robot.default_place_pose is {place!r}, which names no pose of robot.named_poses "
-                             f"(poses: {known}); teach it first, or name one of them")
+            raise ValueError(f"robot.motion.default_place_pose is {place!r}, which names no pose of "
+                             f"robot.motion.named_poses (poses: {known}); teach it first, or name one of them")
         return self
 
     @field_validator("natural_closing_axis")
@@ -1058,27 +936,33 @@ class RobotConfig(StrictModel):
         try:
             closing_axis_of(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"robot.natural_closing_axis: {exc}") from None
+            raise ValueError(f"robot.motion.natural_closing_axis: {exc}") from None
         return value
 
-    @model_validator(mode="after")
-    def _check_safe_pose_in_workspace(self) -> "RobotConfig":
-        """The safe (retreat) pose must lie inside ``workspace_limits``.
 
-        The ``SafetyPreflight`` WorkspaceGuard rejects any motion whose target is outside
-        ``workspace_limits``, so a safe_pose outside the box would make the retreat-to-safe motion
-        itself fail closed. Only position is gated: :class:`SafePoseConfig` carries no orientation.
-        """
-        sp, wl = self.safe_pose, self.workspace_limits
-        if not (wl.x_min <= sp.x <= wl.x_max
-                and wl.y_min <= sp.y <= wl.y_max
-                and wl.z_min <= sp.z <= wl.z_max):
-            raise ValueError(
-                f"safe_pose ({sp.x}, {sp.y}, {sp.z}) mm is outside workspace_limits "
-                f"x[{wl.x_min}, {wl.x_max}] y[{wl.y_min}, {wl.y_max}] z[{wl.z_min}, {wl.z_max}]: "
-                "the WorkspaceGuard would reject the retreat-to-safe motion."
-            )
-        return self
+class RobotConfig(StrictModel):
+    """Top-level robot configuration tree.
+
+    ``vendor`` selects which driver the robot runtime instantiates and defaults to ``ur``.
+    Vendor-specific transport settings live in named sibling blocks (``ur``, ``sim``, ``dummy``) so
+    each driver owns its own typed surface: a UR cell's transport under ``ur``. Only the block
+    matching ``vendor`` is consulted at runtime; the others stay valid but unused.
+
+    The config layer imports no robot runtime module, so validation works on hosts that only edit
+    or lint YAML.
+    """
+
+    vendor: str = Field(default="ur", min_length=1)
+    ur: URConfig = Field(default_factory=URConfig)
+    sim: SimConfig = Field(default_factory=SimConfig)
+    dummy: DummyConfig = Field(default_factory=DummyConfig)
+    #: How this cell moves (:class:`RobotMotionConfig`): its planner and its limits, the box it works in, its home,
+    #: looks and taught poses, and how its tasks set their parts down.
+    motion: RobotMotionConfig = Field(default_factory=RobotMotionConfig)
+    gripper: GripperConfig = Field(default_factory=GripperConfig)
+    calibration: RobotCalibrationConfig = Field(default_factory=RobotCalibrationConfig)
+    safety: RobotSafetyConfig = Field(default_factory=RobotSafetyConfig)
+    grasping: RobotGraspingConfig = Field(default_factory=RobotGraspingConfig)
 
     @property
     def arm(self) -> ArmSelection:

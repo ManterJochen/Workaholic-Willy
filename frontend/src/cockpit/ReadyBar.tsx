@@ -187,13 +187,10 @@ function LightAction({
       return button('jaws', t('ck.act.jaws'), t('ck.act.jawsTitle'))
     case 'gripper:question_pending':
       return say(t('ck.act.answer'))
-    case 'carried_part:not_modelled':
-      return say(t('ck.act.payload'))
     case 'commands:idle':
     case 'commands:failed':
       return button('load', t('ck.act.load'), t('ck.act.loadTitle'))
     case 'commands:missing':
-    case 'commands:not_configured':
       return say(t('ck.act.byHand'))
     default:
       return null

@@ -9,7 +9,8 @@ the boxes the camera saw wherever only they refuse the planner's world: cuRobo, 
 longer judges them at all there. Before, cuRobo's own world term stood behind the guard as a second check, and a cell
 could ask the guard for 0 mm with ``planning_world.perceived.margin_mm`` 10, the sum the step rule asks for. Now
 ``robot.safety.self_collision.perceived_min_distance_mm`` below 1 is refused at load, with a sentence naming the key,
-and the schema says so to anyone who reads it (``>= 1``). The step rule and the voxel rule stay as they were.
+and the schema says so to anyone who reads it (``>= 1``). The step rule stays as it was, with the 6 mm every camera
+world grows its boxes by since 2026-10-17, where the margin and the voxel were keys.
 """
 
 from __future__ import annotations
@@ -72,15 +73,10 @@ class BelowOneMillimetreIsRefusedAtLoadTests(unittest.TestCase):
                     RobotSafetyConfig.model_validate({"self_collision": {"perceived_min_distance_mm": value}})
 
     def test_the_other_rules_on_the_seen_boxes_stand(self) -> None:
-        """2 mm with a 4 mm box margin is still short of a 10 mm step, and the voxel rule still holds while the seen boxes are held nearer than the step."""
+        """2 mm with the camera world's 6 mm box margin is still short of a 10 mm step."""
         with self.assertRaises(ValidationError) as caught:
-            RobotSafetyConfig.model_validate({"self_collision": {"perceived_min_distance_mm": 2.0, "min_distance_mm": 10.0},
-                                              "planning_world": {"perceived": {"margin_mm": 4.0}}})
+            RobotSafetyConfig.model_validate({"self_collision": {"perceived_min_distance_mm": 2.0, "min_distance_mm": 10.0}})
         self.assertIn("the step every path is sampled at", str(caught.exception))
-        with self.assertRaises(ValidationError) as caught:
-            RobotSafetyConfig.model_validate({"self_collision": {"min_distance_mm": 10.0},
-                                              "planning_world": {"perceived": {"voxel_size_mm": 20.0}}})
-        self.assertIn("voxel_size_mm", str(caught.exception))
 
 
 class EveryShippedConfigStillLoadsTests(unittest.TestCase):

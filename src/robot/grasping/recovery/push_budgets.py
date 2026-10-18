@@ -55,7 +55,7 @@ PUSHES_PER_CAMPAIGN = 5
 SCENE_PUSHES_PER_PICK = 3
 SCENE_PUSHES_PER_CAMPAIGN = 10
 #: A part whose BASE XY centre lies within this plus the push's length of a pushed part's centre is the same
-#: part. It matches the floor of the next_target exclusion radius.
+#: part: a small part's centre jitters about that much between scans.
 SAME_PART_RADIUS_MM = 30.0
 
 BUDGET_ALLOWED = "allowed"

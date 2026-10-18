@@ -6,6 +6,8 @@ Exit codes:
   cannot be read or does not hold the hand the cell names)
 * 2: bad CLI arguments
 
+``migrate`` exits 1 where ``--write`` changed the files and the tree they made did not load, every file put back.
+
 A query that finds nothing still exits 0: ``explain`` reports the key as unknown and offers near
 matches, ``where`` prints "no config key matches". A key removed on purpose is not unknown to
 ``explain``: it answers with the sentence ``schema/_removed.py`` holds for it, the one the loader
@@ -20,6 +22,10 @@ Examples::
     # ...and the questions reading the YAML cannot answer:
     python -m src.config explain robot.safety.self_collision.planner_margin_mm --profile sim,ur3e
     python -m src.config where gripper
+
+    # ...and a tree written for an older Willy brought to the keys this one reads, every comment kept:
+    python -m src.config migrate D:/cell/config            # says what it would change, changes nothing
+    python -m src.config migrate D:/cell/config --write    # changes the files, and puts them back if they do not load
 
 ``explain`` reports a key's type, constraints, default, which file and layer set the winning value,
 the whole override chain, and the comment written above that line, which ``yaml.safe_load`` discards.
@@ -131,6 +137,15 @@ def main(argv: list[str] | None = None) -> int:
         "--tier", default=None,
         help="show only this tier (safety | site | tuned | advanced), or 'all'",
     )
+    migrate_cmd = sub.add_parser(
+        "migrate",
+        help="bring a tree written for an older Willy to the keys this one reads, every comment kept",
+    )
+    migrate_cmd.add_argument("path", help="the tree's folder, the one holding robot/, camera/, models/ and app/")
+    migrate_cmd.add_argument(
+        "--write", action="store_true",
+        help="change the files, then load the tree under its base and every layer; a refusal puts every file back",
+    )
     args = parser.parse_args(argv)
 
     # A flag that cannot apply is rejected rather than accepted and ignored. Both flags below ride
@@ -152,6 +167,18 @@ def main(argv: list[str] | None = None) -> int:
                     f"{flag} cannot change its answer. Drop {flag}, or use 'explain' / 'decisions', "
                     f"which do read the tree."
                 )
+
+    if args.command == "migrate":
+        for flag, value in (("--data", args.data), ("--profile", args.profile)):
+            if value is not None:
+                parser.error(f"'migrate' rewrites the tree at PATH under its base and every layer it holds, so {flag} "
+                             f"cannot apply. Drop {flag}.")
+        # The tree it is given is read as text: a tree that no longer loads is what it is for.
+        from .migrate import migrate_tree
+
+        migration = migrate_tree(args.path, write=args.write)
+        _emit(migration.render())
+        return 1 if migration.refused else 0
 
     if args.command == "where":  # schema-only: needs no tree and cannot fail on a broken one
         from .explain import find_keys

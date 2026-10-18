@@ -8,14 +8,14 @@
 # One name, three readers. The tree answers three questions about one piece of hardware:
 #
 #   robot.gripper widths                 actuation: what the driver may command
-#   robot.grasping.gripper_geometry      envelope: what shape the calculator sweeps
+#   grippers/robotiq_hande.yaml          envelope: what shape the calculator sweeps
 #   robot.gripper.model + coupling_plates      the planner's model: what cuRobo and Coal refuse against
 #
 # Written as three statements, nothing would cross-check them: a layer that sets `max_width_mm: 50` and
 # leaves the rest commands a 50 mm stroke while the collision filter sweeps a 2F-85's fingers. So `model`
-# below is the only statement. The loader fills the widths and the envelope from
-# grippers/robotiq_hande.yaml and refuses a layer that states them differently, and the planner and the
-# guard read the bundle and the sphere map fitted from the same measurement.
+# below is the only statement. The loader fills the widths from grippers/robotiq_hande.yaml and refuses
+# a layer that states them differently, the calculator reads the envelope from the same file, and the
+# planner and the guard read the bundle and the sphere map fitted from the same measurement.
 #
 # Every number of this hand is measured off `robotiq_hande_ur5e_collision_meshes.npz`, which is the Isaac
 # Hand-E asset placed into the tool0 frame by scripts/grippers/bake_gripper_variant.py. That script
@@ -70,6 +70,5 @@ robot:
     tool_frame:
       source: "undeclared"
 
-  # grasping.gripper_geometry is not written here: the named hand supplies its collision envelope, and
-  # the measurements behind each number, the carriage shoulder under-model among them, are written in
-  # grippers/robotiq_hande.yaml.
+  # The named hand supplies its collision envelope from grippers/robotiq_hande.yaml, where the
+  # measurements behind each number, the carriage shoulder under-model among them, are written.

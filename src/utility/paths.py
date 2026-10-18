@@ -231,25 +231,30 @@ def debug_dir(
 
 
 def weights_root() -> Path:
-    """Where every downloaded model file lives: ``assets/models/hf`` under the project root.
+    """Where every downloaded model file lives unless a tree says otherwise: ``assets/models/hf`` under the root.
 
-    One root, sub-categorised by whoever writes into it. Hugging Face lays out ``hub/`` and ``xet/``
-    itself, the fetch script writes a directory per model under a category such as ``detection`` or
-    ``vlm``, and the MediaPipe bundles sit in ``mediapipe/`` beside them.
+    The default of ``models.weights_root``, the one folder every model's weights are read from
+    (:mod:`src.models.weights`), which a tree may name once to keep them elsewhere. One root,
+    sub-categorised by whoever writes into it. Hugging Face lays out ``hub/`` and ``xet/`` itself, the
+    fetch script writes a directory per model under its kind (``detection``, ``segmentation``,
+    ``speech``, ``vlm``), and the MediaPipe bundles sit in ``mediapipe/`` beside them.
 
     Deleting the repository takes the weights with it, which is the reason for the location. A
     user level cache does not have that property: a download that lands in the profile outlives every
     checkout, is shared silently between them, and cannot be reasoned about from inside the tree.
 
-    Trained artifacts this repository produces, ``assets/models/success_probability`` and
-    ``assets/models/grasp_ranker``, are not under here. They are committed or generated rather than
-    fetched, and that difference is what this directory is ignored for.
+    A trained artifact this repository produces, ``assets/models/grasp_ranker``, is not under here. It
+    is committed or generated rather than fetched, and that difference is what this directory is
+    ignored for.
     """
     return project_root() / "assets" / "models" / "hf"
 
 
-def fence_model_downloads() -> Path:
-    """Point every download library at :func:`weights_root` and return it.
+def fence_model_downloads(root: os.PathLike[str] | str | None = None) -> Path:
+    """Point every download library at ``root``, :func:`weights_root` where none is named, and return it.
+
+    The fetch script names the tree's ``models.weights_root``, so the Hugging Face cache it fills sits in
+    the same folder the models are read from.
 
     Call this before importing ``huggingface_hub``, ``transformers`` or ``torch.hub``. The hub reads
     its cache locations into module level constants at import time, so an assignment afterwards is
@@ -264,15 +269,13 @@ def fence_model_downloads() -> Path:
     because an account makes the download path depend on who is logged in and this repository needs a
     fetch anyone can reproduce.
     """
-    import os
-
-    root = weights_root()
-    os.environ["HF_HOME"] = str(root)
-    os.environ["TORCH_HOME"] = str(root / "torch")
+    folder = Path(root) if root is not None and str(root) else weights_root()
+    os.environ["HF_HOME"] = str(folder)
+    os.environ["TORCH_HOME"] = str(folder / "torch")
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     # Windows has no symlinks here, so the cache cannot deduplicate. Saying so once beats a warning
     # per file.
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     for variable in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
         os.environ.pop(variable, None)
-    return root
+    return folder

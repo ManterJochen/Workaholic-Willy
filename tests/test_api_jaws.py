@@ -10,8 +10,8 @@ no DO of its own):
   answered with ``POST /v1/cell/jaws/answer``, and the connect answers once the hand is connected;
 * "closed" offers ``open_now``, which is ONE change of DO0, sent only after the controller said it can move: a stopped
   controller refuses it with no DO0 change, and the connect is refused;
-* an answer that leaves the jaws open tells the planner the hand is empty (``detach_payload``) and stamps the console,
-  so the next moving run counts down after "open now";
+* an answer that leaves the jaws open stamps the console, so the next moving run counts down after "open now" (no
+  planner holds a part to forget since 2026-10-17);
 * a question nobody answers in time is no answer, never "open": the connect is refused with nothing sent;
 * a hand that would ask, built without the browser seam, refuses the connect; it never falls back to the terminal;
 * a halted arm is refused at connect: a latched arm switches no output;
@@ -24,7 +24,7 @@ no DO of its own):
   never go on together: a run that started all the same refuses the check (``run_active``), ends its waiting question
   at once, and the one change never goes out while any run is active;
 * a connect that came up with the jaws kept closed (a solenoid's feedback reads a part between them) stamps nothing
-  open and tells the planner nothing;
+  open;
 * a Disconnect waits for the one change a check is sending, so the arm never comes down in the middle of it.
 
 Honesty bucket (2): real objects, a real rehearsal build on a dummy tree, real threads, real HTTP; no controller.
@@ -85,18 +85,6 @@ def wait_for(condition: Callable[[], Any], *, timeout: float = 10.0, what: str =
             return found
         time.sleep(0.01)
     raise AssertionError(f"{what} did not happen within {timeout} s")
-
-
-def _carries_a_payload(arm: Any, detached: list[str]) -> None:
-    """Make ``arm`` an arm that models a payload (``CarriesPayload``, the whole capability: an arm carries one or does
-    not), its ``detach_payload`` writing into ``detached``. The console tells the planner the hand is empty only on
-    such an arm."""
-    from src.robot.core.arm_capabilities import PayloadModel
-
-    arm.attach_payload = lambda _width_mm: True
-    arm.detach_payload = lambda: detached.append("detach") or True
-    arm.payload_declined_reason = lambda: None
-    arm.payload_model = lambda: PayloadModel.PLANNER_AND_FILTER
 
 
 def _confirmed_order(cell: Any) -> int:
@@ -193,8 +181,6 @@ class ToggleCell(ScratchCell):
         self.jaws = _toggle(self.events, Person(), sleep=self.slept.append)
         self.cell.session.service.runtime.orchestrator.gripper = self.jaws
         self.arm = self.cell.session.arm
-        self.detached: list[str] = []
-        _carries_a_payload(self.arm, self.detached)
         if self.INSTALL:
             browser_jaws.install(self.cell)
 
@@ -223,7 +209,6 @@ class ToggleCell(ScratchCell):
         self.assertEqual(200, self.answer(self.question(), "open").status_code)
         self.assertEqual(200, connecting.result().status_code)
         self.events.clear()
-        self.detached.clear()
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -256,15 +241,14 @@ class AConnectAsksInTheBrowserTests(ToggleCell):
         self.assertEqual(("toggle", "open"), (connected.json()["hand"]["kind"], connected.json()["hand"]["jaws"]))
         self.assertFalse(connected.json()["jaws_question"])
         self.assertEqual(0, _pulses(self.events), "an answer of open changed DO0")
-        # Open jaws hold nothing: the planner is told, and the answer is stamped; nothing was opened, so no countdown.
-        self.assertEqual(["detach"], self.detached)
+        # Open jaws hold nothing: the answer is stamped; nothing was opened, so no countdown.
         self.assertIsNotNone(self.cell.jaws_confirmed_at)
         self.assertFalse(self.cell.countdown_due())
         self.assertEqual(["cell.jaws_question", "cell.jaws_answered", "cell.jaws_ended"],
                          [e.type for e in self.cell_events() if e.type.startswith("cell.jaws")])
         (ended,) = self.cell_events("cell.jaws_ended")
-        self.assertEqual((asked["question_id"], "open", True), (ended.data["question_id"], ended.data["outcome"],
-                                                                 ended.data["detached"]))
+        self.assertEqual((asked["question_id"], "open"), (ended.data["question_id"], ended.data["outcome"]))
+        self.assertNotIn("detached", ended.data, "no planner holds a part to forget")
         (published,) = self.cell_events("cell.jaws_question")
         self.assertEqual(asked, published.data, "the stream and the panel showed two questions")
         (said,) = self.cell_events("cell.jaws_answered")
@@ -288,12 +272,10 @@ class AConnectAsksInTheBrowserTests(ToggleCell):
         self.assertEqual(200, connecting.result().status_code)
         self.assertEqual(1, _pulses(self.events), "open now is exactly ONE change of DO0")
         self.assertEqual("open", self.client.get("/v1/cell/jaws").json()["hand"]["jaws"])
-        self.assertEqual(["detach"], self.detached)
         self.assertEqual("jaws_opened", self.cell.countdown_because(), "a person held the part: the next run counts down")
         self.assertTrue(self.client.get("/v1/cell").json()["countdown_due"])
         (ended,) = self.cell_events("cell.jaws_ended")
-        self.assertEqual(("open", True, offered["question_id"]),
-                         (ended.data["outcome"], ended.data["detached"], ended.data["question_id"]))
+        self.assertEqual(("open", offered["question_id"]), (ended.data["outcome"], ended.data["question_id"]))
 
     def test_a_stopped_controller_refuses_open_now_with_no_change_of_do0(self) -> None:
         self.arm.quick_robot_status = lambda: STOPPED  # type: ignore[attr-defined]
@@ -308,10 +290,9 @@ class AConnectAsksInTheBrowserTests(ToggleCell):
         self.assertIn("nothing was sent", refused.json()["message"])
         self.assertEqual(0, _pulses(self.events), "a stopped controller got its change of DO0")
         self.assertEqual("built", self.client.get("/v1/cell").json()["state"])
-        self.assertEqual([], self.detached, "a refused answer told the planner the hand is empty")
         self.assertIsNone(self.cell.jaws_confirmed_at)
         (ended,) = self.cell_events("cell.jaws_ended")
-        self.assertEqual(("refused", False), (ended.data["outcome"], ended.data["detached"]))
+        self.assertEqual("refused", ended.data["outcome"])
         self.assertIn("controller cannot move", ended.data["refusal"])
 
     def test_a_halted_arm_gets_no_open_now_either(self) -> None:
@@ -340,7 +321,7 @@ class AConnectAsksInTheBrowserTests(ToggleCell):
         self.assertFalse(self.jaws.is_connected)
         self.assertIsNone(self.client.get("/v1/cell/jaws").json()["question"])
         (ended,) = self.cell_events("cell.jaws_ended")
-        self.assertEqual(("no_answer", False), (ended.data["outcome"], ended.data["detached"]))
+        self.assertEqual("no_answer", ended.data["outcome"])
 
     def test_disconnect_while_a_question_waits_ends_it_and_returns_at_once(self) -> None:
         connecting = self.connect_in_background()
@@ -467,8 +448,6 @@ class AConnectThatKeepsThePartIsNeverStampedOpenTests(ScratchCell):
                             part_present_input_pin=1, confirm_open_at_start=True, pulse_s=0.0, close_settle_s=0.0,
                             ask=Person(), sleep=lambda _s: None)
         self.cell.session.service.runtime.orchestrator.gripper = hand
-        detached: list[str] = []
-        _carries_a_payload(self.cell.session.arm, detached)
         browser_jaws.install(self.cell)
         connecting = _InBackground(self.app, "POST", "/v1/cell/connect", json={"token": self.token()})
         asked = wait_for(lambda: self.client.get("/v1/cell/jaws").json().get("question"), what="the question")
@@ -480,9 +459,8 @@ class AConnectThatKeepsThePartIsNeverStampedOpenTests(ScratchCell):
         self.assertEqual("connected", connected.json()["state"])
         self.assertTrue(hand.jaws_closed, "the driver let go of a part its sensor reads")
         self.assertIsNone(self.cell.jaws_confirmed_at, "jaws the hand keeps closed were stamped open")
-        self.assertEqual([], detached, "the planner was told a hand that holds a part is empty")
         (ended,) = self.cell_events("cell.jaws_ended")
-        self.assertEqual(("refused", False), (ended.data["outcome"], ended.data["detached"]))
+        self.assertEqual("refused", ended.data["outcome"])
         self.assertIn("closed", ended.data["refusal"])
         self.assertFalse(self.client.get("/v1/cell").json()["jaws_question"])
 
@@ -526,7 +504,7 @@ class TheCheckAlwaysAsksTests(ToggleCell):
     def check_in_background(self) -> _InBackground:
         return _InBackground(self.app, "POST", "/v1/cell/jaws/check")
 
-    def test_it_asks_even_where_the_count_says_open_and_an_open_answer_stamps_and_detaches(self) -> None:
+    def test_it_asks_even_where_the_count_says_open_and_an_open_answer_stamps(self) -> None:
         confirmed = _confirmed_order(self.cell)
         checking = self.check_in_background()
         asked = self.question()
@@ -539,7 +517,6 @@ class TheCheckAlwaysAsksTests(ToggleCell):
         self.assertEqual(("toggle", "open"), (checked.json()["hand"]["kind"], checked.json()["hand"]["jaws"]))
         self.assertIsNone(checked.json()["question"])
         self.assertEqual(0, _pulses(self.events))
-        self.assertEqual(["detach"], self.detached)
         self.assertGreater(_confirmed_order(self.cell), confirmed, "the open answer was not stamped")
         self.assertFalse(self.cell.countdown_due())
 
@@ -568,7 +545,6 @@ class TheCheckAlwaysAsksTests(ToggleCell):
         self.assertIn("CLOSED", refused.json()["message"])
         self.assertEqual(0, _pulses(self.events))
         self.assertTrue(self.jaws.jaws_closed, "a person said closed: the count stands closed")
-        self.assertEqual([], self.detached)
 
     def test_an_output_switched_at_the_pendant_while_the_person_decided_sends_nothing(self) -> None:
         """The hand refuses its one change where DO0 no longer stands where the program left it: the count is nobody's
@@ -770,7 +746,7 @@ class TheCheckAlwaysAsksTests(ToggleCell):
         late = self.answer(asked, "open_now")
         self.assertEqual((404, "no_question"), (late.status_code, late.json()["code"]), late.text)
         (ended,) = [e for e in self.cell_events("cell.jaws_ended") if e.data["question_id"] == asked["question_id"]]
-        self.assertEqual(("cancelled", False), (ended.data["outcome"], ended.data["detached"]))
+        self.assertEqual("cancelled", ended.data["outcome"])
         self.assertEqual(0, _pulses(self.events))
         self.assertTrue(self.jaws.jaws_closed, "the count moved for a question nobody answered")
         done.set()
@@ -1013,8 +989,6 @@ class InstallingTheSeamTests(unittest.TestCase):
                 return ""
 
         arm = self._dummy_arm()
-        detached: list[str] = []
-        _carries_a_payload(arm, detached)
         console = self._console_on(arm)
         console.session.service.runtime.orchestrator.gripper = _SaysOpenKeepsClosed()
         console.session.state = CellState.CONNECTED
@@ -1025,7 +999,6 @@ class InstallingTheSeamTests(unittest.TestCase):
         self.assertEqual("jaws_not_open", str(caught.exception.code))
         self.assertIn("closed", caught.exception.message)
         self.assertIsNone(console.jaws_confirmed_at)
-        self.assertEqual([], detached)
         self.assertIsNone(browser_jaws.pending(console))
 
     def test_a_controller_status_that_does_not_say_it_can_move_lets_nothing_out(self) -> None:

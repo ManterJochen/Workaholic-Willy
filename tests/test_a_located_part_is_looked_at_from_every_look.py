@@ -13,9 +13,10 @@ the look around to the end of the pick, and let go by the pick, a new look aroun
 locates once, as it stands.
 
 Every frame is ray-cast from where the arm's tool stands (``tests/_wrist_views.py``: the owner's tilted D415 at half
-resolution, a 40 mm cube on the bench) and placed through the real locator by the tool pose stamped at its shutter.
-Seen from one 45 degree look the cube's best grasp closes across the two faces that look does not face; the looks from
-its east and its west together show both faces the grasp then closes on.
+resolution, a part on the bench) and placed through the real locator by the tool pose stamped at its shutter. The part
+is a bar the Hand-E closes across along x alone (``X_BAR``): the looks from its east and its west together show both
+faces its grasp closes on. Seen from one 45 degree look a 40 mm cube's best grasp closes across the two faces that look
+does not face, which the generated view turns to.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from src.robot.perception.locator import Located, LocatedObject, Locator, Locato
 from tests._wrist_views import (
     CUBE,
     CUBE_CENTRE,
+    X_BAR,
     HEIGHT,
     WIDTH,
     Box,
@@ -62,7 +64,7 @@ from tests._wrist_views import (
     render,
     tool_for,
 )
-from tests.test_a_scene_plans_the_trees_hand import _hande, _replace
+from tests.test_a_scene_plans_the_trees_hand import _hande, _on_a_bench
 from tests.test_locator import _backend, _Owner, _Segmentation
 from tests.test_robot_hand_verbs import _Hand
 
@@ -112,7 +114,7 @@ class _Wrist:
     rig_id = "wrist"
     source = "rgbd"
 
-    def __init__(self, arm: Any, boxes: "tuple[Box, ...]" = (CUBE,), *,
+    def __init__(self, arm: Any, boxes: "tuple[Box, ...]" = (X_BAR,), *,
                  labels: "dict[int, dict[str, str]] | None" = None) -> None:
         self.arm = arm
         self.boxes = boxes
@@ -160,7 +162,7 @@ class _Blind(_Wrist):
     """The wrist camera measuring no depth on the part from the tool poses in ``blind_at``: a dark or shiny face at a
     bad angle, which the detector still masks."""
 
-    def __init__(self, arm: Any, boxes: "tuple[Box, ...]" = (CUBE,), *, blind_at: "tuple[Pose, ...]" = ()) -> None:
+    def __init__(self, arm: Any, boxes: "tuple[Box, ...]" = (X_BAR,), *, blind_at: "tuple[Pose, ...]" = ()) -> None:
         super().__init__(arm, boxes)
         self.blind_at = tuple(pose.to_matrix() for pose in blind_at)
 
@@ -240,7 +242,7 @@ def _locator(wrist: _Wrist, *, tool_pose: Any = None) -> Locator:
                               tool_frame=_TOOL_FRAME, attempts=1)
 
 
-def _looked(*looks: _Look, boxes: "tuple[Box, ...]" = (CUBE,), both_faces: bool = False, **arm: Any,
+def _looked(*looks: _Look, boxes: "tuple[Box, ...]" = (X_BAR,), both_faces: bool = False, **arm: Any,
             ) -> "tuple[Located, Any, _Wrist]":
     built = _arm(*looks, **arm)
     wrist = _Wrist(built, boxes)
@@ -288,11 +290,11 @@ class TheLooksAreVisitedInOrderAndFusedTests(unittest.TestCase):
         self.assertEqual((WEST.label, EAST.label), located.looks_fused, "the look the frame is of comes first")
         self.assertEqual((True, True), located.jaw_faces_seen)
         self.assertEqual("", located.refused)
-        cube = located.objects[0]
+        part = located.objects[0]
         # The fused cloud holds the east face one look saw and the west face the other saw.
-        self.assertGreater(int(np.sum(np.abs(cube.points_base_mm[:, 0] - 20.0) < 1.0)), 100)
-        self.assertGreater(int(np.sum(np.abs(cube.points_base_mm[:, 0] + 20.0) < 1.0)), 100)
-        self.assertTrue(CUBE.holds(cube.points_base_mm, margin_mm=2.0).all(), "a point off the part joined its cloud")
+        self.assertGreater(int(np.sum(np.abs(part.points_base_mm[:, 0] - 15.0) < 1.0)), 100)
+        self.assertGreater(int(np.sum(np.abs(part.points_base_mm[:, 0] + 15.0) < 1.0)), 100)
+        self.assertTrue(X_BAR.holds(part.points_base_mm, margin_mm=2.0).all(), "a point off the part joined its cloud")
         best = located.scene(0, _cell()).grasps().best
         assert best is not None
         self.assertAlmostEqual(1.0, abs(float(best.closing_axis[0])), places=3, msg="the grasp closes across the "
@@ -344,7 +346,7 @@ class ALookThatDoesNotSeeThePartTests(unittest.TestCase):
         far = Box((290.0, -720.0, 0.0), (310.0, -680.0, 30.0), "block")
         elsewhere = _look(180.0, target=(300.0, -700.0, 15.0), key=1.0)
         with self.assertLogs(_LOGGER, level=logging.WARNING) as said:
-            located, arm, _ = _looked(EAST, elsewhere, WEST, boxes=(CUBE, far), both_faces=True)
+            located, arm, _ = _looked(EAST, elsewhere, WEST, boxes=(X_BAR, far), both_faces=True)
 
         self.assertEqual([_key(EAST), _key(elsewhere), _key(WEST)], _moved_to(arm))
         self.assertEqual((EAST.label, elsewhere.label, WEST.label), located.looks)
@@ -352,7 +354,7 @@ class ALookThatDoesNotSeeThePartTests(unittest.TestCase):
         self.assertTrue(any(elsewhere.label in line and "did not see the part" in line for line in said.output),
                         said.output)
         self.assertEqual("part", located.objects[0].label)
-        self.assertTrue(CUBE.holds(located.objects[0].points_base_mm, margin_mm=2.0).all())
+        self.assertTrue(X_BAR.holds(located.objects[0].points_base_mm, margin_mm=2.0).all())
 
     def test_a_look_that_measured_no_surface_of_the_part_does_not_make_it_the_next_look_does(self) -> None:
         """A dark or shiny face at a bad angle: the detector masks the part, and no depth lies under the mask. Nothing a
@@ -393,7 +395,7 @@ class WhatTheLooksAddTests(unittest.TestCase):
     def test_a_neighbour_only_an_earlier_look_saw_stays_an_obstacle_to_the_grasp(self) -> None:
         """7.2: the east look sees a block 330 mm west of the cube, the west look stands over it and does not."""
         block = Box((-350.0, -720.0, 0.0), (-310.0, -680.0, 20.0), "block")
-        located, _, _ = _looked(EAST, WEST, boxes=(CUBE, block), both_faces=True)
+        located, _, _ = _looked(EAST, WEST, boxes=(X_BAR, block), both_faces=True)
 
         self.assertEqual(["part", "block"], [obj.label for obj in located.objects])
         carried = located.objects[1]
@@ -404,14 +406,16 @@ class WhatTheLooksAddTests(unittest.TestCase):
         np.testing.assert_array_equal(carried.points_base_mm, scene.obstacle_points_base_mm)
 
     def test_the_support_is_read_from_every_look_that_saw_the_part(self) -> None:
-        """7.1: a look straight over the cube sees its top alone and cannot say what it stands on; fused with a look that
-        sees its side down to the bench, the support is read at the cube's foot. The cell declares its table 10 mm
-        low, so a support raised to the foot shows."""
-        config = _replace(_cell(), "grasping.support.height_mm", -10.0)
+        """7.1: fused with looks that see the cube's side down to the bench, the support is read at the cube's foot. The
+        cell declares its bench 10 mm low, so a support raised to the foot shows. A look straight over the cube reads
+        the bench beside it too: a declared bench turns the camera world on, and every cell's finds what its parts stand
+        on (2026-10-17); until then a cell could declare a bench with its world off, and the top alone read none."""
+        config = _on_a_bench(_cell(), -10.0)
         over = _look(0.0, elevation_deg=88.0, key=2.0)
         alone = _Wrist(_arm(over, start=over.tool))
         single = _locator(alone).locate("a part")
-        self.assertEqual(-10.0, single.scene(0, config).support_height_mm, "the control: the top alone reads no support")
+        self.assertAlmostEqual(0.0, single.scene(0, config).support_height_mm, delta=1.0,
+                               msg="the top look reads the bench it sees beside the cube, not the declared one")
 
         built = _arm(over, WEST, EAST)
         located = _locator(_Wrist(built)).look_around("a part", [over.joints, WEST.joints, EAST.joints],
@@ -444,7 +448,7 @@ class WhatTheLooksAddTests(unittest.TestCase):
         east_block = Box((310.0, -720.0, 0.0), (350.0, -680.0, 20.0), "block")
         unnamed = {"part": "", "block": ""}
         built = _arm(EAST, WEST, NORTH)
-        wrist = _Wrist(built, (east_block, CUBE), labels={0: unnamed, 1: unnamed, 2: unnamed})
+        wrist = _Wrist(built, (east_block, X_BAR), labels={0: unnamed, 1: unnamed, 2: unnamed})
 
         located = _locator(wrist).look_around("a part", [EAST.joints, WEST.joints, NORTH.joints], robot=_robot(built),
                                               both_faces=True)
@@ -465,7 +469,7 @@ class WhatTheLooksAddTests(unittest.TestCase):
         unthinned = 0
         for look in (low, WEST):
             camera = look.tool.to_matrix() @ mount()
-            depth, hit = render(camera, (CUBE,))
+            depth, hit = render(camera, (X_BAR,))
             mask = hit == 0
             surface = mask & ~pixels_behind_depth_steps(mask, depth)
             thinned = surface & ~grazing_pixels(surface, depth, K)
@@ -483,10 +487,9 @@ class WhatTheLooksAddTests(unittest.TestCase):
 
         (call,) = fuse.call_args_list
         self.assertEqual(
-            (association.AssociationMetric.OVERLAP, association.WRIST_VIEW_MIN_SCORE,
-             association.WRIST_VIEW_NEIGHBOUR_MM, association.WRIST_VIEW_SCORE_VOXEL_MM),
-            (call.kwargs["metric"], call.kwargs["min_score"], call.kwargs["neighbour_mm"],
-             call.kwargs["score_voxel_mm"]))
+            (association.WRIST_VIEW_MIN_SCORE, association.WRIST_VIEW_NEIGHBOUR_MM,
+             association.WRIST_VIEW_SCORE_VOXEL_MM),
+            (call.kwargs["min_score"], call.kwargs["neighbour_mm"], call.kwargs["score_voxel_mm"]))
 
     def test_the_looks_check_the_hand_eye_on_the_surface_they_share(self) -> None:
         """7.5: the median distance between the looks' surfaces of the part; above 6 mm the calibration may have
@@ -648,25 +651,6 @@ class ARefusedLookTests(unittest.TestCase):
         self.assertIn("robot section", str(refused.exception))
         self.assertEqual([], built.motions)
         self.assertEqual([], built.live_planner_world.calls, "the looks were held before the refusal")
-
-    def test_a_hand_that_is_no_parallel_jaw_is_refused_before_anything_moves(self) -> None:
-        """``Located.scene`` plans jaw grasps only, so a look around cannot judge a suction cup's looks: refused before
-        the first look, with nothing held, and a fixed camera asked for both faces the same."""
-        config = _replace(_cell(), "grasping.gripper_geometry.kind", "suction")
-        built = _arm(EAST)
-        with self.assertRaises(LocatorRefused) as refused:
-            _locator(_Wrist(built)).look_around("a part", [EAST.joints], robot=_robot(built, config=config))
-        self.assertIn("parallel jaw", str(refused.exception))
-        self.assertEqual([], built.motions)
-        self.assertEqual([], built.live_planner_world.calls)
-
-        owner = _Owner()
-        with self.assertRaises(LocatorRefused):
-            Locator.from_parts(camera=owner, backend=_backend("red cube")).look_around(
-                "a red cube", robot=_robot(built, config=config), both_faces=True)
-        fixed = Locator.from_parts(camera=_Owner(), backend=_backend("red cube")).look_around(
-            "a red cube", robot=_robot(built, config=config))
-        self.assertTrue(fixed.objects, "the control: a fixed camera judges nothing without both_faces, so it locates")
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -857,8 +841,8 @@ class _OrbitingArm(LookingArm):
 
 
 #: The turns of the east look about the cube that show a contact face of its grasp, as this arm names them.
-_PLUS_50 = (48.9, -100.0, -110.0, -60.0, 135.0, 45.0)
-_MINUS_50 = (-49.2, -100.0, -110.0, -60.0, 135.0, 45.0)
+_PLUS_50 = (49.9, -100.0, -110.0, -60.0, 135.0, 45.0)
+_MINUS_50 = (-49.9, -100.0, -110.0, -60.0, 135.0, 45.0)
 
 
 class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
@@ -866,27 +850,26 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
     the last resort, through the pick loop's own ``generated_view.go_to_generated_view``: screened by the arm before it
     moves, the smallest turn first, driven on the straight joint line alone and never planned around; and the move back
     to the look the part was last seen from on that line (``move_back_to_look``), or the pick approaches from where the
-    arm stands. From the east look alone the cube's grasp closes across the two faces it does not face.
+    arm stands. From the east look alone the cube's grasp closes across the two faces it does not face; the move back
+    grips the bar (:data:`X_BAR`), both of whose contact faces the east and the west look show.
 
     The turns below are named for the grasp these looks judged before side approaches came (the cell fixes, 2026-10-01:
-    ``robot.grasping.side_approaches``, on in a tree, ranks the cube's grasps by the room they keep and judges another
-    one, whose contact face another turn shows). What is under test here is the view and the move back, so the cell
-    runs with side approaches off; what they rank is ``test_a_side_grasp_*``'s.
+    every cell ranks the cube's grasps by the room they keep and judges another one, whose contact face another turn
+    shows). What is under test here is the view and the move back, so the scene ranks its leans as before side
+    approaches (``SIDE_APPROACH_SCORE_WEIGHTS`` taken out); what they rank is ``test_a_side_grasp_*``'s.
     """
 
     def setUp(self) -> None:
         from unittest import mock
 
-        cell = _hande()
-        upright = cell.model_copy(update={"grasping": cell.grasping.model_copy(update={"side_approaches": False})})
-        patcher = mock.patch(f"{__name__}._cell", lambda: upright)
+        patcher = mock.patch("src.robot.grasping.scene.SIDE_APPROACH_SCORE_WEIGHTS", None)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_the_view_turns_to_the_unseen_contact_face_and_both_faces_still_refuses_what_it_did_not_show(self) -> None:
         arm = _OrbitingArm(self, EAST)
 
-        located = _locator(_Wrist(arm)).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
+        located = _locator(_Wrist(arm, (CUBE,))).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
 
         self.assertEqual([("joints", _key(EAST)), ("line", _PLUS_50)], arm.motions,
                          "the view was not driven on the straight joint line from the east look, or the arm went on")
@@ -907,7 +890,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         arm = _OrbitingArm(self, EAST)
         arm.blocked.add(_PLUS_50)
 
-        located = _locator(_Wrist(arm)).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
+        located = _locator(_Wrist(arm, (CUBE,))).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
 
         self.assertEqual([(_key(EAST), _PLUS_50), (_key(EAST), _MINUS_50)], arm.lines)
         self.assertEqual(-50.0, located.generated_view_deg)
@@ -916,7 +899,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         arm = _OrbitingArm(self, EAST)
         arm.answers[_PLUS_50] = (MotionStatus.CONTROLLER_REJECTED, "the drive refused once moveJ may have been sent")
 
-        located = _locator(_Wrist(arm)).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
+        located = _locator(_Wrist(arm, (CUBE,))).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
 
         self.assertEqual([(_key(EAST), _PLUS_50)], arm.lines, "the arm was sent on after a motion that may have moved")
         self.assertIn("did not reach the generated view orbit +50 deg", located.refused)
@@ -940,7 +923,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         the part was last seen from the west look, both its contact faces seen, so no view is generated and the arm
         goes back to the west look."""
         far = Box((290.0, -720.0, 0.0), (310.0, -680.0, 30.0), "block")
-        wrist = _Wrist(arm, (CUBE, far), labels={1: {"part": "bolt"}})
+        wrist = _Wrist(arm, (X_BAR, far), labels={1: {"part": "bolt"}})
         return _locator(wrist).look_around("a part", [EAST.joints, WEST.joints, self.ELSEWHERE.joints],
                                            robot=_robot(arm), both_faces=True), self.ELSEWHERE
 
@@ -976,7 +959,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         arm = _OrbitingArm(self, EAST)
         arm.move_to_joints(EAST.joints)
 
-        located = _locator(_Wrist(arm)).look_around("a part", robot=_robot(arm), both_faces=True)
+        located = _locator(_Wrist(arm, (CUBE,))).look_around("a part", robot=_robot(arm), both_faces=True)
 
         self.assertEqual([], arm.screened)
         self.assertEqual([], arm.lines)
@@ -988,7 +971,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         arm = _OrbitingArm(self, EAST, WEST, refuse=(WEST.joints,))
 
         with self.assertLogs(_LOGGER, level=logging.WARNING) as said:
-            located = _locator(_Wrist(arm)).look_around("a part", [EAST.joints, WEST.joints], robot=_robot(arm),
+            located = _locator(_Wrist(arm, (CUBE,))).look_around("a part", [EAST.joints, WEST.joints], robot=_robot(arm),
                                                         both_faces=True)
 
         self.assertEqual([("joints", _key(EAST)), ("joints", _key(WEST)), ("line", _PLUS_50)], arm.motions)
@@ -1008,7 +991,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         arm = _OrbitingArm(self, EAST)
         arm.set_live_planner_world(_HoldsNothing())
         with self.assertLogs("src.robot.execution.generated_view", level=logging.INFO) as said:
-            located = _locator(_Wrist(arm)).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
+            located = _locator(_Wrist(arm, (CUBE,))).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
 
         self.assertEqual([], arm.screened)
         self.assertEqual([], arm.lines)
@@ -1045,7 +1028,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         arm = _OrbitingArm(self, EAST)
         self._unvouched(arm, _PLUS_50)
 
-        located = _locator(_Wrist(arm)).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
+        located = _locator(_Wrist(arm, (CUBE,))).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
 
         self.assertEqual([("joints", _key(EAST)), ("line", _PLUS_50)], arm.motions, "the arm was sent on")
         self.assertIn("did not reach the view generated for the part", located.refused)
@@ -1081,7 +1064,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
 
         arm = _HomeIsWest(self, EAST, WEST, self.ELSEWHERE)
         far = Box((290.0, -720.0, 0.0), (310.0, -680.0, 30.0), "block")
-        wrist = _Wrist(arm, (CUBE, far), labels={1: {"part": "bolt"}})
+        wrist = _Wrist(arm, (X_BAR, far), labels={1: {"part": "bolt"}})
 
         located = _locator(wrist).look_around("a part", [EAST.joints, "home", self.ELSEWHERE.joints],
                                               robot=_robot(arm), both_faces=True)

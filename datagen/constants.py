@@ -90,14 +90,6 @@ PHYSICS_CELL_LOG_FILE: Final[str] = "physics_cell.log"
 #: Driving the real camera adapter over written scenes (the d435 bench).
 CAMERA_PROBE_LOG_FILE: Final[str] = "camera_probe.log"
 
-#: The RL chain: the occupancy gate, then physics collection, then the ranker proof.
-#: ``rl_perception`` is the scene-to-rig loader in front of all three. Separate from them because a
-#: rig built from fewer cameras than the scene declares is a quiet fidelity change, and the sweep
-#: that consumes it reports only that it got a rig.
-RL_PERCEPTION_LOG_FILE: Final[str] = "rl_perception.log"
-RL_OCCUPANCY_LOG_FILE: Final[str] = "rl_occupancy.log"
-RL_COLLECT_LOG_FILE: Final[str] = "rl_collect.log"
-RL_PROOF_LOG_FILE: Final[str] = "rl_proof.log"
 
 #: Where fetched meshes live. Declared once and imported by `assets/library.py` and
 #: `assets/fetch.py` alike: two declarations of one value are held in step by nothing, and a

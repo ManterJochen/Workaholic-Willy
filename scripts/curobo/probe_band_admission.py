@@ -145,14 +145,14 @@ def _owner_like_config() -> Any:
 
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
-        "workspace_limits": {"x_min": -1500.0, "x_max": 1500.0, "y_min": -1500.0, "y_max": 1500.0,
-                             "z_min": -500.0, "z_max": 1500.0},
+        "ur": {"model": "ur10"},
+        "motion": {"planner": "curobo",
+                   "workspace": {"x_min": -1500.0, "x_max": 1500.0, "y_min": -1500.0, "y_max": 1500.0,
+                                 "z_min": -500.0, "z_max": 1500.0}},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0}},
+        "safety": {"self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0}},
     })
 
 
@@ -173,7 +173,7 @@ class CpuReplicaClient:
     """The sidecar's judgement on the CPU, for a box where cuRobo's kernels cannot load: labelled so in every line.
 
     It is NOT the GPU sidecar. It holds the robot the sidecar composes (``compose_for_cell`` with the cell's hand link,
-    plates, retract row, margin and payload slots), places cuRobo's own spheres by numpy forward kinematics of the URDF
+    plates, retract row and margin), places cuRobo's own spheres by numpy forward kinematics of the URDF
     the descriptor names (the research's replica, 2026-09-30, which reproduces LOOK[0]'s 1.21 mm), and applies the
     kernel's rules: the self term sphere pair by sphere pair (:meth:`_kernel_self_hit`, apart from the pair naming), the
     bounds as the planner's window, and the world as sphere against box at the clearance asked. Its report rows are
@@ -186,7 +186,6 @@ class CpuReplicaClient:
     def __init__(self, arm: Any, content_root: Path) -> None:
         self._arm = arm
         self._root = content_root
-        self._attach = 0
         self.joint_names: list[str] = []
         self.identity: Any = None
         self.last_refusal: Any = None
@@ -198,9 +197,6 @@ class CpuReplicaClient:
     # the client's lifecycle, as the planner glue drives it
     def reserve_world(self, reservation: Any) -> None:
         return None
-
-    def reserve_attach_spheres(self, slots: int) -> None:
-        self._attach = max(0, int(slots))
 
     def start(self) -> None:
         import hashlib
@@ -221,8 +217,7 @@ class CpuReplicaClient:
         bodies = [link.to_dict(), *coupling_bodies(hand, arm="ur10")]
         default_q = read_retract("ur10", hand.model, float(hand.coupling_mm), 4.0,
                                  placement=f"{link.placement.approach}{link.placement.closing}")
-        loaded, evidence, _, _, _ = compose_for_cell(raw, bodies=bodies, margin_mm=4.0, attach_spheres=self._attach,
-                                                     default_q=default_q)
+        loaded, evidence, _, _ = compose_for_cell(raw, bodies=bodies, margin_mm=4.0, default_q=default_q)
         self._config = loaded
         layout = SphereLayout.from_robot_config(loaded)
         if layout is None:
@@ -405,7 +400,7 @@ class CpuReplicaClient:
         clearance_m = float(clearance_mm) / 1000.0
         request: dict[str, Any] = {} if ignore_perceived is None else {IGNORE_PERCEIVED_KEY: list(ignore_perceived)}
         try:
-            aside = requested_aside(request, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX, carrying=False)
+            aside = requested_aside(request, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX)
             with judged_world(aside, lambda: self, prefix=PERCEIVED_PREFIX):
                 terms = [self._terms(row, clearance_m)[:3] for row in rows]
         except PerceivedAsideError as exc:

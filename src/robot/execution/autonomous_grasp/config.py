@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
 from src.robot.grasping.types.modes import GraspSamplingMode
 
@@ -19,8 +19,8 @@ class GraspMode(StrEnum):
 
     Attributes:
         EASY: One object, no recovery at all: a guarantee rather than a default.
-        AUTO: The automatic sampler, with ``rescan`` and ``next_target``; ``robot.yaml``'s default.
-        DENSE_CLUTTER: The dense sampler for a pile, with ``rescan``, ``next_target`` and ``nudge_target`` (the push).
+        AUTO: The automatic sampler, with ``rescan``; ``robot.yaml``'s default.
+        DENSE_CLUTTER: The dense sampler for a pile, with ``rescan`` and ``nudge_target`` (the push).
     """
 
     EASY = "easy"
@@ -91,8 +91,8 @@ class GraspBehaviorProfile:
     mode
         The :class:`GraspMode` this profile represents.
     sampling_mode
-        The :class:`GraspSamplingMode` value the calculator should use
-        for this profile.
+        The :class:`GraspSamplingMode` label this profile's picks carry.
+        The calculator runs one search whatever it says (2026-10-16).
     recovery_allowed_actions
         Allow-list of :class:`SceneRecoveryAction` names, held as
         strings so this module does not couple to a Protocol that does
@@ -113,11 +113,9 @@ class GraspBehaviorProfile:
 # safety guarantee, not a knob. ``next_viewpoint`` left ``auto`` and ``dense_clutter`` on
 # 2026-09-29, merged into ``rescan``, which both already allowed.
 #
-# ``next_target`` joined ``auto`` and ``dense_clutter`` the same day (owner's decision). It means
-# "rescan, skipping the part that failed": another part of the same label, never another object,
-# and it moves nothing itself. ``nudge_target``, the push, stays in ``dense_clutter`` only, so auto
-# recovery stays motion-free. ``container_agitate`` is in no profile: this cell has no container,
-# and a config that names it without one is refused at load.
+# ``nudge_target``, the push, stays in ``dense_clutter`` only, so auto recovery stays motion-free.
+# ``next_target`` (a rescan that skipped the part that failed) and ``container_agitate`` left on
+# 2026-10-16 (the owner's cleanup).
 _PROFILES: Mapping[GraspMode, GraspBehaviorProfile] = {
     GraspMode.EASY: GraspBehaviorProfile(
         mode=GraspMode.EASY,
@@ -127,18 +125,23 @@ _PROFILES: Mapping[GraspMode, GraspBehaviorProfile] = {
     GraspMode.AUTO: GraspBehaviorProfile(
         mode=GraspMode.AUTO,
         sampling_mode=GraspSamplingMode.AUTO,
-        recovery_allowed_actions=("rescan", "next_target"),
+        recovery_allowed_actions=("rescan",),
     ),
     # ``nudge_target`` moved here from ``dense_autonomous`` when that mode left on 2026-09-29 (owner's
     # decision), so the one physical recovery a built-in profile allowed stays reachable. The profile
-    # is only the outer gate: the action still needs ``recovery.allowed_actions`` to name it. It needs
-    # no fixture envelope since 2026-10-01 (owner): a declared one only narrows the push box.
+    # is only the outer gate: the action still needs the cell's or the campaign's actions to name it.
     GraspMode.DENSE_CLUTTER: GraspBehaviorProfile(
         mode=GraspMode.DENSE_CLUTTER,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        recovery_allowed_actions=("rescan", "next_target", "nudge_target"),
+        recovery_allowed_actions=("rescan", "nudge_target"),
     ),
 }
+
+
+#: The attempts a pick makes at most, each re-perceiving and trying again within one ``pick()`` call: the owner's
+#: cell's, ``robot.grasping.max_attempts`` until 2026-10-17 (the owner's cleanup). A service built in code may ask
+#: fewer (``AutonomousGraspService.from_robot_config(max_attempts=...)``).
+MAX_ATTEMPTS = 5
 
 
 def _profile_for(mode: GraspMode) -> GraspBehaviorProfile:
@@ -147,79 +150,17 @@ def _profile_for(mode: GraspMode) -> GraspBehaviorProfile:
     return _PROFILES[mode]
 
 
-# The resolved ``robot.grasping`` overlay is grouped into one frozen sub-config
-# per phase, mirroring the schema sub-blocks: ``grasping.decision`` becomes
-# :class:`EffectiveDecisionConfig`, and so on. :class:`EffectiveGraspingConfig`
-# nests these; its :meth:`~EffectiveGraspingConfig.to_dict` emits flat keys
-# (``decision_enabled``, ``watchdog_mode``, and the rest) so the telemetry and
-# replay serialization contract is unchanged.
-
-
-@dataclass(frozen=True, slots=True)
-class EffectiveDecisionConfig:
-    """Decision-layer overlay. Defaults match the locked disabled state so legacy
-    snapshots round-trip unchanged.
-
-    ``max_reobservations`` and its flat key ``decision_max_reobservations`` left with the
-    camera re-observation they budgeted (``MOVE_CAMERA``, removed 2026-09-29)."""
-
-    enabled: bool = False
-    auto_uncertainty_threshold: float = 0.4
-
-
-@dataclass(frozen=True, slots=True)
-class EffectiveFeasibilityConfig:
-    """Feasibility-aware ranking overlay, plus the ``corridor_risk_*`` 4th-signal
-    weight. Defaults match the locked schema disabled state so ``total_score``
-    stays byte-identical until the operator opts in. ``apply_modes`` filtering
-    (EASY lock-out) is the service's responsibility, not these flags'."""
-
-    enabled: bool = False
-    score_weight: float = 0.0
-    ik_quality_enabled: bool = False
-    joint_margin_enabled: bool = False
-    swept_approach_enabled: bool = False
-    swept_approach_top_k: int = 5
-    corridor_risk_enabled: bool = False
-    corridor_risk_weight: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class EffectiveCorridorConfig:
-    """Occlusion / hidden-geometry analyzer knobs. All default off so the snapshot
-    is byte-identical until the operator opts in. EASY is locked out via
-    ``apply_modes`` (enforced by the service)."""
-
-    directional_enabled: bool = False
-    hard_reject_enabled: bool = False
-    top_k: int = 5
-    radius_mm: float = 20.0
-    step_mm: float = 5.0
-    max_distance_mm: float = 200.0
-    mask_fusion_weight: float = 0.5
-    hard_reject_confidence_threshold: float = 0.7
-
-
-@dataclass(frozen=True, slots=True)
-class EffectiveOrderingConfig:
-    """Clutter-aware target-ordering overlay. All flags default off so the snapshot
-    is byte-identical until the operator opts in. EASY is locked out via
-    ``apply_modes``."""
-
-    enabled: bool = False
-    unlock_weight: float = 0.0
-    max_local_score_drop: float = 0.1
-    mask_adjacency_enabled: bool = False
-    depth_only_enabled: bool = False
-    corridor_overlap_enabled: bool = False
-    adjacency_radius_px: int = 5
-    depth_tolerance_mm: float = 10.0
+# The resolved ``robot.grasping`` overlay a cell was built with. ``decision``, ``feasibility``, ``occlusion``,
+# ``ordering``, ``uncertainty``, ``success_model``, ``watchdog``, ``performance`` and ``approach_validation`` left on
+# 2026-10-16 with their code (the owner's cleanup): switched on alone, none of them changed a pick of the replay bank's
+# 479. :meth:`EffectiveGraspingConfig.to_dict` lost their flat keys with them.
 
 
 @dataclass(frozen=True, slots=True)
 class EffectiveRecoveryOrchestratorConfig:
-    """Recovery-orchestrator overlay. All flags default off. EASY mode is
-    permanently excluded from the default ``apply_modes``."""
+    """Recovery-orchestrator overlay. All flags default off, which is what a service built from components carries.
+    EASY mode is permanently excluded from the default ``apply_modes``. A cell built from config carries
+    :data:`CELL_RECOVERY`: since 2026-10-16 no key sets it (the owner's cleanup)."""
 
     enabled: bool = False
     max_actions: int = 2
@@ -229,118 +170,29 @@ class EffectiveRecoveryOrchestratorConfig:
     )
     allowed_actions: tuple[str, ...] = ()
     per_action_budget: tuple[tuple[str, int], ...] = ()
-    #: How many of a blocker's grasps the clearing tries (``recovery.blocker_grasp_tries``). Not in
-    #: :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    #: How many of a blocker's grasps the clearing tries. Not in :meth:`EffectiveGraspingConfig.to_dict`.
     blocker_grasp_tries: int = 3
-    #: Whether the parts are critical (``recovery.critical_parts``): a blocker is cleared and nothing is pushed. Not in
-    #: :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    #: Whether the parts are critical (``runtime.task.critical_parts``): a blocker is cleared and nothing is pushed. Not
+    #: in :meth:`EffectiveGraspingConfig.to_dict`.
     critical_parts: bool = False
-    #: Whether a blocker of a task that takes every part goes where the parts go (``recovery.blocker_into_the_place``).
-    #: Not in :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    #: Whether a blocker of a task that takes every part goes where the parts go. Not in
+    #: :meth:`EffectiveGraspingConfig.to_dict`.
     blocker_into_the_place: bool = True
-    #: The operator-declared BASE-frame box a physical recovery action may act inside, as
-    #: ``(centre_xyz_mm, half_extents_xyz_mm, max_nudge_mm)``. ``None`` when the config declares no
-    #: fixture, which the schema permits unless ``container_agitate`` is allowed.
-    #:
-    #: Required whenever `allowed_actions` names ``container_agitate``: `SceneRecoveryPolicy` refuses
-    #: to construct without an envelope for it, because an agitation with no declared bound is a robot
-    #: shaking an unbounded workspace. Optional for ``nudge_target`` (owner, 2026-10-01): the push
-    #: lands inside the automatic push box, and a declared box only narrows it.
-    #:
-    #: Deliberately not in :meth:`EffectiveGraspingConfig.to_dict`: that is a frozen flat 77-key
-    #: telemetry contract whose exact keys and order are pinned, the first 74 positions held fixed
-    #: and three keys appended after them, and a nested box is not a scalar. Widening it is a
-    #: separate decision with telemetry-catalog consequences.
-    fixture: "tuple[tuple[float, float, float], tuple[float, float, float], float] | None" = None
-    #: How far a push of the failed part moves it when nobody asks for another distance, in mm:
-    #: ``recovery.fixture.push_distance_mm`` (30 by default, never above the fixture's
-    #: ``max_nudge_mm``, the third number above, which is the ceiling a request is held to). 30 without a
-    #: fixture, whose ceiling is then the hard cap of 50 mm. Not in :meth:`EffectiveGraspingConfig.to_dict`,
-    #: like the fixture.
-    push_distance_mm: float = 30.0
 
 
-@dataclass(frozen=True, slots=True)
-class EffectiveUncertaintyConfig:
-    """Uncertainty-fusion overlay. All flags default off. EASY mode is permanently
-    excluded from the default ``apply_modes``.
-
-    When :attr:`enabled` is :data:`False` the builder mirrors
-    :attr:`fail_closed_threshold` from the legacy
-    ``decision.auto_uncertainty_threshold`` (back-compat). ``1.01`` is the
-    off-sentinel for the aggressive / disagreement thresholds (the fused score is
-    clamped to ``[0, 1]``)."""
-
-    enabled: bool = False
-    fail_closed_threshold: float = 0.4
-    apply_modes: tuple[str, ...] = (
-        "auto",
-        "dense_clutter",
-    )
-    weights: tuple[tuple[str, float], ...] = (
-        ("depth_confidence", 1.0),
-        ("mask_confidence", 1.0),
-        ("occlusion_corridor_risk", 1.0),
-        ("feasibility_margin", 1.0),
-        ("verification_residual", 1.0),
-        ("topology_risk", 0.0),
-        ("semantic_confidence", 0.0),
-    )
-    ranking_penalty_weight: float = 0.0
-    recovery_aggressive_threshold: float = 1.01
-    channel_disagreement_threshold: float = 1.01
-    calibration_artifact_path: Optional[str] = None
-
-
-@dataclass(frozen=True, slots=True)
-class EffectiveWatchdogConfig:
-    """Drift + OOD watchdog. ``mode`` defaults to ``"shadow"`` (compute + emit
-    telemetry, no behavioural effect until the operator escalates to ``canary`` /
-    ``active``). ``"disabled"`` emits no telemetry. Five threshold ladders are
-    non-decreasing; the OOD ladder is inverted, a lower score being worse, so it
-    is validated ``moderate >= high >= severe``. Both directions are enforced at
-    the schema layer by ``GraspingWatchdogConfig``."""
-
-    mode: str = "shadow"
-    window_size: int = 20
-    min_samples_for_trend: int = 6
-    calibration_delta_moderate_mm: float = 2.0
-    calibration_delta_high_mm: float = 5.0
-    calibration_delta_severe_mm: float = 10.0
-    depth_confidence_shift_moderate: float = 0.05
-    depth_confidence_shift_high: float = 0.10
-    depth_confidence_shift_severe: float = 0.20
-    fail_closed_rate_moderate: float = 0.30
-    fail_closed_rate_high: float = 0.50
-    fail_closed_rate_severe: float = 0.75
-    hand_eye_residual_trend_moderate_mm: float = 1.0
-    hand_eye_residual_trend_high_mm: float = 3.0
-    hand_eye_residual_trend_severe_mm: float = 7.0
-    verification_residual_trend_moderate_mm: float = 0.5
-    verification_residual_trend_high_mm: float = 2.0
-    verification_residual_trend_severe_mm: float = 5.0
-    ood_score_moderate: float = 0.5
-    ood_score_high: float = 0.3
-    ood_score_severe: float = 0.1
-    block_modes: tuple[str, ...] = ("auto",)
-
-
-@dataclass(frozen=True, slots=True)
-class EffectivePerformanceConfig:
-    """Runtime SLO + bounded-compute snapshot. Defaults off / no-timeout so the
-    snapshot is byte-identical until opt-in."""
-
-    enabled: bool = False
-    decision_latency_slo_ms: float = 60.0
-    ranking_latency_slo_ms: float = 80.0
-    fusion_latency_slo_ms: float = 220.0
-    decision_timeout_ms: float = 0.0
-    ranking_timeout_ms: float = 0.0
-    fusion_timeout_ms: float = 0.0
-    model_fallback_policy: str = "legacy_score"
-    fusion_fallback_policy: str = "skip"
-    emit_breach_events: bool = False
-    breach_window_size: int = 32
+#: The recovery a cell built from config runs, fixed at the values the owner's cell ran (the owner, 2026-10-16): a
+#: rescan once and a push twice a pick, at most two actions, three tries at a blocker's grasps and the blocker into the
+#: place, in ``auto`` and ``dense_clutter``. The mode's own profile is the outer gate: ``easy`` allows no action, and
+#: only ``dense_clutter`` the push. Whether the parts are critical is the cell's ``runtime.task.critical_parts``.
+CELL_RECOVERY = EffectiveRecoveryOrchestratorConfig(
+    enabled=True,
+    max_actions=2,
+    apply_modes=("auto", "dense_clutter"),
+    allowed_actions=("rescan", "nudge_target"),
+    per_action_budget=(("rescan", 1), ("nudge_target", 2)),
+    blocker_grasp_tries=3,
+    blocker_into_the_place=True,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,47 +233,12 @@ class EffectiveGraspingConfig:
 
     default_mode: GraspMode
     max_attempts: int
-    # The ``success_model``, ``fusion`` and ``approach_validation`` keys. Appended, never
-    # inserted, so every key above keeps its position and its value.
-    #
-    # Each records the effective state, matching what `feasibility_enabled` and friends do: a
-    # block outside its ``apply_modes`` reads False here even when the YAML says true, because
-    # the question a record has to answer is "was it acting on this attempt", not "what did the
-    # file say". `fusion` has no ``apply_modes`` so it reports its configured value; whether another
-    # camera's view was actually fused depends on the rig and each camera's calibration, which are
-    # runtime facts this snapshot cannot see. `approach_validation` is the sharp one: it is the
-    # block that can refuse a motion, so its key is what tells a `GraspAttemptRecord` whether the
-    # swept-volume validator was on for that attempt.
-    success_model_enabled: bool = False
+    #: Whether the cell fuses its other cameras' views: its camera section declares two or more enabled, calibrated
+    #: RGB-D rigs (``camera_fusion.fused_cameras``). Whether another camera's view was fused depends on the rig
+    #: delivering, a runtime fact this snapshot cannot see.
     fusion_enabled: bool = False
-    approach_validation_enabled: bool = False
-    # Per-phase overlays, each grouped into a frozen sub-config that mirrors its
-    # ``robot.grasping`` schema sub-block. Every sub-config defaults to its
-    # locked-off state so a snapshot is byte-identical until the operator opts a
-    # phase in. ``to_dict()`` flattens these back to the per-field keys.
-    decision: EffectiveDecisionConfig = field(
-        default_factory=EffectiveDecisionConfig
-    )
-    feasibility: EffectiveFeasibilityConfig = field(
-        default_factory=EffectiveFeasibilityConfig
-    )
-    corridor: EffectiveCorridorConfig = field(
-        default_factory=EffectiveCorridorConfig
-    )
-    ordering: EffectiveOrderingConfig = field(
-        default_factory=EffectiveOrderingConfig
-    )
     recovery_orchestrator: EffectiveRecoveryOrchestratorConfig = field(
         default_factory=EffectiveRecoveryOrchestratorConfig
-    )
-    uncertainty: EffectiveUncertaintyConfig = field(
-        default_factory=EffectiveUncertaintyConfig
-    )
-    watchdog: EffectiveWatchdogConfig = field(
-        default_factory=EffectiveWatchdogConfig
-    )
-    performance: EffectivePerformanceConfig = field(
-        default_factory=EffectivePerformanceConfig
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -430,202 +247,13 @@ class EffectiveGraspingConfig:
         return {
             "default_mode": self.default_mode.value,
             "max_attempts": int(self.max_attempts),
-            # `closed_loop_enabled` left here with the two-scan refinement on 2026-09-29, removed with the
-            # owner's approval (cleanup, 2026-09-28), which shifts every key below one position.
-            # `verification_enabled`, `dense_recovery_enabled` and `dense_recovery_allowed_actions`
-            # left the same day with their two blocks (cleanup phase 4, owner-approved 2026-09-29),
-            # which shifts every key below three more.
-            "decision_enabled": bool(self.decision.enabled),
-            "decision_auto_uncertainty_threshold": float(
-                self.decision.auto_uncertainty_threshold
-            ),
-            "feasibility_enabled": bool(self.feasibility.enabled),
-            "feasibility_score_weight": float(self.feasibility.score_weight),
-            "feasibility_ik_quality_enabled": bool(
-                self.feasibility.ik_quality_enabled
-            ),
-            "feasibility_joint_margin_enabled": bool(
-                self.feasibility.joint_margin_enabled
-            ),
-            "feasibility_swept_approach_enabled": bool(
-                self.feasibility.swept_approach_enabled
-            ),
-            "feasibility_swept_approach_top_k": int(
-                self.feasibility.swept_approach_top_k
-            ),
-            "corridor_directional_enabled": bool(
-                self.corridor.directional_enabled
-            ),
-            "corridor_hard_reject_enabled": bool(
-                self.corridor.hard_reject_enabled
-            ),
-            "corridor_top_k": int(self.corridor.top_k),
-            "corridor_radius_mm": float(self.corridor.radius_mm),
-            "corridor_step_mm": float(self.corridor.step_mm),
-            "corridor_max_distance_mm": float(self.corridor.max_distance_mm),
-            "corridor_mask_fusion_weight": float(
-                self.corridor.mask_fusion_weight
-            ),
-            "corridor_hard_reject_confidence_threshold": float(
-                self.corridor.hard_reject_confidence_threshold
-            ),
-            "feasibility_corridor_risk_enabled": bool(
-                self.feasibility.corridor_risk_enabled
-            ),
-            "feasibility_corridor_risk_weight": float(
-                self.feasibility.corridor_risk_weight
-            ),
-            "ordering_enabled": bool(self.ordering.enabled),
-            "ordering_unlock_weight": float(self.ordering.unlock_weight),
-            "ordering_max_local_score_drop": float(
-                self.ordering.max_local_score_drop
-            ),
-            "ordering_mask_adjacency_enabled": bool(
-                self.ordering.mask_adjacency_enabled
-            ),
-            "ordering_depth_only_enabled": bool(
-                self.ordering.depth_only_enabled
-            ),
-            "ordering_corridor_overlap_enabled": bool(
-                self.ordering.corridor_overlap_enabled
-            ),
-            "ordering_adjacency_radius_px": int(
-                self.ordering.adjacency_radius_px
-            ),
-            "ordering_depth_tolerance_mm": float(
-                self.ordering.depth_tolerance_mm
-            ),
-            "recovery_orchestrator_enabled": bool(
-                self.recovery_orchestrator.enabled
-            ),
-            "recovery_orchestrator_max_actions": int(
-                self.recovery_orchestrator.max_actions
-            ),
-            "recovery_orchestrator_apply_modes": list(
-                self.recovery_orchestrator.apply_modes
-            ),
-            "recovery_orchestrator_allowed_actions": list(
-                self.recovery_orchestrator.allowed_actions
-            ),
+            "recovery_orchestrator_enabled": bool(self.recovery_orchestrator.enabled),
+            "recovery_orchestrator_max_actions": int(self.recovery_orchestrator.max_actions),
+            "recovery_orchestrator_apply_modes": list(self.recovery_orchestrator.apply_modes),
+            "recovery_orchestrator_allowed_actions": list(self.recovery_orchestrator.allowed_actions),
             "recovery_orchestrator_per_action_budget": [
                 [str(action), int(count)]
                 for action, count in self.recovery_orchestrator.per_action_budget
             ],
-            "uncertainty_enabled": bool(self.uncertainty.enabled),
-            "uncertainty_fail_closed_threshold": float(
-                self.uncertainty.fail_closed_threshold
-            ),
-            "uncertainty_apply_modes": list(self.uncertainty.apply_modes),
-            "uncertainty_weights": [
-                [str(name), float(value)]
-                for name, value in self.uncertainty.weights
-            ],
-            "uncertainty_ranking_penalty_weight": float(
-                self.uncertainty.ranking_penalty_weight
-            ),
-            "uncertainty_recovery_aggressive_threshold": float(
-                self.uncertainty.recovery_aggressive_threshold
-            ),
-            "uncertainty_channel_disagreement_threshold": float(
-                self.uncertainty.channel_disagreement_threshold
-            ),
-            "uncertainty_calibration_artifact_path": (
-                None
-                if self.uncertainty.calibration_artifact_path is None
-                else str(self.uncertainty.calibration_artifact_path)
-            ),
-            "watchdog_mode": str(self.watchdog.mode),
-            "watchdog_window_size": int(self.watchdog.window_size),
-            "watchdog_min_samples_for_trend": int(
-                self.watchdog.min_samples_for_trend
-            ),
-            "watchdog_calibration_delta_moderate_mm": float(
-                self.watchdog.calibration_delta_moderate_mm
-            ),
-            "watchdog_calibration_delta_high_mm": float(
-                self.watchdog.calibration_delta_high_mm
-            ),
-            "watchdog_calibration_delta_severe_mm": float(
-                self.watchdog.calibration_delta_severe_mm
-            ),
-            "watchdog_depth_confidence_shift_moderate": float(
-                self.watchdog.depth_confidence_shift_moderate
-            ),
-            "watchdog_depth_confidence_shift_high": float(
-                self.watchdog.depth_confidence_shift_high
-            ),
-            "watchdog_depth_confidence_shift_severe": float(
-                self.watchdog.depth_confidence_shift_severe
-            ),
-            "watchdog_fail_closed_rate_moderate": float(
-                self.watchdog.fail_closed_rate_moderate
-            ),
-            "watchdog_fail_closed_rate_high": float(
-                self.watchdog.fail_closed_rate_high
-            ),
-            "watchdog_fail_closed_rate_severe": float(
-                self.watchdog.fail_closed_rate_severe
-            ),
-            "watchdog_hand_eye_residual_trend_moderate_mm": float(
-                self.watchdog.hand_eye_residual_trend_moderate_mm
-            ),
-            "watchdog_hand_eye_residual_trend_high_mm": float(
-                self.watchdog.hand_eye_residual_trend_high_mm
-            ),
-            "watchdog_hand_eye_residual_trend_severe_mm": float(
-                self.watchdog.hand_eye_residual_trend_severe_mm
-            ),
-            "watchdog_verification_residual_trend_moderate_mm": float(
-                self.watchdog.verification_residual_trend_moderate_mm
-            ),
-            "watchdog_verification_residual_trend_high_mm": float(
-                self.watchdog.verification_residual_trend_high_mm
-            ),
-            "watchdog_verification_residual_trend_severe_mm": float(
-                self.watchdog.verification_residual_trend_severe_mm
-            ),
-            "watchdog_ood_score_moderate": float(
-                self.watchdog.ood_score_moderate
-            ),
-            "watchdog_ood_score_high": float(self.watchdog.ood_score_high),
-            "watchdog_ood_score_severe": float(
-                self.watchdog.ood_score_severe
-            ),
-            "watchdog_block_modes": list(self.watchdog.block_modes),
-            "performance_enabled": bool(self.performance.enabled),
-            "performance_decision_latency_slo_ms": float(
-                self.performance.decision_latency_slo_ms
-            ),
-            "performance_ranking_latency_slo_ms": float(
-                self.performance.ranking_latency_slo_ms
-            ),
-            "performance_fusion_latency_slo_ms": float(
-                self.performance.fusion_latency_slo_ms
-            ),
-            "performance_decision_timeout_ms": float(
-                self.performance.decision_timeout_ms
-            ),
-            "performance_ranking_timeout_ms": float(
-                self.performance.ranking_timeout_ms
-            ),
-            "performance_fusion_timeout_ms": float(
-                self.performance.fusion_timeout_ms
-            ),
-            "performance_model_fallback_policy": str(
-                self.performance.model_fallback_policy
-            ),
-            "performance_fusion_fallback_policy": str(
-                self.performance.fusion_fallback_policy
-            ),
-            "performance_emit_breach_events": bool(
-                self.performance.emit_breach_events
-            ),
-            "performance_breach_window_size": int(
-                self.performance.breach_window_size
-            ),
-            # Appended, never inserted: every key above keeps its position. The field comment
-            # above says what these three record.
-            "success_model_enabled": bool(self.success_model_enabled),
             "fusion_enabled": bool(self.fusion_enabled),
-            "approach_validation_enabled": bool(self.approach_validation_enabled),
         }

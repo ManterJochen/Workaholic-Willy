@@ -263,8 +263,7 @@ class TheLatchReadersTests(unittest.TestCase):
         self.assertFalse(brakes_in_motion_of(object()))
         self.assertFalse(brakes_in_motion_of(_Raising()))
         self.assertFalse(brakes_in_motion_of(DummyRobotArm()))
-        self.assertFalse(brakes_in_motion_of(ur_arm_on(RecordingRtde())))
-        self.assertTrue(brakes_in_motion_of(ur_arm_on(RecordingRtde(), brake_on_halt=True)))
+        self.assertTrue(brakes_in_motion_of(ur_arm_on(RecordingRtde())), "every UR brakes a move in flight")
 
     def test_a_halt_state_says_what_became_of_the_move(self) -> None:
         idle = HaltState(reason=_REASON, requested_at=12.5)

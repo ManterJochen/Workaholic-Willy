@@ -23,7 +23,6 @@ from __future__ import annotations
 import math
 import unittest
 from typing import Any, Callable
-from unittest import mock
 
 import numpy as np
 
@@ -42,7 +41,6 @@ from src.robot.core import (
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator, PickOutcome
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome, PolicyReport
 from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
-from src.robot.grasping.motion.trajectory_safety import ApproachPathPolicy
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.safety.planning.perceived import WorldBuildLimits, WorldBuildTuning
@@ -406,17 +404,6 @@ class AToggleHandAcrossTheTriesTests(unittest.TestCase):
 
 
 class TheSweepAndTheLogTests(unittest.TestCase):
-    def test_the_approach_sweep_is_judged_with_the_cell_s_own_hand(self) -> None:
-        """Red before: the sweep was judged with the 2F-85's defaults (E2-9)."""
-        cell = _Cell({}, approach_path_policy=ApproachPathPolicy(), mode_label="dense_clutter",
-                     _approach_path_modes=frozenset({"dense_clutter"}))
-        clear = mock.Mock(is_clear=True)
-        with mock.patch("src.robot.grasping.loop.pick_loop.validate_approach_and_retreat",
-                        return_value=(clear, clear)) as sweep:
-            cell.run()
-
-        self.assertTrue(sweep.called)
-        self.assertIs(HAND_E, sweep.call_args.kwargs["gripper_model"])
 
     def test_every_refused_grasp_is_said_at_warning_with_its_status(self) -> None:
         cell = _Cell({0: REFUSED, 1: REFUSED})

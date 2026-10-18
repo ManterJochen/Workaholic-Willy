@@ -6,6 +6,13 @@ itself. A second owner of an open device in this process is refused with `Camera
 holder, every grab through any handle of the owner runs under the rig's lock, and a frame the owner
 hands out carries the host time read just before the device grab (`captured_at_s`).
 
+Every owner built here measures depth. A RealSense or an OpenCV RGB-D rig gives its own; a stereo
+rig, a webcam pair or a side by side stereo device, gives depth through its stereo calibration
+(`StereoDepthStreamer`, the owner, 2026-10-17): its colour is the left image rectified, and its lens
+the rectified left one. A stereo rig whose stereo calibration is not on disk is refused where it is
+chosen (`select_rig`) and where it opens, with how to calibrate it. The stereo calibration tools take
+the raw pair instead (`create_device_streamer`, through `FrameProvider`).
+
 Identity is the device, not the rig name:
 
 * a RealSense rig is its serial. A RealSense with no serial is one shared key that collides with
@@ -22,7 +29,8 @@ A frame to look at is not a frame to measure with. `Camera.peek` hands a camera 
 measuring grab as it would have been without the window: see its docstring for why and how.
 
 `FrameProvider` is the multi-rig catalogue for stereo capture and hand detection, and opens every rig
-through an owner of this class, so a catalogue and a `Camera` never both hold one device.
+through an owner of this class, over the device's own streamer, so a catalogue and a `Camera` never
+both hold one device.
 
 This module imports nothing from `src.robot`: the camera package sits below the robot.
 """
@@ -34,8 +42,10 @@ import logging
 import threading
 import time
 import weakref
+from contextlib import contextmanager
+from contextvars import ContextVar
 from time import monotonic as _monotonic
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, Literal
 
 import numpy as np
 
@@ -48,6 +58,7 @@ from src.calibration.rig_calibration import RigCalibration
 from src.camera.setup.capture_backend import capture_backend_refusal
 from src.camera.setup.image_taking.rgbd import OpenCvRGBDStreamer, RealSenseRGBDStreamer
 from src.camera.setup.image_taking.single import SingleDeviceStreamer
+from src.camera.setup.image_taking.stereo_depth import StereoDepthStreamer, stereo_calibration_refusal
 from src.camera.setup.image_taking.webcam import WebcamPairStreamer
 from src.contracts import UNSET, Maybe, chosen
 
@@ -58,11 +69,12 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.camera.setup.image_taking.frames import AnyFrame
 
 CameraRigConfig = WebcamPairRigConfig | SingleDeviceRigConfig | RGBDDeviceRigConfig
-AnyStreamer = WebcamPairStreamer | SingleDeviceStreamer | OpenCvRGBDStreamer | RealSenseRGBDStreamer
+AnyStreamer = (WebcamPairStreamer | SingleDeviceStreamer | StereoDepthStreamer | OpenCvRGBDStreamer
+               | RealSenseRGBDStreamer)
 #: A device as the registry knows it: its kind and its id. None is no id, which matches any device
 #: of the kind.
 DeviceKey = tuple[str, "int | str | None"]
-RefusalReason = Literal["unknown", "disabled", "not_rgbd", "backend"]
+RefusalReason = Literal["unknown", "disabled", "no_stereo_calibration", "backend"]
 
 __all__ = [
     "PEEK_QUIET_S",
@@ -73,6 +85,7 @@ __all__ = [
     "CameraRefused",
     "CameraRigConfig",
     "PeekFrame",
+    "create_device_streamer",
     "create_streamer",
     "device_keys",
     "select_rig",
@@ -91,25 +104,27 @@ _REGISTRY_LOCK = threading.Lock()
 #: The open owners, by the device keys they hold. Weak, so an owner that no longer exists holds no
 #: claim.
 _HOLDERS: weakref.WeakValueDictionary[DeviceKey, Camera] = weakref.WeakValueDictionary()
+#: The open owners whose devices another arm of the cell sees through its own rig, inside :meth:`Camera.sharing`.
+_SHARED: ContextVar[tuple[Camera, ...]] = ContextVar("willy_shared_cameras", default=())
 
 
 class CameraBusy(RuntimeError):
     """A second owner asked for a device that another live owner in this process holds."""
 
-    def __init__(self, rig_id: str, holder: str, device: DeviceKey) -> None:
+    def __init__(self, rig_id: str, holder: str, device: DeviceKey, *, why: str = "") -> None:
         self.rig_id = rig_id
         self.holder = holder
         self.device = device
         super().__init__(
             f"rig {rig_id!r} cannot open its camera: rig {holder!r} holds the same device "
-            f"({_describe(device)}) in this process. Release {holder!r} first, or give the two rigs "
-            "distinct device ids."
+            f"({_describe(device)}) in this process. "
+            + (why or f"Release {holder!r} first, or give the two rigs distinct device ids.")
         )
 
 
 class CameraRefused(ValueError):
-    """The camera section cannot give this rig: it is not configured, it is switched off, or it has
-    no depth."""
+    """The camera section cannot give this rig: it is not configured, it is switched off, it is a stereo pair whose
+    stereo calibration is not there yet, or this platform cannot open its capture backend."""
 
     def __init__(self, message: str, *, reason: RefusalReason) -> None:
         super().__init__(message)
@@ -124,7 +139,7 @@ class CameraNotOpen(RuntimeError):
 class PeekFrame:
     """A colour image taken for a person to look at (:meth:`Camera.peek`), never one to measure with.
 
-    ``color`` is BGR, a copy the device no longer holds: the left eye of a stereo rig, and no depth at all.
+    ``color`` is BGR, a copy the device no longer holds: the left eye of a stereo rig, rectified, and no depth at all.
     ``captured_at_s`` is the host time read just before the device was asked for it, as a grab's stamp is.
     """
 
@@ -145,9 +160,25 @@ def device_keys(rig: CameraRigConfig) -> tuple[DeviceKey, ...]:
     raise ValueError(f"Unsupported rig type: {type(rig)!r}")
 
 
-def create_streamer(rig: CameraRigConfig) -> AnyStreamer:
-    """The device streamer a rig names. Constructing one touches no device: every streamer
-    ``__init__`` under ``camera.setup.image_taking`` only stores config."""
+def create_streamer(rig: CameraRigConfig, *, workspace: Any = None) -> AnyStreamer:
+    """The streamer a camera owner measures with: an RGB-D rig's device streamer, and a stereo rig's pair as an RGB-D
+    camera (:class:`StereoDepthStreamer`, around the pair's own streamer built here). Constructing one touches no
+    device: every streamer ``__init__`` under ``camera.setup.image_taking`` only stores config.
+
+    ``workspace`` is ``robot.motion.workspace``, where a fixed stereo rig's depth search starts; ``None`` searches from
+    the near limit (``working_depth_range_mm``). An RGB-D rig never reads it.
+    """
+    if isinstance(rig, (WebcamPairRigConfig, SingleDeviceRigConfig)):
+        return StereoDepthStreamer(rig, pair=create_device_streamer(rig), workspace=workspace)
+    return create_device_streamer(rig)
+
+
+def create_device_streamer(rig: CameraRigConfig) -> AnyStreamer:
+    """The device's own streamer: a stereo rig's two raw eyes as ``StereoFrame``, an RGB-D rig's colour and depth.
+
+    What the stereo calibration tools and the stereo catalogue take (``FrameProvider``): they record, rectify and
+    triangulate the raw pair themselves. Constructing one touches no device, as :func:`create_streamer` says.
+    """
     if isinstance(rig, WebcamPairRigConfig):
         return WebcamPairStreamer(rig)
     if isinstance(rig, SingleDeviceRigConfig):
@@ -164,13 +195,15 @@ def select_rig(camera_cfg: Any, *, rig_id: Maybe[str] = UNSET, open_disabled: Ma
 
     ``rig_id`` UNSET means the rig the cell runs on, ``camera.cameras.primary_rig_id``. Four
     refusals, in this order: a rig the section does not configure, a rig switched off (lifted only
-    by ``open_disabled``, which the bench exerciser passes), a rig with no depth channel, and a
-    capture backend this platform's OpenCV does not have (P0h h7: 700 and 1400 exist on Windows only).
-    The third is the stereo refusal: the planner world and the pick path take depth from RGB-D rigs only.
+    by ``open_disabled``, which the bench exerciser passes), a stereo rig whose stereo calibration
+    is not on disk, and a capture backend this platform's OpenCV does not have (P0h h7: 700 and
+    1400 exist on Windows only). The third is the stereo refusal: a webcam pair or a side by side
+    device gives depth through its stereo calibration, so before it is calibrated it gives none, and
+    the refusal names the file and how to write it.
 
     The cell, the calibration CLI and the exerciser all select through this function, so the three
-    apply one policy. A refusal for a rig with no depth lists the RGB-D rigs the section has,
-    because the reader of that refusal is the one who does not know which they are.
+    apply one policy. A refusal for a rig with no depth lists the rigs of the section that give
+    depth, because the reader of that refusal is the one who does not know which they are.
     """
     cameras = getattr(camera_cfg, "cameras", None)
     rigs = list(getattr(cameras, "rigs", []) or [])
@@ -192,18 +225,15 @@ def select_rig(camera_cfg: Any, *, rig_id: Maybe[str] = UNSET, open_disabled: Ma
             "Switch it on, or name a rig that is on.",
             reason="disabled",
         )
-    source = getattr(rig, "source", None)
-    if source != "rgbd":
-        depth_rigs = sorted(r.rig_id for r in rigs if getattr(r, "source", None) == "rgbd")
-        subject = (f"camera.cameras.primary_rig_id names {wanted!r}, a {source!r} rig" if by_key
-                   else f"rig {wanted!r} is a {source!r} rig")
-        why = ("A grasp cell needs an RGB-D primary: the grasp is synthesised from its depth." if by_key
-               else "Every camera this owner opens gives depth, and stereo rigs wait for their own step.")
-        tail = (f"The RGB-D rigs here are {depth_rigs}. Name one of those instead, and prove it standalone "
-                "with `python -m src.robot.perception`." if depth_rigs else
-                "There is no RGB-D rig in camera.cameras.rigs at all, so this profile cannot build a grasp "
-                "cell until one is added.")
-        raise CameraRefused(f"{subject}, not an RGB-D device. {why} {tail}", reason="not_rgbd")
+    uncalibrated = stereo_calibration_refusal(rig)
+    if uncalibrated is not None:
+        depth_rigs = sorted(r.rig_id for r in rigs if r is not rig and stereo_calibration_refusal(r) is None)
+        subject = f"camera.cameras.primary_rig_id names {wanted!r}: " if by_key else ""
+        tail = (f" The rigs here that give depth now are {depth_rigs}: calibrate this one, or name one of those "
+                "instead and prove it standalone with `python -m src.robot.perception`." if depth_rigs else
+                " No rig in camera.cameras.rigs gives depth yet, so this profile cannot build a grasp cell until one "
+                "does.")
+        raise CameraRefused(f"{subject}{uncalibrated}{tail}", reason="no_stereo_calibration")
     backend = capture_backend_refusal(rig)
     if backend is not None:
         raise CameraRefused(backend, reason="backend")
@@ -220,6 +250,9 @@ class Camera:
     with Camera.from_tree(load_tree()) as camera:
         frame = camera.grab()          # colour (BGR uint8) and depth (uint16 millimetres)
     ```
+
+    A stereo rig is a camera like any other here: its colour is the left image rectified and its depth is read through
+    its stereo calibration (:class:`StereoDepthStreamer`).
 
     :meth:`open` claims the device in the process registry, so two owners never share one, and :meth:`release` gives
     both back and never raises. Every grab and every lens read goes through the rig's lock.
@@ -240,22 +273,55 @@ class Camera:
         self._quiet_until = float("-inf")
 
     @classmethod
-    def from_rig(cls, rig: CameraRigConfig, *, streamer: Maybe[Any] = UNSET) -> Camera:
+    def from_rig(cls, rig: CameraRigConfig, *, streamer: Maybe[Any] = UNSET, workspace: Maybe[Any] = UNSET) -> Camera:
         """The owner of one rig, not yet open.
 
         Args:
             rig (CameraRigConfig): The rig, one entry of ``camera.cameras.rigs``.
             streamer (Maybe[Any]): The device streamer to put behind the owner, such as a device double; unset is the
                 streamer the rig names (default: UNSET).
+            workspace (Maybe[Any]): ``robot.motion.workspace``: where a stereo rig fixed in the cell starts its depth
+                search; unset searches from the near limit (``working_depth_range_mm``). An RGB-D rig never reads it
+                (default: UNSET).
 
         Returns:
-            Camera: The owner; nothing is opened.
+            Camera: The owner; nothing is opened. Inside :meth:`sharing`, a fixed camera whose device an owner given
+                there holds is that device seen through this rig.
         """
-        return cls(rig, streamer if chosen(streamer) else create_streamer(rig))
+        if chosen(streamer):
+            return cls(rig, streamer)
+        for owner in _SHARED.get():
+            if any(_collides(mine, held) for mine in device_keys(rig) for held in owner._keys):
+                return _SharedView(owner, rig)
+        return cls(rig, create_streamer(rig) if not chosen(workspace) else create_streamer(rig, workspace=workspace))
+
+    @staticmethod
+    @contextmanager
+    def sharing(owners: Iterable[Camera]) -> Iterator[None]:
+        """Inside the block, a rig built for a device one of ``owners`` holds is that device seen through the rig: the
+        owner's device, lock and stream, the rig's own calibration (owner, 2026-10-15: a fixed camera belongs to every
+        arm of a cell, a wrist camera to the arm it is mounted on). How a cell of several arms builds its other arms.
+
+        ```python
+        with Camera.sharing(first_arm.cameras):
+            other_arm.build()          # the fixed camera the first arm opened, placed in this arm's base
+        ```
+
+        Args:
+            owners (Iterable[Camera]): The open owners to share.
+
+        Yields:
+            None: Inside the block.
+        """
+        token = _SHARED.set(tuple(owners))
+        try:
+            yield
+        finally:
+            _SHARED.reset(token)
 
     @classmethod
     def from_config(cls, camera_cfg: Any, *, rig_id: Maybe[str] = UNSET,
-                    open_disabled: Maybe[bool] = UNSET) -> Camera:
+                    open_disabled: Maybe[bool] = UNSET, workspace: Maybe[Any] = UNSET) -> Camera:
         """The owner of the rig a camera section gives, not yet open.
 
         Args:
@@ -264,20 +330,24 @@ class Camera:
                 ``camera.cameras.primary_rig_id`` (default: UNSET).
             open_disabled (Maybe[bool]): ``True`` opens a rig switched off (``enabled: false``), as the bench exerciser
                 does; unset refuses it (default: UNSET).
+            workspace (Maybe[Any]): ``robot.motion.workspace``: where a stereo rig fixed in the cell starts its depth
+                search; unset searches from the near limit (default: UNSET).
 
         Returns:
             Camera: The owner; nothing is opened.
 
         Raises:
-            CameraRefused: The section does not configure the rig, the rig is switched off, or it has no depth (the
-                message lists the RGB-D rigs it has).
+            CameraRefused: The section does not configure the rig, the rig is switched off, or it is a stereo pair whose
+                stereo calibration is not there yet (the message lists the rigs that give depth).
         """
-        return cls.from_rig(select_rig(camera_cfg, rig_id=rig_id, open_disabled=open_disabled))
+        return cls.from_rig(select_rig(camera_cfg, rig_id=rig_id, open_disabled=open_disabled), workspace=workspace)
 
     @classmethod
     def from_tree(cls, tree: Any, *, rig_id: Maybe[str] = UNSET,
                   open_disabled: Maybe[bool] = UNSET) -> Camera:
         """The owner of the rig a loaded tree's camera section gives, not yet open.
+
+        A stereo rig fixed in the cell starts its depth search where the tree's workspace box begins.
 
         Args:
             tree (Any): A loaded tree, ``load_tree()``.
@@ -291,9 +361,11 @@ class Camera:
 
         Raises:
             ConfigError: The tree did not load.
-            CameraRefused: The rig is not configured, switched off, or has no depth.
+            CameraRefused: The rig is not configured, switched off, or a stereo pair not yet calibrated.
         """
-        return cls.from_config(tree.app_config.camera, rig_id=rig_id, open_disabled=open_disabled)
+        robot = getattr(tree.app_config, "robot", None)
+        workspace = robot.motion.workspace if robot is not None else UNSET
+        return cls.from_config(tree.app_config.camera, rig_id=rig_id, open_disabled=open_disabled, workspace=workspace)
 
     @property
     def rig(self) -> CameraRigConfig:
@@ -314,6 +386,12 @@ class Camera:
     def enabled(self) -> bool:
         """Whether the rig is switched on in the camera section (``enabled``)."""
         return bool(self._rig.enabled)
+
+    @property
+    def gives_depth(self) -> bool:
+        """Whether a grab is an ``RGBDFrame``: every owner :meth:`from_rig` builds, a stereo rig's through its stereo
+        calibration. Not one a stereo catalogue built over the raw pair (``FrameProvider``), whose grab is the pair."""
+        return not isinstance(self._streamer, (WebcamPairStreamer, SingleDeviceStreamer))
 
     @property
     def calibrated(self) -> bool:
@@ -394,8 +472,10 @@ class Camera:
         """One frame for measuring, taken under the rig's lock and stamped with the host time read just before the grab.
 
         Returns:
-            AnyFrame: An ``RGBDFrame`` for an RGB-D rig: ``color`` (BGR ``uint8``), ``depth`` (``uint16`` millimetres)
-                and the stamp. Every grab keeps the rig quiet for display frames for a while after it (:meth:`peek`).
+            AnyFrame: An ``RGBDFrame``: ``color`` (BGR ``uint8``), ``depth`` (``uint16`` millimetres) and the stamp, a
+                stereo rig's colour its left image rectified; a ``StereoFrame`` only behind an owner a stereo catalogue
+                built over the raw pair (:attr:`gives_depth`). Every grab keeps the rig quiet for display frames for a
+                while after it (:meth:`peek`).
 
         Raises:
             CameraNotOpen: The owner is not open.
@@ -472,7 +552,7 @@ class Camera:
         return max(PEEK_QUIET_S, frames)
 
     def get_intrinsics(self) -> np.ndarray | None:
-        """The camera matrix the device reports.
+        """The camera matrix the device reports: a stereo rig's the rectified left one, the matrix its depth lies on.
 
         Returns:
             np.ndarray | None: The 3 x 3 pinhole matrix in pixels; ``None`` where the rig has no single one.
@@ -513,7 +593,7 @@ class Camera:
         return dataclasses.replace(frame, depth=depth)
 
     def get_distortion(self) -> np.ndarray | None:
-        """The lens distortion coefficients the device reports.
+        """The lens distortion coefficients the device reports: a stereo rig's five zeros, its images rectified.
 
         Returns:
             np.ndarray | None: The coefficients, OpenCV's order; ``None`` where it has none.
@@ -583,6 +663,43 @@ class Camera:
             for key in self._keys:
                 if _HOLDERS.get(key) is self:
                     del _HOLDERS[key]
+
+
+class _SharedView(Camera):
+    """A fixed camera another arm of the cell opened, seen through this arm's own rig (:meth:`Camera.sharing`).
+
+    The device, its lock and its stream are the owner's, so every grab of either goes through one lock. The rig is this
+    arm's, so its calibration places the camera in this arm's base. Opening the view claims nothing, and releasing it
+    never closes the device: the owner gives the device back, and a cell comes down in the reverse of its bring-up, its
+    other arms' views first. A wrist camera is never shared: it belongs to the one arm it is mounted on.
+    """
+
+    def __init__(self, owner: Camera, rig: CameraRigConfig) -> None:
+        owner = getattr(owner, "_owner", owner)
+        for one in (owner.rig, rig):
+            if getattr(getattr(one, "extrinsics", None), "mounting_mode", None) != "eye_to_hand":
+                raise CameraBusy(rig.rig_id, owner.rig_id, device_keys(rig)[0], why=(
+                    "Only a fixed camera, calibrated eye_to_hand, is shared by the arms of a cell; a wrist camera "
+                    "belongs to the arm it is mounted on: declare it in that arm's own layer."))
+        super().__init__(rig, owner._streamer)
+        self._owner = owner
+        self._lock = owner._lock
+
+    def open(self) -> None:
+        """Open the view on its owner's device, which the owner opened; claims nothing."""
+        with self._lock:
+            if not self._owner.is_open:
+                raise CameraNotOpen(f"rig {self.rig_id!r} sees rig {self._owner.rig_id!r}'s device, which is not open")
+            self._open = True
+
+    def release(self) -> None:
+        """Close the view; the device stays its owner's to give back."""
+        self._open = False
+
+    def _require_open(self) -> None:
+        super()._require_open()
+        if not self._owner.is_open:
+            raise CameraNotOpen(f"rig {self.rig_id!r} sees rig {self._owner.rig_id!r}'s device, which was given back")
 
 
 def _collides(a: DeviceKey, b: DeviceKey) -> bool:

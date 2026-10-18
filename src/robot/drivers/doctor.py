@@ -60,32 +60,6 @@ def _gripper_vendor_sdks() -> dict[GripperVendor, tuple[str, ...]]:
 # driven.
 _MOCKABLE_ARM_VENDORS: frozenset[RobotVendor] = frozenset({RobotVendor.SIM, RobotVendor.DUMMY})
 
-#: Which systems a vendor's driver runs on, by ``sys.platform`` name. A vendor absent from this map carries no
-#: platform claim, which is not the same as running everywhere: the repository says nothing, and the row reads as it
-#: did before this map existed.
-#:
-#: "SDK not installed" is the wrong sentence for a driver that cannot be installed here: it sends an operator to
-#: ``pip install`` something that has no wheel for their system. So the doctor says plainly what runs only on Linux.
-#: The entries are the measured restrictions of aurora's vendor research of 2026-09-19, and only those. UR and the two
-#: simulated arms carry no entry, because nothing measured a system they refuse.
-_ARM_VENDOR_PLATFORMS: dict[RobotVendor, frozenset[str]] = {
-    # franky/libfranka publish Linux wheels only, and a real cell wants PREEMPT_RT besides.
-    RobotVendor.FRANKA: frozenset({"linux"}),
-    # KUKA returns over ROS 2 only, and `kuka_drivers` is an apt package.
-    RobotVendor.KUKA: frozenset({"linux"}),
-    # `rclpy` is built for the distribution's Python on Linux; there is no Windows Jazzy.
-    RobotVendor.ROS2: frozenset({"linux"}),
-}
-
-#: How to say a ``sys.platform`` to a person. An unknown value is printed as it is, rather than guessed.
-_PLATFORM_NAMES: dict[str, str] = {"win32": "Windows", "linux": "Linux", "darwin": "macOS"}
-
-
-def platform_name(platform: str) -> str:
-    """``sys.platform`` as a person writes it, or the raw value where this repository has no name."""
-    return _PLATFORM_NAMES.get(platform, platform)
-
-
 # The gate below is the last cheap moment before a cryptic late failure, so what it saw
 # is worth keeping. A bring-up that dies inside connect() is diagnosed faster from a
 # record that the doctor passed with these SDK versions than from the traceback alone.
@@ -119,14 +93,6 @@ class VendorReadiness:
     sdks: tuple[SdkStatus, ...]
     ready: bool
     note: str
-    #: The systems this driver runs on, by ``sys.platform`` name, sorted. Empty means no claim: this
-    #: repository has measured no system that refuses it (:data:`_ARM_VENDOR_PLATFORMS`), not that it
-    #: runs nowhere.
-    platforms: tuple[str, ...] = ()
-
-    def runs_on(self, platform: str) -> bool:
-        """Whether this driver runs on ``platform``. True wherever no claim is made."""
-        return not self.platforms or platform in self.platforms
 
     def to_dict(self) -> dict[str, Any]:
         """Plain data, safe for `json.dumps` with no custom encoder.
@@ -143,7 +109,6 @@ class VendorReadiness:
             "registered": self.registered,
             "ready": self.ready,
             "note": self.note,
-            "platforms": list(self.platforms),
             "sdks": [sdk.to_dict() for sdk in self.sdks],
         }
 
@@ -223,28 +188,8 @@ def _readiness(
     kind: str,
     sdk_modules: tuple[str, ...],
     registered: bool,
-    platforms: tuple[str, ...] = (),
-    platform: str = "",
 ) -> VendorReadiness:
-    """One row. ``platform`` is the ``sys.platform`` the question is asked about, empty to skip it.
-
-    The platform is decided before the SDK is probed, and the probe is then not run at all. A module
-    with no wheel for this system can only answer "not installed", which is true and useless: it names
-    a repair that does not exist here. The row says what the operator can act on, which is that this
-    driver is driven from another system.
-    """
-    runs_here = not platforms or not platform or platform in platforms
-    if not runs_here:
-        where = " or ".join(platform_name(p) for p in platforms)
-        # The reserved-slot wording is kept as it is where it still applies: an operator who has read
-        # this table once reads the sentence, not the row, and two words for one state stop a table
-        # being read.
-        head = (f"no driver registered (reserved slot / not implemented), and when one lands it "
-                f"drives from {where} only" if not registered else f"drives from {where} only")
-        return VendorReadiness(
-            vendor=vendor_value, kind=kind, registered=registered, sdks=(), ready=False,
-            note=f"{head}; this host is {platform_name(platform)}", platforms=platforms,
-        )
+    """One row: registered, and every SDK module imported for real."""
     sdks = tuple(probe_module(m) for m in sdk_modules)
     sdks_ok = all(s.importable for s in sdks)
     ready = registered and sdks_ok
@@ -262,7 +207,6 @@ def _readiness(
         note = "ready"
     return VendorReadiness(
         vendor=vendor_value, kind=kind, registered=registered, sdks=sdks, ready=ready, note=note,
-        platforms=platforms,
     )
 
 
@@ -297,11 +241,11 @@ def require_arm_vendor_ready(vendor: RobotVendor, *, mock_mode: bool = False) ->
     """The fail-early startup gate: raise unless this host can drive ``vendor``.
 
     It is a query over the rows of the readiness table rather than a second definition
-    of ready. A gate that asks only whether any SDK modules are missing answers no for
-    franka, which has no SDK entry, and a vendor with no registered driver then sails
-    through the last cheap check before a bring-up.
+    of ready. A gate that asks only whether any SDK modules are missing answers no for a
+    vendor with no SDK entry, and one with no registered driver then sails through the
+    last cheap check before a bring-up.
 
-    It is fail-closed: a config naming franka or ros2 is refused here, by name, instead
+    It is fail-closed: a vendor with no registered driver is refused here, by name, instead
     of failing later inside the driver factory with less context. ``mock_mode`` skips
     the SDK half for the vendors whose mock path drives no real device, and does not
     skip the registered half, because a driver that does not exist cannot be mocked

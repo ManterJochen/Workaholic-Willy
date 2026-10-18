@@ -37,6 +37,7 @@ touches no device until `open()`, and no driver opens a window: frames come back
 | `RealSenseRGBDStreamer` | a rig with `source: rgbd`, `rgbd_backend: realsense` | `open()`, `grab()`, `release()` | `RGBDFrame`, depth in millimetres, aligned to colour by default |
 | `WebcamPairStreamer` | a rig with `source: webcam_pair` | `open()`, `grab()`, `release()` | `StereoFrame` from two USB cameras |
 | `SingleDeviceStreamer` | a rig with `source: single_device` | `open()`, `grab()`, `release()` | `StereoFrame` cut from one side-by-side or top-bottom image |
+| `StereoDepthStreamer` | either stereo rig, through its stereo calibration, as its camera owner opens it | `open()`, `grab()`, `peek()`, `release()`, `get_intrinsics()` | `RGBDFrame`: the left image rectified and the depth matched on it, `uint16` millimetres, 0 where unmatched |
 | `load_intrinsics` | `load_intrinsics(path)`, from `image_taking/intrinsics.py` | | `(K, dist)` read from a stored `intrinsics.json` |
 
 Every driver takes its rig config and is a context manager. The two RGB-D drivers satisfy
@@ -125,6 +126,7 @@ The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-v
 | `RealSenseRGBDStreamer`, its logic | run on a physical cell: a wrist D415 on a UR10 (CB3); in the suite it runs against an injected fake SDK ([`test_realsense_streamer.py`](../../../tests/test_realsense_streamer.py)) |
 | `RealSenseRGBDStreamer`, its frame processing | run on a physical cell: the same D415; in the suite it runs through the real librealsense, no camera attached ([`test_realsense_sdk_contract.py`](../../../tests/test_realsense_sdk_contract.py), [`test_a_moved_wrist_camera_forgets_the_last_pose.py`](../../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
 | `RealSenseRGBDStreamer`, what it says at open | never touched hardware; Min-Z is Intel's figure, and the messages run against a fake SDK ([`test_a_realsense_says_what_it_opened.py`](../../../tests/test_a_realsense_says_what_it_opened.py)) |
+| `StereoDepthStreamer` | never touched a webcam pair or a stereo device; its depth measured on the D415's own infrared pair against the chip, and its frames, lens and refusals pinned on a rendered pair ([`test_a_stereo_rig_is_an_rgbd_camera.py`](../../../tests/test_a_stereo_rig_is_an_rgbd_camera.py)) |
 | `RealSenseRGBDStreamer`, the colour block and the research recording | never touched hardware; pinned against a fake SDK, the names and the extrinsics convention against the real librealsense ([`test_the_colour_sensor_holds_what_its_rig_asks.py`](../../../tests/test_the_colour_sensor_holds_what_its_rig_asks.py), [`test_a_rig_recording_for_research_keeps_its_infrared_images.py`](../../../tests/test_a_rig_recording_for_research_keeps_its_infrared_images.py)) |
 
 ## Files
@@ -135,6 +137,7 @@ The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-v
 | [`image_taking/rgbd.py`](image_taking/rgbd.py) | `OpenCvRGBDStreamer`, `RealSenseRGBDStreamer`, `RGBDStreamerProtocol` |
 | [`image_taking/webcam.py`](image_taking/webcam.py) | `WebcamPairStreamer` |
 | [`image_taking/single.py`](image_taking/single.py) | `SingleDeviceStreamer`, which owns the crop, split and resize of a combined stereo image |
+| [`image_taking/stereo_depth.py`](image_taking/stereo_depth.py) | `StereoDepthStreamer`, a stereo rig as an RGB-D camera; `stereo_calibration_refusal`, the one sentence of a pair not yet calibrated; `StereoNotCalibrated` |
 | [`image_taking/intrinsics.py`](image_taking/intrinsics.py) | `load_intrinsics`; import it by this path, the package does not re-export it |
 | [`quality.py`](quality.py) | `configure_camera_for_quality` |
 | [`capture_backend.py`](capture_backend.py) | `capture_backend_refusal`, `refuse_a_backend_this_platform_lacks`, `CaptureBackendRefused`, `WINDOWS_ONLY`: a rig's OpenCV capture backend against the platform that opens it; 700 (DirectShow) and 1400 (Media Foundation) exist in OpenCV's Windows builds only (P0h h7) |

@@ -1,6 +1,7 @@
 """The planned arm holds the steady gate itself, once per motion verb (P0e E9, owner 2026-09-22).
 
-``safety.dwell`` asks that the arm stand still before it moves. Until P0e three layers above the arm waited for it: the
+Every arm stands still before it moves (``robot_arm.STEADY_TIMEOUT_S``, the owner's cell's ``safety.dwell`` until
+2026-10-17). Until P0e three layers above the arm waited for it: the
 Robot motion verbs, the pick-and-place steps and the grasp execution policy. A motion none of them wrapped (a park, a
 calibration pose, a recovery move) never waited, and a pick waited in the policy while the arm it drove did not know.
 The gate is the arm's own now: every motion verb waits once, after the frame and camera-world refusals and before
@@ -21,7 +22,15 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from src.geometry import Frame, Pose
-from src.robot.core import CameraWorldDecline, JointPositions, MotionCommand, MotionStatus, RobotMotionRejected
+from src.robot.core import (
+    CameraWorldDecline,
+    JointPositions,
+    MotionCommand,
+    MotionResult,
+    MotionStatus,
+    RobotMotionRejected,
+)
+from src.robot.core.robot_arm import STEADY_TIMEOUT_S
 from tests._arm_kit import HERE, steady_arm
 
 _JOINTS = list(HERE)
@@ -36,9 +45,9 @@ def _pose(frame: Frame = Frame.BASE) -> Pose:
                 frame=frame)
 
 
-def _arm(*, steady: bool = True, dwell: bool = True, connected: bool = True) -> tuple[Any, Any]:
+def _arm(*, steady: bool = True, connected: bool = True) -> tuple[Any, Any]:
     """The kit's steady arm and its fake transport, whose steady gate answers ``steady``."""
-    arm = steady_arm(steady=steady, dwell=dwell, connected=connected)
+    arm = steady_arm(steady=steady, connected=connected)
     return arm, arm._transport
 
 
@@ -78,7 +87,7 @@ class EveryVerbWaitsOnceBeforeItSendsTests(unittest.TestCase):
             with self.subTest(label):
                 arm, conn = _arm()
                 verb(arm)  # type: ignore[operator]
-                self.assertEqual([(1.5, 0.02)], [call.args for call in conn.calls("wait_until_steady")])
+                self.assertEqual([(STEADY_TIMEOUT_S, 0.02)], [call.args for call in conn.calls("wait_until_steady")])
                 sent = _sent(arm, conn)
                 self.assertEqual("wait_until_steady", sent[0], sent)
                 self.assertGreater(len(sent), 1, "nothing was sent after the wait")
@@ -98,7 +107,7 @@ class EveryVerbWaitsOnceBeforeItSendsTests(unittest.TestCase):
                 else:
                     result = verb(arm)  # type: ignore[operator]
                     self.assertIs(MotionStatus.TIMEOUT, result.status)  # type: ignore[attr-defined]
-                    self.assertIn("did not come to rest within 1.50 s", result.message)  # type: ignore[attr-defined]
+                    self.assertIn("did not come to rest within 5.00 s", result.message)  # type: ignore[attr-defined]
                 self.assertEqual(["wait_until_steady"], _sent(arm, conn))
 
     def test_willys_joint_lines_wait_once_before_they_are_judged(self) -> None:
@@ -106,26 +115,17 @@ class EveryVerbWaitsOnceBeforeItSendsTests(unittest.TestCase):
             with self.subTest(label):
                 arm, conn = _arm()
                 self.assertIs(MotionStatus.UNSUPPORTED, verb(arm).status)  # judged after the gate, and refused
-                self.assertEqual([(1.5, 0.02)], [call.args for call in conn.calls("wait_until_steady")])
+                self.assertEqual([(STEADY_TIMEOUT_S, 0.02)], [call.args for call in conn.calls("wait_until_steady")])
                 arm, conn = _arm(steady=False)
                 result = verb(arm)
                 self.assertIs(MotionStatus.TIMEOUT, result.status)
-                self.assertIn("did not come to rest within 1.50 s", result.message)
+                self.assertIn("did not come to rest within 5.00 s", result.message)
                 self.assertEqual(["wait_until_steady"], _sent(arm, conn))
 
     def test_a_pose_outside_base_is_refused_before_the_wait(self) -> None:
         arm, conn = _arm()
         self.assertIs(MotionStatus.INVALID_TARGET, arm.move(_pose(Frame.TOOL)).status)
         self.assertEqual(["read_joints"], _asked_nothing_but_a_control_read(conn))
-
-    def test_a_cell_that_asks_for_no_gate_never_waits(self) -> None:
-        for label, verb in _verbs().items():
-            with self.subTest(label):
-                arm, conn = _arm(dwell=False)
-                verb(arm)  # type: ignore[operator]
-                sent = _sent(arm, conn)
-                self.assertNotIn("wait_until_steady", sent)
-                self.assertGreater(len(sent), 0, "the verb sent nothing, so its not waiting says nothing")
 
     def test_a_closed_link_is_not_waited_on(self) -> None:
         arm, conn = _arm(connected=False)
@@ -136,12 +136,13 @@ class EveryVerbWaitsOnceBeforeItSendsTests(unittest.TestCase):
 
 
 class AnArmThatGatesItsOwnSendsWaitsAtTheSendTests(unittest.TestCase):
-    """Willy's ``safety.dwell.gate_at: send``: the cuRobo UR judges first and waits right before it sends
+    """Every cuRobo arm (the owner's cell's ``safety.dwell.gate_at: send`` until 2026-10-17) judges first and waits
+    right before it sends
     (``tests/test_a_motion_waits_for_steady_right_before_it_is_sent.py``), so the start of its verb does not wait."""
 
     def test_the_start_of_its_verb_does_not_wait(self) -> None:
         arm, conn = _arm()
-        arm._gates_sends = True  # what gate_at: send sets on a cuRobo arm
+        arm._gates_sends = True  # what every cuRobo arm holds
         self.assertIsNone(arm._steady_refusal(MotionCommand.MOVE_TO))
         self.assertEqual(["read_joints"], _asked_nothing_but_a_control_read(conn))
 
@@ -156,18 +157,18 @@ class TheRobotReadsTheArmsTimeoutTests(unittest.TestCase):
         from src.robot.safety.preflight import SafetyPreflight
         from tests._arm_kit import line_arm
 
-        # A cuRobo arm, because Robot.move refuses the ik route before the arm is asked; its line judge is stood in.
+        # A cuRobo arm, because Robot.move refuses the ik route before the arm is asked. It waits for steady at its send,
+        # which the drive stood in here answers as a gate that timed out answers.
         arm = line_arm()
-        waited: list[float] = []
-        arm.wait_until_steady = lambda timeout_s=5.0, poll_interval_s=0.02: waited.append(timeout_s) or False  # type: ignore[method-assign,func-returns-value]
-        arm._drive_curobo = MagicMock()  # type: ignore[method-assign]
+        arm._drive_curobo = MagicMock(return_value=MotionResult.failed(  # type: ignore[method-assign]
+            MotionStatus.TIMEOUT, MotionCommand.MOVE_TO,
+            message="the arm did not come to rest within 5.00 s before the motion was sent; nothing was sent"))
         with patch.object(SafetyPreflight, "path_judge_refusal", return_value=None):
             report = Robot.from_parts(arm=arm, gripper=None, lock_key=None).move(
                 _pose(), decline="unit double: this test reads the steady gate and no camera world is wired")
         self.assertIs(MotionOutcome.MOTION_REFUSED, report.outcome, report.render())
         self.assertIs(MotionStatus.TIMEOUT, report.result.status)
-        self.assertEqual([5.0], waited)
-        arm._drive_curobo.assert_not_called()
+        arm._drive_curobo.assert_called_once()
 
 
 if __name__ == "__main__":

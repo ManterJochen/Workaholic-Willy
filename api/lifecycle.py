@@ -138,8 +138,7 @@ class JawsWatch(Protocol):
     """One connect watched by the console's jaws question (``api.jaws``): told how the connect ended."""
 
     def succeeded(self) -> None:
-        """The connect came up. Where a question was answered with the jaws standing open, the console stamps it and
-        tells the planner the hand is empty."""
+        """The connect came up. Where a question was answered with the jaws standing open, the console stamps it."""
         ...
 
     def failed(self, error: BaseException) -> str:

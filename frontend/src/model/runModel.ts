@@ -1295,7 +1295,7 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
     }
     case 'task.drop_planned': {
       const kind = str(data.kind)
-      // A box's part set down below its rim (robot.place.release_in_a_box) says how far under the rim it goes.
+      // A box's part set down below its rim (robot.motion.place.release_in_a_box) says how far under the rim it goes.
       const below = num(data.below_rim_mm)
       const line = below !== null
         ? m('event.task.drop_planned.below', { depth: round(below) })
