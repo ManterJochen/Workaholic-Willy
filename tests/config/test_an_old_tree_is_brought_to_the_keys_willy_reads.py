@@ -266,7 +266,9 @@ class TheKeysOfHowACellMovesGoUnderMotionTests(unittest.TestCase):
         self.assertIn("# Where the arm goes home, facing the bench.", text)
         reload_config()
         motion = load_config(root, profile="oldcell").robot.motion
-        self.assertEqual((0.8, 0.4), (motion.max_velocity, motion.max_acceleration))
+        # The one pair a line and a joint move shared was the joints': it lands under joint, and a line keeps its own.
+        self.assertEqual((0.8, 0.4), (motion.joint.max_velocity, motion.joint.max_acceleration))
+        self.assertEqual((0.25, 1.2), (motion.linear.max_velocity, motion.linear.max_acceleration))
         self.assertEqual((-400.0, 400.0, -800.0, -200.0, 20.0, 700.0),
                          (motion.workspace.x_min, motion.workspace.x_max, motion.workspace.y_min,
                           motion.workspace.y_max, motion.workspace.z_min, motion.workspace.z_max))
@@ -279,6 +281,54 @@ class TheKeysOfHowACellMovesGoUnderMotionTests(unittest.TestCase):
         self.assertEqual("drop_left", motion.default_place_pose)
         # The place's rim air is the owner's cell's since 2026-10-17: the key left, the carry stays the layer's.
         self.assertEqual("over_the_rim", motion.place.carry)
+
+
+#: A cell's own layer as Willy wrote it from 2026-10-17 to 2026-11-06: one speed pair for a joint move and a line alike.
+_SHARED_SPEED_LAYER = """\
+# A cell's own layer.
+robot:
+  motion:
+    planner: curobo
+    # The cell's speed, set at the pendant's pace.
+    max_velocity: 1.0          # rad/s
+    max_acceleration: 1.0      # rad/s^2
+"""
+
+
+class AJointMoveAndALineGoAtTheirOwnSpeedsTests(unittest.TestCase):
+    """One pair, ``robot.motion.max_velocity`` and ``max_acceleration``, served a moveJ (rad/s) and a moveL (m/s) until
+    2026-11-06; since then a joint move reads ``robot.motion.joint`` and a line ``robot.motion.linear``."""
+
+    def test_a_layer_that_still_writes_the_shared_pair_is_refused_naming_joint_and_linear(self) -> None:
+        from src.config import ConfigError
+
+        root = _tree(self)
+        (root / "robot" / "robot.sharedspeed.yaml").write_text(_SHARED_SPEED_LAYER, encoding="utf-8")
+        reload_config()
+        with self.assertRaises(ConfigError) as refused:
+            load_config(root, profile="sharedspeed")
+        said = str(refused.exception)
+        for named in ("robot.motion.max_velocity", "robot.motion.joint", "robot.motion.linear", "migrate"):
+            self.assertIn(named, said)
+
+    def test_the_shared_pair_moves_under_joint_with_its_comment_and_a_line_keeps_its_own(self) -> None:
+        root = _tree(self)
+        layer = root / "robot" / "robot.sharedspeed.yaml"
+        layer.write_text(_SHARED_SPEED_LAYER, encoding="utf-8")
+
+        written = migrate_tree(root, write=True)
+
+        self.assertTrue(written.written, written.refused)
+        actions = {f"{c.action} {c.key}" for c in written.changes}
+        self.assertIn("move robot.motion.max_velocity", actions)
+        self.assertIn("move robot.motion.max_acceleration", actions)
+        text = layer.read_text(encoding="utf-8")
+        self.assertIn("    joint:\n", text)
+        self.assertIn("# The cell's speed, set at the pendant's pace.", text)
+        reload_config()
+        motion = load_config(root, profile="sharedspeed").robot.motion
+        self.assertEqual((1.0, 1.0), (motion.joint.max_velocity, motion.joint.max_acceleration))
+        self.assertEqual((0.25, 1.2), (motion.linear.max_velocity, motion.linear.max_acceleration))
 
 
 class TheOwnersTreeTests(unittest.TestCase):

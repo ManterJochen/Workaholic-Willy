@@ -57,7 +57,7 @@ def _pose() -> URPose:
 
 
 def _controller(conn: _FakeConn | None = None, guard: _Guard | None = None) -> MotionController:
-    return MotionController(conn or _FakeConn(), guard or _Guard(), max_velocity=1.0, max_acceleration=1.0)  # type: ignore[arg-type]
+    return MotionController(conn or _FakeConn(), guard or _Guard(), max_joint_velocity=1.0, max_joint_acceleration=1.0)  # type: ignore[arg-type]
 
 
 class TestMotionClassify:
@@ -112,7 +112,7 @@ class TestTheRealBoxJudgesTheMove:
     @staticmethod
     def _real(z_max: float = 500.0) -> tuple[MotionController, WorkspaceGuard]:
         guard = WorkspaceGuard(WorkspaceLimitsConfig(z_max=z_max))
-        mc = MotionController(_FakeConn(), guard, max_velocity=1.0, max_acceleration=1.0)  # type: ignore[arg-type]
+        mc = MotionController(_FakeConn(), guard, max_joint_velocity=1.0, max_joint_acceleration=1.0)  # type: ignore[arg-type]
         mc._is_singularity_risky = lambda joints: False  # type: ignore[method-assign]
         return mc, guard
 

@@ -1311,7 +1311,12 @@ class PlannedArm(RobotArm):
         acc: float | None = None,
         register: bool = True,
     ) -> bool:
-        """Command a Cartesian pose with no safety gate. Callers must have gated it first."""
+        """Command a Cartesian pose with no safety gate. Callers must have gated it first.
+
+        Its speed is held to its own motion's limits on every transport: a line's m/s to ``robot.motion.linear``, a
+        joint move's rad/s to ``robot.motion.joint``.
+        """
+        vel, acc = self._clamped(vel, acc, linear=linear)
         return self._transport.move_pose(
             self._controller_target(pose),
             linear=linear, vel=vel, acc=acc, register=register,
@@ -2054,7 +2059,7 @@ class PlannedArm(RobotArm):
         if len(joints) != self.capabilities.dof or not all(math.isfinite(v) for v in joints):
             return None
         goals = self._goals_in_window(self._pose_to_flange(pose), pose, joints,
-                                      velocity=float(self.config.motion.max_velocity))
+                                      velocity=float(self.config.motion.joint.max_velocity))
         if isinstance(goals, MotionResult):
             # A model with no chain says nothing; a pose out of reach, or none of whose turns lies in the window, has none.
             return None if goals.status is MotionStatus.CONTROLLER_REJECTED else False
@@ -2267,8 +2272,8 @@ class PlannedArm(RobotArm):
            meet both authorities. A branch other than the arm's is tried only after every goal on it failed, and
            taking one is a warning naming both.
 
-        Exactly the list that passed runs, one ``moveJ`` per waypoint, at the speed clamped to ``robot.motion.max_velocity``, and
-        one log line says how it was chosen and how far each joint turns on it.
+        Exactly the list that passed runs, one ``moveJ`` per waypoint, at the speed clamped to
+        ``robot.motion.joint.max_velocity``, and one log line says how it was chosen and how far each joint turns on it.
 
         A route a grasp judged ahead to this pose (:meth:`grasp_refusal_ahead`) runs instead of a second judgement of the
         same route, where nothing it was judged on changed since (:meth:`_why_judged_again`): the very route the exact
@@ -2309,7 +2314,7 @@ class PlannedArm(RobotArm):
         # Ranking reads the speed, but a speed that is no speed is ur_rtde's to refuse at the moveJ, not a reason to
         # plan differently: one speed for every joint orders the goals the same whatever it is.
         ranked_at = (float(vel) if vel is not None and math.isfinite(float(vel)) and float(vel) > 0.0
-                     else float(self.config.motion.max_velocity))
+                     else float(self.config.motion.joint.max_velocity))
         # A move to a pose is no joint move declared next: whatever was judged ahead for one is not this move's.
         self._drop_the_next_leg()
         route: "_Route | MotionResult | None" = None
@@ -3653,7 +3658,7 @@ class PlannedArm(RobotArm):
             said = lift_from(near, self._planner_refresh())
             if said:
                 return said
-        velocity = float(self.config.motion.max_velocity)
+        velocity = float(self.config.motion.joint.max_velocity)
         # The owner's O2 (2026-10-09, every cell since 2026-10-17): the route is judged in the world the line down was
         # judged in, which the move to the standoff and the line down from it then hold (holding_the_approach).
         world = self._planner_refresh() if near is not None and line is None else None
@@ -3750,7 +3755,7 @@ class PlannedArm(RobotArm):
         name = approach.label or "the approach"
         try:
             route = self._route_to_the_nearest_goal(planner, self._pose_to_flange(approach), approach,
-                                                    velocity=float(self.config.motion.max_velocity))
+                                                    velocity=float(self.config.motion.joint.max_velocity))
         except CuroboUnavailableError as exc:
             return f"the move to {name} could not be judged: cuRobo planner unavailable: {exc}"
         if isinstance(route, MotionResult):
@@ -3820,8 +3825,8 @@ class PlannedArm(RobotArm):
                 joint_names=self._joint_names,
                 controller_yaw_deg=self._controller_yaw_deg,
                 client_factory=self._curobo_client_factory or self._default_curobo_client_factory(),
-                vel=self.config.motion.max_velocity,
-                acc=self.config.motion.max_acceleration,
+                vel=self.config.motion.joint.max_velocity,
+                acc=self.config.motion.joint.max_acceleration,
                 world_cuboids=build_planner_cuboids(world_cfg),
                 world_meshes=build_planner_meshes(world_cfg),
                 reservation=reservation,
@@ -4252,7 +4257,7 @@ class PlannedArm(RobotArm):
             )
         label = pose.label or "<unlabeled>"
         goals = self._goals_in_window(self._pose_to_flange(pose), pose, here,
-                                      velocity=float(self.config.motion.max_velocity))
+                                      velocity=float(self.config.motion.joint.max_velocity))
         if isinstance(goals, MotionResult):
             by = "the joint window" if goals.status is MotionStatus.JOINT_LIMIT_REJECTED else "the inverse kinematics"
             raise RobotKinematicsError(f"{label}: refused by {by}: {goals.message}")
@@ -5565,6 +5570,8 @@ class PlannedArm(RobotArm):
         else:
             return self._kept_moving(MotionCommand.MOVE_TO, target_pose=pose)
         worker = self._judging_during(pose, during)
+        # A line's m/s held to robot.motion.linear on every transport, as a joint drive's rad/s is held to the joints'.
+        vel, acc = self._clamped(vel, acc, linear=True)
         try:
             ok = self._transport.move_pose(
                 self._controller_pose(pose), linear=True, vel=vel, acc=acc, register=False,
@@ -5610,12 +5617,14 @@ class PlannedArm(RobotArm):
         m = np.asarray(flange.to_matrix(), dtype=np.float64) @ t
         return Pose.from_matrix(m, frame=Frame.BASE, label=flange.label)
 
-    def _clamped(self, vel: float | None, acc: float | None) -> tuple[float | None, float | None]:
+    def _clamped(self, vel: float | None, acc: float | None, *, linear: bool = False) -> tuple[float | None, float | None]:
         """``(vel, acc)`` held to ``robot.motion``, as the UR motion controller holds its own commands (P0e E7:
-        one clamp, ``clamp_to_motion_limits``, where the joint drives asked that controller to clamp for them)."""
-        limits = self.config.motion
+        one clamp, ``clamp_to_motion_limits``, where the joint drives asked that controller to clamp for them): a joint
+        move's rad/s to ``robot.motion.joint``, a line's m/s to ``robot.motion.linear`` (two pairs since 2026-11-06)."""
+        limits = self.config.motion.linear if linear else self.config.motion.joint
         return clamp_to_motion_limits(vel, acc, max_velocity=limits.max_velocity,
-                                      max_acceleration=limits.max_acceleration, logger=self.logger)
+                                      max_acceleration=limits.max_acceleration, logger=self.logger,
+                                      kind="linear" if linear else "joint")
 
     def _drive_joints(
         self,
@@ -5735,6 +5744,7 @@ class PlannedArm(RobotArm):
                     raise RobotMotionRejected(
                         f"move_linear refused: {rejected.message}", result=rejected,
                     ) from rejected.exception
+                velocity, acceleration = self._clamped(velocity, acceleration, linear=True)
                 ok = self._transport.move_pose(
                     self._controller_pose(pose), linear=True, vel=velocity, acc=acceleration, register=False,
                     workspace_pose=self._base_pose(pose),

@@ -128,8 +128,9 @@ controller function, and
 nothing in this package can enable, disable or observe it.
 
 `robot.motion` (`RobotMotionConfig` in [`schema/robot/robot_schema.py`](schema/robot/robot_schema.py)) holds every
-key of how a cell moves since 2026-10-17 (the owner's cleanup): the `planner`, `max_velocity` and
-`max_acceleration`, the `workspace` box, `home_deg`, the looks, the closing axis, the taught poses and the place.
+key of how a cell moves since 2026-10-17 (the owner's cleanup): the `planner`, the speeds of a joint move (`joint`,
+rad/s) and of a straight line (`linear`, m/s of the TCP; one pair served both until 2026-11-06), the `workspace` box,
+`home_deg`, the looks, the closing axis, the taught poses and the place.
 Home is written in degrees alone, as the pendant shows it, and the code reads it as `home_rad`. A tree that still
 writes one of these keys straight under `robot` (`motion_limits`, `workspace_limits`, `home_joint_positions_deg`,
 `look_joint_positions_deg`, `natural_closing_axis`, `named_poses`, `default_place_pose`, `place`) is refused at load,

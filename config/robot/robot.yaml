@@ -34,8 +34,17 @@ robot:
     # `safety.planning_world`; where it declares no support_plane it plans against its own robot model
     # and a generic 1.6 m table and nothing else. It was robot.ur.motion_planner until 2026-10-13.
     planner: "curobo"
-    max_velocity: 1.0          # rad/s
-    max_acceleration: 0.5      # rad/s^2
+    # How fast a joint move and a straight line go, each the ceiling a caller is held to and the speed
+    # it runs at where the caller names none. A joint move (moveJ: every planned route, every move to
+    # joints) reads rad/s at the joints, a line (moveL: down to a grasp and up again, a place's lines,
+    # a push's legs) m/s of the TCP, so the two are never one number. Until 2026-11-06 they were, and
+    # every line ran at the joints' rad/s read as m/s.
+    joint:
+      max_velocity: 1.0        # rad/s
+      max_acceleration: 0.5    # rad/s^2
+    linear:
+      max_velocity: 0.25       # m/s, UR's own moveL default
+      max_acceleration: 1.2    # m/s^2, UR's own moveL default
     workspace:            # Cartesian box in mm
       x_min: -500.0
       x_max:  500.0

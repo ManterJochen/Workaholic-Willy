@@ -154,7 +154,7 @@ class WhatATestInjectsReachesTheArmTests(unittest.TestCase):
         injected.ik.return_value = list(_JOINTS)
         guard = MagicMock()
         guard.is_inside_workspace.return_value = True
-        controller = MotionController(built, guard, max_velocity=1.0, max_acceleration=1.0)
+        controller = MotionController(built, guard, max_joint_velocity=1.0, max_joint_acceleration=1.0)
         controller._is_singularity_risky = lambda joints: False  # type: ignore[method-assign]
         controller.conn = injected
         pose = URPose(x=400.0, y=0.0, z=300.0, rx=0.0, ry=3.14159, rz=0.0, label="t")

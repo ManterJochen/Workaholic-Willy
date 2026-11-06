@@ -58,16 +58,17 @@ class AcceptingPreflight:
         return (1.0,) * 6
 
 
-def ur_config(planner: str = "ik", **ur: Any) -> Any:
-    """A ur5e cell on ``planner`` with a declared 132 mm tool and a box nothing in these tests leaves."""
+def ur_config(planner: str = "ik", *, motion: "dict[str, Any] | None" = None, **ur: Any) -> Any:
+    """A ur5e cell on ``planner`` with a declared 132 mm tool and a box nothing in these tests leaves; ``motion`` sets
+    keys of ``robot.motion`` beside those (a ``linear`` pair, say)."""
     from src.config.schema.robot import RobotConfig
 
     return RobotConfig.model_validate({
         "vendor": "ur",
         "ur": dict(ur),
-        "motion": {"planner": planner, "max_velocity": 0.6, "max_acceleration": 0.9,
+        "motion": {"planner": planner, "joint": {"max_velocity": 0.6, "max_acceleration": 0.9},
                    "workspace": {"x_min": -2000.0, "x_max": 2000.0, "y_min": -2000.0, "y_max": 2000.0,
-                                 "z_min": -2000.0, "z_max": 2000.0}},
+                                 "z_min": -2000.0, "z_max": 2000.0}, **(motion or {})},
         "gripper": {"model": "robotiq_2f85", "tool_frame": {
             "source": "willy", "offset_mm": [0.0, 0.0, 132.0], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
     })
@@ -77,7 +78,7 @@ def no_client() -> Any:
     raise AssertionError("executing a judged path never starts the planner")
 
 
-def ur_arm_on(controller: Any, planner: str = "ik", **ur: Any) -> Any:
+def ur_arm_on(controller: Any, planner: str = "ik", *, motion: "dict[str, Any] | None" = None, **ur: Any) -> Any:
     """A ur5e on ``planner`` whose controller is ``controller`` (any double with ``attach``), every gate accepting.
 
     On cuRobo its planner glue is the real ``CuroboPlanner`` on the arm's own connection, built with no client: a
@@ -86,13 +87,13 @@ def ur_arm_on(controller: Any, planner: str = "ik", **ur: Any) -> Any:
     from src.robot.drivers.ur.arm import URRobotArm
     from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 
-    arm = URRobotArm(ur_config(planner, **ur))
+    arm = URRobotArm(ur_config(planner, motion=motion, **ur))
     controller.attach(arm._conn)
     arm._preflight = AcceptingPreflight()
     if planner == "curobo":
         arm._curobo = CuroboPlanner(arm._transport, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=no_client,
-                                         vel=arm.config.motion.max_velocity,
-                                         acc=arm.config.motion.max_acceleration)
+                                         vel=arm.config.motion.joint.max_velocity,
+                                         acc=arm.config.motion.joint.max_acceleration)
     return arm
 
 

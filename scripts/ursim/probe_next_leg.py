@@ -112,7 +112,7 @@ def _arm(host: str) -> URRobotArm:
         "vendor": "ur",
         "ur": {"model": "ur10", "ip": host},
         # The UR10's reach: the probe's poses stand outside the shipped half-metre box.
-        "motion": {"planner": "curobo", "max_velocity": 0.25, "max_acceleration": 0.5,
+        "motion": {"planner": "curobo", "joint": {"max_velocity": 0.25, "max_acceleration": 0.5},
                    "workspace": {"x_min": -1300.0, "x_max": 1300.0, "y_min": -1300.0, "y_max": 1300.0,
                                  "z_min": -100.0, "z_max": 1300.0}},
         "safety": {"self_collision": {"planner_margin_mm": 4.0}},

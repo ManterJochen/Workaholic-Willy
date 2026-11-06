@@ -46,7 +46,7 @@ def _pose() -> Pose:
 
 class CalibrationMotionLimitsTests(unittest.TestCase):
     def test_limits_are_threaded_into_move(self) -> None:
-        routine = _routine(RobotMotionConfig(max_velocity=2.0, max_acceleration=1.0))
+        routine = _routine(RobotMotionConfig(joint={"max_velocity": 2.0, "max_acceleration": 1.0}))
         self.assertTrue(routine._move_to_pose(_pose()))
         call = routine.arm.calls[-1]  # type: ignore[attr-defined]
         self.assertEqual(call.get("vel"), 2.0)

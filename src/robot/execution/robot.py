@@ -490,9 +490,10 @@ class Robot:
             decline (Maybe[str]): Why this motion needs no camera world, such as ``"bench, no camera mounted"``; unset
                 asks for the world the cameras built (default: UNSET).
             linear (bool): Drive a straight line in Cartesian space instead of a planned move (default: False).
-            vel (Maybe[float]): The speed handed to the arm driver's move, in the driver's own units; unset keeps the
-                driver's default speed (default: UNSET).
-            acc (Maybe[float]): The acceleration, likewise (default: UNSET).
+            vel (Maybe[float]): The speed handed to the arm driver's move, in the driver's own units: on a UR the
+                TCP's m/s for a line, held to ``robot.motion.linear``, and rad/s at the joints otherwise, held to
+                ``robot.motion.joint``; unset runs at that pair (default: UNSET).
+            acc (Maybe[float]): The acceleration, likewise: m/s^2 for a line, rad/s^2 otherwise (default: UNSET).
 
         Returns:
             MotionReport: What was asked, how the arm's motions reach it, and what the arm said; ``outcome`` is

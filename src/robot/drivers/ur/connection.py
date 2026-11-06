@@ -369,9 +369,13 @@ class URConnection:
 
     Parameters:
         ip:           The IP address of the robot controller.
-        vel:          The default joint velocity in rad/s.
+        vel:          The default joint velocity in rad/s, what a ``moveJ`` runs at where its caller names none.
         acc:          The default joint acceleration in rad/s^2.
         frequency:    The RTDE exchange frequency in Hz. 0 means the default, 125 Hz.
+        line_vel:     The default TCP speed of a line in m/s, what a ``moveL`` runs at where its caller names none (UR's
+                      own 0.25, ``robot.motion.linear``). A line reads m/s where a joint move reads rad/s, so the two
+                      are never one number.
+        line_acc:     The default TCP acceleration of a line in m/s^2 (UR's own 1.2).
         clock, sleep: The monotonic clock and the sleep a watched move polls with; a test hands in its own. The clock is
                       ``perf_counter``: ``time.monotonic`` ticks in 15.6 ms steps on Windows, two RTDE cycles.
 
@@ -386,6 +390,8 @@ class URConnection:
         acc: float = 0.5,
         frequency: float = 0.0,
         *,
+        line_vel: float = 0.25,
+        line_acc: float = 1.2,
         clock: "Callable[[], float]" = time.perf_counter,
         sleep: "Callable[[float], None]" = time.sleep,
     ):
@@ -394,6 +400,8 @@ class URConnection:
         self.ip = ip
         self.vel = vel
         self.acc = acc
+        self.line_vel = line_vel
+        self.line_acc = line_acc
         self.frequency = frequency
         self.logger = create_robot_logger("URConnection", UR_CONNECTION_LOG_FILE)
 
@@ -1022,13 +1030,14 @@ class URConnection:
     ) -> bool:
         """A linear, meaning Cartesian, move.
 
-        ``tcp_pose`` is ``[x, y, z, rx, ry, rz]`` in metres with an axis-angle rotation. The halt latch and the brake
-        work as for :meth:`moveJ`; a line is braked with ``stopL``, along the line.
+        ``tcp_pose`` is ``[x, y, z, rx, ry, rz]`` in metres with an axis-angle rotation, ``vel`` and ``acc`` the TCP's
+        m/s and m/s^2 along the line, :attr:`line_vel` and :attr:`line_acc` where they are ``None``. The halt latch and
+        the brake work as for :meth:`moveJ`; a line is braked with ``stopL``, along the line.
         """
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
-        v = vel if vel is not None else self.vel
-        a = acc if acc is not None else self.acc
+        v = vel if vel is not None else self.line_vel
+        a = acc if acc is not None else self.line_acc
         if self.refuse_if_halted(_LINE):
             return False
         if not asynchronous:

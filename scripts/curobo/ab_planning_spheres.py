@@ -76,7 +76,7 @@ DEFAULT_CROP = REPO / "tests" / "data" / "cell_2026_10_01" / "p1_pick-63e1b3dac2
 STANDOFF_MM = 80.0
 #: How far under a part's top the TCP stands at the grasp, millimetres: about half a Hand-E pad.
 GRASP_DEPTH_MM = 15.0
-#: The joint speed the arm ranks its goals by, rad/s (``motion.max_velocity`` on the owner's cell).
+#: The joint speed the arm ranks its goals by, rad/s (``motion.joint.max_velocity`` on the owner's cell).
 RANK_SPEED = 0.5
 
 

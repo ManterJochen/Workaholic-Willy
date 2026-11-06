@@ -260,13 +260,31 @@ robot:
     # [default: curobo] [one of: ik | curobo]
     planner: curobo
 
-    # The hard ceiling on commanded speed, for every motion of the arm.
-    # [default: 1.0]
-    max_velocity: 1.0
+    # How fast a joint move goes: every moveJ, so every planned route, every move to joints and every move to a pose
+    # the controller solves. Each number is the ceiling a caller's own speed is held to and what the move runs at
+    # where the caller names none. robot.motion.max_velocity and max_acceleration until 2026-11-06.
+    joint:
 
-    # The hard ceiling on commanded acceleration, and the default acceleration when a caller supplies none.
-    # [default: 0.5]
-    max_acceleration: 0.5
+      # The joint speed, rad/s.
+      # [default: 1.0]
+      max_velocity: 1.0
+
+      # The joint acceleration, rad/s^2.
+      # [default: 0.5]
+      max_acceleration: 0.5
+
+    # How fast a straight line goes: every moveL, so the line down to a grasp and up from it, a place's lines, a
+    # push's legs and move_linear. The TCP's m/s and m/s^2 along the line, never the joints' rad/s. Each number is the
+    # ceiling a caller's own speed is held to and what the line runs at where the caller names none.
+    linear:
+
+      # The TCP speed along the line, m/s. UR's own moveL default.
+      # [default: 0.25]
+      max_velocity: 0.25
+
+      # The TCP acceleration along the line, m/s^2. UR's own moveL default.
+      # [default: 1.2]
+      max_acceleration: 1.2
 
     # The box in BASE, mm, every commanded pose stays inside (the workspace guard), and where a stereo rig fixed in
     # the cell starts its depth search.

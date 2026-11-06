@@ -79,8 +79,12 @@ class MotionController:
     Parameters:
         connection: An open ``URConnection``.
         guard: The ``WorkspaceGuard`` that validates every target pose.
-        max_velocity: A hard cap on the commanded velocity. ``None`` disables clamping.
-        max_acceleration: A hard cap on the commanded acceleration.
+        max_joint_velocity: A hard cap on a joint move's commanded speed, rad/s (``robot.motion.joint``). ``None``
+            disables clamping.
+        max_joint_acceleration: A hard cap on a joint move's commanded acceleration, rad/s^2.
+        max_linear_velocity: A hard cap on a line's commanded TCP speed, m/s (``robot.motion.linear``). ``None``
+            disables clamping.
+        max_linear_acceleration: A hard cap on a line's commanded TCP acceleration, m/s^2.
         arm_model: ``robot.ur.model``, whose nominal table the singularity check before a move runs on where the
             controller's own rows cannot be read (:meth:`_singularity_fk`).
     """
@@ -89,16 +93,20 @@ class MotionController:
         self,
         connection: URConnection,
         guard: WorkspaceGuard,
-        max_velocity: float | None = None,
-        max_acceleration: float | None = None,
+        max_joint_velocity: float | None = None,
+        max_joint_acceleration: float | None = None,
         singularity_thresholds: SingularityThresholds | None = None,
         *,
+        max_linear_velocity: float | None = None,
+        max_linear_acceleration: float | None = None,
         arm_model: str | None = None,
     ):
         self.conn = connection
         self.guard = guard
-        self.max_velocity = max_velocity
-        self.max_acceleration = max_acceleration
+        self.max_joint_velocity = max_joint_velocity
+        self.max_joint_acceleration = max_joint_acceleration
+        self.max_linear_velocity = max_linear_velocity
+        self.max_linear_acceleration = max_linear_acceleration
         self.singularity_thresholds = singularity_thresholds or SingularityThresholds()
         self.arm_model = arm_model
         #: What the check last said it runs on, so it says so once for every chain and TCP it meets; and whether
@@ -222,10 +230,15 @@ class MotionController:
         self._nominal_checked = (key, why)
         return why
 
-    def _clamp(self, vel: float | None, acc: float | None) -> tuple[float | None, float | None]:
-        """Clamp a caller-supplied velocity and acceleration to the configured hard limits."""
-        return clamp_to_motion_limits(vel, acc, max_velocity=self.max_velocity,
-                                      max_acceleration=self.max_acceleration, logger=self.logger)
+    def _clamp(self, vel: float | None, acc: float | None, *, linear: bool) -> tuple[float | None, float | None]:
+        """Clamp a caller-supplied velocity and acceleration to the hard limits of its motion: a line's m/s to the
+        linear pair, a joint move's rad/s to the joint pair."""
+        if linear:
+            return clamp_to_motion_limits(vel, acc, max_velocity=self.max_linear_velocity,
+                                          max_acceleration=self.max_linear_acceleration, logger=self.logger,
+                                          kind="linear")
+        return clamp_to_motion_limits(vel, acc, max_velocity=self.max_joint_velocity,
+                                      max_acceleration=self.max_joint_acceleration, logger=self.logger, kind="joint")
 
     def get_current_pose(self) -> URPose:
         """Read the current TCP pose from the robot."""
@@ -284,7 +297,7 @@ class MotionController:
             self.last_reject_status = MotionStatus.WORKSPACE_REJECTED
             return False
 
-        vel, acc = self._clamp(vel, acc)
+        vel, acc = self._clamp(vel, acc, linear=linear)
 
         tcp = pose.to_ur_list()
         try:

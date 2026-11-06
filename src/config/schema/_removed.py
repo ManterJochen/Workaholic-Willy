@@ -272,6 +272,16 @@ def _moved_under_motion(new: str) -> str:
             "all.")
 
 
+#: Said for the one speed pair a joint move and a straight line shared until 2026-11-06.
+_JOINT_AND_LINE_APART: Final[str] = (
+    "a joint move and a straight line go at their own speeds since 2026-11-06 (the owner): this key is now "
+    "robot.motion.joint.max_velocity or max_acceleration, with the same value, in rad/s and rad/s^2 for every moveJ; a "
+    "line (moveL, in m/s and m/s^2 of the TCP) reads robot.motion.linear, 0.25 m/s and 1.2 m/s^2 where the tree sets "
+    "none. Until now a line ran at this joint value read as m/s. `python -m src.config migrate <tree> --write` moves it "
+    "under joint, comments and all."
+)
+
+
 #: Said for the home in radians: the home is written in degrees alone, as the pendant shows it.
 _HOME_RADIANS_REMOVED: Final[str] = (
     "the home is written in degrees alone since 2026-10-17 (the owner's cleanup), as the pendant shows it: "
@@ -647,7 +657,12 @@ REMOVED_KEYS: Final[dict[str, str]] = {
         "model (willy_sim/calibration/stations/eih_<model>.json, or run_eih_calibrate --stations PATH). Delete this key."
     ),
     # Every key of how a cell moves, under robot.motion (the owner's R1, 2026-10-16; built 2026-10-17).
-    "robot.motion_limits": _moved_under_motion("robot.motion.max_velocity and robot.motion.max_acceleration"),
+    "robot.motion_limits": _moved_under_motion(
+        "robot.motion.joint.max_velocity and robot.motion.joint.max_acceleration (a straight line has its own pair since "
+        "2026-11-06, robot.motion.linear)"),
+    # A joint move and a straight line go at their own speeds (the owner, 2026-11-06).
+    "robot.motion.max_velocity": _JOINT_AND_LINE_APART,
+    "robot.motion.max_acceleration": _JOINT_AND_LINE_APART,
     "robot.workspace_limits": _moved_under_motion("robot.motion.workspace"),
     "robot.home_joint_positions_deg": _moved_under_motion("robot.motion.home_deg"),
     "robot.home_joint_positions": _HOME_RADIANS_REMOVED,

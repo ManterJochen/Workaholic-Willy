@@ -493,6 +493,50 @@
       "title": "JawIOGripperConfig",
       "type": "object"
     },
+    "JointSpeedConfig": {
+      "additionalProperties": false,
+      "description": "How fast a joint move goes (``robot.motion.joint``), in rad/s and rad/s^2 at the joints.\n\nEvery ``moveJ`` the arm sends: each waypoint of a planned route, a move to joints, and a move to a pose the\ncontroller solves. Each number is the ceiling a caller's own ``vel``/``acc`` is held to and what the move runs at\nwhere the caller names none. ``robot.motion.max_velocity`` and ``max_acceleration`` until 2026-11-06, when one pair\nserved the joints and the lines alike, and a line read the joints' rad/s as m/s.",
+      "properties": {
+        "max_acceleration": {
+          "default": 0.5,
+          "exclusiveMinimum": 0.0,
+          "maximum": 5.0,
+          "title": "Max Acceleration",
+          "type": "number"
+        },
+        "max_velocity": {
+          "default": 1.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 3.14,
+          "title": "Max Velocity",
+          "type": "number"
+        }
+      },
+      "title": "JointSpeedConfig",
+      "type": "object"
+    },
+    "LinearSpeedConfig": {
+      "additionalProperties": false,
+      "description": "How fast a straight line goes (``robot.motion.linear``), in m/s and m/s^2 of the TCP.\n\nEvery ``moveL`` the arm sends: the line down to a grasp and up from it, a place's lines, a push's legs and\n``move_linear``. Each number is the ceiling a caller's own ``vel``/``acc`` is held to and what the line runs at\nwhere the caller names none. The defaults are UR's own for ``moveL`` (ur_rtde's and PolyScope's), the owner's\nchoice of 2026-11-06.",
+      "properties": {
+        "max_acceleration": {
+          "default": 1.2,
+          "exclusiveMinimum": 0.0,
+          "maximum": 5.0,
+          "title": "Max Acceleration",
+          "type": "number"
+        },
+        "max_velocity": {
+          "default": 0.25,
+          "exclusiveMinimum": 0.0,
+          "maximum": 3.0,
+          "title": "Max Velocity",
+          "type": "number"
+        }
+      },
+      "title": "LinearSpeedConfig",
+      "type": "object"
+    },
     "NamedPoseConfig": {
       "additionalProperties": false,
       "description": "A pose taught by hand in the console: where a task puts its part, or where it returns to (owner decision 15).\n\nThe console frees the arm, a person guides it there, and the pose is screened by the exact guard and the planner\nwhile the arm holds; only a pose both clear, or one in the planner's cushion band, is written, into the last layer\nof the profile chain (the owner, Q10). A place pose says where the part's BOTTOM is let go: a task raises the tool\nover it by the part's hang. The name it is kept under (``robot.motion.named_poses.<name>``) follows\n:func:`pose_name_refusal`.",
@@ -777,7 +821,7 @@
     },
     "RobotCalibrationConfig": {
       "additionalProperties": false,
-      "description": "Tunable parameters for the hand-eye calibration routine.\n\nTwo keys this block deliberately does not offer:\n\n* ``quality_threshold_mm``, an auto-apply gate that would hold an RMSE above it for operator\n  review. No such gate exists anywhere: ``save_extrinsics`` writes whatever it is given,\n  judging the RMSE is the operator's job, and :data:`quality_bands_mm` is what labels it.\n* ``speed_scale``, an arm-speed scale for the duration of the routine. There is no speed\n  governor; ``robot.motion.max_velocity`` and ``max_acceleration`` are what the driver layer enforces, and the\n  routine takes a ``motion_limits=`` argument.\n\n``quality_bands_mm`` is the opposite case: both calibration runners (``run_eth_calibrate.py``,\n``run_eih_calibrate.py``) pass it straight into :func:`src.calibration.quality.classify_rmse`.\n\nNor does it offer anything that shapes generated poses (a spread, a retry budget, a pose box):\nnothing generates calibration stations. They are written down, taught, or guided by hand.",
+      "description": "Tunable parameters for the hand-eye calibration routine.\n\nTwo keys this block deliberately does not offer:\n\n* ``quality_threshold_mm``, an auto-apply gate that would hold an RMSE above it for operator\n  review. No such gate exists anywhere: ``save_extrinsics`` writes whatever it is given,\n  judging the RMSE is the operator's job, and :data:`quality_bands_mm` is what labels it.\n* ``speed_scale``, an arm-speed scale for the duration of the routine. There is no speed\n  governor; ``robot.motion.joint`` and ``robot.motion.linear`` are what the driver layer enforces, and the\n  routine takes a ``motion_limits=`` argument.\n\n``quality_bands_mm`` is the opposite case: both calibration runners (``run_eth_calibrate.py``,\n``run_eih_calibrate.py``) pass it straight into :func:`src.calibration.quality.classify_rmse`.\n\nNor does it offer anything that shapes generated poses (a spread, a retry budget, a pose box):\nnothing generates calibration stations. They are written down, taught, or guided by hand.",
       "properties": {
         "freedrive_samples": {
           "default": 15,
@@ -904,6 +948,12 @@
           "default": null,
           "title": "Home Deg"
         },
+        "joint": {
+          "$ref": "#/$defs/JointSpeedConfig"
+        },
+        "linear": {
+          "$ref": "#/$defs/LinearSpeedConfig"
+        },
         "look_deg": {
           "anyOf": [
             {
@@ -921,20 +971,6 @@
           ],
           "default": null,
           "title": "Look Deg"
-        },
-        "max_acceleration": {
-          "default": 0.5,
-          "exclusiveMinimum": 0.0,
-          "maximum": 5.0,
-          "title": "Max Acceleration",
-          "type": "number"
-        },
-        "max_velocity": {
-          "default": 1.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 3.14,
-          "title": "Max Velocity",
-          "type": "number"
         },
         "named_poses": {
           "additionalProperties": {

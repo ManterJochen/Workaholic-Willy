@@ -257,7 +257,7 @@ class JointStationsRunAsJudgedJointMovesTests(unittest.TestCase):
         stations: list[Any] = [JointStation(_joints(i), label=f"j{i}") for i in range(5)]
         stations.insert(2, Pose.from_matrix(tool[5], frame=Frame.BASE, label="pose"))
         arm = _Arm({tuple(_joints(i).tolist()): tool[i] for i in range(5)})
-        routine, _ = _routine(arm, motion_limits=RobotMotionConfig(max_velocity=0.4, max_acceleration=0.3))
+        routine, _ = _routine(arm, motion_limits=RobotMotionConfig(joint={"max_velocity": 0.4, "max_acceleration": 0.3}))
         result = routine.run_with_poses(stations)
 
         commanded = arm.commanded()

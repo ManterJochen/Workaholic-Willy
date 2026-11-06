@@ -397,8 +397,9 @@ class CalibrationRoutine:
         of the same duration.
     motion_limits : RobotMotionConfig or None
         Commanded velocity / acceleration for the calibration moves (``robot.motion``): when
-        supplied, ``max_velocity`` / ``max_acceleration`` are passed to
-        ``RobotArm.move(vel=, acc=)``. ``None`` keeps the driver default speed.
+        supplied, ``joint.max_velocity`` / ``joint.max_acceleration`` are passed to
+        ``RobotArm.move(vel=, acc=)``, every calibration move being a joint move. ``None`` keeps
+        the driver default speed.
     on_event : RobotCalibrationEventListener or None
         Progress callback. Listener exceptions are swallowed so a buggy
         subscriber cannot abort a calibration run.
@@ -506,7 +507,7 @@ class CalibrationRoutine:
         self._marker_source = marker_source
         self.calibrator = calibrator
         # ``motion_limits`` reaches the controller through :meth:`_move_to_pose`, which
-        # passes max_velocity/max_acceleration to ``RobotArm.move(vel=, acc=)``.
+        # passes joint.max_velocity/joint.max_acceleration to ``RobotArm.move(vel=, acc=)``.
         # ``None`` keeps the driver default speed.
         self._motion_limits = motion_limits
 
@@ -1092,8 +1093,8 @@ class CalibrationRoutine:
         controller refusal) is preserved in the routine log. Returns
         the bool the surrounding loop expects for control flow.
 
-        When the routine was given ``motion_limits``, its ``max_velocity``
-        and ``max_acceleration`` are commanded through
+        When the routine was given ``motion_limits``, its ``joint.max_velocity``
+        and ``joint.max_acceleration`` are commanded through
         ``RobotArm.move(vel=, acc=)``; without them the driver default
         speed applies.
 
@@ -1112,8 +1113,8 @@ class CalibrationRoutine:
                 result = self.arm.move(
                     pose,
                     register=False,
-                    vel=self._motion_limits.max_velocity,
-                    acc=self._motion_limits.max_acceleration,
+                    vel=self._motion_limits.joint.max_velocity,
+                    acc=self._motion_limits.joint.max_acceleration,
                 )
             else:
                 result = self.arm.move(pose, register=False)
@@ -1133,8 +1134,8 @@ class CalibrationRoutine:
             if self._motion_limits is not None:
                 result = self.arm.move_to_joints(
                     station.joints,
-                    velocity=self._motion_limits.max_velocity,
-                    acceleration=self._motion_limits.max_acceleration,
+                    velocity=self._motion_limits.joint.max_velocity,
+                    acceleration=self._motion_limits.joint.max_acceleration,
                 )
             else:
                 result = self.arm.move_to_joints(station.joints)

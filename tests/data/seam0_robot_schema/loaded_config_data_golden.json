@@ -334,8 +334,14 @@
     "dummy": {},
     "motion": {
       "planner": "curobo",
-      "max_velocity": 1.0,
-      "max_acceleration": 0.5,
+      "joint": {
+        "max_velocity": 1.0,
+        "max_acceleration": 0.5
+      },
+      "linear": {
+        "max_velocity": 0.25,
+        "max_acceleration": 1.2
+      },
       "workspace": {
         "x_min": -500.0,
         "x_max": 500.0,

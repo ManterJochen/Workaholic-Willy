@@ -103,11 +103,15 @@ class URRobotArm(
         # The address the tree declares, or none: there is no placeholder any more (2026-10-13). A driver with no
         # address builds, so a desk can read this cell and say what it lacks, and refuses at `connect`, the first thing
         # that needs a controller to exist.
+        # A joint move runs at robot.motion.joint (rad/s), a line at robot.motion.linear (m/s of the TCP) where its
+        # caller names no speed: two pairs since 2026-11-06, the owner's, when one pair served both.
         connection = URConnection(
             ip=config.ur.ip or "",
-            vel=config.motion.max_velocity,
-            acc=config.motion.max_acceleration,
+            vel=config.motion.joint.max_velocity,
+            acc=config.motion.joint.max_acceleration,
             frequency=config.ur.rtde_frequency,
+            line_vel=config.motion.linear.max_velocity,
+            line_acc=config.motion.linear.max_acceleration,
         )
         guard = WorkspaceGuard(config.motion.workspace)
         # The controller below the planning half (P0e E7): RTDE and the UR motion controller behind the verbs of
@@ -115,8 +119,10 @@ class URRobotArm(
         transport = URTransport(connection, MotionController(
             connection,
             guard,
-            max_velocity=config.motion.max_velocity,
-            max_acceleration=config.motion.max_acceleration,
+            max_joint_velocity=config.motion.joint.max_velocity,
+            max_joint_acceleration=config.motion.joint.max_acceleration,
+            max_linear_velocity=config.motion.linear.max_velocity,
+            max_linear_acceleration=config.motion.linear.max_acceleration,
             # The line's singularity check runs on the arm's own chain where it can be read (the owner's dh, 2026-10-09).
             arm_model=capabilities.model,
         ))

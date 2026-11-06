@@ -52,7 +52,7 @@ class TheCuroboRouteIsHeldToTheLimitsTests(unittest.TestCase):
         arm, planner = _CUROBO_ARM("willy")
         with arm.without_camera_world(_DECLINED):
             arm.move(pose_where_it_ends(arm, _Q), vel=5.0, acc=9.0)
-        limits = arm.config.motion
+        limits = arm.config.motion.joint
         self.assertEqual((limits.max_velocity, limits.max_acceleration),
                          (planner.execute.call_args.kwargs["vel"], planner.execute.call_args.kwargs["acc"]))
 
@@ -84,7 +84,7 @@ class TheCuroboRouteIsHeldToTheLimitsTests(unittest.TestCase):
         with arm.without_camera_world(_DECLINED):
             result = arm.move_to_joints(JointPositions(target), velocity=5.0, acceleration=9.0)
         self.assertTrue(result.ok, result.message)
-        limits = arm.config.motion
+        limits = arm.config.motion.joint
         self.assertEqual((limits.max_velocity, limits.max_acceleration),
                          (planner.execute.call_args.kwargs["vel"], planner.execute.call_args.kwargs["acc"]))
 

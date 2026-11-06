@@ -40,8 +40,11 @@ MOVED: Final[dict[str, str]] = {
     "robot.grasping.recovery.critical_parts": "runtime.task.critical_parts",
     # Every key of how a cell moves, under robot.motion (2026-10-17). The limits' block leaves (its sentence) and its
     # two keys move out of it, one level up.
-    "robot.motion_limits.max_velocity": "robot.motion.max_velocity",
-    "robot.motion_limits.max_acceleration": "robot.motion.max_acceleration",
+    "robot.motion_limits.max_velocity": "robot.motion.joint.max_velocity",
+    "robot.motion_limits.max_acceleration": "robot.motion.joint.max_acceleration",
+    # A joint move and a straight line go at their own speeds (the owner, 2026-11-06): the one pair was the joints'.
+    "robot.motion.max_velocity": "robot.motion.joint.max_velocity",
+    "robot.motion.max_acceleration": "robot.motion.joint.max_acceleration",
     "robot.workspace_limits": "robot.motion.workspace",
     "robot.home_joint_positions_deg": "robot.motion.home_deg",
     "robot.look_joint_positions_deg": "robot.motion.look_deg",

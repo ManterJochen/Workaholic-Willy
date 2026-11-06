@@ -151,7 +151,7 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
         self.kept = kept
         return SimpleNamespace(
             _motion_planner=planner, _preflight=object(), _transport=SimpleNamespace(is_connected=True),
-            config=SimpleNamespace(motion=SimpleNamespace(max_velocity=0.5)),
+            config=SimpleNamespace(motion=SimpleNamespace(joint=SimpleNamespace(max_velocity=0.5))),
             _curobo_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
             _route_to_the_nearest_goal=route_to, _judge_linear_move=judge_line, ik=ik, carried_line_refusal=carried,
             nearest_configuration=nearest, _planner_refresh=lambda: world, held_world=held_world,

@@ -47,6 +47,8 @@ __all__ = [
     "FixtureBoxConfig",
     "GripperConfig",
     "ArmSelection",
+    "JointSpeedConfig",
+    "LinearSpeedConfig",
     "RobotMotionConfig",
     "NamedPoseConfig",
     "POSE_LABEL_MAX_CHARS",
@@ -99,6 +101,36 @@ class WorkspaceLimitsConfig(StrictModel):
         if self.z_min >= self.z_max:
             raise ValueError(f"z_min ({self.z_min}) must be < z_max ({self.z_max})")
         return self
+
+
+class JointSpeedConfig(StrictModel):
+    """How fast a joint move goes (``robot.motion.joint``), in rad/s and rad/s^2 at the joints.
+
+    Every ``moveJ`` the arm sends: each waypoint of a planned route, a move to joints, and a move to a pose the
+    controller solves. Each number is the ceiling a caller's own ``vel``/``acc`` is held to and what the move runs at
+    where the caller names none. ``robot.motion.max_velocity`` and ``max_acceleration`` until 2026-11-06, when one pair
+    served the joints and the lines alike, and a line read the joints' rad/s as m/s.
+    """
+
+    #: The joint speed, rad/s; 3.14 is what ur_rtde takes at most.
+    max_velocity: float = Field(default=1.0, gt=0.0, le=3.14)
+    #: The joint acceleration, rad/s^2.
+    max_acceleration: float = Field(default=0.5, gt=0.0, le=5.0)
+
+
+class LinearSpeedConfig(StrictModel):
+    """How fast a straight line goes (``robot.motion.linear``), in m/s and m/s^2 of the TCP.
+
+    Every ``moveL`` the arm sends: the line down to a grasp and up from it, a place's lines, a push's legs and
+    ``move_linear``. Each number is the ceiling a caller's own ``vel``/``acc`` is held to and what the line runs at
+    where the caller names none. The defaults are UR's own for ``moveL`` (ur_rtde's and PolyScope's), the owner's
+    choice of 2026-11-06.
+    """
+
+    #: The TCP speed along the line, m/s; 3.0 is what ur_rtde takes at most.
+    max_velocity: float = Field(default=0.25, gt=0.0, le=3.0)
+    #: The TCP acceleration along the line, m/s^2.
+    max_acceleration: float = Field(default=1.2, gt=0.0, le=5.0)
 
 
 #: How many digital pins the UR tool connector has each way: outputs 0 and 1, inputs 0 and 1. The standard and
@@ -769,10 +801,12 @@ class RobotMotionConfig(StrictModel):
     #: TIMEOUT when no collision-free plan exists, and never degrades to blind IK, so a cell without a cuRobo environment
     #: does not move at all. Check that environment with ``python -m src.robot.safety.planning --doctor``.
     planner: Literal["ik", "curobo"] = "curobo"
-    #: The hard upper bounds on a commanded motion's velocity and acceleration: every motion is held to them
-    #: (``clamp_to_motion_limits``).
-    max_velocity: float = Field(default=1.0, gt=0.0, le=3.14)
-    max_acceleration: float = Field(default=0.5, gt=0.0, le=5.0)
+    #: How fast a joint move goes, rad/s and rad/s^2: the ceiling every ``moveJ`` is held to and its speed where the
+    #: caller names none (``clamp_to_motion_limits``).
+    joint: JointSpeedConfig = Field(default_factory=JointSpeedConfig)
+    #: How fast a straight line goes, m/s and m/s^2 of the TCP: the ceiling every ``moveL`` is held to and its speed
+    #: where the caller names none.
+    linear: LinearSpeedConfig = Field(default_factory=LinearSpeedConfig)
     #: The box in BASE, millimetres, every commanded pose stays inside (the workspace guard), and where a stereo rig
     #: fixed in the cell starts its depth search.
     workspace: WorkspaceLimitsConfig = Field(default_factory=WorkspaceLimitsConfig)

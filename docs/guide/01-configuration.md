@@ -437,12 +437,21 @@ every pose the cell drives to: the workspace guard also subtracts 20 mm from eve
 since 2026-10-17 (the key `safety.limits.workspace_margin_mm` left that day).
 
 **How the cell moves is one block.** Every key of it stands under `robot.motion` since 2026-10-17: the planner,
-`max_velocity` and `max_acceleration`, the `workspace` box, home (`home_deg`, in degrees as the pendant shows the
+the speeds (`joint` and `linear`), the `workspace` box, home (`home_deg`, in degrees as the pendant shows the
 joints; there is no radians twin), the looks (`look_deg`), the `natural_closing_axis`, the taught poses
 (`named_poses`, `default_place_pose`) and how a task sets its parts down (`place`). A tree that still writes one of
 them straight under `robot` is refused at load, naming where it went, and
 `python -m src.config migrate PATH --write` moves it there, comments and all. `robot.safe_pose` left the same day:
 nothing moved to it.
+
+**A joint move and a line go at their own speeds.** `robot.motion.joint.max_velocity` and `max_acceleration` hold
+every `moveJ` in rad/s and rad/s² at the joints: each step of a planned route, a move to joints, a move to a pose
+the controller solves. `robot.motion.linear.max_velocity` and `max_acceleration` hold every `moveL` in m/s and m/s²
+of the TCP: the line down to a grasp and up from it, a place's lines, a push's legs, `move_linear`. Each number is the
+ceiling a caller's own `vel`/`acc` is held to and the speed the motion runs at where the caller names none. A tree
+that sets no `linear` runs its lines at UR's own `moveL` defaults, 0.25 m/s and 1.2 m/s². Until 2026-11-06 one pair,
+`robot.motion.max_velocity` and `max_acceleration`, served both, and every line ran at the joints' rad/s read as m/s.
+A tree that still writes that pair is refused at load, and `migrate` moves it under `joint`.
 
 **The hand.** `robot.gripper.model` names a file in the gripper registry, and the hand brings its
 widths and its collision envelope from it:

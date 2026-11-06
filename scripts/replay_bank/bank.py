@@ -684,7 +684,7 @@ class ReplayCell:
             try:
                 route = self.arm._route_to_the_nearest_goal(  # noqa: SLF001 (the cell's own route)
                     self.arm._curobo_planner(), self.arm._pose_to_flange(standoff), standoff,  # noqa: SLF001
-                    velocity=float(self.robot.motion.max_velocity))
+                    velocity=float(self.robot.motion.joint.max_velocity))
             except Exception as exc:  # noqa: BLE001 (a route the bank cannot ask is said, never a crash of the run)
                 return {"route": "not asked", "route_why": f"{type(exc).__name__}: {exc}"[:200],
                         "route_s": round(time.perf_counter() - started, 2)}
